@@ -1,6 +1,6 @@
 // The Tacit Praxis ceremony page: the wall of contributors (each receipt's signature checked in the browser against the coordinator's key,
 // each face the zOrgz invader its address picks, as on the prover pool page), the stats, the rewards, and the command to take part.
-import { COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isAddress, ago, findReceipt } from '/praxis/receipt.js?cb=7b8d83c8';
+import { COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl } from '/praxis/receipt.js?cb=73d664fd';
 import { invaderSvg } from '/prove/invader.js?cb=e8a5ec59';
 
 const $ = (id) => document.getElementById(id);
@@ -76,6 +76,7 @@ function tile(r, fresh) {
   time.title = when(r.at);
   meta.append(el('span', 'num', `#${r.index}`), time);
   if (isProver(r)) meta.append(el('span', 'bd', 'prover'));
+  if (isHouse(r)) { const h = el('span', 'bd house', 'Tacit'); h.title = 'made by Tacit’s own machines, to test the ceremony'; meta.append(h); }
   b.append(face(faceKey(r)), tick, nm, meta);
   b.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(r.contribution_hash); } catch { return; }
@@ -116,7 +117,9 @@ function drawChain(t) {
   const ours = t.receipts.length;
   setNum($('n-total'), SUCCINCT_CONTRIBUTORS + ours);
   setNum($('n-ours'), ours);
-  setNum($('n-prover'), t.receipts.filter(isProver).length);
+  const provers = t.receipts.filter(isProver).length;
+  setNum($('n-prover'), provers);
+  $('n-prover').closest('li').hidden = provers === 0;       // a count that is zero says nothing until a prover has joined
   $('head-line').textContent = t.closed ? `Closed at phase2-${t.head_index}. Succinct's 18 came first.` : `Head: phase2-${t.head_index}. Succinct's 18 came first.`;
   for (const s of document.querySelectorAll('[data-head]')) s.textContent = String(t.head_index);
   const bad = brokenLink(t);
@@ -139,7 +142,7 @@ function drawYou() {
   box.append(el('span', null, `You are #${mine.index}${mine.name && !isAddress(mine.name) ? `, ${mine.name}` : ''}. Thank you.`));
   const a = el('a', 'btn');
   a.textContent = 'Share on X';
-  a.href = shareUrl(mine.contribution_hash);
+  a.href = shareUrl(mine.contribution_hash, mine.index);
   a.target = '_blank';
   a.rel = 'noopener noreferrer';
   box.append(a);
@@ -180,7 +183,12 @@ function drawCommand() {
   $('cmd-run').textContent = runCommand({ plat: $('plat').value, addr: $('addr').value, name: $('name').value, coordinator });
 }
 $('plat').value = platformGuess(navigator.userAgent, navigator.platform || '');
-for (const id of ['plat', 'addr', 'name']) $(id).addEventListener('input', drawCommand);
+$('share-page').href = pageShareUrl();
+// what was typed is kept in this browser only, so coming back after contributing finds you on the wall, with the share button
+const ME = 'tacit-praxis-me-v1';
+try { const m = JSON.parse(localStorage.getItem(ME) || '{}'); if (isAddress(m.addr)) $('addr').value = m.addr; if (typeof m.name === 'string') $('name').value = m.name.slice(0, 64); } catch { /* nothing kept */ }
+const keep = () => { try { localStorage.setItem(ME, JSON.stringify({ addr: isAddress($('addr').value.trim()) ? $('addr').value.trim() : '', name: $('name').value.trim() })); } catch { /* private window */ } };
+for (const id of ['plat', 'addr', 'name']) $(id).addEventListener('input', () => { drawCommand(); keep(); });
 $('addr').addEventListener('input', drawYou);
 drawCommand();
 

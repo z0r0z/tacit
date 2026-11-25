@@ -111,7 +111,8 @@ console.log('the wall: a face and a checked signature for each contribution');
   ok(sigs.length === tiles.length && sigs.every((s) => s === 'ok'), `every receipt's signature checks against the coordinator key (${sigs})`);
   const dots = await page.$$eval('#strip .dot', (d) => d.length);
   ok(dots === 18, `Succinct's 18 as dots (${dots})`);
-  ok((await text(page, '#n-total')) === String(18 + T.receipts.length) && (await text(page, '#n-ours')) === String(T.receipts.length) && (await text(page, '#n-prover')) === '0', 'the stats: in the chain, joined here, by provers');
+  ok((await text(page, '#n-total')) === String(18 + T.receipts.length) && (await text(page, '#n-ours')) === String(T.receipts.length) && await page.$eval('#n-prover', (e) => e.closest('li').hidden), 'the stats: in the chain and joined here; the count of provers stays out of sight while it is zero');
+  ok(/Tacit/.test(await text(page, '.tile[data-index="18"] .bd.house')) && /Tacit/.test(await text(page, '.tile[data-index="20"] .bd.house')) && (await page.$('.tile[data-index="19"] .bd')) === null, 'Tacit\'s own two contributions are badged, by their hashes, and the outside one is not');
   ok(/phase2-20/.test(await text(page, '#head-line')) && (await page.$eval('#link', (e) => e.hidden)), 'the head, and no warning about the chain');
   await page.click(`.tile[data-index="18"]`);
   ok((await page.evaluate(() => navigator.clipboard.readText())) === R18.contribution_hash && /hash copied/.test(await text(page, `.tile[data-index="18"]`)), 'a tile copies its whole contribution hash');
@@ -139,10 +140,10 @@ console.log('provers on the wall');
   const p = { index: last.index + 1, name: 'tacit-prover', handle: A, contribution_hash: '9f'.repeat(32), file_sha256: '8e'.repeat(32), prev_file_sha256: last.file_sha256, at: new Date(Date.now() - 120e3).toISOString(), signature: '00'.repeat(64) };
   const live = { ...T, head_index: p.index, head_sha256: p.file_sha256, receipts: [...T.receipts, p] };
   const { ctx, page, errs, csp } = await fresh({ live });
-  ok((await text(page, '#n-prover')) === '1' && (await text(page, '#n-ours')) === String(T.receipts.length + 1), 'a contribution by tacit-prover counts as one by a prover');
+  ok((await text(page, '#n-prover')) === '1' && !(await page.$eval('#n-prover', (e) => e.closest('li').hidden)) && (await text(page, '#n-ours')) === String(T.receipts.length + 1), 'a contribution by tacit-prover counts as one by a prover, and the stat shows once there is one');
   const row = await text(page, `.tile[data-index="${p.index}"]`);
   ok(/prover/.test(row) && /0xcdcd…cdcd/.test(row) && !/tacit-prover/.test(row), `its tile says prover and shows the address, not the tool's name (${row})`);
-  ok((await page.$$eval('.tile .bd', (b) => b.length)) === 1, 'and only that tile has the badge');
+  ok((await page.$$eval('.tile .bd:not(.house)', (b) => b.length)) === 1, 'and only that tile has the prover badge');
   ok(/live/i.test(await text(page, '#live')) && !(await page.$eval('#live', (e) => e.classList.contains('off'))), 'the wall says it read the chain live');
   ok(!errs.length && !csp.length, `no page or CSP errors (${[...errs, ...csp].join(' | ')})`);
   await ctx.close();
@@ -156,7 +157,9 @@ console.log('find yours, and share it');
   ok(/You are #18, Tacit/.test(await text(page, '#you')) && (await page.$(`.tile.mine[data-index="18"]`)) !== null, 'a number finds the contribution and marks its tile');
   const href = await page.getAttribute('#you a.btn', 'href');
   const u = new URL(href);
-  ok(u.origin === 'https://twitter.com' && u.pathname === '/intent/tweet' && u.searchParams.get('url') === 'https://tacit.finance/praxis/' && u.searchParams.get('text').includes(R18.contribution_hash) && /Tacit Praxis ceremony/.test(u.searchParams.get('text')), 'the X post carries the hash and the page');
+  const tweet = u.searchParams.get('text');
+  ok(u.origin === 'https://twitter.com' && u.pathname === '/intent/tweet' && u.searchParams.get('url') === 'https://tacit.finance/praxis/' && tweet.includes(R18.contribution_hash) && /Tacit Praxis ceremony, #18 in the chain/.test(tweet) && /#TAC #Praxis/.test(tweet) && /earn TAC/.test(tweet), `the X post carries the number, the hash, the tags and the page (${tweet.length} characters)`);
+  ok(tweet.length + 24 <= 280, 'and fits in a post with the link');
   ok((await page.getAttribute('#you a.btn', 'target')) === '_blank' && /noopener/.test(await page.getAttribute('#you a.btn', 'rel')), 'it opens in a new tab');
   await page.fill('#find', ` 0x${R18.contribution_hash.toUpperCase()} `);
   ok(/You are #18/.test(await text(page, '#you')), 'a pasted hash, in capitals and with spaces, finds it too');
@@ -167,6 +170,22 @@ console.log('find yours, and share it');
   await page.fill('#find', '');
   await page.fill('#addr', R19.handle);
   ok(/You are #19/.test(await text(page, '#you')), 'typing your address in the command finds you as well');
+  await ctx.close();
+}
+
+console.log('sharing the ceremony, and a contributor who comes back');
+{
+  const { ctx, page } = await fresh();
+  const u = new URL(await page.getAttribute('#share-page', 'href'));
+  const tweet = u.searchParams.get('text');
+  ok(u.origin === 'https://twitter.com' && u.pathname === '/intent/tweet' && u.searchParams.get('url') === 'https://tacit.finance/praxis/' && /Tacit Praxis ceremony is open/.test(tweet) && /earn TAC/.test(tweet) && /#TAC #Praxis/.test(tweet) && tweet.length + 24 <= 280, `the Share button next to Contribute posts the ceremony, with the tags (${tweet.length} characters)`);
+  ok((await page.getAttribute('#share-page', 'target')) === '_blank' && /noopener/.test(await page.getAttribute('#share-page', 'rel')), 'it opens in a new tab');
+  await page.fill('#addr', R19.handle);
+  await page.fill('#name', 'Nobody');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.querySelector('.tile.mine'), null, { timeout: 15000 });
+  ok((await page.inputValue('#addr')) === R19.handle && (await page.inputValue('#name')) === 'Nobody', 'what was typed is still there on the next visit');
+  ok(/You are #19/.test(await text(page, '#you')) && (await page.$eval('#you a.btn', (a) => /#19 in the chain/.test(new URL(a.href).searchParams.get('text')))), 'and a returning contributor is found on the wall, with a post ready to share');
   await ctx.close();
 }
 

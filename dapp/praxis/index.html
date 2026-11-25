@@ -21,8 +21,8 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /praxis/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/praxis/app.js?cb=bc35ff54">
-<link rel="modulepreload" href="/praxis/receipt.js?cb=7b8d83c8">
+<link rel="modulepreload" href="/praxis/app.js?cb=0a12cccc">
+<link rel="modulepreload" href="/praxis/receipt.js?cb=73d664fd">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <!-- preload:end -->
@@ -91,11 +91,15 @@ code { font: inherit; }
 .reward-chip { display: inline-flex; align-items: center; gap: 9px; padding: 7px 16px 7px 7px; border: 1px solid var(--hair-2); border-radius: 99px; font-size: 13px; background: var(--card); }
 .reward-chip .tk { width: 28px; height: 28px; }
 .reward-chip b { font-weight: 500; }
-.stats { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 24px 0 0; padding: 0; }
+.stats { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 24px 0 0; padding: 0; }
 .stats li { background: var(--card); border: 1px solid var(--hair); border-radius: 16px; padding: 14px 16px; min-width: 0; }
 .stats b { display: block; font: 400 clamp(30px, 5.5vw, 44px)/1 var(--serif); font-variant-numeric: tabular-nums; }
 .stats span { display: block; margin-top: 4px; font-size: 11.5px; color: var(--mute); }
 @media (max-width: 600px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
+.btn.ghost svg { width: 15px; height: 15px; }
+@media (hover: hover) { .btn.ghost:hover:not([aria-disabled]) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 14%, transparent); } }
+.cta .btn.ghost { min-width: 0; padding-inline: 20px; }
 
 .note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
 .note a { color: var(--ink); }
@@ -135,6 +139,7 @@ code { font: inherit; }
 .tile .nm { font-weight: 500; font-size: 13.5px; overflow-wrap: anywhere; line-height: 1.2; }
 .tile .meta { font-size: 11.5px; color: var(--mute); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .tile .bd { font-size: 10.5px; padding: 1px 8px; border: 1px solid var(--orange); color: var(--orange); border-radius: 99px; }
+.tile .bd.house { border-color: var(--hair-2); color: var(--mute); }
 .tile .tick { position: absolute; top: 12px; right: 14px; font-size: 12px; color: var(--ok); }
 .tile .tick.bad { color: var(--err); }
 .tile.mine { border-color: var(--orange); box-shadow: 0 0 0 2px color-mix(in srgb, var(--orange) 45%, transparent); }
@@ -517,6 +522,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <noscript><p class="note">The wall of contributors needs JavaScript; the commands below work without it.</p></noscript>
       <div class="cta">
         <a class="btn big" href="#join" id="cta-go">Contribute</a>
+        <a class="btn big ghost" id="share-page" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg>Share</a>
         <span class="reward-chip" id="cta-reward" hidden><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b id="cta-each">…</b> TAC each</span></span>
       </div>
       <ul class="stats" aria-label="The ceremony so far">
@@ -646,6 +652,6 @@ shasum -a 256 phase2-*</pre></div>
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/praxis/app.js?cb=bc35ff54"></script>
+<script type="module" src="/praxis/app.js?cb=0a12cccc"></script>
 </body>
 </html>

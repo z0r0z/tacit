@@ -62,8 +62,15 @@ export function normalHash(s) {
   return HEX64.test(h) ? h : null;
 }
 
-export function shareUrl(hash) {
-  const text = `I contributed to the Tacit Praxis ceremony.\n\nMy contribution hash:\n${hash}\n\nCheck it, or add yours:`;
+// The post that shares a contribution: its number in the chain and its hash, an invitation to add one, the tags, and the page.
+export function shareUrl(hash, index) {
+  const text = `I contributed to the Tacit Praxis ceremony${Number.isInteger(index) ? `, #${index} in the chain` : ''}.\n\nMy contribution:\n${hash}\n\nAdd yours and earn TAC:\n\n#TAC #Praxis`;
+  return `https://twitter.com/intent/tweet?${new URLSearchParams({ text, url: PAGE_URL })}`;
+}
+
+// The post anyone can make about the ceremony, before or without contributing.
+export function pageShareUrl() {
+  const text = 'The Tacit Praxis ceremony is open: add your randomness to a shared key and earn TAC for it.\n\n#TAC #Praxis';
   return `https://twitter.com/intent/tweet?${new URLSearchParams({ text, url: PAGE_URL })}`;
 }
 
@@ -164,5 +171,10 @@ export function findReceipt(receipts, q) {
     || String(r.name).toLowerCase() === s || String(r.handle).toLowerCase() === s) || null;
 }
 
-// the post that shares a contribution, once a visitor has found theirs
-export const PAGE_URL_SHARE = PAGE_URL;
+// Contributions made by Tacit's own machines, to test the ceremony before it opened. A name is self-declared, so a badge by name could be copied
+// by anyone; these are the contributions themselves, which cannot be.
+export const HOUSE_CONTRIBUTIONS = new Set([
+  'b027d931c74e1f0175b3f51d54df92dd8f79a152d0efe5ea3783205b7e8f33af',   // #18, the first, made on a rented machine through the public coordinator
+  '2192474662e8da01db43f77d6e42ea6800d1e65334768d6f8066bdc47a79fda8',   // #20, the release binary tried through the public coordinator
+]);
+export const isHouse = (r) => HOUSE_CONTRIBUTIONS.has(r?.contribution_hash);
