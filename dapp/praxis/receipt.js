@@ -110,3 +110,59 @@ export function platformGuess(ua = '', platform = '') {
   if (s.includes('linux')) return 'linux-amd64';
   return 'darwin-arm64';
 }
+
+// A contribution's credit is this many points (CEREMONY_POINTS on the ceremony's proxy); a point pays at most the campaign's cap in TAC.
+export const POINTS_PER_CONTRIBUTION = 100n;
+export const POINTS_VIEW = 'https://tacit-points.onrender.com/ceremony';
+const WAD = 10n ** 18n;
+const big = (v) => { try { return BigInt(v); } catch { return null; } };
+
+// What the points service's /ceremony view means for a contributor: the most one contribution pays, the pot, what is left and how many
+// contributions that still covers. null when the campaign is off or the view is not what it should be.
+export function rewardView(v) {
+  if (!v || v.enabled !== true || !v.pocket || !v.terms || v.terms.off) return null;
+  const cap = big(v.terms.capWeiPerPoint), total = big(v.pocket.totalWei), left = big(v.pocket.remainingWei);
+  if (cap === null || total === null || left === null || cap <= 0n || total <= 0n || left < 0n || left > total) return null;
+  const each = cap * POINTS_PER_CONTRIBUTION;
+  return { each, total, left, count: left / each, paidFrac: Number((total - left) * 10000n / total) / 10000 };
+}
+
+// whole TAC, or two decimals when it is not whole: 5, 600, 12.5
+export function tac(wei) {
+  const cents = wei / (WAD / 100n);
+  const whole = cents / 100n, frac = cents % 100n;
+  const w = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return frac === 0n ? w : `${w}.${frac.toString().padStart(2, '0').replace(/0$/, '')}`;
+}
+
+export const isAddress = (s) => /^0x[0-9a-fA-F]{40}$/.test(String(s ?? ''));
+// a contribution made by a tacit-prover on its own (the tool's name when the prover takes its turn)
+export const isProver = (r) => r?.name === 'tacit-prover';
+// what picks a contribution's face: its 0x address when it has one (the same zOrgz invader the prover pool shows for it), else its own hash
+export const faceKey = (r) => (isAddress(r?.handle) ? r.handle : isAddress(r?.name) ? r.name : `0x${r?.contribution_hash}`);
+export const label = (s) => (isAddress(s) ? `${String(s).slice(0, 6)}…${String(s).slice(-4)}` : String(s ?? ''));
+// a receipt's name for the wall: the name, or the address shortened; a handle only when it says something else
+export const nameOf = (r) => label(isProver(r) && isAddress(r.handle) ? r.handle : r.name);
+
+export function ago(at, now = Date.now()) {
+  const t = new Date(at).getTime();
+  if (Number.isNaN(t)) return '';
+  const s = Math.max(0, (now - t) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 48 * 3600) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+}
+
+// the receipt a visitor means by a name, a handle, a 0x address, a contribution hash or "#20"; null when none
+export function findReceipt(receipts, q) {
+  const s = String(q ?? '').trim().toLowerCase();
+  if (!s) return null;
+  const h = normalHash(s), num = /^#?(\d{1,6})$/.exec(s);
+  return (receipts || []).find((r) => (h && (r.contribution_hash === h || r.file_sha256 === h))
+    || (num && r.index === Number(num[1]))
+    || String(r.name).toLowerCase() === s || String(r.handle).toLowerCase() === s) || null;
+}
+
+// the post that shares a contribution, once a visitor has found theirs
+export const PAGE_URL_SHARE = PAGE_URL;

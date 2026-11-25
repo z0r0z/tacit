@@ -1,10 +1,13 @@
-// The Tacit Praxis ceremony page: the chain read from this site's copy of the coordinator's transcript (the coordinator speaks plain HTTP,
-// which an HTTPS page cannot fetch), each receipt's signature checked against the coordinator's key, the copy buttons and the share link.
-import { COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, short, when, normalHash, shareUrl, runCommand, waitText, platformGuess } from '/praxis/receipt.js?cb=7ca6eecc';
+// The Tacit Praxis ceremony page: the wall of contributors (each receipt's signature checked in the browser against the coordinator's key,
+// each face the zOrgz invader its address picks, as on the prover pool page), the stats, the rewards, and the command to take part.
+import { COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isAddress, ago, findReceipt } from '/praxis/receipt.js?cb=7b8d83c8';
+import { invaderSvg } from '/prove/invader.js?cb=e8a5ec59';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+// ── copy buttons
 function copyButton(get, label = 'Copy') {
   const b = el('button', 'cp', label);
   b.type = 'button';
@@ -14,107 +17,136 @@ function copyButton(get, label = 'Copy') {
   });
   return b;
 }
-
 for (const box of document.querySelectorAll('.cmd')) {
   const pre = box.querySelector('pre');
   box.append(copyButton(() => pre.textContent.trim()));
 }
-for (const v of document.querySelectorAll('[data-copy]')) v.after(copyButton(() => v.dataset.copy));
 
+// ── numbers that count up to their value
+function setNum(node, to) {
+  const from = Number(node.dataset.v);
+  node.dataset.v = String(to);
+  if (reduced || !Number.isFinite(from) || from === to) { node.textContent = String(to); return; }
+  const t0 = performance.now();
+  const tick = (now) => {
+    const k = Math.min(1, (now - t0) / 700);
+    node.textContent = String(Math.round(from + (to - from) * (1 - (1 - k) ** 3)));
+    if (k < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+// ── faces: the zOrgz invader of an address (the prover pool page's own drawing), or of the contribution's hash when it has no address
+const faces = new Map();
+function face(key, px = 68) {
+  if (!faces.has(key)) {
+    let svg = '';
+    try { svg = invaderSvg(key, 128); } catch { /* no face: the tile still reads */ }
+    faces.set(key, svg ? `data:image/svg+xml;base64,${btoa(svg)}` : '');
+  }
+  const img = el('img', 'inv');
+  img.width = img.height = px;
+  img.alt = '';
+  const src = faces.get(key);
+  if (src) img.src = src;
+  return img;
+}
+
+// ── the wall
 let receipts = [];
+let mine = null;                       // the receipt a visitor found
+const seen = new Set();                // indexes already drawn, so only a new one pops in
+const sigs = new Map();                // index -> true | false | null, once checked
+
+function tile(r, fresh) {
+  const t = el('li');
+  const b = el('button', 'tile');
+  b.type = 'button';
+  b.dataset.index = String(r.index);
+  b.title = `contribution ${r.contribution_hash}: click to copy it`;
+  if (fresh) b.classList.add('new');
+  if (mine && mine.index === r.index) b.classList.add('mine');
+  const tick = el('span', 'tick', '…');
+  tick.title = 'checking the coordinator’s signature';
+  const nm = el('span', 'nm', nameOf(r));
+  if (r.handle && String(r.handle).toLowerCase() !== String(r.name).toLowerCase() && !isProver(r)) nm.append(el('span', 'mute', ` ${label(r.handle)}`));
+  const meta = el('span', 'meta');
+  const time = el('time', null, ago(r.at));
+  time.dateTime = r.at;
+  time.title = when(r.at);
+  meta.append(el('span', 'num', `#${r.index}`), time);
+  if (isProver(r)) meta.append(el('span', 'bd', 'prover'));
+  b.append(face(faceKey(r)), tick, nm, meta);
+  b.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(r.contribution_hash); } catch { return; }
+    const f = el('span', 'flash', 'hash copied');
+    b.append(f);
+    setTimeout(() => f.remove(), 1200);
+  });
+  t.append(b);
+  const paint = (v) => {
+    tick.textContent = v === true ? '✓' : v === false ? '✗' : '·';
+    tick.className = `tick sig${v === false ? ' bad' : ''}`;
+    tick.title = v === true ? 'signed by the coordinator' : v === false ? 'signature does not match' : 'signature not checked in this browser';
+    tick.dataset.sig = v === true ? 'ok' : v === false ? 'bad' : 'none';
+  };
+  if (sigs.has(r.index)) paint(sigs.get(r.index));
+  else verifyReceipt(r, COORDINATOR_KEY).then((v) => { sigs.set(r.index, v); paint(v); });
+  return t;
+}
+
+function slot() {
+  const t = el('li');
+  const a = el('a', 'tile slot');
+  a.href = '#join';
+  a.append(el('b', null, 'You?'), el('span', null, `be #${SUCCINCT_CONTRIBUTORS + receipts.length + 1}`));
+  t.append(a);
+  return t;
+}
+
+function drawWall(first) {
+  const list = $('tiles');
+  list.replaceChildren(slot(), ...[...receipts].reverse().map((r) => tile(r, !first && !seen.has(r.index))));
+  for (const r of receipts) seen.add(r.index);
+  const strip = $('strip');
+  if (!strip.childElementCount) for (let i = 0; i < SUCCINCT_CONTRIBUTORS; i++) strip.append(el('i', 'dot'));
+}
 
 function drawChain(t) {
   const ours = t.receipts.length;
-  const strip = $('strip');
-  strip.replaceChildren();
-  for (let i = 0; i < SUCCINCT_CONTRIBUTORS; i++) strip.append(el('i', 'dot'));
-  for (let i = 0; i < ours; i++) strip.append(el('i', 'dot ours'));
-  strip.setAttribute('aria-label', `${SUCCINCT_CONTRIBUTORS} contributions by Succinct's setup, then ${ours} in this ceremony`);
-  $('n-total').textContent = String(SUCCINCT_CONTRIBUTORS + ours);
-  $('n-ours').textContent = String(ours);
-  const head = $('head');
-  head.replaceChildren(el('span', null, `phase2-${t.head_index} · `), el('code', null, short(t.head_sha256)), copyButton(() => t.head_sha256));
-  $('state').textContent = t.closed ? 'Closed' : 'Open for contributions';
+  setNum($('n-total'), SUCCINCT_CONTRIBUTORS + ours);
+  setNum($('n-ours'), ours);
+  setNum($('n-prover'), t.receipts.filter(isProver).length);
+  $('head-line').textContent = t.closed ? `Closed at phase2-${t.head_index}. Succinct's 18 came first.` : `Head: phase2-${t.head_index}. Succinct's 18 came first.`;
   for (const s of document.querySelectorAll('[data-head]')) s.textContent = String(t.head_index);
   const bad = brokenLink(t);
-  $('link').textContent = bad < 0 ? 'Each receipt continues the file before it, from Succinct\'s phase2-17 to the head.' : `Receipt ${bad + 1} does not continue the file before it.`;
-  $('link').className = bad < 0 ? 'note' : 'note err';
+  const link = $('link');
+  link.hidden = bad < 0;
+  link.textContent = bad < 0 ? '' : `Receipt ${bad + 1} does not continue the file before it: do not trust this list.`;
 }
 
-async function drawReceipts(t) {
-  const list = $('receipts');
-  list.replaceChildren();
-  if (!t.receipts.length) { list.append(el('li', 'empty', 'No contributions yet.')); return; }
-  for (const r of [...t.receipts].reverse()) {
-    const li = el('li', 'rc');
-    const top = el('div', 'rc-top');
-    const who = el('span', 'who');
-    // an address as a name (the tool's handle for the points) is shown once and shortened, whole on hover
-    const isAddr = (s) => /^0x[0-9a-fA-F]{40}$/.test(String(s || ''));
-    const label = (s) => (isAddr(s) ? `${s.slice(0, 6)}…${s.slice(-4)}` : s);
-    const nameEl = el('b', null, label(r.name));
-    if (isAddr(r.name)) nameEl.title = r.name;
-    who.append(nameEl);
-    if (r.handle && r.handle.toLowerCase() !== String(r.name).toLowerCase()) {
-      const h = el('span', 'mute', ` ${label(r.handle)}`);
-      if (isAddr(r.handle)) h.title = r.handle;
-      who.append(h);
-    }
-    top.append(el('span', 'idx num', `#${r.index}`), who, el('time', 'mute', when(r.at)));
-    top.lastChild.dateTime = r.at;
-    const hash = el('div', 'rc-hash');
-    const code = el('code', null, short(r.contribution_hash));
-    code.title = r.contribution_hash;
-    const sig = el('span', 'sig mute', 'checking signature…');
-    hash.append(el('span', 'k mute', 'contribution'), code, copyButton(() => r.contribution_hash), sig);
-    li.append(top, hash);
-    list.append(li);
-    verifyReceipt(r, COORDINATOR_KEY).then((v) => {
-      sig.textContent = v === true ? 'signed by the coordinator' : v === false ? 'signature does not match' : 'signature not checked in this browser';
-      sig.className = `sig ${v === true ? 'ok' : v === false ? 'err' : 'mute'}`;
-    });
-  }
+// ── find yours
+function drawYou() {
+  const box = $('you');
+  const q = $('find').value;
+  mine = findReceipt(receipts, q) || (isAddress($('addr').value.trim()) ? findReceipt(receipts, $('addr').value) : null);
+  for (const b of document.querySelectorAll('.tile.mine')) b.classList.remove('mine');
+  box.replaceChildren();
+  if (!q.trim() && !mine) { box.hidden = true; return; }
+  box.hidden = false;
+  if (!mine) { box.append(el('span', null, 'Not on the wall yet. A contribution shows up here once it has been accepted.')); return; }
+  document.querySelector(`.tile[data-index="${mine.index}"]`)?.classList.add('mine');
+  box.append(el('span', null, `You are #${mine.index}${mine.name && !isAddress(mine.name) ? `, ${mine.name}` : ''}. Thank you.`));
+  const a = el('a', 'btn');
+  a.textContent = 'Share on X';
+  a.href = shareUrl(mine.contribution_hash);
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  box.append(a);
 }
+$('find').addEventListener('input', drawYou);
 
-function drawShare() {
-  const input = $('share-hash'), go = $('share-go'), hint = $('share-hint');
-  const paint = () => {
-    const h = normalHash(input.value);
-    if (h) { go.href = shareUrl(h); go.removeAttribute('aria-disabled'); } else { go.removeAttribute('href'); go.setAttribute('aria-disabled', 'true'); }
-    const mine = h && receipts.find((r) => r.contribution_hash === h);
-    hint.textContent = !input.value.trim() ? '' : !h ? 'A contribution hash is 64 hex characters.'
-      : mine ? `That is contribution #${mine.index}${mine.name ? `, by ${mine.name}` : ''}.` : 'Not in this page\'s copy of the transcript yet. It may be newer than the copy.';
-  };
-  input.addEventListener('input', paint);
-  paint();
-  return paint;
-}
-
-const repaint = drawShare();
-
-// Take part: the command for this computer, with the address and name typed; the queue and the coordinator's address from the window
-let coordinator = COORDINATOR;
-function drawCommand() {
-  const pre = $('cmd-run');
-  if (!pre) return;
-  pre.textContent = runCommand({ plat: $('plat').value, addr: $('addr').value, name: $('name').value, coordinator });
-}
-if ($('plat')) {
-  $('plat').value = platformGuess(navigator.userAgent, navigator.platform || '');
-  for (const id of ['plat', 'addr', 'name']) $(id).addEventListener('input', drawCommand);
-  drawCommand();
-}
-async function drawQueue() {
-  try {
-    const r = await fetch('https://tacit-praxis-ceremony.onrender.com/api/coordinator', { cache: 'no-store', signal: AbortSignal.timeout(6000) });
-    const v = await r.json();
-    if (/^https?:\/\/[^\s"'<>]+$/.test(v.coordinator || '')) { coordinator = v.coordinator; drawCommand(); }
-    $('queue').textContent = v.open === false ? 'Closed' : waitText(v.queue);
-  } catch { $('queue').textContent = 'Not read just now'; }
-}
-if ($('queue')) { drawQueue(); setInterval(drawQueue, 30_000); }
-// the live transcript through the ceremony's HTTPS window (each receipt's signature is still checked below against the
-// coordinator key); this site's copy if the window does not answer
+// ── the transcript: live through the ceremony's HTTPS window, this site's copy if it does not answer
 const LIVE = 'https://tacit-praxis-ceremony.onrender.com/api/transcript';
 async function readTranscript() {
   try {
@@ -125,15 +157,76 @@ async function readTranscript() {
   if (!res.ok) throw new Error(String(res.status));
   return { t: await res.json(), live: false };
 }
-try {
-  const { t, live } = await readTranscript();
-  if (!Array.isArray(t.receipts)) throw new Error('no receipts');
-  const src = document.getElementById('src');
-  if (src) src.textContent = live ? 'Read live from the coordinator.' : 'A copy of the coordinator\'s transcript.';
-  receipts = t.receipts;
-  drawChain(t);
-  await drawReceipts(t);
-  repaint();
-} catch {
-  $('receipts').replaceChildren(el('li', 'empty err', 'The transcript could not be read here.'));
+let first = true;
+async function refresh() {
+  try {
+    const { t, live } = await readTranscript();
+    if (!Array.isArray(t.receipts)) throw new Error('no receipts');
+    $('src').textContent = live ? 'live' : 'saved copy';
+    $('live').classList.toggle('off', !live);
+    const changed = t.receipts.length !== receipts.length || t.receipts.some((r, i) => receipts[i]?.contribution_hash !== r.contribution_hash);
+    receipts = t.receipts;
+    drawChain(t);
+    if (changed || first) { drawWall(first); drawYou(); }
+    first = false;
+  } catch {
+    if (first) $('tiles').replaceChildren(el('li', 'empty err', 'The chain could not be read here.'));
+  }
 }
+
+// ── take part: the command for this computer, the queue and the coordinator's address from the window
+let coordinator = COORDINATOR;
+function drawCommand() {
+  $('cmd-run').textContent = runCommand({ plat: $('plat').value, addr: $('addr').value, name: $('name').value, coordinator });
+}
+$('plat').value = platformGuess(navigator.userAgent, navigator.platform || '');
+for (const id of ['plat', 'addr', 'name']) $(id).addEventListener('input', drawCommand);
+$('addr').addEventListener('input', drawYou);
+drawCommand();
+
+$('copy-run').addEventListener('click', async () => {
+  const b = $('copy-run');
+  try { await navigator.clipboard.writeText($('cmd-run').textContent.trim()); b.textContent = 'Copied: paste it in a terminal'; } catch { b.textContent = 'Select the command below and copy it'; }
+  setTimeout(() => { b.textContent = 'Copy the command'; }, 2500);
+});
+$('cta-go').addEventListener('click', (e) => {
+  e.preventDefault();
+  $('join').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+  setTimeout(() => $('addr').focus({ preventScroll: true }), reduced ? 0 : 450);
+});
+
+async function drawQueue() {
+  try {
+    const r = await fetch('https://tacit-praxis-ceremony.onrender.com/api/coordinator', { cache: 'no-store', signal: AbortSignal.timeout(6000) });
+    const v = await r.json();
+    if (/^https?:\/\/[^\s"'<>]+$/.test(v.coordinator || '')) { coordinator = v.coordinator; drawCommand(); }
+    $('queue').textContent = v.open === false ? 'Closed.' : waitText(v.queue);
+    if (Number.isInteger(v.queue)) setNum($('n-queue'), v.queue);
+  } catch { $('queue').textContent = ''; }
+}
+
+// ── the rewards: what a contribution pays in TAC, the pot and what is left (the panel stays hidden if the points service cannot be read)
+async function drawRewards() {
+  const box = $('rewards');
+  try {
+    const r = await fetch(POINTS_VIEW, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    const v = rewardView(await r.json());
+    if (!v) { box.hidden = true; $('cta-reward').hidden = true; return; }
+    $('rw-each').textContent = `up to ${tac(v.each)}`;
+    $('cta-each').textContent = `up to ${tac(v.each)}`;
+    $('rw-left').textContent = `${tac(v.left)} TAC left · about ${v.count.toLocaleString('en-US')} more contribution${v.count === 1n ? '' : 's'}`;
+    $('rw-pot').textContent = `of a ${tac(v.total)} TAC pot`;
+    $('rw-fill').style.width = `${Math.round(v.paidFrac * 100)}%`;
+    $('rw-bar').setAttribute('aria-label', `${Math.round(v.paidFrac * 100)}% of the ${tac(v.total)} TAC pot is paid out`);
+    box.hidden = false;
+    $('cta-reward').hidden = false;
+  } catch { box.hidden = true; $('cta-reward').hidden = true; }
+}
+
+await refresh();
+drawQueue();
+drawRewards();
+setInterval(refresh, 20_000);
+setInterval(drawQueue, 30_000);
+setInterval(drawRewards, 120_000);
+setInterval(() => { for (const t of document.querySelectorAll('.tile time')) t.textContent = ago(t.dateTime); }, 30_000);   // "3 min ago" stays true

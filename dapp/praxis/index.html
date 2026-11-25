@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://tacit-praxis-ceremony.onrender.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://tacit-praxis-ceremony.onrender.com https://tacit-points.onrender.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit praxis</title>
 <meta name="description" content="The Tacit Praxis ceremony: new public contributions to the Groth16 Phase 2 setup of SP1 v6.1.0's verifier circuit, for a new key. Take part in about 20 minutes.">
@@ -21,8 +21,10 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /praxis/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/praxis/app.js?cb=927bec06">
-<link rel="modulepreload" href="/praxis/receipt.js?cb=7ca6eecc">
+<link rel="modulepreload" href="/praxis/app.js?cb=bc35ff54">
+<link rel="modulepreload" href="/praxis/receipt.js?cb=7b8d83c8">
+<link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
+<link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -79,51 +81,110 @@ code { font: inherit; }
 .brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
 
 /* the head */
-.hero { padding: 26px 0 18px; }
-.hero h1 { font: 400 clamp(40px, 7vw, 72px)/.95 var(--serif); letter-spacing: -.025em; margin: 0; }
+.hero { padding: 30px 0 6px; }
+.hero h1 { font: 400 clamp(44px, 8vw, 84px)/.92 var(--serif); letter-spacing: -.03em; margin: 0; }
 .hero h1 em { font-style: italic; }
-.hero .sub { margin: 14px 0 0; color: var(--mute); font-size: 13px; max-width: 66ch; }
+.lede { margin: 16px 0 0; font-size: clamp(17px, 2.4vw, 21px); line-height: 1.35; max-width: 34em; }
+.fine { margin: 10px 0 0; color: var(--mute); font-size: 12.5px; max-width: 64ch; }
+.cta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 22px 0 0; }
+.cta .btn { width: auto; min-width: 230px; margin: 0; padding-inline: 32px; }
+.reward-chip { display: inline-flex; align-items: center; gap: 9px; padding: 7px 16px 7px 7px; border: 1px solid var(--hair-2); border-radius: 99px; font-size: 13px; background: var(--card); }
+.reward-chip .tk { width: 28px; height: 28px; }
+.reward-chip b { font-weight: 500; }
+.stats { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 24px 0 0; padding: 0; }
+.stats li { background: var(--card); border: 1px solid var(--hair); border-radius: 16px; padding: 14px 16px; min-width: 0; }
+.stats b { display: block; font: 400 clamp(30px, 5.5vw, 44px)/1 var(--serif); font-variant-numeric: tabular-nums; }
+.stats span { display: block; margin-top: 4px; font-size: 11.5px; color: var(--mute); }
+@media (max-width: 600px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
-/* the page */
-.grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; align-items: start; }
-.grid > .wide { grid-column: 1 / -1; }
-@media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
-.panel { background: var(--card); border: 1px solid var(--hair); border-radius: 18px; padding: 22px; min-width: 0; }
-@media (max-width: 480px) { .panel { padding: 18px 14px; } }
-.panel h2 { font: 400 clamp(26px, 4vw, 34px)/1.05 var(--serif); letter-spacing: -.015em; margin: 0 0 12px; }
-.panel h3 { font-size: 11px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 20px 0 8px; }
-.panel p { margin: 10px 0 0; font-size: 13px; }
 .note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
 .note a { color: var(--ink); }
-.kv { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 12.5px; color: var(--mute); padding: 5px 0; }
-.kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
+.plain { font-size: 13px; margin: 12px 0 0; }
 
-/* the chain: Succinct's contributions, then this ceremony's */
-.strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 10px; }
-.dot { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--mute); flex: none; }
-.dot.ours { background: var(--orange); border-color: var(--orange); }
-.dot:not(.ours) + .dot.ours { margin-left: 10px; }
-@media (max-width: 480px) { .strip { gap: 4px; } .dot { width: 11px; height: 11px; } }
-.tally { font-size: 12.5px; color: var(--mute); margin: 0 0 6px; }
-.tally b { font-weight: 500; color: var(--ink); }
-.tally .o { display: inline-block; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--mute); margin: 0 6px 0 4px; vertical-align: 0; }
-.tally .o:first-child { margin-left: 0; }
-.tally .o.ours { background: var(--orange); border-color: var(--orange); }
+/* paid in TAC */
+.rewards { margin-top: 26px; padding: 20px 22px; background: var(--card); border: 1px solid var(--hair); border-radius: 20px; }
+@media (max-width: 480px) { .rewards { padding: 16px 14px; } }
+.rw-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.rw-top h2 { font: 400 clamp(24px, 4vw, 30px)/1.05 var(--serif); letter-spacing: -.015em; margin: 0; }
+.rw-amt { margin-left: auto; display: flex; align-items: baseline; gap: 8px; }
+.rw-amt b { font: 400 clamp(36px, 7vw, 52px)/.95 var(--serif); letter-spacing: -.02em; }
+.rw-amt span { color: var(--mute); font-size: 12.5px; }
+@media (max-width: 480px) { .rw-amt { margin-left: 0; width: 100%; } }
+.rw-bar { height: 10px; margin: 16px 0 8px; background: var(--field); border: 1px solid var(--hair); border-radius: 99px; overflow: hidden; }
+.rw-bar i { display: block; height: 100%; width: 0; background: var(--orange); transition: width .5s; }
+.rw-line { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12.5px; }
+.rewards .note { margin: 10px 0 0; }
+
+/* the wall */
+.sec { margin-top: 30px; }
+.sec h2, .join h2 { font: 400 clamp(28px, 4.4vw, 38px)/1.05 var(--serif); letter-spacing: -.015em; margin: 0 0 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.live { font: 500 10.5px var(--mono); color: var(--mute); display: inline-flex; align-items: center; gap: 6px; letter-spacing: .1em; text-transform: uppercase; }
+.live i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: pulse 1.8s ease-in-out infinite; }
+.live.off i { background: var(--mute); animation: none; }
+@keyframes pulse { 50% { opacity: .25; } }
+.find input { width: 100%; max-width: 420px; min-height: var(--tap); padding: 8px 14px; font-size: 12.5px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 99px; }
+.find input:focus-visible { outline-offset: 0; }
+.you { margin: 12px 0 0; padding: 12px 16px; border: 1px solid var(--orange); border-radius: 14px; font-size: 13px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; background: color-mix(in srgb, var(--orange) 10%, transparent); }
+.you .btn { width: auto; min-height: 38px; margin: 0 0 0 auto; padding: 6px 16px; font-size: 13px; }
+.tiles { list-style: none; margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(156px, 1fr)); gap: 12px; }
+.tiles .empty { grid-column: 1 / -1; padding: 12px 0; color: var(--mute); font-size: 12.5px; }
+.tiles > li { min-width: 0; display: flex; }
+.tile { position: relative; display: flex; flex-direction: column; gap: 9px; min-width: 0; width: 100%; padding: 14px; text-align: left; font: inherit; color: inherit; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; cursor: pointer; transition: transform .15s, border-color .15s; }
+@media (hover: hover) { .tile:hover { transform: translateY(-2px); border-color: var(--hair-2); } }
+.tile .inv { width: 68px; height: 68px; border-radius: 14px; image-rendering: pixelated; display: block; }
+.tile .nm { font-weight: 500; font-size: 13.5px; overflow-wrap: anywhere; line-height: 1.2; }
+.tile .meta { font-size: 11.5px; color: var(--mute); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.tile .bd { font-size: 10.5px; padding: 1px 8px; border: 1px solid var(--orange); color: var(--orange); border-radius: 99px; }
+.tile .tick { position: absolute; top: 12px; right: 14px; font-size: 12px; color: var(--ok); }
+.tile .tick.bad { color: var(--err); }
+.tile.mine { border-color: var(--orange); box-shadow: 0 0 0 2px color-mix(in srgb, var(--orange) 45%, transparent); }
+.tile.new { animation: pop .7s ease-out; }
+@keyframes pop { from { transform: scale(.82); opacity: 0; } }
+.tile.slot { border-style: dashed; border-color: var(--hair-2); align-items: center; justify-content: center; text-align: center; min-height: 168px; text-decoration: none; gap: 6px; }
+.tile.slot b { font: 400 26px/1 var(--serif); }
+.tile.slot span { font-size: 12px; color: var(--mute); }
+.tile .flash { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; font-size: 11px; color: var(--ok); }
+@media (prefers-reduced-motion: reduce) { .live i, .tile.new { animation: none; } .rw-bar i, .tile { transition: none; } }
+.chain-err { margin: 12px 0 0; font-size: 13px; }
+.succ { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; font-size: 12px; color: var(--mute); }
+.dots { display: flex; flex-wrap: wrap; gap: 5px; }
+.dot { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--mute); flex: none; }
+
+/* contribute */
+.join { margin-top: 30px; padding: 24px; background: var(--card); border: 1px solid var(--hair); border-radius: 22px; }
+@media (max-width: 480px) { .join { padding: 18px 14px; } }
+.needs { margin: 0 0 18px; font-size: 13px; color: var(--mute); }
+.queue { font-weight: 400; color: var(--ink); white-space: nowrap; }
+.steps { display: grid; gap: 18px; }
+.step { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 14px; align-items: start; }
+.step .n { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--hair-2); display: grid; place-items: center; font: 500 12px var(--mono); margin-top: 2px; }
+.field label { display: block; font-size: 13px; margin-bottom: 7px; }
+.field label.l2 { margin-top: 12px; }
+.field .opt { color: var(--mute); margin-left: 4px; font-size: 12px; }
+.field small { display: block; margin-top: 8px; color: var(--mute); font-size: 12px; }
+.field input, .field select { width: 100%; min-height: var(--tap); padding: 8px 14px; font-size: 12.5px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; color: inherit; }
+.field input:focus-visible, .field select:focus-visible { outline-offset: 0; }
+.field input, .field select, .field .btn { max-width: 560px; }
+.field select { appearance: none; -webkit-appearance: none; padding-right: 46px; cursor: pointer; font-family: var(--mono);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23999' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 18px center; background-size: 12px 8px; }
+.alt { margin: 20px 0 0; font-size: 12.5px; color: var(--mute); }
+.alt a { color: var(--ink); }
+
+/* the details, folded away */
+.acc { margin-top: 12px; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
+.acc:first-of-type { margin-top: 30px; }
+.acc > summary { padding: 18px 22px; cursor: pointer; font: 400 clamp(22px, 3.4vw, 28px)/1 var(--serif); letter-spacing: -.01em; list-style: none; display: flex; justify-content: space-between; align-items: center; }
+.acc > summary::-webkit-details-marker { display: none; }
+.acc > summary::after { content: '+'; font: 300 26px/1 var(--mono); color: var(--mute); }
+.acc[open] > summary::after { content: '\2212'; }
+.acc > div { padding: 0 22px 22px; }
+.acc p { margin: 10px 0 0; font-size: 13px; }
+.acc p.note { font-size: 12.5px; }
+@media (max-width: 480px) { .acc > summary { padding: 16px 14px; } .acc > div { padding: 0 14px 18px; } }
 
 .cp { min-height: 28px; padding: 0 8px; margin-left: 8px; font: 500 11px var(--mono); color: var(--mute); background: var(--card); border: 1px solid var(--hair); border-radius: 8px; cursor: pointer; vertical-align: 1px; }
 @media (hover: hover) { .cp:hover { color: var(--ink); border-color: var(--hair-2); } }
-
-.receipts { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--hair); }
-.rc { padding: 10px 0; border-bottom: 1px solid var(--hair); font-size: 12.5px; }
-.rc-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
-.rc-top .idx { color: var(--mute); }
-.rc-top .who b { font-weight: 500; }
-.rc-top time { margin-left: auto; font-size: 11.5px; }
-.rc-hash { margin-top: 4px; display: flex; flex-wrap: wrap; align-items: center; row-gap: 4px; }
-.rc-hash code { color: var(--ink); }
-.rc-hash .k { margin-right: .6em; }
-.rc-hash .sig { flex-basis: 100%; font-size: 11.5px; }
-.receipts .empty { padding: 10px 0; color: var(--mute); font-size: 12.5px; }
 
 .cmd { position: relative; margin: 8px 0 0; }
 .cmd pre { margin: 0; padding: 10px 64px 10px 12px; font: 12px/1.6 var(--mono); background: var(--field); border: 1px solid var(--hair); border-radius: 10px; white-space: pre; overflow-x: auto; }
@@ -132,16 +193,7 @@ code { font: inherit; }
 .cmd pre .c { color: var(--mute); }
 .lbl { display: block; font-size: 11.5px; color: var(--mute); margin: 14px 0 0; }
 
-.share { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--hair); }
-.share label { display: block; font-size: 12.5px; margin-bottom: 6px; }
-.share input { width: 100%; min-height: var(--tap); padding: 8px 12px; font-size: 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 10px; }
-.share input:focus-visible { outline-offset: 0; }
-.share .hint { margin: 8px 0 0; font-size: 12px; color: var(--mute); min-height: 1.6em; }
-.pick { display: grid; gap: 6px; margin: 14px 0 4px; }
-.pick label { font-size: 12.5px; margin-top: 6px; }
-.pick .opt { color: var(--mute); }
-.pick input, .pick select { width: 100%; min-height: var(--tap); padding: 8px 12px; font-size: 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 10px; color: inherit; }
-.pick input:focus-visible, .pick select:focus-visible { outline-offset: 0; }
+.btn.big { min-height: 56px; font-size: 15px; border-radius: 16px; }
 .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 48px; margin-top: 10px; padding: 10px 16px; font-weight: 500; text-decoration: none;
   color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 14px; cursor: pointer; transition: box-shadow .15s, transform .1s; }
 .btn svg { width: 16px; height: 16px; fill: currentColor; }
@@ -460,60 +512,71 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <main>
     <section class="hero" aria-labelledby="h">
       <h1 id="h">Tacit <em>Praxis</em> ceremony</h1>
-      <p class="sub">A Groth16 setup for the SP1 v6.1.0 verifier circuit, extending Succinct's with new contributions. It is the setup for future Tacit Praxis work and for other Groth16 verifiers of this circuit; Praxis itself is in progress and has not been reviewed.</p>
-      <p class="sub">The key it makes is sound if at least one Phase 2 contributor (in Succinct's 18 or here) was honest, at least one of the first 54 contributors to the Perpetual Powers of Tau (Phase 1) was honest, and the starting files were derived correctly from Phase 1 and the circuit.</p>
-      <noscript><p class="note">The list of contributions needs JavaScript; the commands below work without it.</p></noscript>
+      <p class="lede">Add your randomness to a shared key. If one contributor throws theirs away, the key cannot be forged.</p>
+      <p class="fine">A Groth16 setup for the SP1 v6.1.0 verifier circuit, extending Succinct's. It is the setup for future Tacit Praxis work, which is in progress and has not been reviewed. Nothing rests on this key yet.</p>
+      <noscript><p class="note">The wall of contributors needs JavaScript; the commands below work without it.</p></noscript>
+      <div class="cta">
+        <a class="btn big" href="#join" id="cta-go">Contribute</a>
+        <span class="reward-chip" id="cta-reward" hidden><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b id="cta-each">…</b> TAC each</span></span>
+      </div>
+      <ul class="stats" aria-label="The ceremony so far">
+        <li><b id="n-total" class="num">…</b><span>contributions in the chain</span></li>
+        <li><b id="n-ours" class="num">…</b><span>joined here</span></li>
+        <li><b id="n-prover" class="num">…</b><span>by provers</span></li>
+        <li><b id="n-queue" class="num">…</b><span>waiting</span></li>
+      </ul>
     </section>
 
-    <div class="grid">
-      <section class="panel" id="status" aria-labelledby="h-status">
-        <h2 id="h-status">The chain</h2>
-        <div class="strip" id="strip" role="img" aria-label="18 contributions by Succinct's setup, then this ceremony's"></div>
-        <p class="tally"><span class="o"></span><b>18</b> in Succinct's setup ·<span class="o ours"></span><b id="n-ours">0</b> here · <b id="n-total">18</b> in all</p>
-        <div class="kv"><span>Head</span><b id="head">…</b></div>
-        <div class="kv"><span>Status</span><b id="state">…</b></div>
-        <h3>Contributions here</h3>
-        <ul class="receipts" id="receipts"><li class="empty">Reading the transcript…</li></ul>
-        <p class="note" id="link"></p>
-        <p class="note" id="self">Names and handles are self-declared: each is as its contributor typed it, and the coordinator does not check them. A contributor's own attestation is what ties a contribution to them.</p>
-        <p class="note"><span id="src">A copy of the coordinator's transcript.</span> The <a id="live" href="http://143.55.45.86:53874/api/transcript" target="_blank" rel="noopener noreferrer">live transcript</a> is on the coordinator (plain HTTP).</p>
-      </section>
+    <section class="rewards" id="rewards" aria-labelledby="h-rewards" hidden>
+      <div class="rw-top">
+        <svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>
+        <h2 id="h-rewards">Paid in TAC</h2>
+        <div class="rw-amt"><b id="rw-each">…</b><span>TAC for each contribution</span></div>
+      </div>
+      <div class="rw-bar" id="rw-bar" role="img" aria-label="How much of the pot is paid out"><i id="rw-fill"></i></div>
+      <div class="rw-line"><span id="rw-left">…</span><span id="rw-pot" class="mute">…</span></div>
+      <p class="note">Add your 0x address when you contribute. One reward for each address, paid once the UTC day it landed in is over.</p>
+    </section>
 
-      <section class="panel" id="join" aria-labelledby="h-join">
-        <h2 id="h-join">Take part</h2>
-        <p>You need about 16 GB of RAM, about 2.2 GB of free disk, and about 1 GB down and 1 GB up. It takes 15 to 20 minutes once it is your turn.</p>
-        <div class="kv"><span>Queue</span><b id="queue">…</b></div>
-        <div class="pick">
-          <label for="plat">Your computer</label>
+    <section class="sec" id="wall" aria-labelledby="h-wall">
+      <h2 id="h-wall">Contributors <span class="live" id="live"><i></i><span id="src">live</span></span></h2>
+      <div class="find"><input id="find" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Find yours: name, 0x address or hash" aria-label="Find your contribution"></div>
+      <div class="you" id="you" role="status" hidden></div>
+      <ul class="tiles" id="tiles"><li class="empty">Reading the chain…</li></ul>
+      <p class="chain-err err" id="link" role="alert" hidden></p>
+      <div class="succ"><span class="dots" id="strip" role="img" aria-label="18 contributions by Succinct's setup"></span><span id="head-line">Succinct's 18 came first.</span></div>
+    </section>
+
+    <section class="join" id="join" aria-labelledby="h-join">
+      <h2 id="h-join">Contribute</h2>
+      <p class="needs">16 GB of RAM · 2.2 GB of disk · 1 GB each way · about 20 minutes once it is your turn. <b id="queue" class="queue">…</b></p>
+      <div class="steps">
+        <div class="step"><span class="n">1</span><div class="field"><label for="plat">Your computer</label>
           <select id="plat">
             <option value="darwin-arm64">macOS, Apple silicon</option>
             <option value="darwin-amd64">macOS, Intel</option>
             <option value="linux-amd64">Linux, x86-64</option>
             <option value="linux-arm64">Linux, ARM</option>
             <option value="windows-amd64.exe">Windows</option>
-          </select>
-          <label for="addr">Your 0x address <span class="opt">(optional: the ceremony's points go to it)</span></label>
+          </select></div></div>
+        <div class="step"><span class="n">2</span><div class="field"><label for="addr">Your 0x address <span class="opt">for your TAC</span></label>
           <input id="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x…">
-          <label for="name">Your name</label>
-          <input id="name" type="text" autocomplete="off" spellcheck="false" maxlength="64" placeholder="as it will appear in the transcript">
-        </div>
-        <div class="cmd"><pre id="cmd-run">curl -fLO https://github.com/src-company/tacit/releases/download/ceremony-v1.0.0/tacit-ceremony-darwin-arm64
+          <label for="name" class="l2">Name <span class="opt">optional</span></label>
+          <input id="name" type="text" autocomplete="off" spellcheck="false" maxlength="64" placeholder="as it will appear on the wall"></div></div>
+        <div class="step"><span class="n">3</span><div class="field">
+          <button class="btn big" type="button" id="copy-run">Copy the command</button>
+          <small>Paste it into a terminal and leave it running. It waits for your turn.</small>
+          <div class="cmd"><pre id="cmd-run">curl -fLO https://github.com/src-company/tacit/releases/download/ceremony-v1.0.0/tacit-ceremony-darwin-arm64
 chmod +x tacit-ceremony-darwin-arm64
-./tacit-ceremony-darwin-arm64 contribute --coordinator http://143.55.45.86:53874 --name "&lt;your name&gt;"</pre></div>
-        <p class="note">Check the download against <a href="https://github.com/src-company/tacit/releases/tag/ceremony-v1.0.0" target="_blank" rel="noopener noreferrer">SHA256SUMS</a>, or build it yourself: <code>git clone https://github.com/src-company/tacit &amp;&amp; cd tacit/ceremony-phase2 &amp;&amp; go build -o tacit-ceremony ./cmd/tacit-ceremony</code> (Go 1.24 or later); <code>./release.sh</code> rebuilds the release byte for byte.</p>
-        <p class="note">Running <a href="/prove/">tacit-prover</a> (v0.7.0 or later) with mining on? It contributes once by itself when it has nothing to prove, waiting behind every person in the queue, with your mining address as its handle.</p>
-        <p>Leave it running: it holds your place in the queue, waits for your turn, mixes in fresh randomness, uploads the result, checks the receipt against the coordinator key and saves it as <code>receipt-&lt;n&gt;.json</code>. Ctrl-C gives the place up. The randomness is gone when it exits: run it on a machine you trust, ideally with no swap. Windows and offline steps are in the <a href="https://github.com/src-company/tacit/tree/main/ceremony-phase2" target="_blank" rel="noopener noreferrer">README</a>.</p>
-        <div class="share">
-          <label for="share-hash">Share your contribution</label>
-          <input id="share-hash" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="contribution_hash from your receipt">
-          <a class="btn" id="share-go" target="_blank" rel="noopener noreferrer" aria-disabled="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg>Share on X</a>
-          <p class="hint" id="share-hint" aria-live="polite"></p>
-        </div>
-      </section>
+./tacit-ceremony-darwin-arm64 contribute --coordinator http://143.55.45.86:53874 --name '&lt;your name&gt;'</pre></div></div></div>
+      </div>
+      <p class="alt">Run <a href="/prove/">tacit-prover</a> (v0.7.0 or later) with mining on, and it takes its turn by itself while idle, behind everyone in the queue.</p>
+    </section>
 
-      <section class="panel wide" id="verify" aria-labelledby="h-verify">
-        <h2 id="h-verify">Verify</h2>
-        <p>From phase2-17 onward, every contribution can be checked from the files alone. Fetch Succinct's last file and each one after it from the coordinator (about 1 GB each; every file is also pinned on IPFS, and <a href="https://tacit-praxis-ceremony.onrender.com/api/mirror" target="_blank" rel="noopener noreferrer">the list with their CIDs</a> is public), then check one link or the whole chain. How phase2-17 descends from Phase 1 and the circuit is not covered by these commands: the starting files were re-derived from the Hermez file and the circuit and match Succinct's byte for byte, as do the key and the verifier on Ethereum (<a href="https://github.com/src-company/tacit/blob/main/ceremony-phase2/genesis/RESULT.md" target="_blank" rel="noopener noreferrer">the record</a>, and a script to run it yourself).</p>
+    <details class="acc" id="verify">
+      <summary>Verify it yourself</summary>
+      <div>
+        <p>From phase2-17 onward every contribution can be checked from the files alone. Each file is also pinned on IPFS: <a href="https://tacit-praxis-ceremony.onrender.com/api/mirror" target="_blank" rel="noopener noreferrer">the list with their CIDs</a>. This page checks each receipt's signature in your browser, and <a id="live-link" href="https://tacit-praxis-ceremony.onrender.com/api/transcript" target="_blank" rel="noopener noreferrer">the transcript</a> is the coordinator's own record.</p>
         <span class="lbl">The files</span>
         <div class="cmd"><pre>for n in $(seq 17 <span data-head>18</span>); do
   curl -fO http://143.55.45.86:53874/f/phase2-$n
@@ -523,7 +586,7 @@ shasum -a 256 phase2-*</pre></div>
         <div class="cmd"><pre>./tacit-ceremony verify phase2-17 phase2-18</pre></div>
         <span class="lbl">The whole chain, from Succinct's phase2-17 to the head</span>
         <div class="cmd"><pre>./tacit-ceremony verify-chain . 17 <span data-head>18</span></pre></div>
-        <p class="note">phase2-17 must hash to the starting file below, and each later file to its receipt's <code>file_sha256</code>. Each receipt is signed with the coordinator's ed25519 key over its JSON without the signature; this page checks those signatures in your browser.</p>
+        <p class="note">phase2-17 must hash to the starting file below, and each later file to its receipt's <code>file_sha256</code>. How phase2-17 descends from Phase 1 and the circuit is not covered by these commands: the starting files were re-derived from the Hermez file and the circuit and match Succinct's byte for byte, as do the key and the verifier on Ethereum (<a href="https://github.com/src-company/tacit/blob/main/ceremony-phase2/genesis/RESULT.md" target="_blank" rel="noopener noreferrer">the record</a>, and a script to run it yourself).</p>
         <dl class="fixed">
           <dt>Circuit, <code>groth16_circuit.bin</code> (SP1 v6.1.0)</dt><dd><code>d6a66be2702206e2b1a20bebf7096142864feac9e399a309e5e6e00353264cbc</code></dd>
           <dt>Starting file, Succinct's <code>phase2-17</code></dt><dd><code>bf6f7799c77a90009ae356fd0d3a69a91cf153825e6762ce344fe804cf5db2df</code></dd>
@@ -531,25 +594,30 @@ shasum -a 256 phase2-*</pre></div>
           <dt>Phase 1 seal</dt><dd>drand round 1000 (League of Entropy default chain), as in Succinct's transcript</dd>
           <dt>Phase 2 seal</dt><dd>the first Bitcoin block mined after the close is announced (with the final head's hash) and the first drand quicknet round after that block's time: SHA-256 of <code>tacit-praxis-beacon-v1</code>, the block hash as explorers print it, and the randomness of a drand quicknet round whose signature is checked</dd>
         </dl>
-        <p class="note">Hashes are sha256. The tool and its notes: <a href="https://github.com/src-company/tacit/tree/main/ceremony-phase2" target="_blank" rel="noopener noreferrer">ceremony-phase2</a>.</p>
-      </section>
+        <p class="note">Check the downloaded tool against <a href="https://github.com/src-company/tacit/releases/tag/ceremony-v1.0.0" target="_blank" rel="noopener noreferrer">SHA256SUMS</a>, or build it: <code>git clone https://github.com/src-company/tacit &amp;&amp; cd tacit/ceremony-phase2 &amp;&amp; go build -o tacit-ceremony ./cmd/tacit-ceremony</code> (Go 1.24 or later); <code>./release.sh</code> rebuilds the release byte for byte. Windows and offline steps are in the <a href="https://github.com/src-company/tacit/tree/main/ceremony-phase2" target="_blank" rel="noopener noreferrer">README</a>. The randomness is gone when the tool exits: run it on a machine you trust, ideally with no swap.</p>
+      </div>
+    </details>
 
-      <section class="panel" id="honest" aria-labelledby="h-honest">
-        <h2 id="h-honest">What it protects today</h2>
-        <p class="plain">Nothing yet. No value will rest on this key until the SP1 v6 recursion and wrap circuits have been reviewed.</p>
-        <p class="note">The ceremony makes a new key (a new delta) for the circuit. It does not change Succinct's deployed SP1 verifier, which keeps its own key.</p>
-      </section>
+    <details class="acc" id="honest">
+      <summary>What it rests on</summary>
+      <div>
+        <p>The key it makes is sound if at least one Phase 2 contributor (in Succinct's 18 or here) was honest, at least one of the first 54 contributors to the Perpetual Powers of Tau (Phase 1) was honest, and the starting files were derived correctly from Phase 1 and the circuit.</p>
+        <p class="plain">What it protects today: nothing yet. No value will rest on this key until the SP1 v6 recursion and wrap circuits have been reviewed.</p>
+        <p class="note">The ceremony makes a new key (a new delta) for the circuit. It does not change Succinct's deployed SP1 verifier, which keeps its own key. Names and handles are self-declared: each is as its contributor typed it, and the coordinator does not check them. A contributor's own attestation is what ties a contribution to them.</p>
+      </div>
+    </details>
 
-      <section class="panel" id="credits" aria-labelledby="h-credits">
-        <h2 id="h-credits">Credits</h2>
+    <details class="acc" id="credits">
+      <summary>Credits</summary>
+      <div>
         <ul class="credits">
           <li>Succinct, who organized SP1's v6.1.0 Groth16 setup, and its 18 Phase 2 contributions (phase2-0 to phase2-17), the chain this one extends. L2BEAT's ZK catalog lists them as 18 participants from Etherealize, Polygon, OP Labs, Alpen Labs, Offchain Labs, Succinct, Coinbase and Across Protocol.</li>
           <li>The Perpetual Powers of Tau and Hermez, for Phase 1.</li>
           <li>Worldcoin and the zkbnb-setup authors, for the Phase 2 tools, and gnark.</li>
           <li>Praxis is by Tse, Vanjani and Vesely (<a href="https://eprint.iacr.org/2026/2971" target="_blank" rel="noopener noreferrer">ePrint 2026/2971</a>). The scheme is theirs and has not been reviewed; they are not part of this ceremony.</li>
         </ul>
-      </section>
-    </div>
+      </div>
+    </details>
   </main>
 
   <!-- chrome:foot:begin -->
@@ -578,6 +646,6 @@ shasum -a 256 phase2-*</pre></div>
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/praxis/app.js?cb=927bec06"></script>
+<script type="module" src="/praxis/app.js?cb=bc35ff54"></script>
 </body>
 </html>
