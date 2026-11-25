@@ -57,7 +57,7 @@ test('page: a provider this key finished a swap with is asked although it is onl
   await w.ready();
   w.lEvm.fund(10n * UNITS, 'inv0');
   const [real] = await w.discover();
-  const onBoard = { ...real, ref: { ...real.ref, kind: 'mailbox' } };
+  const onBoard = { ...real, pinned: false, ref: { ...real.ref, kind: 'mailbox' } };
   let houseAsked = 0, round = 0;
   const pair = w.makePair({
     discover: async () => [onBoard, ...fakesOf(real, ++round)],
