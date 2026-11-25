@@ -1046,6 +1046,12 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const t = e.target;
     if (t.closest('[data-press-cancel]')) { cancelPress(); return; }
     if (t.closest('[data-pay-retry]')) { payRetry(t.closest('[data-pay-retry]').dataset.payRetry); return; }
+    // (a page with no apart list shows the swaps in the lane: their next steps are the page's, as on /btc/)
+    if (!recsHost && onNext) {
+      const nx = t.closest('[data-next="send"]'), wd = t.closest('[data-next="withdraw"]');
+      if (nx) { try { onNext({ act: 'send', sats: BigInt(nx.dataset.sats) }); } catch { /* the page's hook */ } return; }
+      if (wd) { try { onNext({ act: 'withdraw', id: wd.dataset.id, units: wd.dataset.units ? BigInt(wd.dataset.units) : null }); } catch { /* the page's hook */ } return; }
+    }
     const ca = t.closest('[data-check-again]'); if (ca) { checkAgain(ca.dataset.checkAgain, ca); return; }
     const cp = t.closest('[data-copy]');
     if (cp) { navigator.clipboard?.writeText(cp.dataset.copy).then(() => { cp.textContent = 'Copied'; setTimeout(() => { cp.textContent = /^bc1|^[13]/.test(cp.dataset.copy) ? 'Copy address' : 'Copy amount'; }, 1500); }, () => {}); return; }

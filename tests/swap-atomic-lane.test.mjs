@@ -6,7 +6,7 @@
 //   checks: with no provider the card is as it was (two switches, no lane code or markup, one read of the board) for a board that is empty, one with other ads, and one with an ad
 //   no key signed; with a provider the third switch appears; the lane (sign-in, balances, the minimum, a quote and its comparison with the market, a quote that must not be started,
 //   a flip, one start however many presses, the steps of a swap under way, done and returned, dismissing, found again from the key); links and the address; the front page's switch; a phone width.
-//   The card passes no way to add ETH: a lane short of ETH says so and offers no deposit (the /btc/ page's Add ETH is tested in tests/btc-page.test.mjs).
+//   The card hosts the lane with the /btc/ page's Add ETH and Receive as; a finished swap's next steps open /btc/ (Add ETH's flow is tested in tests/btc-page.test.mjs).
 //
 //   node tests/swap-atomic-lane.test.mjs        (SHOTS=<dir> saves screenshots; PLAYWRIGHT=<path to playwright-core>)
 import { createRequire } from 'node:module';
@@ -266,8 +266,8 @@ console.log('a provider: the switch appears, and the lane opens');
   const getNow = parseFloat(await text(page, '#a-out')), want = Number((await atom(page, 'A.calls.quotes.at(-1).get')) - 500n) / 1e8;
   ok(Math.abs(getNow - want) < 1e-9, `the amount shown is what arrives, the lock less the fee of taking it (${getNow} = ${want})`);
   await type(page, '5');
-  await page.waitForFunction(() => /^Not enough ETH in your private balance$/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 }).catch(() => {});
-  ok(/^Not enough ETH in your private balance$/.test(await text(page, '#a-go')) && (await page.$eval('#a-go', (e) => e.disabled)) && !/One wallet transaction/.test(await text(page, '#a-q')), 'with no way to add ETH here, more than the private balance says so: the one press that adds it is the BTC page\'s');
+  await page.waitForFunction(() => /^Swap 5 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 }).catch(() => {});
+  ok(/^Swap 5 ETH → BTC$/.test(await text(page, '#a-go')) && (await page.$eval('#a-go', (e) => e.dataset.act)) === 'oneclick', 'the card passes the same Add ETH as /btc/: more than the private balance is one press that adds the shortfall and swaps ('+await text(page, '#a-go')+')');
   await page.click('#a-flip');
 
   console.log('starting: once, with the quote shown');
@@ -567,13 +567,18 @@ console.log('a phone width, and the dark scheme');
   await page.click('#a-flip');
   ok((await text(page, '#a-bal')) === 'Balance 0.00847639 ETH', `the balance is what the wallet holds, not what is left after the relay fee (${await text(page, '#a-bal')})`);
   await page.fill('#a-amt', '0.0083');
-  await page.waitForFunction(() => /stays back/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
-  ok((await text(page, '#a-go')) === '0.00028 ETH stays back for the pool’s fee' && await page.$eval('#a-go', (e) => e.disabled), `more than can be locked, but less than is held, says what stays back (${await text(page, '#a-go')})`);
+  await page.waitForFunction(() => /^Swap 0\.0083 ETH/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(/^Swap 0\.0083 ETH → BTC$/.test(await text(page, '#a-go')) && (await page.$eval('#a-go', (e) => e.dataset.act)) === 'oneclick', `more than can be locked, but less than is held, is the one press that adds the rest (${await text(page, '#a-go')})`);
   await page.fill('#a-amt', '0.009');
-  await page.waitForFunction(() => /Not enough/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
-  ok(/Not enough ETH in your private balance/.test(await text(page, '#a-go')), 'more than is held still says there is not enough');
-  // the card's lane has no way to add ETH from a wallet (the /btc/ page passes one: tests/btc-page.test.mjs): no Add button, and no line about a deposit
-  ok((await page.$eval('#a-go', (e) => e.dataset.act)) === '' && !/deposit from your wallet/.test(await text(page, '#a-q')), 'on the card, a lane with no way to add ETH offers no deposit');
+  await page.waitForFunction(() => /^Swap 0\.009 ETH/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(/^Swap 0\.009 ETH → BTC$/.test(await text(page, '#a-go')), 'more than is held is the one-press Add ETH swap, as on /btc/');
+  ok((await page.$eval('#a-go', (e) => e.dataset.act)) === 'oneclick', 'on the card, the lane has Add ETH, as /btc/ does');
+  // the card's lane has the page's "Receive as" for a swap of BTC (btc/payout.js), and a finished swap's next steps open the page that has the panels
+  await page.click('#a-flip');
+  await page.fill('#a-amt', '0.001');
+  await page.waitForFunction(() => document.querySelector('#a-payto') && !document.querySelector('#a-payto').hidden, null, { timeout: 8000 }).catch(() => {});
+  ok(/Receive as/.test(await text(page, '#a-payto')) && /Sent to another Ethereum address/.test(await text(page, '#a-payto')), 'on the card, a swap of BTC asks "Receive as", as /btc/ does');
+  await page.click('#a-flip');
   await page.fill('#a-amt', '0.008');
   await page.waitForFunction(() => /^Swap/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
   ok(!(await page.$eval('#a-go', (e) => e.disabled)), 'an amount that fits can be swapped');

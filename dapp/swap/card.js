@@ -2921,7 +2921,11 @@ function paintAtomic() {
 }
 async function openAtomic() {
   try {
-    atomicP ||= import('/swap/atomic.js?cb=fee8756d').then((mod) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir })));
+    // the same lane as /btc/, with the same two helpers: ETH added from the Ethereum wallet in one press, and "Receive as" (the ETH kept private or sent on).
+    // The page's own panels (the Bitcoin send, the ETH send) are on /btc/, so a finished swap's next step opens them there.
+    atomicP ||= Promise.all([import('/swap/atomic.js?cb=0a565a73'), import('/btc/add-eth.js?cb=eae599fd'), import('/btc/payout.js?cb=3b028d52')]).then(([mod, ae, po]) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir ,
+      shield: ae.makeAddEth({ getUx }), payout: po.makePayout({ getUx }),
+      onNext: ({ act }) => { if (act === 'send') location.href = '/btc/?dir=e2b#mybtc'; else if (act === 'withdraw') location.href = '/btc/#myeth'; } })));
     await atomicP;
     if (S.atomic) { if (ATOM.ask) { atomic.set(ATOM.ask); ATOM.ask = null; } await atomic.show(); }
   } catch (e) { $('#atomic').innerHTML = `<p class="q err">Could not load the Bitcoin and Ethereum lane: ${esc(e?.message || e)}</p>`; atomic = atomicP = null; }
