@@ -13697,7 +13697,7 @@ async function handleTacImport(req, env, network, cors) {
 // multiplies that by hundreds of txs. This keeps immutable responses in a bounded in-process LRU and collapses
 // concurrent identical requests into one upstream call. Responses that can still change (unconfirmed tx, address
 // state, a spend not yet confirmed) are never stored.
-const CHAIN_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const CHAIN_CACHE_MAX_BYTES = 128 * 1024 * 1024;
 const _chainCache = new Map(); // key -> { body, status, contentType, exp, size }
 let _chainCacheBytes = 0;
 const _chainInflight = new Map(); // key -> Promise<{ body, status, contentType, cached }>
@@ -13732,7 +13732,7 @@ function _chainCacheTtlMs(path, body) {
     let j; try { j = JSON.parse(body); } catch { return 0; }
     const confirmed = /\/outspend\//.test(p) ? (j && j.spent === true && j.status && j.status.confirmed === true) : (j && j.confirmed === true) || (j && j.status && j.status.confirmed === true);
     if (!confirmed) return 0;
-    return 30 * 60_000;
+    return 6 * 3600_000; // a confirmed answer only changes in a reorg; six hours keeps a wallet's re-reads off the public explorers (which rate-limit this host)
   }
   return 0;
 }
