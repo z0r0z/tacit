@@ -13,6 +13,7 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { makeStuck, stuckScreen } from '../dapp/fast/stuck.js';
 process.on('unhandledRejection', (e) => console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'error', msg: 'unhandled rejection', error: String((e && e.message) || e).slice(0, 200) })));
 
 const DRY = process.argv.includes('--dry-run');
@@ -103,6 +104,15 @@ if (PAIR) {
 const confs = (C.policy.confs || [['0', 1]]).map(([from, n]) => [BigInt(from), n]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
 // TAC with up to 8 places, as the pool's units (8 places) and as the token's wei (18)
 const tacUnits = (t) => { const [whole, frac = ''] = String(t).split('.'); return BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8)); };
+
+// Stuck TAC (dapp/fast/stuck.js, README "TAC out of the Bitcoin shielded pool"): with a `quote.stuck` schedule the provider prices the TAC the regular
+// bridge cannot carry home instead of taking it at the clean price, and refuses at offer time a lock whose class is worse than the one its quote was
+// priced for. The class is read by the same code the page uses (`bridgeUx().lineage`), so the daemon and the page tell a note's history apart alike.
+// A schedule that mis-states its own floor throws here in makeStuck, before anything is served: a provider that cannot price a class must not take it.
+const stuck = makeStuck({ quote: C.quote || {}, stuck: C.quote?.stuck ?? null });
+const lockScreen = stuck && !C.policy?.screen ? stuckScreen((notes) => tacit.bridgeUx().lineage(notes), { stuck }) : null;
+if (lockScreen) log({ level: 'info', msg: 'stuck TAC is priced by class, and a lock of a worse class than its quote is refused', take: stuck.take, feeBps: Object.fromEntries(stuck.take.map((k) => [k, stuck.feeBpsFor(k)])) });
+
 const config = {
   claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
   lowFree: (PAIR ? C.lowFreeEth : C.lowFreeTac) != null ? tacUnits(PAIR ? C.lowFreeEth : C.lowFreeTac) : null,    // what is left to lend, an amount with up to 8 places (TAC, or ETH for a pair provider)
@@ -113,6 +123,7 @@ const config = {
     roundSecs: C.policy.roundSecs ?? 600, refundMarginSecs: C.policy.refundMarginSecs ?? 600, maxOfferAgeSecs: C.policy.maxOfferAgeSecs ?? 3600, holdAgeSecs: C.policy.holdAgeSecs,
     minAmount: C.quote.minAmount, maxAmount: C.quote.maxAmount,
     minConfsFor: (v) => confs.reduce((n, [from, c]) => (BigInt(v) >= from ? c : n), confs[0][1]),
+    ...(lockScreen ? { screen: lockScreen } : {}),
   },
 };
 const data = resolve(C.dataDir || 'fastbridge-lp/data');

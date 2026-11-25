@@ -32,7 +32,7 @@ node fastbridge-lp/server.mjs                                      # prints the 
 3. **Know what comes home.** Bitcoin TAC builds up as the private TAC drains. You can trade it on Bitcoin, or bring home what the regular bridge can carry (the front
    page's Bridge tab with the same key, or `tools/fastbridge-lp-bridge-home.mjs` from a terminal) and lend it again. The bridge cannot follow TAC whose history passes through
    Bitcoin's shielded pool, a pool or farm trade, or a very long chain of transfers, and a provider that takes every note is often paid in such TAC: it stays on
-   Bitcoin. The page's "Provide liquidity" panel can refuse it; the daemon takes it (see the last section). Until the private TAC is topped up the provider shows "full right now" and bridgers use another.
+   Bitcoin. The page's "Provide liquidity" panel can refuse it; the daemon takes it unless its `quote.stuck` says otherwise (see the last section). Until the private TAC is topped up the provider shows "full right now" and bridgers use another.
 4. **Be told.** Set `FB_LP_ALERT_WEBHOOK` (a Slack or Discord webhook works as it is) and it says when it runs low on TAC or ETH, or a swap waits long.
 
 `FB_LP_MAX_AMOUNT=0` stops new swaps and finishes the open ones; to stop for good, wait for those to finish, then stop the process. One process per key.
@@ -78,6 +78,7 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `quote.minAmount`, `quote.maxAmount` | amounts in base units, both sides; set `maxAmount` below `minAmount` to stop quoting while open swaps finish |
 | `quote.feeBps`, `quote.flatFee` | the LP's fee: a share of the amount plus a flat part in base units. The flat part covers the relay's fee (for cutting a note to size) and a little more: the user already pays the Bitcoin take in sats, inside its lock (`takeSats`), so it is not part of the fee. Keep it small: a fee over 5% of the amount is quoted by the fast page with a plain warning, and the front page's Bridge tab does not prefer it, so a flat fee of F TAC keeps every bridge under about 20 × F TAC out of the tab (a fee over 90% is not quoted at all) |
 | `quote.validSecs`, `quote.rate` | how long a quote holds; `{num, den}` converts what is left after the fee (1/1 for one asset on both sides) |
+| `quote.stuck` | the stuck-TAC schedule: `take` names the classes of TAC it takes (`clean`, `long`, `poolExit`; `clean` is always one of them), `haircutBps` what it expects to lose on each of the others, in hundredths of a percent, and `marginBps` what it adds on top for itself. A class in `take` with no `haircutBps` stops the process at start: nothing is taken at the clean price that is not clean. With the block, a quote says which class it was priced for and a lock of a worse class is refused at offer time (last section); without it, every note is taken at the old price |
 | `quote.graceSecs`, `quote.lateSecs`, `quote.lateMoveBps` | how long after `validSecs` an offer is still answered at the quote. With a fixed `rate` (the TAC provider) the grace is all there is. A provider priced from the market answers after the grace only an offer whose lock it saw before the quote ran out (named to `/extend` in time, or confirmed in a block by then), up to `lateSecs` after it (6 h), and only while the price of the moment pays no more than `lateMoveBps` over the quote (100) |
 | `traceRpcs` | the Ethereum nodes asked for a transaction's trace (`debug_traceTransaction` or `trace_transaction`), to read a claim settled through a contract other than the pool or its relayer; `FB_LP_TRACE_RPCS` (comma separated) wins. An own node goes first (the public ones that answer are the default) |
 | `agreeRpcs` | the Ethereum nodes, of separate operators, that must agree before a swap is taken as claimed, refunded or lost: every one is asked at one block, two or more must answer and all that answer must say the same (else the read is made again and the swap waits; refunds still go out at their time). `FB_LP_AGREE_RPCS` (comma separated) wins; at least two. Default: public nodes that serve the pool's state at a block number. `traceRpcs` should name two or more as well, since a claim read from a trace is taken only once two nodes trace it alike |
@@ -304,5 +305,14 @@ node tests/fastbridge-fork.mjs          # the Ethereum side against the live poo
 ## TAC out of the Bitcoin shielded pool
 
 The daemon takes any TAC the note validator accepts, a note made by an exit from the Bitcoin shielded pool included, and says so in its terms
-and ad (`anyTac: true`), so bridgers send it such notes. That TAC cannot be bridged home afterwards, only traded on Bitcoin. The daemon has no
-option to refuse it; a provider run from the page's "Provide liquidity" panel has one.
+and ad (`anyTac: true`), so bridgers send it such notes. That TAC cannot be bridged home afterwards, only traded on Bitcoin. Without a `quote.stuck`
+block it has no option to refuse it; a provider run from the page's "Provide liquidity" panel has one.
+
+`quote.stuck` prices that TAC instead of turning it away. A note's class is read from the bridge's own trace of its history before a lock is taken:
+`clean` when the burn's proof can carry it home, `long` when more than 255 transfers are behind it (the proof's walk is bounded), and `poolExit`
+when the proof does not follow it at all (an exit from the shielded pool, a pool or farm trade, TAC that came over from Ethereum); the rules and
+the numbers are in [`docs/STUCK-TAC-PRICING.md`](../docs/STUCK-TAC-PRICING.md). For each class it takes, `haircutBps` is what the provider expects to
+lose on that class, so the fee is `feeBps + haircutBps + marginBps` of the amount (plus the flat part), and a quote names the class it was priced for.
+A lock whose class is worse than the quote's is refused, so no TAC is taken below the floor the provider set for it, and a class in `take` with no
+haircut stops the process at start rather than let it price that class at the clean rate. Removing the block is the provider it was: it takes any
+TAC the validator accepts, at its old price, unscreened.

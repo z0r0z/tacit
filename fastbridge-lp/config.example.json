@@ -24,7 +24,8 @@
     "feeBps": 30,
     "flatFee": "10000000",
     "validSecs": 600,
-    "rate": { "num": 1, "den": 1 }
+    "rate": { "num": 1, "den": 1 },
+    "stuck": { "take": ["clean", "long"], "haircutBps": { "long": 900, "poolExit": 2500 }, "marginBps": 100 }
   },
   "policy": {
     "minCsv": 72,
