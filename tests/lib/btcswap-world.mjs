@@ -112,7 +112,7 @@ export function world({ desk: deskOver = {}, holder: holderOver = {}, tracked = 
     if (w.refuseSign?.has(req.pledgeId)) return null;
     const pledge = await w.pledges.get(req.pledgeId);
     if (!pledge) return null;
-    const remaining = BigInt(pledge.amount) - BigInt(pledge.drawn) - pledge.draws.filter((d) => ['allocated', 'requested', 'broadcast'].includes(d.phase)).reduce((s, d) => s + BigInt(d.amount), 0n);
+    const remaining = BigInt(pledge.amount) - BigInt(pledge.drawn) - pledge.draws.filter((d) => d.swapId !== req.swapId && ['allocated', 'requested', 'broadcast'].includes(d.phase)).reduce((s, d) => s + BigInt(d.amount), 0n);
     if (BigInt(req.amount) > remaining || req.discountBps > pledge.maxDiscountBps) return null;
     const swap = await w.deskStore.get(req.swapId);
     if (!swap || swap.phase !== 'accepted') return null;
@@ -121,6 +121,7 @@ export function world({ desk: deskOver = {}, holder: holderOver = {}, tracked = 
     if (reveal.inputs[1].txid !== pledge.lock.txid || reveal.inputs[1].vout !== pledge.lock.vout) return null;
     if (bytesToHex(reveal.outputs[0].script) !== deskScript) return null;
     const joint = S.jointLock({ prims: pW.prims, holderPub: pledge.pledgerPub, deskPub: pledge.joint.deskPub, deskXonly: pledge.joint.refundXonly, csvBlocks: pledge.csvBlocks, refundXonly: pledge.joint.refundXonly });
+    if (bytesToHex(reveal.outputs[1].script) !== bytesToHex(joint.spk)) return null;
     const nonce = M.nonceGen({ sk: pW.prims.wallet.priv, pk: pW.prims.wallet.pub, aggXonly: joint.keys.xonly, msg: hexToBytes(req.sighash) });
     const sess = M.session({ keys: joint.keys, pubnonces: [hexToBytes(req.deskNonce), nonce.pubnonce], msg: hexToBytes(req.sighash), T: null });
     return { pubnonce: bytesToHex(nonce.pubnonce), psig: bytesToHex(M.partialSign({ secnonce: nonce.secnonce, sk: pW.prims.wallet.priv, sess })) };

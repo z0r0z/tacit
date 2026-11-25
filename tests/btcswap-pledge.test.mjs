@@ -61,7 +61,27 @@ test('the provider loop: a stuck note swaps at the desk for tracked TAC, which b
   const p = await w.pledges.get(id);
   assert.equal(p.drawn, String(OUT), 'the desk drew exactly what the swap needed');
   assert.equal(p.owed, String(OWED), 'the desk owes the drawn amount plus the stated return');
-  assert.equal(p.phase, 'spent');
+  // the draw spent the whole lock note and returned the rest as change, so the pledge still holds 51,660 and its lock
+  // has moved to the change note: a second draw spends that, not the note already spent
+  assert.equal(p.phase, 'funded');
+  assert.equal(p.lock.amount, String(100000n - OUT), 'the change is what is left of the pledge');
+  assert.ok(await w.noteOf(p.lock.txid, p.lock.vout), 'the change note is valid');
+  // a second draw, driven straight at the pledges module: it spends the change note and leaves 21,660
+  const swap2 = '22'.repeat(32);
+  await w.deskStore.put({ id: swap2, phase: 'accepted', discountBps: 300 });
+  const alloc2 = await w.pledges.allocate({ swapId: swap2, want: 30000n, discountBps: 300 });
+  assert.ok(alloc2, 'the change funds a second draw');
+  const built2 = await w.pledges.buildDraw({ pledge: alloc2[0].pledge, swapId: swap2, amount: alloc2[0].take, index: alloc2[0].index });
+  const signed2 = await w.pledges.signDraw({ pledge: alloc2[0].pledge, swapId: swap2, amount: alloc2[0].take, discountBps: 300, built: built2 });
+  assert.ok(signed2, 'the pledger signs the second draw');
+  await w.dBtc.broadcast({ ...signed2, revealTxid: built2.pair.revealTxid });
+  w.btc.mine(1);
+  await w.pledges.confirmDraw({ pledge: await w.pledges.get(id), draw: { swapId: swap2, index: alloc2[0].index, txid: built2.pair.revealTxid, amount: String(alloc2[0].take), rLock: built2.rLock, changeRLock: built2.changeRLock, changeAmount: built2.changeAmount, value: built2.value }, height: w.btc.tip });
+  const p2 = await w.pledges.get(id);
+  assert.equal(p2.drawn, String(OUT + 30000n), 'both draws are counted');
+  assert.equal(p2.lock.amount, String(100000n - OUT - 30000n), 'the second change is what is left');
+  assert.ok(await w.noteOf(built2.pair.revealTxid, 0), 'the second drawn note is valid');
+  assert.ok(await w.noteOf(p2.lock.txid, p2.lock.vout), 'the second change note is valid');
 });
 
 test('a drawn pledge is repaid once the desk is topped up, from what the desk owns', async () => {
@@ -93,19 +113,19 @@ test('a pledge whose refund has opened is given back, not drawn on', async () =>
   const p = await w.pledges.get(id);
   assert.equal(p.phase, 'expired', 'the pledge is marked expired once its refund opens');
   assert.equal(await w.pledges.available(), 0n, 'an expired pledge funds nothing');
-  // the desk cannot fund a swap from it: with no owned TAC it locks nothing and the holder refunds
-  w.deskNotes = [];
+  // the swap runs on the desk's own TAC: the expired pledge is never drawn on
   w.traceClass[keyOf(w.holderNote)] = 'pool-exit';
   await w.start(HELD, w.holderNote);
-  await w.run(async () => (await w.d())?.phase === 'aborted');
+  await w.run(async () => (await w.h())?.phase === 'done' && (await w.d())?.phase === 'done');
   assert.equal((await w.pledges.get(id)).drawn, '0', 'nothing was drawn from the expired pledge');
 });
 
 test('expiry mid-swap: a pledge that runs out before its draw is built is given back and the swap is funded from the rest', async () => {
-  const w = world({ pledge: { csvPledge: 8 } });
+  const w = world({ pledge: { csvPledge: 20 } });
   w.traceClass[keyOf(w.holderNote)] = 'pool-exit';
   w.deskNotes = [];
   const a = await w.pledge(PLEDGER_NOTE, 500, w.pledgerNote);
+  w.btc.mine(8); // the second pledge is funded later, so it runs out later
   const b = await w.pledge(PLEDGER_NOTE, 500, w.pledgerNote2);
   w.deskOnline = false; // drive the desk by hand, so the tip can move between the allocation and the build
   await w.start(HELD, w.holderNote);
@@ -113,7 +133,9 @@ test('expiry mid-swap: a pledge that runs out before its draw is built is given 
   await w.desk.step(await w.d());
   let d = await w.d();
   assert.equal(d.draws[0].pledgeId, a, 'the first pledge funds the swap');
-  w.btc.mine(3); // the first pledge's refund opens before its draw is built
+  // move the tip until the first pledge's refund opens, but the second's has not
+  const aRec = await w.pledges.get(a);
+  w.btc.mine(Math.max(1, Number(BigInt(aRec.expiryHeight) - BigInt(w.btc.tip) - 6n)));
   await w.desk.step(await w.d());
   d = await w.d();
   assert.equal(d.draws[0].pledgeId, b, 'the swap is funded from the second pledge instead');

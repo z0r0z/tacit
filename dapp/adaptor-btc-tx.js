@@ -194,6 +194,23 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return { ...pair, sighash, revealJson: txToJson(pair.revealTx) };
   }
 
+  // A draw on a pledge spends the whole lock note: the drawn amount goes to the wallet, the rest returns to the joint
+  // lock as change, so the pledge can be drawn on again. The change note's blinding is the caller's; the drawn note's
+  // is the wallet's own change blinding for this anchor, returned so the caller can track the drawn note.
+  function jointClaimSplit({ asset, lockOut, lock, amount, changeAmount, changeRLock, satsUtxos, feeRate }) {
+    let sighash = null;
+    const input = {
+      txid: lockOut.txid, vout: lockOut.vout, value: lockOut.value ?? DUST, amount: asBig(lockOut.amount), blinding: asBig(lockOut.blinding), spk: lock.spk, witnessSizes: [64],
+      sign: (tx, idx, prevouts) => { sighash = prims.tapSighashKeyPath(tx, idx, prevouts, 0x00); return [new Uint8Array(64)]; },
+    };
+    const anchor = anchorOf(input);
+    const pair = transfer({ asset, inputs: [input], outputs: [
+      selfOut(anchor, 0, amount),
+      { amount: asBig(changeAmount), blinding: asBig(changeRLock), script: lock.spk, keystream: kit.deriveAmountKeystreamSelf(wallet.priv, anchor, 1) },
+    ], satsUtxos, feeRate });
+    return { ...pair, sighash, revealJson: txToJson(pair.revealTx), drawnBlinding: bytesToHex(bigintToBytes32(kit.deriveChangeBlinding(wallet.priv, anchor, 0))) };
+  }
+
   // The stored claim with the parties' signature in the lock's witness (vin[1]); refused unless it verifies under the lock.
   function withKeyPathSig({ revealJson, sighash, sig, outputXonly }) {
     if (!verifySchnorr(sig, sighash, outputXonly)) throw new Error('adaptor-btc-tx: the joint signature does not verify under the lock output key');
@@ -363,7 +380,7 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     ];
     return transfer({ asset, inputs, outputs, satsUtxos, feeRate });
   };
-  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, payTransfer, withKeyPathSig, pickSats, lockSats, pickSatsMany, lockSatsMany, claimSats, refundSats, childSats, childVsize, broadcastPair, vsizeOf };
+  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, jointClaimSplit, payTransfer, withKeyPathSig, pickSats, lockSats, pickSatsMany, lockSatsMany, claimSats, refundSats, childSats, childVsize, broadcastPair, vsizeOf };
 }
 
 // A transaction as JSON a record can keep (bytes as hex), and back.

@@ -9,7 +9,9 @@ provider needs to use it without holding stuck TAC itself.
 
 First, pledges. A pledger funds the desk's tracked-TAC inventory by locking tracked TAC to a MuSig2 joint key of their key and
 the desk's per-pledge key, refundable to them after 144 blocks. The desk draws from a pledge only to fund a swap at the agreed
-discount, and only with the pledger's signature on that draw. The pledger runs `tools/pledge-signer.mjs`, which checks the
+discount, and only with the pledger's signature on that draw. A draw spends the whole lock note: the drawn amount goes to
+the desk and the rest returns to the joint lock as change, so one pledge funds several swaps and the lock moves to the
+change note after each draw. The pledger runs `tools/pledge-signer.mjs`, which checks the
 amount, the discount and the swap before it signs, and refuses anything else. A draw is repaid from the desk's owned tracked
 TAC once the swap it funded has settled, plus a 50bps return on the drawn amount. The desk's owned inventory is spent first;
 a draw is only taken when the desk is short. Undrawn TAC is reclaimable by the pledger through the script path once the refund
@@ -79,9 +81,19 @@ The desk has never been deployed to Render, and no live signet run has happened.
 `btcswap-desk/config.render.json` is not filled in: the signet TAC Bitcoin asset id is not published in this repo (the mainnet
 one is `tacAssetId` in `contracts/deployments/1.json`), and it must be filled in before a live signet swap. The trace endpoint
 has not been called against the live Tacit API from the desk server. The pledger signer has not been run as a standalone
-process against a live desk. The sim tests cover the pledge, discount, floor and provider flows against a simulated Bitcoin;
-the reflection's fold of a pledge draw is not covered, and neither is a live signet swap.
+process against a live desk. The sim tests cover the pledge, discount, floor and provider flows against a simulated Bitcoin,
+including a second draw from one pledge's change note; the drawn and change notes are checked by the sim's note resolver,
+but the live reflection indexer's fold of a draw is not covered, and neither is a live signet swap. Two swaps drawing from
+the same pledge at once is not covered by a test: the desk refuses the second draw until the first confirms, and retries.
 
 ## Tests
 
-[test results to be filled in once the full suite has run]
+Run with Node 22 from the repo root, after `npm ci` (no new dependencies). All four suites pass.
+
+- `node tests/btcswap-sim.test.mjs`: all 10 passed. The baseline swap flow is unchanged by this entry.
+- `node tests/btcswap-reflect.test.mjs`: passed. The desk's lock and the holder's MuSig2 key-path claim fold live.
+- `node tests/btcswap-pledge.test.mjs`: all 12 passed. Pledge funding and the lock check, the provider loop (stuck note
+  swaps for tracked TAC, bridges home, and a second draw spends the change note), repayment from a top-up, expiry and
+  expiry mid-swap, discount-cap refusal, clean-quote mismatch, floor matching, signer refusal, holder-abandons refund,
+  and the `/info` totals.
+- `node tests/btcswap-numbers.test.mjs`: all 1 passed. The numbers table above is its printed output.

@@ -196,7 +196,7 @@ export function makeBtcSwapDesk(ctx) {
     if (need > 0n) {
       const alloc = await ctx.pledges.allocate({ swapId: rec.id, want: need, discountBps: rec.discountBps ?? 0, tip, exclude: rec.refusedDraws || [] });
       if (!alloc) return 'short';
-      for (const { pledge, take, index } of alloc) draws.push({ pledgeId: pledge.id, amount: String(take), phase: 'requested', index });
+      for (const { pledge, take, index } of alloc) draws.push({ pledgeId: pledge.id, amount: String(take), phase: 'requested', index, swapId: rec.id });
       await save(rec, { draws });
       return false;
     }
@@ -212,19 +212,19 @@ export function makeBtcSwapDesk(ctx) {
         await save(rec, { draws, refusedDraws: refused });
         const alloc = await ctx.pledges.allocate({ swapId: rec.id, want: BigInt(d.amount), discountBps: rec.discountBps ?? 0, tip, exclude: refused });
         if (!alloc) return 'short';
-        for (const { pledge: p2, take, index } of alloc) draws.push({ pledgeId: p2.id, amount: String(take), phase: 'requested', index });
+        for (const { pledge: p2, take, index } of alloc) draws.push({ pledgeId: p2.id, amount: String(take), phase: 'requested', index, swapId: rec.id });
         await save(rec, { draws });
         return false;
       }
-      Object.assign(d, { phase: 'broadcast', txid: signed.revealTxid, revealHex: signed.revealHex, revealJson: signed.revealJson, sighash: built.sighash, value: built.value });
+      Object.assign(d, { phase: 'broadcast', txid: built.pair.revealTxid, revealHex: signed.revealHex, revealJson: signed.revealJson, sighash: built.sighash, value: built.value, rLock: built.rLock, changeRLock: built.changeRLock, changeAmount: built.changeAmount });
       await save(rec, { draws });
-      await btc.broadcast({ ...signed, revealTxid: signed.revealTxid });
+      await btc.broadcast({ ...signed, revealTxid: built.pair.revealTxid });
       return false;
     }
     for (const d of draws) {
       if (d.phase !== 'broadcast') continue;
       const st = await btc.status(d.txid);
-      if (!st.confirmations) { await btc.broadcast({ revealTxid: d.txid, revealHex: d.revealHex }); return false; }
+      if (!st.confirmations) { await btc.broadcast({ revealTxid: d.txid, revealHex: d.revealHex, revealJson: d.revealJson }); return false; }
       const pledge = await ctx.pledges.get(d.pledgeId);
       await ctx.pledges.confirmDraw({ pledge, draw: d, height: st.height });
       d.phase = 'confirmed';

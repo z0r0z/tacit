@@ -12,12 +12,13 @@
 //
 // It is written when the pledge is funded (the offer response gives deskPub and csvBlocks, the lock gives the
 // outpoint). The signer trusts only this file for what a pledge is; the desk's API is used only for live state
-// (phase, drawn, committed) and the swap's phase. A draw is signed only when every check below passes:
+// (phase, drawn, committed, the lock's current outpoint) and the swap's phase. A draw is signed only when every check below passes:
 //
 //   * the pledge is in this file, funded or spent, and the draw's amount fits what is left of it;
 //   * the draw's discount is within the pledge's maxDiscountBps;
 //   * the swap is accepted at the desk;
-//   * the draw spends the pledge's own lock, and pays the desk's wallet (from the desk's /info) and nothing else.
+//   * the draw spends the pledge's own lock (the lock as the desk reports it now, which moves to the change note after
+//     a partial draw), pays the desk's wallet (from the desk's /info) and returns the rest to the joint lock, nothing else.
 //
 // A refusal is a 403 with a reason, and nothing is signed. The desk, on a refusal, funds the swap elsewhere.
 
@@ -74,10 +75,12 @@ async function signDraw(req) {
   if (req.discountBps > mine.maxDiscountBps) return [null, `the discount is ${req.discountBps}bps but this pledge allows ${mine.maxDiscountBps}bps`];
   if (!swap || swap.phase !== 'accepted') return [null, `the swap is ${swap?.phase ?? 'unknown'}, not accepted`];
   const reveal = txFromJson(req.revealJson);
-  if (reveal.inputs[1].txid !== mine.lock.txid || reveal.inputs[1].vout !== mine.lock.vout) return [null, 'the draw does not spend this pledge\'s lock'];
+  const lock = live.lock || mine.lock;
+  if (!lock || reveal.inputs[1].txid !== lock.txid || reveal.inputs[1].vout !== lock.vout) return [null, 'the draw does not spend this pledge\'s lock'];
   const deskScript = bytesToHex(prims.p2wpkhScript(hexToBytes(info.deskPub)));
   if (bytesToHex(reveal.outputs[0].script) !== deskScript) return [null, 'the draw does not pay the desk\'s wallet'];
   const joint = S.jointLock({ prims, holderPub: mine.pledgerPub, deskPub: mine.joint.deskPub, deskXonly: mine.joint.refundXonly, csvBlocks: mine.csvBlocks, refundXonly: mine.joint.refundXonly });
+  if (bytesToHex(reveal.outputs[1].script) !== bytesToHex(joint.spk)) return [null, 'the draw does not return the rest to the joint lock'];
   const nonce = M.nonceGen({ sk: wallet.priv, pk: wallet.pub, aggXonly: joint.keys.xonly, msg: hexToBytes(req.sighash) });
   const sess = M.session({ keys: joint.keys, pubnonces: [hexToBytes(req.deskNonce), nonce.pubnonce], msg: hexToBytes(req.sighash), T: null });
   return [{ pubnonce: bytesToHex(nonce.pubnonce), psig: bytesToHex(M.partialSign({ secnonce: nonce.secnonce, sk: wallet.priv, sess })) }, null];

@@ -42,7 +42,7 @@ export function makePledges(ctx) {
   const remainingOf = (p) => BigInt(p.amount) - BigInt(p.drawn) - committedOf(p);
 
   const jointOf = (p) => S.jointLock({ prims, holderPub: p.pledgerPub, deskPub: p.joint.deskPub, deskXonly: p.joint.refundXonly, csvBlocks: p.csvBlocks, refundXonly: p.joint.refundXonly });
-  const publicPledge = (p) => ({ id: p.id, phase: p.phase, amount: p.amount, maxDiscountBps: p.maxDiscountBps, csvBlocks: p.csvBlocks, fundedAt: p.fundedAt, expiryHeight: p.expiryHeight, drawn: p.drawn, owed: p.owed, repaid: p.repaid, committed: String(committedOf(p)), signerUrl: p.signerUrl });
+  const publicPledge = (p) => ({ id: p.id, phase: p.phase, amount: p.amount, maxDiscountBps: p.maxDiscountBps, csvBlocks: p.csvBlocks, fundedAt: p.fundedAt, expiryHeight: p.expiryHeight, drawn: p.drawn, owed: p.owed, repaid: p.repaid, committed: String(committedOf(p)), signerUrl: p.signerUrl, lock: p.lock || null });
 
   // Whether the proof follows a lock output: it does already, or it will because the lock transaction is a valid transfer
   // whose every note input is tracked and signed so as to bind every output (the holder's readDeskLock, same rule).
@@ -98,7 +98,7 @@ export function makePledges(ctx) {
     const v = S.checkDeskOffer(offerRec, { prims, holderPub: rec.pledgerPub, expect: { swapId: id, asset: assetHex, amount: rec.amount }, chain, minConfs: cfg.minConfs, minCsv: 1, policy: { lockDelayBlocks: 0, csvDesk: 0, takeMarginBlocks: 0 } });
     if (!v.ok) return { ok: false, why: v.reasons.join('; ') };
     rec.phase = 'funded';
-    rec.lock = { txid: strip(lock.txid), vout: lock.vout, value: out.value, height: st.height };
+    rec.lock = { txid: strip(lock.txid), vout: lock.vout, value: out.value, height: st.height, amount: rec.amount, blinding: hx(bigintToBytes32(sec.rLock)) };
     rec.fundedAt = st.height;
     rec.expiryHeight = st.height + rec.csvBlocks;
     await store.put(rec);
@@ -166,17 +166,26 @@ export function makePledges(ctx) {
     if (p.draws.length !== before) await store.put(p);
   }
 
-  // The draw itself: a joint claim of the pledge lock into the desk's own wallet, with the sighash and the desk's nonce
-  // for the pledger to sign against. Nothing is spent yet; the pair is stored by the caller and signed once.
+  // The draw itself: the whole lock note is spent, the drawn amount goes to the desk's own wallet and the rest returns
+  // to the joint lock as change, so the pledge can be drawn on again. The sighash and the desk's nonce are for the
+  // pledger to sign against. Nothing is spent yet; the pair is stored by the caller and signed once. A second draw on
+  // the same pledge waits until the first confirms and the lock moves to its change note.
   async function buildDraw({ pledge, swapId, amount, index }) {
+    if (!pledge.lock) throw new Error('pledges: this pledge holds nothing to draw');
+    const inFlight = pledge.draws.find((d) => (d.phase === 'allocated' || d.phase === 'broadcast') && !(d.swapId === swapId && d.index === index));
+    if (inFlight) throw new Error('pledges: this pledge has a draw in flight');
     const sec = S.pledgeSecrets({ seed, pledgeId: hexToBytes(pledge.id.slice(3)) });
     const joint = jointOf(pledge);
-    const rLock = S.drawSecrets({ seed, pledgeId: hexToBytes(pledge.id.slice(3)), index }).rLock;
-    const pair = btc.tx.jointClaimTransfer({ asset: hexToBytes(assetHex), lockOut: { txid: pledge.lock.txid, vout: pledge.lock.vout, value: pledge.lock.value },
-      lock: { spk: hexToBytes(pledge.joint.spk), outputXonly: hexToBytes(pledge.joint.outputXonly) }, amount: BigInt(amount), rLock,
+    const change = BigInt(pledge.lock.amount) - BigInt(amount);
+    if (change < 0n) throw new Error('pledges: this draw is more than the pledge holds');
+    const changeRLock = S.changeSecrets({ seed, pledgeId: hexToBytes(pledge.id.slice(3)), index }).rLock;
+    const pair = btc.tx.jointClaimSplit({ asset: hexToBytes(assetHex),
+      lockOut: { txid: pledge.lock.txid, vout: pledge.lock.vout, value: pledge.lock.value, amount: BigInt(pledge.lock.amount), blinding: BigInt('0x' + pledge.lock.blinding) },
+      lock: { spk: hexToBytes(pledge.joint.spk), outputXonly: hexToBytes(pledge.joint.outputXonly) },
+      amount: BigInt(amount), changeAmount: change, changeRLock,
       satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate() });
-    const nonce = M.nonceGen({ sk: bigintToBytes32(sec.d), pk: sec.pub, aggXonly: joint.keys.xonly, msg: hexToBytes(strip(pair.sighash)) });
-    return { pair, sighash: hx(pair.sighash), deskNonce: hx(nonce.pubnonce), secnonce: hx(nonce.secnonce), rLock: hx(bigintToBytes32(rLock)), index, value: pair.revealTx.outputs[0].value };
+    const nonce = M.nonceGen({ sk: bigintToBytes32(sec.d), pk: sec.pub, aggXonly: joint.keys.xonly, msg: pair.sighash });
+    return { pair, sighash: hx(pair.sighash), deskNonce: hx(nonce.pubnonce), secnonce: hx(nonce.secnonce), rLock: pair.drawnBlinding, changeRLock: hx(bigintToBytes32(changeRLock)), changeAmount: String(change), index, value: pair.revealTx.outputs[0].value };
   }
 
   // The pledger's half, checked, and the desk's half, aggregated into the draw's signature. A null return is a refusal:
@@ -196,10 +205,10 @@ export function makePledges(ctx) {
   }
 
   // A broadcast draw, confirmed: the drawn note joins the desk's inventory, and the pledge owes the drawn amount plus its
-  // return. The note is tracked (its only input is the tracked pledge lock), so the desk can lock it at once.
+  // return. The lock moves to the change note the draw left behind, so the next draw spends that. The note is tracked
+  // (its only input is the tracked pledge lock), so the desk can lock it at once.
   async function confirmDraw({ pledge, draw, height }) {
-    const rLock = S.drawSecrets({ seed, pledgeId: hexToBytes(pledge.id.slice(3)), index: draw.index }).rLock;
-    const note = { txid: draw.txid, vout: 0, value: draw.value ?? 546, amount: BigInt(draw.amount), blinding: rLock, height };
+    const note = { txid: draw.txid, vout: 0, value: draw.value ?? 546, amount: BigInt(draw.amount), blinding: BigInt('0x' + draw.rLock), height };
     if (inventory.add) await inventory.add(note);
     else if (inventory.forget) inventory.forget();
     const ret = (BigInt(draw.amount) * BigInt(cfg.pledgeReturnBps)) / 10000n;
@@ -207,6 +216,8 @@ export function makePledges(ctx) {
     pledge.owed = String(BigInt(pledge.owed) + BigInt(draw.amount) + ret);
     const stub = pledge.draws.find((d) => d.swapId === draw.swapId && d.index === draw.index);
     if (stub) { stub.phase = 'confirmed'; stub.txid = draw.txid; }
+    if (BigInt(draw.changeAmount ?? '0') > 0n) pledge.lock = { txid: draw.txid, vout: 1, value: 546, height, amount: draw.changeAmount, blinding: draw.changeRLock };
+    else pledge.lock = null;
     if (BigInt(pledge.drawn) >= BigInt(pledge.amount)) pledge.phase = 'spent';
     await store.put(pledge);
     log({ level: 'info', msg: 'pledge drawn', id: pledge.id, swapId: draw.swapId, amount: draw.amount });

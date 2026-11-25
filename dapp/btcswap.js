@@ -127,10 +127,10 @@ export function pledgeSecrets({ seed, pledgeId }) {
   return { d, pub: secp.ProjectivePoint.BASE.multiply(d).toRawBytes(true), rLock: scalarOf(seed, 'pledge-r-lock', pledgeId) };
 }
 
-// The blinding for one draw from a pledge: a pledge funds more than one swap, so each draw blinds its own note. The
-// index is hashed in with the pledge id, so two draws never share a blinding.
-export function drawSecrets({ seed, pledgeId, index }) {
-  return { rLock: scalarOf(seed, 'draw-r-lock', concatBytes(bx(pledgeId), te.encode(String(index)))) };
+// The blinding for the change note a draw leaves behind: a pledge funds more than one swap, so each draw blinds its own
+// change. The index is hashed in with the pledge id, so two draws never share a blinding.
+export function changeSecrets({ seed, pledgeId, index }) {
+  return { rLock: scalarOf(seed, 'draw-change-r-lock', concatBytes(bx(pledgeId), te.encode(String(index)))) };
 }
 
 // The discount for one class of stuck TAC, in basis points of the amount swapped, or null when the class is unknown or the
