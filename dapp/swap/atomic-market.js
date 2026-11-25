@@ -10,7 +10,7 @@
 
 import { discoverProviders } from '/fast/discover.js?cb=ba6128db';
 import { makeRateFeed, chainlinkEthBtc, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
-import { SATS_ASSET_ID, ETH_ASSET_ID } from '/swap/atomic-probe.js?cb=590d41c3';
+import { SATS_ASSET_ID, ETH_ASSET_ID } from '/swap/atomic-probe.js?cb=a367ec6d';
 import { OWN_PROVIDERS } from '/fastbridge-board.js';
 
 const loadLists = async (fetchImpl) => {
