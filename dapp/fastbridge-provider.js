@@ -71,11 +71,16 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   let holdSeq = 0;
   const refreshSecs = config.inventory?.refreshSecs ?? 60;
   const reservations = new Map();
+  // the transactions looked at for quotes whose hold is gone (/extend), and the explorer reads all of those may make
+  const lateLooks = new Map();
   const pending = new Map();
   const published = new Map();
   const checking = new Map();
   const offerBudgetMs = config.offerBudgetMs ?? 8000;
+  // A budget of reads, refilled at `cap` a `perSecs` on this side's clock: for the explorer reads a request makes when nothing held already pays for them
+  const budget = (cap, perSecs) => { let n = cap, at = null; return () => { const t = now(); if (at != null) n = Math.min(cap, n + ((t - at) * cap) / perSecs); at = t; if (n < 1) return false; n -= 1; return true; }; };
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+  const lateRead = budget(hold.lateReads ?? 30, 60);
   const counter = { publishEvmOffer: async (id, offer) => { published.set(id, offer); } };
   const graceSecs = Number(config.quote?.graceSecs) || 0;
   // A quote priced from the market (`quote.rate` a function) is not answered at its old price for long after its time: past `graceSecs` (and any hold) an offer
@@ -387,18 +392,35 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       }
       if (method === 'POST' && path === '/extend') {
         if (!body || !isId(body.quoteId) || !/^[0-9a-f]{64}$/.test(String(body.txid))) return reply({ error: 'quoteId and txid are required' }, 400);
-        const held = reservations.get(body.quoteId);
-        if (!held || held.until <= now()) return no('no reservation');
-        if (held.txid === body.txid) return reply({ ok: true, until: held.until });
-        if (held.txid) return no('this reservation is held for another transaction');
-        // each transaction looked at is a read from the explorers, so a reservation looks at a few, not at any number
-        if ((held.looks = (held.looks || 0) + 1) > (hold.maxLooks ?? 20)) return no('this reservation has looked at enough transactions');
+        const held = reservations.get(body.quoteId), live = !!held && held.until > now();
+        if (live && held.txid === body.txid) return reply({ ok: true, until: held.until });
+        if (live && held.txid) return no('this reservation is held for another transaction');
+        if (live) {
+          // each transaction looked at is a read from the explorers, so a reservation looks at a few, not at any number
+          if ((held.looks = (held.looks || 0) + 1) > (hold.maxLooks ?? 20)) return no('this reservation has looked at enough transactions');
+        } else {
+          // The hold is gone (let go for a newer one of the same client, or run out), and a lock may already pay this quote: while the quote and its grace
+          // stand, a transaction that pays this quote's own lock stands for the hold, so letting go of holds nobody has locked for never turns away one that has
+          const q = await quoter.get(body.quoteId);
+          if (!q || now() > q.validUntil + graceSecs || !body.lock) return no('no reservation');
+          if (q.seenTxid && q.seenTxid !== body.txid) return no('this reservation is held for another transaction');
+          if (q.seenTxid !== body.txid) {
+            const n = (lateLooks.get(body.quoteId) || 0) + 1;
+            if (lateLooks.size >= 4096 && !lateLooks.has(body.quoteId)) for (const [k] of lateLooks) { lateLooks.delete(k); if (lateLooks.size < 2048) break; }
+            lateLooks.set(body.quoteId, n);
+            if (n > (hold.maxLateLooks ?? 4)) return no('this reservation has looked at enough transactions');
+            if (!lateRead()) return no('the provider is busy just now', true);
+          }
+        }
         const tx = await btc.fetchTx(body.txid).catch(() => null);
         return await exclusive(async () => {
-          const r = reservations.get(body.quoteId);
-          if (!r || r.until <= now()) return no('no reservation');
-          if (r.txid && r.txid !== body.txid) return no('this reservation is held for another transaction');
-          if (r.txid === body.txid) return reply({ ok: true, until: r.until });
+          const r0 = reservations.get(body.quoteId), r = r0 && r0.until > now() ? r0 : null;
+          if (r && r.txid && r.txid !== body.txid) return no('this reservation is held for another transaction');
+          if (r && r.txid === body.txid) return reply({ ok: true, until: r.until });
+          if (!r) {
+            const q = await quoter.get(body.quoteId);
+            if (!q || now() > q.validUntil + graceSecs || !body.lock) return no('no reservation');
+          }
           if (!tx) return no('the lock transaction is not visible yet', true);
           // a lock of a note spends the note as its second input (the first is its commit); a lock of plain sats is an ordinary transaction
           if (!tx.vin || tx.vin.length < (sats ? 1 : 2)) return no('that is not a lock transaction');
@@ -412,15 +434,26 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
             if (!pays) return no('that transaction does not pay the fee of the take');
           }
           // a hold of up to two hours is for a lock, so the transaction must pay the quoted amount to the lock of this quote: the Taproot output its terms make
-          // (`lock`: the adaptor point and the refund key, with this side's claim key and the quote's timelock); any other output would hold the payout for nothing
-          if (sats) {
+          // (`lock`: the adaptor point and the refund key, with this side's claim key and the quote's timelock); any other output would hold the payout for nothing.
+          // A lock that stands for a hold that is gone is checked so for a note too (its value is the note's, so only its script)
+          if (sats || !r) {
             let spk = null;
             try { spk = lockSpkOf(body.lock, q); } catch { spk = null; }
             if (!spk) return no('that transaction does not pay the quoted amount to a Taproot lock: the extension names no lock');
-            if (!(tx.vout || []).some((o) => String(o.scriptpubkey || '').toLowerCase() === spk && q && o.value === Number(q.btcValue))) return no('that transaction does not pay the quoted amount to a Taproot lock of this quote');
+            if (!(tx.vout || []).some((o) => String(o.scriptpubkey || '').toLowerCase() === spk && q && (!sats || o.value === Number(q.btcValue)))) return no('that transaction does not pay the quoted amount to a Taproot lock of this quote');
           }
           for (const [id, other] of reservations) if (id !== body.quoteId && other.txid === body.txid) return no('that transaction already holds another reservation');
           for (const rec of await swaps.list()) if (rec.lockTxid === body.txid) return no('that transaction is already a swap');
+          if (!r) {
+            // the lock is seen in time whatever comes of the hold (a late offer is weighed by this), and holds the payout as a reservation would while there is room
+            await keep(body.quoteId, { seenTxid: body.txid, seenAt: q.seenTxid === body.txid ? q.seenAt : now() });
+            try { await capacity(BigInt(q.evmAmount)); if (!(await unbackedFits(BigInt(q.evmAmount)))) throw cannotTake(); } catch (e) { if (e.status) return no(e.message, !!e.retry); throw e; }
+            const until = now() + hold.extendSecs;
+            reservations.set(body.quoteId, { amount: BigInt(q.evmAmount), until, txid: body.txid, who: 'lock', seq: ++holdSeq });
+            stale();
+            await keep(body.quoteId, { seenTxid: body.txid, seenAt: q.seenTxid === body.txid ? q.seenAt : now() });
+            return reply({ ok: true, until });
+          }
           r.txid = body.txid; r.until = Math.max(r.until, now() + hold.extendSecs);
           // when the lock was first seen: a late offer for it is weighed by this (quotes.get)
           await keep(body.quoteId, { seenTxid: body.txid, seenAt: now() });

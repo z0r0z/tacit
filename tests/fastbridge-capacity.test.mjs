@@ -152,6 +152,57 @@ test('board: a provider\'s inbox tells one client address\'s requests from anoth
   assert.deepEqual(seen.filter(Boolean), [`board:${tagA3}`], 'the request it could open was handled for the tag of its address');
 });
 
+test('provider: a user whose free hold was let go for four newer ones through the board still has its lock taken: /extend with a transaction that pays the quote\'s lock stands for the hold', async () => {
+  const run = async (evict) => {
+    const w = pairWorld({ fwdQuote: { validSecs: 300, graceSecs: 900, lateSecs: 21600 } });
+    await w.ready();
+    w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');      // a note of the payout's size, and room for four more holds
+    w.lEvm.fund(10n * UNITS, 'inv1');
+    const q = await w.pair.quote({ dir: 'b2e', amount: SATS });
+    await w.pair.start(q);                                // the page's /reserve, with no client address (as a board request without a tag)
+    if (evict) {
+      for (let i = 0; i < 4; i++) {
+        const aq = await w.fwd.handle({ method: 'POST', path: '/quote', body: { amount: '20000' } });
+        assert.equal((await w.fwd.handle({ method: 'POST', path: '/reserve', body: { quoteId: aq.body.id } })).body.ok, true);
+      }
+      assert.equal(w.fwd.reservations.has(q.ref.r.id), false, 'the user\'s hold was let go');
+    }
+    // the lock waits 25 minutes for its block (a slow block, or a fee the next block did not take)
+    for (let i = 0; i < 25; i++) { await w.step(); w.clock.advance(60); }
+    w.btc.mine(1, { advance: false });
+    for (let i = 0; i < 200; i++) {
+      await w.step(); w.clock.advance(60);
+      if (i % 10 === 9) w.btc.mine(1, { advance: false });
+      const r = (await w.mems.get('fwd').list())[0];
+      if (['done', 'refund-wait', 'counter-took', 'claimed'].includes(r.phase)) break;
+    }
+    return (await w.mems.get('fwd').list())[0];
+  };
+  for (const evict of [false, true]) {
+    const r = await run(evict);
+    assert.equal(r.extended, true, `${evict ? 'with' : 'without'} the four holds the /extend is taken (${r.extendWhy || ''})`);
+    assert.ok(['done', 'claimed', 'counter-took'].includes(r.phase), `${evict ? 'with' : 'without'} the four holds the swap goes through (${r.phase} ${r.why || ''})`);
+  }
+});
+
+test('provider: /extend without a hold is taken only for a transaction that pays this quote\'s own lock, while the quote and its grace stand', async () => {
+  const w = pairWorld({ fwdQuote: { validSecs: 300, graceSecs: 900, lateSecs: 21600 } });
+  await w.ready();
+  w.lEvm.fund(10n * UNITS, 'inv0');
+  const q = (await w.fwd.handle({ method: 'POST', path: '/quote', body: { amount: String(SATS) } })).body;
+  const ext = (body) => w.fwd.handle({ method: 'POST', path: '/extend', body: { quoteId: q.id, ...body } });
+  const lock = { T: bytesToHex(secp.getPublicKey(priv(3), true)), lockerXonly: bytesToHex(secp.getPublicKey(priv(4), true)).slice(2) };
+  assert.match((await ext({ txid: 'ab'.repeat(32) })).body.why, /no reservation/, 'no lock named: refused as before');
+  let reads = 0;
+  const fetchTx = w.lBtc.fetchTx;
+  w.lBtc.fetchTx = async (txid) => { reads++; return fetchTx(txid); };
+  assert.match((await ext({ txid: 'ab'.repeat(32), lock })).body.why, /not visible yet/);
+  for (let i = 0; i < 8; i++) await ext({ txid: (i + 10).toString(16).padStart(64, '0'), lock });
+  assert.ok(reads <= 4, `a quote with no hold looks at a few transactions (${reads})`);
+  w.clock.advance(300 + 900 + 1);
+  assert.match((await ext({ txid: 'cd'.repeat(32), lock })).body.why, /no reservation/, 'past its grace: refused');
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log('ok   ' + name); } catch (e) { failed++; console.log('FAIL ' + name + '\n     ' + String((e && e.stack) || e).split('\n').slice(0, 6).join('\n     ')); }
