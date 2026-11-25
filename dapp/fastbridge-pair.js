@@ -576,7 +576,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   }
   // The legs of a plan quoted, each at its own amount, and the plan settled on what the quotes give (their rates replace the ads' assumption of one rate): a provider that
   // cannot quote, or does not answer a share of a transaction (its quote does not say `legVouts`), is left out and the plan made again without it
-  async function quoteSplit(want, all, first) {
+  async function quoteSplit(want, all, first, why = []) {
     const out = new Set(), rates = new Map();
     let plan = first, got = new Map();
     for (let round = 0; round < 4 && plan; round++) {
@@ -587,7 +587,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
           const q = await quoteFwd(p, leg.amount);
           if (q.r.legVouts !== 1) throw new Error('the provider does not take a share of a transaction');
           return { leg, p, q };
-        } catch (error) { strike(p.id); return { leg, p, error }; }
+        } catch (error) { strike(p.id); why.push(`${p.name}: ${said(error, 'did not answer')}`); return { leg, p, error }; }
       }));
       for (const r of results) { if (r.q) { got.set(r.p.id, r.q); rates.set(r.p.id, rateOfQuote(r.p, r.q.r)); } else out.add(r.p.id); }
       // the rate of a provider not quoted yet is taken as the mean of the ones that have: the plan is then made on the differences in their fees and what they hold
@@ -666,9 +666,11 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     const first = await adPlan(want, all).catch(() => null);
     if (!first) return quoteOne({ dir, amount });
     const market = await reference();
-    const [one, made] = await Promise.all([quoteOne({ dir, amount }).catch((error) => ({ error })), quoteSplit(want, all, first).catch(() => null)]);
+    const why = [];
+    const [one, made] = await Promise.all([quoteOne({ dir, amount }).catch((error) => ({ error })), quoteSplit(want, all, first, why).catch(() => null)]);
     const lone = one && !one.error ? one : null;
-    if (!made) { if (lone) return lone; throw one.error; }
+    // (a split that could not be quoted says which provider failed it, and not only that the first could not take the whole amount)
+    if (!made) { if (lone) return lone; throw why.length ? new Error(`this amount needs more than one provider, and ${why.join('; ')}`) : one.error; }
     const sq = await splitQuote(want, market, made, lone);
     if (!lone) return sq;
     // a split is shown over a lone quote only when it gives more by what is worth the added locks (net of the added output's fee), or when the lone quote is blocked

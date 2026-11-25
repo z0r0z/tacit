@@ -203,7 +203,7 @@ test('a provider that does not say it answers a share of a transaction is not as
     { name: 'Charlie', feeBps: 30, flatFee: 500, minAmount: 20_000, maxAmount: 150_000 },
   ] });
   await w.ready(); ample(w);
-  await assert.rejects(() => w.pair.quote({ dir: 'b2e', amount: 400_000n }), /no provider takes that amount|could not quote/);
+  await assert.rejects(() => w.pair.quote({ dir: 'b2e', amount: 400_000n }), /needs more than one provider, and Bravo: /);
   assert.equal(w.btc.broadcasts.length, 0);
   // 280,000 is filled by the two that do
   const q = await w.pair.quote({ dir: 'b2e', amount: 280_000n });
@@ -238,6 +238,21 @@ test('the card for a mixed state counts what came and what returned (describeBat
   const d = describeBatch('b', [leg(0, 'returned', 'Returned'), leg(1, 'returned', 'Returned')]);
   assert.equal(d.state, 'returned');
   assert.equal(d.get, 0n);
+});
+
+test('one provider pinned over HTTP and one that is board-only: an amount above the first one\'s availability is split 250,000 + 50,000; when the second does not answer, the page says so', async () => {
+  const mk = () => multiWorld({ providers: [
+    { name: 'A', feeBps: 20, flatFee: 800, minAmount: 120_000, maxAmount: 1_000_000 },
+    { name: 'B', feeBps: 30, flatFee: 1000, minAmount: 50_000, maxAmount: 55_886 }], userSats: [310_000] });
+  const w = mk();
+  await w.ready(); w.fund('A', 275_989n, 'cap'); w.fund('B', 55_886n, 'cap');
+  const q = await w.pair.quote({ dir: 'b2e', amount: 300_000n });
+  assert.deepEqual(q.split.legs.map((l) => [l.provider.name, l.pay]), [['A', 250_000n], ['B', 50_000n]]);
+  const d = mk();
+  await d.ready(); d.fund('A', 275_989n, 'cap'); d.fund('B', 55_886n, 'cap');
+  d.ctl.B.down = true;
+  await assert.rejects(() => d.pair.quote({ dir: 'b2e', amount: 300_000n }), /needs more than one provider, and B: /);
+  assert.equal(d.btc.broadcasts.length, 0);
 });
 
 let passed = 0;
