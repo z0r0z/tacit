@@ -84,7 +84,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
   let bitcoin = null, T = null, loading = null;
   const load = () => (loading ||= (async () => {
     const m = await import(BTC_MODULE);
-    bitcoin = m.makeBitcoin({ notify, wallet, onChange, asset: { id: TETH_ID, title: 'tETH on Bitcoin', after: '' } });
+    bitcoin = m.makeBitcoin({ notify, wallet, onChange, asset: { id: TETH_ID, title: 'tETH on Bitcoin', after: '' }, purpose: 'swap BTC and ETH' });
     T = await bitcoin.session.load();
     return T;
   })().catch((e) => { loading = null; throw e; }));
