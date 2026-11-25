@@ -5161,7 +5161,7 @@ function _upstreamDegraded(base) {
 // (a 2xx or a non-retryable 4xx) wins while the losers are aborted. hedgeMs <= 0 keeps strict one-at-a-time failover.
 // Returns { r, sawRateLimit, retryAfter, lastErr, lastStatus }; r is null when every upstream failed.
 function _hedgedUpstreamFetch(bases, pathQuery, mkInit, hedgeMs, timeoutMs) {
-  const st = { r: null, sawRateLimit: false, retryAfter: null, lastErr: null, lastStatus: null };
+  const st = { r: null, sawRateLimit: false, retryAfter: null, lastErr: null, lastStatus: null, tried: [] };
   return new Promise((resolve) => {
     let next = 0, active = 0, done = false;
     const attempts = [];
@@ -5179,7 +5179,7 @@ function _hedgedUpstreamFetch(bases, pathQuery, mkInit, hedgeMs, timeoutMs) {
       attempts.push(a);
       const t0 = Date.now();
       const retry = () => { if (a.ended) return; a.ended = true; active--; clearTimeout(a.hedge); launch(); };
-      a.timer = setTimeout(() => { st.lastErr = new Error('upstream timeout'); _recordUpstream(base, false); _markUpstreamCooling(base, 4_000, 'timeout'); try { ctrl.abort(); } catch {} retry(); }, timeoutMs);
+      a.timer = setTimeout(() => { st.tried.push(new URL(base).hostname + ':timeout'); st.lastErr = new Error('upstream timeout'); _recordUpstream(base, false); _markUpstreamCooling(base, 4_000, 'timeout'); try { ctrl.abort(); } catch {} retry(); }, timeoutMs);
       if (hedgeMs > 0 && next < bases.length) a.hedge = setTimeout(launch, hedgeMs);
       const { init } = mkInit(ctrl.signal);
       fetch(`${base}${pathQuery}`, init).then(async (r) => {
@@ -5187,6 +5187,7 @@ function _hedgedUpstreamFetch(bases, pathQuery, mkInit, hedgeMs, timeoutMs) {
         if (done || a.ended) { try { await r.text(); } catch {} return; }
         if (r.status === 429 || r.status >= 500) {
           st.lastStatus = r.status; _recordUpstream(base, false);
+          st.tried.push(new URL(base).hostname + ':' + r.status);
           if (r.status === 429) {
             st.sawRateLimit = true;
             const ra = r.headers.get('retry-after'); if (ra) st.retryAfter = ra;
@@ -5200,6 +5201,7 @@ function _hedgedUpstreamFetch(bases, pathQuery, mkInit, hedgeMs, timeoutMs) {
       }, (e) => {
         clearTimeout(a.timer);
         if (done || a.ended) return;
+        st.tried.push(new URL(base).hostname + ':' + (e?.cause?.code || e?.name || 'network'));
         st.lastErr = e; _recordUpstream(base, false); _markUpstreamCooling(base, 4_000, e?.name || 'network');
         retry();
       });
@@ -13893,7 +13895,7 @@ async function _handleChainProxyUncached(req, env, network, cors) {
     const respHeaders = new Headers(cors);
     respHeaders.set('Content-Type', 'application/json');
     if (lastRetryAfter) respHeaders.set('Retry-After', lastRetryAfter);
-    return new Response(JSON.stringify({ error: 'all upstreams rate-limited', path }), {
+    return new Response(JSON.stringify({ error: 'all upstreams rate-limited', path, tried: res.tried }), {
       status: 429,
       headers: respHeaders,
     });
@@ -13901,7 +13903,7 @@ async function _handleChainProxyUncached(req, env, network, cors) {
   const errMsg = lastErr
     ? `all upstreams unreachable: ${lastErr.message}`
     : `all upstreams returned ${lastStatus}`;
-  return new Response(JSON.stringify({ error: errMsg, path }), {
+  return new Response(JSON.stringify({ error: errMsg, path, tried: res.tried }), {
     status: 502,
     headers: { ...cors, 'Content-Type': 'application/json' },
   });
