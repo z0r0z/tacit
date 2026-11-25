@@ -2,6 +2,8 @@ package ceremony
 
 import (
 	"bytes"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -114,5 +116,59 @@ func TestUploadInParts(t *testing.T) {
 	}
 	if m, _ := filepath.Glob(filepath.Join(f.dir, "part-*")); len(m) != 0 {
 		t.Fatalf("junk part left behind: %v", m)
+	}
+}
+
+// Two parts at the same offset, both started before either wrote a byte, could both pass the offset check; the second
+// then wrote into the file after it was checked (or into the head it became). One part at a time, and no check while
+// a part is still arriving.
+func TestOnePartAtATime(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	c.PerIP = -1
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	in := filepath.Join(f.dir, "in")
+	_ = copyFile(c.path(17), in)
+	out := filepath.Join(f.dir, "out")
+	if _, err := Contribute(in, out); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(out)
+	tok := joinHTTP(t, srv, "browser")
+	if r := call(t, srv, "POST", "/api/claim", tok, nil, -1); r.Code != 200 {
+		t.Fatalf("claim: %d", r.Code)
+	}
+	cut := len(data) - 8
+	if r := putPart(t, srv, tok, 0, data[:cut]); r.Code != 200 {
+		t.Fatalf("first part: %d %v", r.Code, r.Body)
+	}
+	// part A opens and stalls before its body
+	pr, pw := io.Pipe()
+	req, _ := http.NewRequest("PUT", srv.URL+"/api/upload-part?offset="+strconv.Itoa(cut), pr)
+	req.ContentLength = 8
+	req.Header.Set(TokenHeader, tok)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	time.Sleep(300 * time.Millisecond)
+	if r := putPart(t, srv, tok, cut, data[cut:]); r.Code != 409 {
+		t.Fatalf("a second part while one is arriving: %d %v", r.Code, r.Body)
+	}
+	if r := call(t, srv, "POST", "/api/upload-finish", tok, nil, -1); r.Code != 409 {
+		t.Fatalf("finish while a part is arriving: %d %v", r.Code, r.Body)
+	}
+	_, _ = pw.Write(data[cut:])
+	pw.Close()
+	<-done
+	if r := call(t, srv, "POST", "/api/upload-finish", tok, nil, -1); r.Code != 202 {
+		t.Fatalf("finish after it ended: %d %v", r.Code, r.Body)
+	}
+	if r := waitResult(t, srv, tok); r.Body["state"] != "done" {
+		t.Fatalf("result: %v", r.Body)
 	}
 }

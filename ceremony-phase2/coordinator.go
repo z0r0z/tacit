@@ -138,6 +138,7 @@ type ticket struct {
 	// Lane "pool": a machine of the prover pool that contributes when idle; it waits behind every person in the queue.
 	Lane      string `json:"lane,omitempty"`
 	lastSeen  time.Time
+	partBusy  bool // a part of a chunked upload is arriving (parts.go)
 	uploading bool // the upload's body is arriving
 	verifying bool // the whole body arrived and is being checked: the slot's cap waits (up to verifyGrace)
 	// progress of a claimed slot (restored as done after a restart, so a restart never drops a slot)
@@ -720,6 +721,9 @@ func (c *Coordinator) beginUpload(tok string, length int64) (*ticket, time.Time,
 	}
 	if t.uploading {
 		return nil, time.Time{}, refuse(409, "an upload for this slot is already in progress", nil)
+	}
+	if t.partBusy {
+		return nil, time.Time{}, refuse(409, "a part of this contribution is still arriving", nil)
 	}
 	if length != c.headSize {
 		return nil, time.Time{}, refuse(400, fmt.Sprintf("the upload must be exactly %d bytes (the size of the head)", c.headSize), nil)

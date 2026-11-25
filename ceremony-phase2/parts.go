@@ -35,7 +35,11 @@ func (c *Coordinator) partPath(tok string) string {
 }
 
 // partHolder: the token holds the claimed slot of an open ceremony.
-func (c *Coordinator) partHolder(tok string) (*ticket, error) {
+func (c *Coordinator) partHolder(tok string) (*ticket, error) { return c.partHolderTake(tok, false) }
+
+// partHolderTake: as partHolder; with take, the caller becomes the one part in flight for this slot (partBusy), so two
+// parts can never write the stored file at once, and no check starts while one is still arriving.
+func (c *Coordinator) partHolderTake(tok string, take bool) (*ticket, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.state.Closed {
@@ -51,6 +55,12 @@ func (c *Coordinator) partHolder(tok string) (*ticket, error) {
 	}
 	if t.uploading {
 		return nil, refuse(409, "the contribution is being checked", nil)
+	}
+	if take {
+		if t.partBusy {
+			return nil, refuse(409, "another part of this contribution is still arriving", nil)
+		}
+		t.partBusy = true
 	}
 	return t, nil
 }
@@ -90,11 +100,12 @@ func (c *Coordinator) partRoutes(mux *http.ServeMux) {
 
 func (c *Coordinator) handlePart(w http.ResponseWriter, r *http.Request) {
 	tok := token(r)
-	t, err := c.partHolder(tok)
+	t, err := c.partHolderTake(tok, true)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	defer func() { c.mu.Lock(); t.partBusy = false; c.mu.Unlock() }()
 	if r.ContentLength <= 0 || r.ContentLength > maxPart {
 		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("a part is 1 to %d bytes, with a Content-Length", maxPart)})
 		return
