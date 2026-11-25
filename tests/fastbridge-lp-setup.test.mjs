@@ -215,6 +215,36 @@ test('the status text says where to look and what the numbers mean', () => {
   assert.match(S.earnRiskText(), /Tacit never holds your funds/); assert.match(S.earnRiskText(), /16 hours/);
 });
 
+test('a probe that times out is retried once and then warns (not FAIL, not stopping); a real error still fails', async () => {
+  let calls = 0;
+  const slow = async () => { calls++; throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }); };
+  const out = [];
+  const r = await S.runChecks([S.corsCheck({ base: 'b', origin: 'https://tacit.finance', fetchImpl: slow }), S.quoteCheck({ base: 'b', minSats: 1, fetchImpl: slow })], (t) => out.push(t));
+  assert.equal(calls, 4, 'each probe tried twice'); assert.equal(r.ok, true, 'a timeout does not stop the start');
+  assert.ok(out.every((l) => /warn/.test(l.split('\n')[0])) && /run setup again/.test(out.join('')), out.join('\n'));
+  const http = async () => ({ ok: false, status: 500, headers: { get: () => null }, json: async () => ({ error: 'no price' }) });
+  const bad = await S.runChecks([S.quoteCheck({ base: 'b', minSats: 1, fetchImpl: http })], () => {});
+  assert.equal(bad.ok, false); assert.match(bad.results[0].detail, /500: no price/);
+  const refused = await S.runChecks([S.corsCheck({ base: 'b', origin: 'o', fetchImpl: async () => { throw new Error('ECONNREFUSED'); } })], () => {});
+  assert.equal(refused.ok, false, 'a refused connection is a real failure');
+});
+
+test('the explorer check names each explorer it tried', async () => {
+  const f = async (u) => (u.startsWith('https://a') ? { ok: true, text: async () => '1' } : Promise.reject(new Error('x')));
+  const r = await S.explorerCheck({ bases: ['https://a.example/api', 'https://b.example/api'], fetchImpl: f }).run();
+  assert.equal(r.ok, true); assert.match(r.detail, /1 of 2 answer/); assert.match(r.detail, /a\.example\/api answered/); assert.match(r.detail, /b\.example\/api did not/);
+});
+
+test('--help and -h print the usage and touch nothing', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const d = tmp(), script = new URL('../fastbridge-lp/setup.mjs', import.meta.url).pathname;
+  for (const a of ['--help', '-h']) {
+    const r = spawnSync(process.execPath, [script, a, '--data', join(d, 'made')], { cwd: d, encoding: 'utf8' });
+    assert.equal(r.status, 0); assert.match(r.stdout, /node fastbridge-lp\/setup\.mjs +set up/); assert.match(r.stdout, /--no-start/);
+    assert.equal(existsSync(join(d, 'made')), false, 'no directory or key was made');
+  }
+});
+
 let passed = 0;
 for (const [name, fn] of tests) { try { await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; } }
 console.log(`\n${passed}/${tests.length} provider setup checks passed`);

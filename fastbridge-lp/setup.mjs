@@ -21,6 +21,11 @@ import { createInterface } from 'node:readline/promises';
 import * as S from './lib/setup.mjs';
 
 const argv = process.argv.slice(2);
+if (argv.includes('--help') || argv.includes('-h') || argv[0] === 'help') {            // before anything is read or made
+  const src = readFileSync(new URL(import.meta.url), 'utf8').split('\n');
+  console.log(src.slice(1, src.findIndex((l, i) => i > 1 && !l.startsWith('//'))).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+  process.exit(0);
+}
 const cmd = ['run', 'status', 'show-key'].includes(argv[0]) ? argv[0] : 'setup';
 const flag = (n, env) => { const i = argv.indexOf('--' + n); return i >= 0 && argv[i + 1] != null ? argv[i + 1] : (env && process.env[env]) || null; };
 const has = (n) => argv.includes('--' + n);
@@ -137,7 +142,8 @@ if (cmd === 'run') {
     say('  starting a dry run to try the quote path (the first read of the pool takes about two minutes)…');
     const p = await freePort(), child = spawnServer({ keyHex: k.keyHex, dry: true, p }), base = `http://localhost:${p}`;
     try {
-      const up = await until(async () => (await getJson(base + '/health'))?.ok, 8 * 60000);
+      let dots = 0;
+      const up = await until(async () => { const h = await getJson(base + '/health'); if (!h?.ok && ++dots % 5 === 0) say(`  still reading the pool… (${Math.round(dots * 3 / 60 * 10) / 10} min)`); return h?.ok; }, 8 * 60000);
       if (!up) res = { ok: false, results: [{ name: 'dry run', required: true, ok: false }] }, say('  FAIL  the dry run did not come up in eight minutes: run it by hand (`node fastbridge-lp/server.mjs --dry-run`) to see why');
       else {
         const origin = (cfg.origins || ['https://tacit.finance'])[0];

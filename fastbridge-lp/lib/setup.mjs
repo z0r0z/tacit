@@ -257,7 +257,8 @@ export async function runChecks(checks, say = () => {}) {
   for (const c of checks) {
     let r;
     try { r = await c.run(); } catch (e) { r = { ok: false, detail: String((e && e.message) || e).slice(0, 200) }; }
-    const res = { name: c.name, required: c.required !== false, ok: !!r.ok, detail: r.detail || '', fix: r.ok ? '' : c.fix || '' };
+    // a probe that timed out says so (`timedOut`): that is not a fault found, so it warns and does not stop the start
+    const res = { name: c.name, required: c.required !== false && !r.timedOut, timedOut: !!r.timedOut, ok: !!r.ok, detail: r.detail || '', fix: r.ok ? '' : r.timedOut ? (r.fix || 'it did not answer in time (a busy machine reads the pool slowly): run setup again') : c.fix || '' };
     results.push(res);
     say(`  ${res.ok ? 'ok  ' : res.required ? 'FAIL' : 'warn'}  ${res.name}${res.detail ? ': ' + res.detail : ''}${res.fix ? '\n        -> ' + res.fix : ''}`);
   }
@@ -283,17 +284,31 @@ export const rpcQuorumCheck = ({ nodes, fetchImpl, need = 2 }) => ({
 export const explorerCheck = ({ bases, fetchImpl }) => ({
   name: 'Bitcoin explorers', required: true, fix: 'check this machine\'s outbound HTTPS, or set FB_LP_BTC_BASES to explorers you can reach',
   async run() {
-    let ok = 0;
-    await Promise.all(bases.map(async (b) => { try { const r = await fetchImpl(b + '/blocks/tip/height', { signal: AbortSignal.timeout(8000) }); if (r.ok && /^\d+$/.test((await r.text()).trim())) ok++; } catch { /* not reachable */ } }));
-    return { ok: ok >= 1, detail: `${ok} of ${bases.length} answer` };
+    const got = [];
+    await Promise.all(bases.map(async (b) => { let up = false; try { const r = await fetchImpl(b + '/blocks/tip/height', { signal: AbortSignal.timeout(8000) }); up = !!(r.ok && /^\d+$/.test((await r.text()).trim())); } catch { /* not reachable */ } got.push(`${b} ${up ? 'answered' : 'did not'}`); }));
+    const ok = got.filter((g) => g.endsWith('answered')).length;
+    return { ok: ok >= 1, detail: `${ok} of ${bases.length} answer (${got.sort().join('; ')})` };
   },
 });
+
+// A request to the dry-run daemon: 30 s, and once more when it timed out (a daemon that has just read the pool is slow to its first answers)
+export async function probe(fetchImpl, url, opts = {}, { timeoutMs = 30000, tries = 2 } = {}) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try { return { r: await fetchImpl(url, { ...opts, signal: AbortSignal.timeout(timeoutMs) }) }; }
+    catch (e) { last = e; if (!/abort|timeout/i.test(String((e && (e.name + e.message)) || e))) break; }
+  }
+  const timedOut = /abort|timeout/i.test(String((last && (last.name + last.message)) || last));
+  return { timedOut, error: String((last && last.message) || last).slice(0, 120) };
+}
+const timedOutAnswer = (what) => ({ ok: false, timedOut: true, detail: `${what} did not answer within 30 s, twice` });
 
 // A page at `origin` can call the provider only if the answer carries the origin back
 export const corsCheck = ({ base, origin, fetchImpl }) => ({
   name: `pages at ${origin} may call it`, required: true, fix: `add ${origin} to "origins" in the config`,
   async run() {
-    const r = await fetchImpl(base + '/info', { headers: { origin }, signal: AbortSignal.timeout(8000) });
+    const { r, timedOut, error } = await probe(fetchImpl, base + '/info', { headers: { origin } });
+    if (!r) return timedOut ? timedOutAnswer('/info') : { ok: false, detail: error };
     const got = r.headers.get('access-control-allow-origin');
     return { ok: r.ok && got === origin, detail: r.ok ? (got === origin ? 'CORS answer is right' : `the answer allows "${got || 'nothing'}"`) : `/info answered ${r.status}` };
   },
@@ -302,7 +317,8 @@ export const corsCheck = ({ base, origin, fetchImpl }) => ({
 export const quoteCheck = ({ base, minSats, fetchImpl }) => ({
   name: 'a quote at the minimum', required: true, fix: 'a provider with no price quotes nothing: check the price sources (Chainlink, Coinbase, Kraken) are reachable',
   async run() {
-    const r = await fetchImpl(base + '/quote', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ amount: String(minSats) }), signal: AbortSignal.timeout(15000) });
+    const { r, timedOut, error } = await probe(fetchImpl, base + '/quote', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ amount: String(minSats) }) });
+    if (!r) return timedOut ? timedOutAnswer('/quote') : { ok: false, detail: error };
     const j = await r.json().catch(() => ({}));
     return { ok: r.ok && !!j.id, detail: r.ok ? 'a quote came back' : `answered ${r.status}: ${String(j.error || '').slice(0, 120)}` };
   },
