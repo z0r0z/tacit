@@ -136,7 +136,7 @@ export const headHtml = (dapp, inline = false) => `${inline ? `<style>\n${readFi
 // drawn by chrome.js once it runs, the head pushed the whole page down under the reader (tools/layout-shift-check.mjs). The vault is two views,
 // told apart by the address's #btc, which chrome.js reads: it is stamped as its section alone, with the head of its first view.
 //   <!-- chrome:sec:begin -->…<!-- chrome:sec:end -->     the section's head, first in <main>
-export const SEC_PAGES = { 'farm/index.html': 'defi/farm', 'fast/index.html': 'chains/fast', 'rewards/index.html': 'rewards/', 'vault/index.html': 'borrow' };
+export const SEC_PAGES = { 'farm/index.html': 'defi/farm', 'fast/index.html': 'chains/fast', 'btc/index.html': 'chains/btc', 'rewards/index.html': 'rewards/', 'vault/index.html': 'borrow' };
 // the sections' names, lines and views are chrome.js's (its SEC table), read from it so the two cannot differ
 const secTable = (dapp) => {
   const m = /\n  const SEC = (\{\n[\s\S]*?\n  \});\n/.exec(readFileSync(join(dapp, 'chrome.js'), 'utf8'));
