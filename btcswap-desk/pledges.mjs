@@ -42,7 +42,7 @@ export function makePledges(ctx) {
   const remainingOf = (p) => BigInt(p.amount) - BigInt(p.drawn) - committedOf(p);
 
   const jointOf = (p) => S.jointLock({ prims, holderPub: p.pledgerPub, deskPub: p.joint.deskPub, deskXonly: p.joint.refundXonly, csvBlocks: p.csvBlocks, refundXonly: p.joint.refundXonly });
-  const publicPledge = (p) => ({ id: p.id, phase: p.phase, amount: p.amount, maxDiscountBps: p.maxDiscountBps, csvBlocks: p.csvBlocks, fundedAt: p.fundedAt, expiryHeight: p.expiryHeight, drawn: p.drawn, owed: p.owed, repaid: p.repaid, committed: String((p.draws || []).filter((d) => ['allocated', 'requested', 'broadcast'].includes(d.phase)).reduce((s, d) => s + BigInt(d.amount), 0n)), signerUrl: p.signerUrl });
+  const publicPledge = (p) => ({ id: p.id, phase: p.phase, amount: p.amount, maxDiscountBps: p.maxDiscountBps, csvBlocks: p.csvBlocks, fundedAt: p.fundedAt, expiryHeight: p.expiryHeight, drawn: p.drawn, owed: p.owed, repaid: p.repaid, committed: String(committedOf(p)), signerUrl: p.signerUrl });
 
   // Whether the proof follows a lock output: it does already, or it will because the lock transaction is a valid transfer
   // whose every note input is tracked and signed so as to bind every output (the holder's readDeskLock, same rule).
