@@ -28,7 +28,7 @@ The wrapper circuit has five public inputs. A ciphertext fixes all five:
 | input | value |
 |---|---|
 | program vkey hash | the vkey hash of the `praxis-gate` program (below), as published with its ELF |
-| public-values digest | SHA-256 of the gate's committed public values: the statement bytes `S` below |
+| public-values digest | SHA-256 of the gate's committed public values (the statement bytes `S` below) with its top 3 bits cleared, read big-endian: SP1's `hash_bn254`, `sha256(S) & (2^253 - 1)`. Not the BLAKE3 variant SP1 also offers. |
 | exit code | 0 |
 | vk root | SP1 v6.1.0's recursion vk root `0x002f850e…` (the same in every release v6.1.0 to v6.10.0) |
 | proof nonce | the first 16 bytes of `SHA-256("tacit-praxis-nonce-v1" ‖ ciphertext id)`, as four u32 words each read big-endian from 4 bytes (the layout of SP1's own `generate_nonce`) |
