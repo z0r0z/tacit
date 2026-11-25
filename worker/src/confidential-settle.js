@@ -29,10 +29,12 @@ export const OPEN_TYPES = ['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 
 // A proof posted from elsewhere may also be a wrap-swap whose deposit already waits in the pool (a staged deposit, or one sent first): its settle
 // is then a plain pool.settle too, and verifyPosted's simulation refuses one whose deposit is not there, so a proof meant to go with its deposit
 // through the router never goes on the board.
-export const POSTED_TYPES = [...OPEN_TYPES, 'wrapswap'];
+// And an atomic swap's pool lock proved ahead (prove only, while the other chain's lock waits for its block), posted by its holder the moment that lock is
+// confirmed: when it lands is the holder's choice, made by when it posts it, and once posted it should land at once.
+export const POSTED_TYPES = [...OPEN_TYPES, 'wrapswap', 'adaptorlock'];
 // The posted steps the relay sends with no fee in them, on its free settles for the day, as it does the same step relayed: a stealth send's lock
-// (the recipient's claim pays the relay). Proved ahead of the press, the lock is then only sent at it.
-export const FREE_POSTED_TYPES = ['stealthlock'];
+// (the recipient's claim pays the relay), and an atomic swap's pool lock (relayed, it is fee-less too: FEELESS_TYPES). Proved ahead, each is then only sent.
+export const FREE_POSTED_TYPES = ['stealthlock', 'adaptorlock'];
 // KV has no compare-and-swap (real Cloudflare KV doesn't either, and this queue must stay portable to
 // it — see server/kv-store.mjs), so a plain read-then-write claim races once more than one poller hits
 // the same pending job. CLAIM_VERIFY_DELAY_MS narrows that window from "the whole poll interval" to
@@ -48,10 +50,11 @@ const MAX_PENDING_PER_SENDER = 32;
 // rest, which wait only this long behind them (after it a job takes its place in the arrival order, so a stream of swaps cannot hold the others back).
 const PINNED_TYPES = ['route', 'swap', 'wrapswap', 'wraplp', 'lp', 'lpbond', 'lpremove'];
 const PINNED_HEAD_START_MS = 120 * 1000;
-// Proofs a person is not watching a spinner for: a bridge mint (the Bitcoin burn behind it took an hour to confirm) and the fast bridge's pool lock, claim and refund (a bridge takes minutes
-// whichever way it goes, and each has hours of margin on its deadline). They are taken behind the ops a person is waiting on (an unwrap, a send, a wrap), for the same two minutes the
-// others are held behind a swap, and after that by arrival: a run of them cannot be held back, and a run of them cannot hold back a person's unwrap either.
-const PATIENT_TYPES = ['bridgemint', 'bridgestealthmint', 'adaptorlock', 'adaptorclaim', 'adaptorrefund'];
+// Proofs a person is not watching a spinner for: a bridge mint (the Bitcoin burn behind it took an hour to confirm) and a swap's pool refund (hours of margin on its deadline). They are
+// taken behind the ops a person is waiting on (an unwrap, a send, a wrap), for the same two minutes the others are held behind a swap, and after that by arrival: a run of them cannot be
+// held back, and a run of them cannot hold back a person's unwrap either. A swap's pool lock and claim are not among them: the Bitcoin page's swaps are watched as they go, and two
+// minutes held on each added four to every swap.
+const PATIENT_TYPES = ['bridgemint', 'bridgestealthmint', 'adaptorrefund'];
 // A sender whose swap or liquidity add was refused because the pool had moved has already waited its turn once, and the page builds it again on the pool's
 // reserves at once, so that second job goes before every other: queued behind the rest again it would be stale by the time it was looked at. Each refusal
 // gives its sender one such place, for RETRY_LANE_MS (about the page's own budget for chasing a swap).
