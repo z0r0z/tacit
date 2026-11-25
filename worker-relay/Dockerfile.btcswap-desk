@@ -1,0 +1,41 @@
+# tacit-btcswap-desk: the stuck-TAC desk (btcswap-desk/server.mjs). It swaps TAC whose history the bridge's proof does not
+# follow for tracked TAC on Bitcoin, funded by its own inventory and by pledges of tracked TAC (btcswap-desk/pledges.mjs).
+# Its key is BTCSWAP_DESK_KEY, set in the dashboard and nowhere else. See btcswap-desk/README.md.
+# Build context is the repo root: the desk runs the dapp's own modules (dapp/btcswap*.js, the pool wallet, the note validator),
+# so the runtime image keeps that layout. Its swap and pledge records are its safety state: mount a persistent disk at
+# BTCSWAP_DESK_DATA_DIR.
+#   docker build -f worker-relay/Dockerfile.btcswap-desk .
+#   docker run -p 10000:10000 -e BTCSWAP_DESK_KEY=<64 hex> <image> node btcswap-desk/server.mjs --dry-run
+
+FROM node:22-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+
+# worker/src/btc-shielded-pool.js (the note validator's pool code) has the packages of worker/ beside it, as in the Bitcoin pool indexer's image;
+# the dapp's own modules take theirs from the vendored bundle.
+COPY worker/package.json worker/package-lock.json /app/worker/
+RUN cd /app/worker && npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY worker/src/btc-shielded-pool.js /app/worker/src/btc-shielded-pool.js
+
+COPY dapp/package.json /app/dapp/package.json
+COPY dapp/*.js /app/dapp/
+COPY dapp/vendor/*.js /app/dapp/vendor/
+COPY dapp/trade/rpc.js /app/dapp/trade/rpc.js
+COPY dapp/evm-pool/token-pool-code.json /app/dapp/evm-pool/token-pool-code.json
+
+WORKDIR /app/worker-relay
+COPY worker-relay/package.json worker-relay/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY worker-relay/src ./src
+
+WORKDIR /app
+COPY fastbridge-lp/lib ./fastbridge-lp/lib
+COPY btcswap-desk ./btcswap-desk
+
+ENV NODE_ENV=production \
+    BTCSWAP_DESK_CONFIG=/app/btcswap-desk/config.render.json \
+    BTCSWAP_DESK_DATA_DIR=/var/lib/tacit-btcswap-desk \
+    PORT=10000
+EXPOSE 10000
+CMD ["node", "btcswap-desk/server.mjs"]

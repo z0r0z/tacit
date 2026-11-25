@@ -1,0 +1,54 @@
+{
+  "apiBase": "https://tacit-api.onrender.com",
+  "asset": "FILL IN: the signet TAC Bitcoin asset id, the same field as tacAssetId in contracts/deployments/1.json for mainnet. The desk will not run a live signet swap without it; --dry-run does not need it.",
+  "btcBases": [
+    "https://mempool.space/signet/api",
+    "https://blockstream.info/signet/api"
+  ],
+  "dataDir": "/var/lib/tacit-btcswap-desk",
+  "network": "signet",
+  "origins": [
+    "https://tacit.finance"
+  ],
+  "pledge": {
+    "csvPledge": 144,
+    "minConfs": 2,
+    "pledgeReturnBps": 50
+  },
+  "policy": {
+    "acceptWaitSecs": 21600,
+    "confs": [
+      [
+        "0",
+        1
+      ],
+      [
+        "50000000000",
+        2
+      ],
+      [
+        "100000000000",
+        3
+      ]
+    ],
+    "csvDesk": 144,
+    "csvHolder": 288
+  },
+  "poolAddress": "0x000000003eD19c48531bd397F66800004F8A18c2",
+  "port": 10000,
+  "quote": {
+    "discountBps": {
+      "clean": 0,
+      "long-history": 150,
+      "pool-exit": 300
+    },
+    "discountMaxBps": 500,
+    "feeBps": 30,
+    "flatFee": "100000000",
+    "maxAmount": "100000000000",
+    "minAmount": "100000000",
+    "validSecs": 600
+  },
+  "tickSecs": 15,
+  "trustProxy": true
+}

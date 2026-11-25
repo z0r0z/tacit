@@ -347,7 +347,23 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return { commitTxid: pair.commitTxid, revealTxid: pair.revealTxid };
   }
 
-  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, withKeyPathSig, pickSats, lockSats, pickSatsMany, lockSatsMany, claimSats, refundSats, childSats, childVsize, broadcastPair, vsizeOf };
+  // A repayment: tracked notes to a third party's address, on the CXFER recipient channel (bound-swap.js buyerNoteEcdh):
+  // the blinding and the amount keystream come from one ECDH with the recipient's key, so the recipient finds and opens the
+  // note from the desk's public key alone. The desk uses it to return a pledge's drawn amount to the pledger once a swap it
+  // funded has settled; it carries no adaptor, no lock, and no refund leaf. The change stays with the desk.
+  const payTransfer = ({ asset, notes, amount, recipientPub, satsUtxos, feeRate }) => {
+    const inputs = notes.map((n) => ({ txid: n.txid, vout: n.vout, value: n.value, amount: n.amount, blinding: n.blinding, spk: own, witnessSizes: [72, 33],
+      sign: (tx, idx, prevouts) => prims.signP2wpkhInput(tx, idx, prevouts[idx].value) }));
+    const total = inputs.reduce((s, i) => s + asBig(i.amount), 0n);
+    if (asBig(amount) <= 0n || asBig(amount) > total) throw new Error('adaptor-btc-tx: the repayment must be positive and within the notes');
+    const anchor = anchorOf(inputs[0]);
+    const outputs = [
+      { amount: asBig(amount), blinding: kit.deriveBlinding(wallet.priv, recipientPub, anchor, 0), script: prims.p2wpkhScript(recipientPub), keystream: kit.deriveAmountKeystreamECDH(wallet.priv, recipientPub, anchor, 0) },
+      selfOut(anchor, 1, total - asBig(amount)),
+    ];
+    return transfer({ asset, inputs, outputs, satsUtxos, feeRate });
+  };
+  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, payTransfer, withKeyPathSig, pickSats, lockSats, pickSatsMany, lockSatsMany, claimSats, refundSats, childSats, childVsize, broadcastPair, vsizeOf };
 }
 
 // A transaction as JSON a record can keep (bytes as hex), and back.

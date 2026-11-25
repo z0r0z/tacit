@@ -1031,3 +1031,31 @@ services:
   #       value: "30"
   #     - key: FB_LP_FLAT_FEE             # 10000000 is 0.1 TAC
   #       value: "10000000"
+
+  # The stuck-TAC desk (btcswap-desk/server.mjs, README there): NOT CREATED. One process per key, always on: two on one key would
+  # lock the same swap twice, so never scale it past one instance. Its key is the desk's Bitcoin wallet, pool identity and swap-seed root; it is
+  # set in the Render dashboard (BTCSWAP_DESK_KEY, `openssl rand -hex 32`) and nowhere else, and it is NOT in `tacit-relay-shared`. The swap and
+  # pledge records on the disk are its safety state: keep the disk, and take snapshots. Tune it with the variables below (a change restarts it; open swaps are read back
+  # and finished). To stop taking new swaps set the quote maxAmount to 0: it quotes nothing and finishes what is open. On the first start it logs the
+  # Bitcoin address and the desk's public key to fund (tracked TAC to that address): the tracked TAC is what it can lock.
+  # The first read of the pool takes about two minutes on an empty disk and the desk answers /info after it; the scan is kept on the disk, so a restart is quick.
+  # - type: web
+  #   name: tacit-btcswap-desk
+  #   runtime: docker
+  #   rootDir: .
+  #   dockerfilePath: ./worker-relay/Dockerfile.btcswap-desk
+  #   dockerContext: .
+  #   plan: starter
+  #   region: oregon
+  #   dockerCommand: node btcswap-desk/server.mjs     # first start: node btcswap-desk/server.mjs --dry-run
+  #   healthCheckPath: /health
+  #   autoDeploy: false
+  #   disk:
+  #     name: btcswap-desk-data
+  #     mountPath: /var/lib/tacit-btcswap-desk
+  #     sizeGB: 1
+  #   envVars:
+  #     - key: BTCSWAP_DESK_KEY
+  #       sync: false
+  #     - key: BTCSWAP_DESK_ALERT_WEBHOOK        # optional: alerts are POSTed here as JSON as well as logged
+  #       sync: false

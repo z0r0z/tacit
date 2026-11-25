@@ -1,6 +1,15 @@
 {
   "providers": [
-    { "name": "Tacit", "base": "https://tacit-fastbridge-pair-lp.onrender.com", "claimPub": "028bfd499e1c84805a3d8ceaf671e6bb46507fb13c02102f27f65f1682a2cf4171" }
+    {
+      "name": "Tacit",
+      "base": "https://tacit-fastbridge-pair-lp.onrender.com",
+      "claimPub": "028bfd499e1c84805a3d8ceaf671e6bb46507fb13c02102f27f65f1682a2cf4171"
+    }
   ],
-  "boards": ["https://tacit-fast-board.onrender.com"]
+  "boards": [
+    "https://tacit-fast-board.onrender.com"
+  ],
+  "desks": [
+    "https://tacit-btcswap-desk.onrender.com"
+  ]
 }

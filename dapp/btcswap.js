@@ -43,10 +43,10 @@ export const DEFAULTS = { csvHolder: 288, csvDesk: 144, lockDelayBlocks: 6, take
 // The desk's lock: key path = MuSig2(holder, desk) tweaked by the refund leaf; script path = the desk's refund after
 // `csvBlocks`. The shape of adaptor-btc-lock deriveLock (the builders' refund reads leaf, leafHash, controlBlock), plus
 // `keys` (the tweaked aggregate the claim is signed under).
-export function jointLock({ prims, holderPub, deskPub, deskXonly, csvBlocks }) {
+export function jointLock({ prims, holderPub, deskPub, deskXonly, csvBlocks, refundXonly = null }) {
   const pks = M.keySort([bx(holderPub), bx(deskPub)]);
   const inner = M.keyAgg(pks);
-  const leaf = refundLeaf({ lockerXonly: bx(deskXonly), csvBlocks });
+  const leaf = refundLeaf({ lockerXonly: bx(refundXonly ?? deskXonly), csvBlocks });
   const leafHash = prims.tapLeafHash(leaf);
   const keys = M.keyAgg(pks, [M.tapTweak(inner.xonly, leafHash)]);
   const { Q_xonly, parity } = prims.tweakedOutputKey(inner.xonly, leafHash);
@@ -117,6 +117,53 @@ export function deskSwapSecrets({ seed, swapId }) {
   if (!(seed instanceof Uint8Array) || seed.length < 32) throw new Error('btcswap: seed must be at least 32 bytes');
   const d = scalarOf(seed, 'musig-key', swapId);
   return { d, pub: secp.ProjectivePoint.BASE.multiply(d).toRawBytes(true), rLock: scalarOf(seed, 'r-lock', swapId) };
+}
+
+// A pledge's MuSig2 key and its lock blinding: the desk's half of a pledge lock is a key the desk derives per pledge, never
+// a key the pledger is asked to trust the desk to hold alone. The pledger's half is the key they publish with the pledge.
+export function pledgeSecrets({ seed, pledgeId }) {
+  if (!(seed instanceof Uint8Array) || seed.length < 32) throw new Error('btcswap: seed must be at least 32 bytes');
+  const d = scalarOf(seed, 'pledge-key', pledgeId);
+  return { d, pub: secp.ProjectivePoint.BASE.multiply(d).toRawBytes(true), rLock: scalarOf(seed, 'pledge-r-lock', pledgeId) };
+}
+
+// The blinding for one draw from a pledge: a pledge funds more than one swap, so each draw blinds its own note. The
+// index is hashed in with the pledge id, so two draws never share a blinding.
+export function drawSecrets({ seed, pledgeId, index }) {
+  return { rLock: scalarOf(seed, 'draw-r-lock', concatBytes(bx(pledgeId), te.encode(String(index)))) };
+}
+
+// The discount for one class of stuck TAC, in basis points of the amount swapped, or null when the class is unknown or the
+// discount the config sets for it is over the cap the desk publishes. A null here is a refusal, not a free swap.
+export function discountBps(cls, schedule) {
+  const s = schedule || {}, max = s.discountMaxBps ?? 500;
+  const bps = { clean: s.discountBps?.clean ?? 0, 'long-history': s.discountBps?.['long-history'] ?? 150, 'pool-exit': s.discountBps?.['pool-exit'] ?? 300 }[cls];
+  if (!Number.isInteger(bps) || bps < 0) return null;
+  return bps > max ? null : bps;
+}
+
+// A note's class from the trace of its history: a pool exit is a note whose history passes through the shielded pool, a
+// long history is a note with more than 255 transfers behind it (the proof is bounded at 256 hops), anything else is clean.
+export function classOfTrace(trace) {
+  if (!trace || typeof trace !== 'object') return null;
+  const bundle = trace.bundle || trace;
+  if (shieldedIn(bundle)) return 'pool-exit';
+  const hops = trace.hops ?? bundle.hops;
+  if (Number.isInteger(hops) && hops > 255) return 'long-history';
+  return 'clean';
+}
+
+// A shielded-pool exit anywhere in a trace bundle: a leaf whose opcode is the pool's 0x6c (deposit) or 0x6d (exit). The
+// bundle's shape is the reflection API's own, so the walk looks for the opcode field rather than assuming a layout.
+function shieldedIn(x) {
+  if (Array.isArray(x)) return x.some(shieldedIn);
+  if (x && typeof x === 'object') {
+    for (const [k, v] of Object.entries(x)) {
+      if (k.toLowerCase() === 'opcode' && (String(v).toLowerCase() === '0x6c' || String(v).toLowerCase() === '0x6d')) return true;
+      if (shieldedIn(v)) return true;
+    }
+  }
+  return false;
 }
 
 // ── step 2 → 3: what the desk publishes once its lock has confirmed ──

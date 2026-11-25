@@ -13804,7 +13804,11 @@ async function hxBridgeInQuote(my, done) {
   const fastable = (n) => n.reason === 'proof' && fastOn();
   if (BR.pick && ![...open, ...notes.filter(fastable)].some((n) => brId(n) === BR.pick)) BR.pick = null;
   if (!BR.pick && open.length === 1) BR.pick = brId(open[0]);
-  const why = (n) => [n.eligible ? 'ready to bridge' : brWhy(n) + (fastable(n) ? '; pick it to see if the fast bridge can take it now' : ''), brTagged(n)].filter(Boolean).join(' · ');
+  const deskUrl = (await bswMod().catch(() => null))?.DESK || null;
+  // A note the regular bridge cannot follow (a history longer than the proof, or one through the shielded pool): the swap
+  // desk takes it, at a discount, where the bridge will not take it at all. A note only waiting for its proof is not one.
+  const stuck = (n) => !n.eligible && /does not follow|the bridge proves up to/.test(n.reason || '');
+  const why = (n) => [n.eligible ? 'ready to bridge' : brWhy(n) + (fastable(n) ? '; pick it to see if the fast bridge can take it now' : '') + (stuck(n) && deskUrl ? '; the swap desk takes notes the bridge cannot follow, at a discount' : ''), brTagged(n)].filter(Boolean).join(' · ');
   const shown = { ...base, rowsName: 'Your TAC on Bitcoin', rows: notes.map((n) => ({ k: brId(n), name: `${fmt(BigInt(n.amount), 8, 4)} TAC`, note: why(n), show: '', off: !n.eligible && !fastable(n) })) };
   const w = notes.filter(fastable).find((x) => brId(x) === BR.pick);
   if (w) {
