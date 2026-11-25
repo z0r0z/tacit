@@ -138,6 +138,23 @@ ranges), `POST /api/join`, `GET /api/slot` (poll), `POST /api/claim`, `PUT /api/
 `DELETE /api/leave`, `GET /api/transcript`. A join must be sent as `application/json`. Anyone may download the
 files, a couple of connections per address at a time; the slot holder's download (sent with its token) is never limited.
 
+### Moving or recovering the coordinator
+
+Everything a coordinator needs is public except its key: every accepted file and the transcript (which is `state.json`)
+are copied to the mirror as they are accepted. To bring the chain up on a new machine:
+
+1. Fetch `transcript.json` and every `phase2-<n>` from the mirror (S3 bucket `tacit-praxis-ceremony` at Filebase, or by
+   each file's IPFS CID from `/api/mirror`), and check each file's SHA-256 against the transcript.
+2. Put the files in `<dir>`, save the transcript as `<dir>/state.json`, and restore `<dir>/coordinator.key` (64 bytes,
+   mode 0600) from the operator's offline copy. `serve` refuses to start if the key does not match `state.json`.
+3. Run `./tacit-ceremony verify-chain <dir> 17 <head>`, then `serve` as above. The queue starts empty; contributors
+   who were waiting join again.
+4. Point the HTTPS window (`COORDINATOR_URL` of the proxy) and the page at the new address.
+
+Contributors' clients pin the coordinator key, so the chain continues under the same key. If the key itself were lost,
+the chain would continue from the same head under a new key, announced with a signature by the old one where possible;
+receipts already issued stay checkable with the old key.
+
 ## Release binaries
 
 ```sh
