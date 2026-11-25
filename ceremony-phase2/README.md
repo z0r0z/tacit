@@ -104,7 +104,7 @@ must be exactly the size its layout accounts for, checked before it is read.
 | Starting file (`phase2-17`, Succinct's last) | sha256 `bf6f7799c77a90009ae356fd0d3a69a91cf153825e6762ce344fe804cf5db2df` |
 | Coordinator key (ed25519) | `c22b59ae8acf7a1c2b78c4da8cfd2a3e7a21f2d2809a4d35e3a71e0fd2052eb7` |
 | Phase 1 seal | the randomness of drand round 1000 on the League of Entropy default chain (`8990e7a9…51b2ce`), as in Succinct's transcript: `a40d3e0e7e3c71f28b7da2fd339f47f0bcf10910309f5253d7c323ec8cea3212`, a constant in `drand.go` whose signature `drand_test.go` checks |
-| Phase 2 seal | `SHA-256("tacit-praxis-beacon-v1" ‖ block hash ‖ quicknet randomness)` for a Bitcoin block and a drand quicknet round announced before the close |
+| Phase 2 seal | `SHA-256("tacit-praxis-beacon-v1" ‖ block hash ‖ quicknet randomness)` for the first Bitcoin block mined after the close is announced (with the final head's hash) and the first drand quicknet round after that block's timestamp |
 
 For the Phase 2 seal, the block hash is the 32 bytes of the hash as block explorers and `bitcoin-cli getblockhash`
 print it (display order, leading zeros first). The quicknet round is from chain
