@@ -8,7 +8,7 @@
 // `joinAt` is an element the join with both sides is drawn in instead (the farm page's own card, on the farm `choose` names), with what
 // it says as it runs; `onAct(name, ok)` is told when an action ends. `more(tk, { pid, alone })` is the page's own words for getting a coin the
 // key holds none of (links, as HTML; `alone` names the other coin when the key holds that one), drawn in that card when a side is missing.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=efcc4e71';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=e9a3a06d';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { makeRunner } from '/activity.js';
 import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond, coinNames, poolMoved, openProofMoved } from '/farm-ops.js?cb=c5192cc4';

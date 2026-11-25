@@ -1,6 +1,6 @@
-import { openBtcWallet } from '/trade/btc-session.js?cb=93339b3d';
+import { openBtcWallet } from '/trade/btc-session.js?cb=fc0f55c7';
 import { isPasskeyAvailable } from '/prf-wallet.js';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=efcc4e71';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=e9a3a06d';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
@@ -21,7 +21,7 @@ const TACIT_URL = '/tacit.js?cb=35e43051';
 // the bridge itself (the lock, the settle, the key's own provider) loads when a key opens; a touch on the page fetches its modules ahead
 let warmed = false;
 const warm = () => { if (warmed) return; warmed = true; const t = document.getElementById('warm'); if (t) document.head.append(t.content.cloneNode(true)); };
-const wire = () => { warm(); return import('/fast/wire.js?cb=fe8e14ab'); };
+const wire = () => { warm(); return import('/fast/wire.js?cb=5f24f77e'); };
 for (const ev of ['pointerdown', 'focusin']) document.querySelector('main')?.addEventListener(ev, warm, { once: true });
 
 async function lists() {
