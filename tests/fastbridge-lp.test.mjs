@@ -59,7 +59,7 @@ test('/info and /health: the LP\'s terms, and 503 once a tick has failed', async
   assert.equal((await call(s.base, 'GET', '/health')).status, 200);
 });
 
-test('/quote: the fee is a share of the amount plus a flat part, within limits, and the quote is kept', async () => {
+test('/quote: the fee is a share of the amount plus a flat part, within limits, and the quote is read back from its id', async () => {
   const { w } = httpWorld();
   w.lEvm.fund(100_000n, 'inv');
   const s = await serve(w, { config: configFor(w, { quote: { feeBps: 30, flatFee: 200, minAmount: 1000, maxAmount: 100_000 } }) });
@@ -67,10 +67,10 @@ test('/quote: the fee is a share of the amount plus a flat part, within limits, 
   assert.equal(q.btcValue, '5000');
   assert.equal(q.evmAmount, String(5000 - (15 + 200)), 'fee = 30 bps of 5000 + 200');
   assert.equal(q.claimPub, bytesToHex(w.lW.wallet.pub));
-  assert.match(q.id, /^[0-9a-f]{32}$/);
+  assert.match(q.id, /^01[0-9a-f]{120}$/);
   assert.equal(q.validUntil, q.created + 3600);
   assert.equal(q.minConfs, 1);
-  assert.deepEqual(await s.svc.quoter.get(q.id), q, 'the quote is stored');
+  assert.deepEqual(await s.svc.quoter.get(q.id), q, 'the quote is read back from its id');
   assert.equal(await s.svc.quoter.get('../../etc/passwd'), null, 'only a quote id is looked up');
   assert.equal(await s.svc.quoter.get('0'.repeat(32)), null);
   for (const [amount, re] of [['999', /between 1000 and 100000/], ['100001', /between/], ['12.5', /whole number/], ['-5', /whole number/], ['abc', /whole number/], [null, /whole number/]]) {
@@ -257,6 +257,8 @@ test('an expired quote ends the swap before anything is locked: the user takes i
   const s = await serve(w, { config: configFor(w, { quote: { validSecs: 100 } }) });
   ref.base = s.base;
   const q = await makeHttpCounter({ base: s.base, fetchImpl: realFetch }).quote(VALUE);
+  // (locked once the quote has run out: a lock named to /extend while the quote stands holds it, with or without a reservation)
+  w.clock.advance(101);
   await startSwap(w, q);
   await w.run(async () => (await w.user())?.phase === 'refund-wait');
   assert.match((await w.user()).why, /quote expired/);
@@ -282,6 +284,7 @@ test('with a grace after the quote, a lock that confirmed late is still taken (t
   const t = await serve(late.w, { config: configFor(late.w, { quote: { validSecs: 100, graceSecs: 1 } }) });
   late.ref.base = t.base;
   const q2 = await makeHttpCounter({ base: t.base, fetchImpl: realFetch }).quote(VALUE);
+  late.w.clock.advance(102);
   await startSwap(late.w, q2);
   await late.w.run(async () => (await late.w.user())?.phase === 'refund-wait');
   assert.match((await late.w.user()).why, /quote expired/);
@@ -1026,10 +1029,10 @@ test('reservations survive a restart of the service, and quotes never used are f
   w.clock.advance(3 * 86400);
   await s.svc.tick();
   assert.equal(await quoteStore.get(unused.id), null, 'an unused quote is forgotten');
-  assert.equal((await s.svc.quoter.get(q.id)), null, 'and so is a reserved one whose time is long past');
+  assert.equal(await quoteStore.get(q.id), null, 'and so is a reserved one whose time is long past');
   const fresh = (await post(s, '/quote', { amount: '1000' })).body;
   await s.svc.tick();
-  assert.ok(await s.svc.quoter.get(fresh.id), 'a quote that is not old is kept');
+  assert.ok(await s.svc.quoter.get(fresh.id), 'a quote that is not old is read back');
 });
 
 // ── the files ──
