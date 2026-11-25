@@ -91,7 +91,9 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   // the providers that failed lately, kept across visits so that one that does not answer is asked after the others (fastbridge-pair.js strikes)
   const strikes = storage ? { get: () => JSON.parse(storage.getItem('tacit-pair-provider-strikes-v1') || '{}'), put: (m) => storage.setItem('tacit-pair-provider-strikes-v1', JSON.stringify(m)) } : null;
   const counterOf = (ref, o = {}) => counterFor(ref, { fetchImpl, ...(o.timeoutMs ? { call: { timeoutMs: o.timeoutMs } } : {}) });
-  const pair = makePairClient({ btc, evm, seed, stores, discover, counterFor: counterOf, reverseCallFor, feed, ...(now ? { now } : {}), tend, exclusive, memo, strikes });
+  // (a lock of sats never takes a coin tacit.js finds a note on: its holdings scan, when the page has tacit.js)
+  const holdings = T && typeof T.scanHoldings === 'function' ? () => T.scanHoldings() : null;
+  const pair = makePairClient({ btc, evm, seed, stores, discover, counterFor: counterOf, reverseCallFor, feed, ...(now ? { now } : {}), tend, exclusive, memo, strikes, holdings });
   const run = ({ everyMs = 15000, onChange = () => {} } = {}) => {
     let busy = false, stopped = false;
     const once = async () => { if (busy || stopped) return; busy = true; try { onChange(await pair.pump()); } catch { /* the next pass */ } finally { busy = false; } };
@@ -113,7 +115,7 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
     coins: () => btc.satsCoins(),
     held: () => pair.heldCoins(),
     locks: () => pair.lockOutputs(),
-    holdings: T && typeof T.scanHoldings === 'function' ? () => T.scanHoldings() : null,
+    holdings,
     feeRates: async () => { const [fast, normal, slow] = await Promise.all(['fast', 'normal', 'slow'].map((k) => tiers[k].feeRate().catch(() => null))); return { fast, normal, slow }; },
     broadcast: (hex) => btc.broadcast({ commitHex: null, revealHex: hex }),
     status: (txid) => btc.status(txid),

@@ -275,6 +275,50 @@ test('the swap is kept: a new page over the same stores shows it, and a lock who
   assert.equal((await fresh.records())[0].title, 'Returned');
 });
 
+test('a lock of sats never takes a coin the wallet\'s holdings scan finds a note on, and with no answer from the scan nothing is locked or reserved', async () => {
+  const w = pairWorld({ userSats: [300_000, 200_000] });
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  const carrier = w.uCoins[0];                                     // the larger coin, which a lock would take first
+  const noted = new Map([['asset', { utxos: [{ utxo: { txid: carrier.txid, vout: carrier.vout } }] }]]);
+  const off = w.makePair({ holdings: async () => { throw new Error('the explorers did not answer'); } });
+  const q0 = await off.quote({ dir: 'b2e', amount: SATS });
+  await assert.rejects(() => off.start(q0), /could not be checked for notes/);
+  assert.equal((await w.mems.get('fwd').list()).length, 0, 'nothing was stored or sent');
+  const pair = w.makePair({ holdings: async () => noted });
+  const q = await pair.quote({ dir: 'b2e', amount: SATS });
+  const { id } = await pair.start(q);
+  const rec = await w.mems.get('fwd').get(id);
+  assert.ok(rec.feeInputs.length > 0);
+  assert.ok(rec.feeInputs.every((i) => i.txid !== carrier.txid), 'the coin with the note on it stays where it is');
+  const { noteOutpoints } = await import('../dapp/fastbridge-pair.js');
+  const h = new Map([['a', { utxos: [{ utxo: { txid: 'aa', vout: 1 } }], ghosts: [{ txid: 'bb', vout: 0 }], pending: [{ utxo: { txid: 'cc', vout: 2 } }] }]]);
+  h.unclassified = ['dd:3'];
+  assert.deepEqual([...noteOutpoints(h)].sort(), ['aa:1', 'bb:0', 'cc:2', 'dd:3']);
+});
+
+test('a lock whose send failed is not sent once its quote has run out, and the page says plainly that nothing left the address', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  const send = w.uBtc.broadcast;
+  w.uBtc.broadcast = async () => { throw new Error('broadcast refused: no explorer answered'); };
+  const q = await w.pair.quote({ dir: 'b2e', amount: SATS });
+  const { id } = await w.pair.start(q);
+  const rec = await w.mems.get('fwd').get(id);
+  assert.equal(rec.validUntil, Number(q.expiresAt), 'the record keeps the quote\'s end');
+  assert.equal(rec.phase, 'built');
+  w.clock.advance(Number(q.expiresAt) - w.clock.now() + 601);
+  w.uBtc.broadcast = send;                                          // the explorers answer again, too late
+  await w.pair.pump();
+  const r = (await w.pair.records()).find((x) => x.id === id);
+  assert.equal((await w.mems.get('fwd').get(id)).phase, 'aborted');
+  assert.deepEqual([r.state, r.title], ['stopped', 'Stopped']);
+  assert.match(r.detail, /never left your Bitcoin address/);
+  assert.equal(w.btc.spends.has(`${w.uCoins[0].txid}:${w.uCoins[0].vout}`), false, 'the coin was not spent');
+  assert.deepEqual(await w.pair.heldCoins(), [], 'and is free for the next swap');
+});
+
 test('of two providers the better quote wins, and one that fails to answer does not stop the other', async () => {
   const w = pairWorld();
   await w.ready();

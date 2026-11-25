@@ -29,6 +29,7 @@
 //                     HTTP, or marked `pinned`), and no other. In e2b the provider is the side that claims, and the user's sats come from reading its claim off the pool:
 //                     the pool keeps no record of a claim's kernel apart from the calldata that carried it, so a claim sent in a form no node will trace is not read.
 //                     Until a claim is read from a record of the pool's own, this direction is asked only of providers the site names.
+//   holdings()        the wallet's holdings scan (tacit.js scanHoldings, a Map): the coins it finds a note on are never put into a lock; when it cannot answer, no lock is built
 
 import { makeBitcoinLocker } from './fastbridge-bl.js';
 import { makeFastBridgeClient } from './fastbridge-client.js';
@@ -60,7 +61,7 @@ const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 const isHex = (h, n) => new RegExp(`^[0-9a-f]{${n}}$`).test(strip(h));
 const big = (v, what) => { try { const b = BigInt(v); if (b < 0n) throw 0; return b; } catch { throw new Error(`the provider's ${what} is not a number`); } };
 const FWD_DONE = new Set(['done', 'counter-took']);
-const FWD_END = new Set(['done', 'refunded', 'counter-took']);
+const FWD_END = new Set(['done', 'refunded', 'counter-took', 'aborted']);
 const REV_END = new Set(['done', 'refunded', 'aborted', 'lost']);
 
 // ETH per BTC a quote gives, and how it compares with the market in basis points (negative = worse for the user): a user who pays BTC wants more ETH for it, a user
@@ -91,6 +92,8 @@ const FWD_SAYS = {
   'counter-took': [4, 'Done', 'The ETH is in your private balance, and the provider collected the BTC.', 0],
   'refund-wait': [0, 'Returning your BTC', 'The lock returns to your Bitcoin address when its timelock ends.', null],
   refunded: [4, 'Returned', 'Your BTC came back to your Bitcoin address.', 0],
+  // (the lock is not sent once its quote has run out: dapp/fastbridge-bl.js 'built')
+  aborted: [0, 'Stopped', 'The lock was not sent before the quote ran out, so your BTC never left your Bitcoin address. Ask for a new quote to swap.', null],
 };
 const REV_SAYS = {
   accepted: [0, 'Waiting for the Bitcoin lock', 'The provider’s lock is on Bitcoin and needs its confirmations before your ETH is locked.', 1650],
@@ -124,7 +127,7 @@ const checking = (dir, rec, providerName = null) => ({
 export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000)) {
   if (rec.checking) return checking('b2e', rec, rec.providerName || null);
   const [at, title, detail, eta] = FWD_SAYS[rec.phase] || [0, rec.phase, '', null];
-  const state = FWD_DONE.has(rec.phase) ? 'done' : rec.phase === 'refunded' ? 'returned' : 'working';
+  const state = FWD_DONE.has(rec.phase) ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' ? 'stopped' : 'working';
   const lockAt = rec.lockAt || rec.confirmedAt || null;
   // a claim the relay could not prove (it proves a claim only with a private input) is sent again while there is time, and the page says so
   const text = rec.phase === 'refund-wait' ? withWhy(detail, rec.why) : rec.phase === 'claiming' && rec.claimFailures ? `${detail} ${CLAIM_AGAIN}` : detail;
@@ -183,10 +186,23 @@ const said = (e, fallback) => {
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('the provider did not answer in time')), ms))]);
 
 // `ethAsset` is the pool's asset for ETH (a test's pool has a stand-in)
+// The outpoints a holdings scan (tacit.js scanHoldings) names as carrying a note, or as not told apart: never spent as plain sats
+export function noteOutpoints(holdings) {
+  const out = new Set();
+  if (!(holdings instanceof Map)) return out;
+  for (const h of holdings.values()) {
+    for (const k of ['utxos', 'ghosts', 'inflated', 'pending', 'unverified']) for (const x of (h && h[k]) || []) {
+      const t = (x && x.utxo && x.utxo.txid) || (x && x.txid), v = x && x.utxo && x.utxo.vout != null ? x.utxo.vout : x && x.vout;
+      if (t != null && v != null) out.add(`${t}:${v}`);
+    }
+  }
+  for (const k of holdings.unclassified || []) out.add(k);
+  return out;
+}
 // The providers ETH for Bitcoin is asked of by default (see e2bFrom above)
 export const namedProvider = (p) => !!p && (p.http === true || p.pinned === true || !!OWN_PROVIDERS[strip((p.ref && p.ref.claimPub) || p.id || '')]);
 
-export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), exclusive = (work) => work(), ethAsset = ETH_ASSET, memo = null, strikes: strikeStore = null, e2bFrom = namedProvider }) {
+export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), exclusive = (work) => work(), ethAsset = ETH_ASSET, memo = null, strikes: strikeStore = null, e2bFrom = namedProvider, holdings = null }) {
   const policy = { ...PAIR_POLICY, ...policyIn };
   const ETH = strip(ethAsset);
   const isPairProvider = (p) => !!p && !!p.assets && strip(p.assets.btcAsset || '') === SATS_ASSET && strip(p.assets.evmAsset || '') === ETH;
@@ -248,11 +264,22 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     if (!fwdBl.has(k)) fwdBl.set(k, makeBitcoinLocker({ seed, now, store: stores.fwd, btc, evm, policy, counter: ref ? counterFor(ref) : noCounter() }));
     return fwdBl.get(k);
   };
-  const TERMINAL_COINS = new Set(['done', 'refunded', 'counter-took']);
+  const TERMINAL_COINS = new Set(['done', 'refunded', 'counter-took', 'aborted']);
   const heldCoins = async () => {
     const held = new Set();
     for (const r of await stores.fwd.list()) if (!TERMINAL_COINS.has(r.phase)) for (const i of r.feeInputs || []) held.add(`${i.txid}:${i.vout}`);
     return held;
+  };
+  // The coins a lock may not take: those of a swap under way, and those the wallet's holdings scan finds a note on or could not tell (tacit.js scanHoldings, as its own
+  // sats send leaves them out). With a holdings reader that cannot answer, no lock is built (`strict`); a quote's fee estimate goes on without it.
+  const avoidCoins = async (strict) => {
+    const out = await heldCoins();
+    if (!holdings) return out;
+    let h = null;
+    try { h = await holdings(); } catch { h = null; }
+    if (!(h instanceof Map)) { if (strict) throw new Error('the coins at your Bitcoin address could not be checked for notes just now, so none was locked: try again in a moment'); return out; }
+    for (const k of noteOutpoints(h)) out.add(k);
+    return out;
   };
 
   async function quoteFwd(p, sats) {
@@ -276,7 +303,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     const bl = blFor(q.p.ref);
     policy.csvBlocks = q.r.csvBlocks;
     try {
-      const { pair } = await bl.build({ asset: hexToBytes(SATS_ASSET), amount: q.r.btcValue, counterClaimPub: hexToBytes(q.r.claimPub), evmAsset: q.r.evmAsset, evmAmount: q.r.evmAmount, quoteId: q.r.id, avoid: await heldCoins() });
+      const { pair } = await bl.build({ asset: hexToBytes(SATS_ASSET), amount: q.r.btcValue, counterClaimPub: hexToBytes(q.r.claimPub), evmAsset: q.r.evmAsset, evmAmount: q.r.evmAmount, quoteId: q.r.id, avoid: await avoidCoins(false) });
       return { fee: pair.revealFee, short: null };
     } catch (e) {
       const m = /not enough sats for the lock \(need (\d+), have (\d+)\)/.exec(String((e && e.message) || e));
@@ -286,12 +313,13 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   }
   async function startFwd(q, paid = null) {
     const r = q.ref.r, bl = blFor(q.ref.p.ref);
+    const avoid = await avoidCoins(true);                // (before the provider is asked to hold anything)
     const held = await counterFor(q.ref.p.ref).reserve({ quoteId: r.id });
     // (a provider that cannot hold its own quote is asked after the others for a while, and the page asks for a new quote: the next best, whose numbers are shown again)
     if (!held || held.ok === false) { strike(q.ref.p.id); throw Object.assign(new Error('the provider cannot hold that amount just now: a new quote is being asked for'), { requote: true }); }
     cleared(q.ref.p.id);
     policy.csvBlocks = r.csvBlocks;
-    const rec = await bl.start({ asset: hexToBytes(SATS_ASSET), amount: r.btcValue, counterClaimPub: hexToBytes(r.claimPub), evmAsset: r.evmAsset, evmAmount: r.evmAmount, quoteId: r.id, avoid: await heldCoins(), ...(paid ? { first: paid } : {}) });
+    const rec = await bl.start({ asset: hexToBytes(SATS_ASSET), amount: r.btcValue, counterClaimPub: hexToBytes(r.claimPub), evmAsset: r.evmAsset, evmAmount: r.evmAmount, quoteId: r.id, avoid, validUntil: Number(r.validUntil) || null, ...(paid ? { first: paid } : {}) });
     rec.provider = q.ref.p.ref; rec.providerName = q.ref.p.name;
     await stores.fwd.put(rec);
     await bl.step(rec).catch(() => {});                 // the lock is stored: a send that fails is tried again by the next pass
