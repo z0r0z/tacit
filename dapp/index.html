@@ -1809,9 +1809,9 @@ html[data-page="tac"] #tcd-seg:empty { min-height: 32px; }
    the right, so shielding is on the first screen. On a narrow one: the chain's state and newest blocks, then the card, then the path and the figures */
 .tpg-hero h1 { margin-bottom: 16px; }
 .tpg-hero h1 em { font-style: italic; }
-.tpg-hero .lead { max-width: 44ch; margin: 0; font: 400 20px/1.3 var(--serif); letter-spacing: 0; color: var(--ink); text-wrap: balance; }
-.tpg-hero .tpg-what { max-width: 66ch; margin-top: 10px; font-size: 13px; }
-.tpg-trust { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 18px 0 0; padding: 0; list-style: none; font-size: 12px; }
+.tpg-hero .lead { max-width: 30ch; margin: 0; font: 400 clamp(21px, 2.8vw, 26px)/1.25 var(--serif); letter-spacing: 0; color: var(--ink); text-wrap: balance; }
+.tpg-hero .tpg-what { max-width: 66ch; margin-top: 12px; font-size: 13px; color: var(--mute); }
+.tpg-trust { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 22px 0 0; padding: 0; list-style: none; font-size: 12px; }
 .tpg-trust li { display: flex; align-items: baseline; gap: 6px; }
 .tpg-trust li::before { content: '✓'; color: var(--ok); font-weight: 500; }
 .tpg-trust a { color: var(--mute); text-decoration: none; }
@@ -1879,7 +1879,7 @@ html[data-page="tac"] #tcd-seg:empty::before { content: ''; position: absolute; 
 #tpg-fees .tpg-more { margin-top: 0; }
 @media (max-width: 639px) { #tpg-why:empty { min-height: 170px; } .cl-earned { min-height: 3em; } #tpg-earn-live:empty { min-height: 118px; } #tpg-earn-plot:empty { min-height: 176px; } .cl-yield .v { font-size: 17px; } .cl-yield > :first-child .v { font-size: 30px; } .cl-yield .k { font-size: 11px; } }
 /* the line under the title that says what holders earned: a hairline pill, one tap to the staking section */
-.tpg-hero .tpg-yield { max-width: none; min-height: 36px; margin-top: 16px; }
+.tpg-hero .tpg-yield { max-width: none; min-height: 36px; margin-top: 20px; }
 .tpg-yield a { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px; border: 1px solid var(--hair-2); border-radius: 999px; font-size: 13px; color: var(--ink); text-decoration: none; background: color-mix(in srgb, var(--card) 55%, transparent); transition: border-color .15s; }
 .tpg-yield b { font-weight: 500; color: var(--ok); }
 .tpg-yield i { font-style: normal; color: var(--mute); transition: transform .15s, color .15s; }
@@ -2564,7 +2564,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <section class="tpg" id="sheet-tac" aria-labelledby="tac-h">
     <div class="tpg-hero">
       <h1 id="tac-h" tabindex="-1">tacit <em>chain</em></h1>
-      <p class="lead">Stake TAC privately, earn from every payment, pay in about a minute.</p>
+      <p class="lead">Stake TAC privately and earn from every payment.</p>
       <p class="tpg-what">A zk-rollup settled on Ethereum, connected to Bitcoin by proof.</p>
       <ul class="tpg-trust" aria-label="What it rests on">
         <li><a href="#tpg-rests" data-tpg-to="tpg-rests">No owner or upgrade key</a></li>

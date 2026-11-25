@@ -320,7 +320,7 @@ try {
     // the page is the chain's: named at its head, with what it rests on; the card beside the chain, its button on the first screen
     const head = await page.evaluate(() => ({ h1: document.querySelector('#tac-h')?.textContent.replace(/\s+/g, ' ').trim(), lead: document.querySelector('.tpg-hero .lead')?.textContent.trim(), what: document.querySelector('.tpg-hero .tpg-what')?.textContent.trim(), marks: [...document.querySelectorAll('.tpg-trust a')].map((a) => a.textContent.trim()) }));
     ok(head.h1 === 'tacit chain' && head.marks.join('|') === 'No owner or upgrade key|Every block proven|Data on Ethereum|Forced inclusion', `the page is named for the chain, with what it rests on (${JSON.stringify(head)})`);
-    ok(head.lead === 'Stake TAC privately, earn from every payment, pay in about a minute.' && /^A zk-rollup settled on Ethereum/.test(head.what || ''), `its first line is what a holder does here, its second what the chain is (${head.lead} / ${head.what})`);
+    ok(head.lead === 'Stake TAC privately and earn from every payment.' && /^A zk-rollup settled on Ethereum/.test(head.what || ''), `its first line is what a holder does here, its second what the chain is (${head.lead} / ${head.what})`);
     await page.waitForFunction(() => !!document.querySelector('#tpg-live .cl-chain li a, #tpg-live .cl-chain li.sl') && !!document.querySelector('#tcd-go'), null, { timeout: 20000 }).catch(() => {});
     const wide = await laid(page);
     ok(wide.card.left >= wide.live.right && wide.card.top < wide.live.bottom && wide.go.bottom <= wide.screen, `on a wide screen the card is beside the chain, its button on the first screen (${JSON.stringify(wide)})`);
