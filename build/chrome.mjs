@@ -31,6 +31,7 @@ const G = {
   pay: '<path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/>',
   borrow: '<path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/>',
   more: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.7"/>',
+  btc: '<circle cx="7.6" cy="8" r="4.4"/><circle cx="16.4" cy="8" r="4.4"/><path d="M6.4 6h1.9a1 1 0 0 1 0 2H6.4m0 0h2.1a1 1 0 0 1 0 2H6.4M6.4 5.2V10.8"/><path d="M16.4 5.4l-1.5 2.5 1.5 2.7 1.5-2.7zM14.9 7.9h3"/><path d="M5 17.5h14m-2.2-2l2.2 2-2.2 2"/><path d="M19 21.5H5m2.2-2l-2.2 2 2.2 2"/>',
   tac: '<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/>',
   bridge: '<path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/>',
   farm: '<path d="M6.5 14.2A4.2 4.2 0 0 1 7.8 6.1a4.6 4.6 0 0 1 8.4 0 4.2 4.2 0 0 1 1.3 8.1"/><path d="M6.5 14.2V19a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-4.8"/><path d="M6.5 16.8h11"/>',
@@ -69,7 +70,7 @@ const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : 
 // FACE. Build and Stats are in every page's footer. Trade is in the menu as well as linked from the pages that show TAC's price: that is where a visitor who wants to buy or sell
 // TAC looks first, and the link says (?src=menu) which door it was, which the page counts and nothing else.
 const MAIN = [['portfolio', '/#portfolio', 'Portfolio'], ['payments', '/#/payments', 'Payments'], ['defi', '/#/defi', 'DeFi'], ['chains', '/#/chains', 'Chains'], ['borrow', '/vault/', 'Borrow'], ['rewards', '/rewards/', 'Rewards']];
-const MORE = [['assets', '/assets/', 'Assets'], ['tac', '/tac/', 'TAC'], ['trade', '/trade/tac/?src=menu', 'Trade'], ['pay', '/pay/', 'Pay pool'], ['bridge', '/bridge/', 'Bridges'],
+const MORE = [['assets', '/assets/', 'Assets'], ['tac', '/tac/', 'TAC'], ['trade', '/trade/tac/?src=menu', 'Trade'], ['pay', '/pay/', 'Pay pool'], ['bridge', '/bridge/', 'Bridges'], ['btc', '/btc/', 'BTC ⇄ ETH'],
   ['etch', '/etch/', 'Etch'], ['shop', '/shop/', 'Shop'], ['prove', '/prove/', 'Prove'], ['tasks', '/tasks/', 'Tasks'], ['face', '/face/', 'FACE']];
 const BAR = 4;   // how many of the sections the phone's bar holds before More; the rest are first in the menu there
 
