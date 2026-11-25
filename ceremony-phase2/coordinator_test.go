@@ -35,7 +35,9 @@ func (f *fakeClock) add(d time.Duration) {
 }
 
 func withClock(c *Coordinator) *fakeClock {
-	clk := &fakeClock{t: time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)}
+	// the clock starts at the real time: an upload's socket deadlines come from it too, and a fixed date in the past would
+	// have them already expired
+	clk := &fakeClock{t: time.Now().UTC().Truncate(time.Second)}
 	c.now = clk.now
 	return clk
 }
