@@ -5,6 +5,8 @@ import { G, SECP_N, signSchnorr } from './bulletproofs.js';
 
 const LOCK_SPENT_SLOT = 119n;
 const LOCK_COUNT_SLOT = '0x54';
+const LOCK_ROOT_SLOT = '0x55';
+const AGREED_TIME_MS = 15000;
 const POSITION_TTL_MS = 5 * 60 * 1000;
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 const lc = (h) => '0x' + strip(h);
@@ -49,19 +51,42 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   const serial = (fn) => { const run = queue.p.catch(() => {}).then(fn); queue.p = run; return run; };
   const reserved = new Set();
 
+  // The chain's time. With a quorum, the time of a block the nodes agree on (a little under their heads, read at most every AGREED_TIME_MS and carried forward by
+  // this machine's clock in between), or the one node's latest block when it is later: a node that is behind cannot make a deadline look further away than it is.
+  // Nodes that do not agree throw (`quorum`): the swap waits, and no claim is built on one node's clock.
+  let agreedAt = null;
   async function now() {
-    const b = await rpc('eth_getBlockByNumber', ['latest', false]);
-    return parseInt(b.timestamp, 16);
+    const one = parseInt((await rpc('eth_getBlockByNumber', ['latest', false])).timestamp, 16);
+    if (!quorum) return one;
+    if (!agreedAt || clock() - agreedAt.at >= AGREED_TIME_MS) {
+      const h = await quorum.head();
+      const b = await quorum.agree('eth_getBlockByNumber', ['0x' + h.toString(16), false], (x) => String(x.timestamp));
+      const ts = Number(BigInt(b.timestamp));
+      if (!(ts > 0)) throw quorumError('the nodes gave no time');
+      agreedAt = { at: clock(), ts };
+    }
+    return Math.max(one, agreedAt.ts + Math.floor((clock() - agreedAt.at) / 1000));
   }
   const lockNullifier = (leaf) => pool.nullifier(lc(leaf));
   const positions = new Map(), misses = new Map();
   const cap = (map, max) => { while (map.size > max) map.delete(map.keys().next().value); };
+  // A lock's place in the pool's lock set. With a quorum, the set is read at a block the nodes agree on, and the root it builds must be the lock root they agree
+  // the pool holds there: a lock set one node made up (with a leaf in it that the pool does not have) is never the ground a claim is built on.
+  async function positionOf(key) {
+    if (!quorum) return ux.stealthLockPosition({ lockLeaf: key });
+    const h = await quorum.head();
+    const pos = await ux.stealthLockPosition({ lockLeaf: key, opts: { toBlock: h } });
+    if (!pos) return null;
+    const root = await quorum.agree('eth_getStorageAt', [poolAddress, LOCK_ROOT_SLOT, '0x' + h.toString(16)], wordOf);
+    if (BigInt('0x' + (strip(root) || '0')) !== BigInt('0x' + (strip(pos.lockSetRoot) || '0'))) throw quorumError('the lock set read does not build the lock root the nodes agree on: read again');
+    return pos;
+  }
   async function lockPosition(leaf) {
     const key = lc(leaf), hit = positions.get(key);
     if (hit && Date.now() - hit.at < POSITION_TTL_MS) return hit.pos;
     const count = BigInt((await rpc('eth_getStorageAt', [poolAddress, LOCK_COUNT_SLOT, 'latest'])) || '0x0');
     if (!hit && misses.get(key) === count) return null;
-    const pos = await ux.stealthLockPosition({ lockLeaf: key });
+    const pos = await positionOf(key);
     if (pos) { positions.set(key, { at: Date.now(), pos }); misses.delete(key); } else { positions.delete(key); misses.set(key, count); }
     cap(positions, 1024); cap(misses, 1024);
     return pos;

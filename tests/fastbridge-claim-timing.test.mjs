@@ -327,6 +327,51 @@ test('three explorers refuse and one shows the counterparty\'s lock confirmed: t
   assert.equal(recs.get(again.id).thinSince, undefined, 'two alike: no wait');
 });
 
+// ── 5. The claimer's clock and lock set ──
+test('a claimer whose one node is two hours behind does not hand out its claim (and so t) past the pool deadline: its own clock says the time is up', async () => {
+  const realNow = 1_800_000_000, deadline = realNow - 300;
+  const recs = new Map(), sent = [];
+  const rec = { v: 1, role: 'bl', id: 'ab'.repeat(36), phase: 'claiming', created: realNow - 20000, asset: X.SATS_ASSET, amount: '100000', csvBlocks: CSV, counterClaimPub: '02' + '11'.repeat(32), lock: { txid: 'cd'.repeat(32), vout: 0, value: 100000 }, evmOffer: { deadline, lockLeaf: 'ee'.repeat(32) }, position: {}, claimStartedAt: realNow - 9000 };
+  recs.set(rec.id, rec);
+  const store = { get: async (id) => recs.get(id) || null, put: async (r) => { recs.set(r.id, r); }, list: async () => [...recs.values()] };
+  const btc = { prims: null, wallet: { xonly: new Uint8Array(32) }, status: async () => ({ confirmations: 5, height: 100 }), outspend: async () => null, tip: async () => 104 };
+  const evm = { now: async () => realNow - 7200, lockPosition: async () => ({}), claimOp: async () => ({ op: { kernelS: '0x' + '77'.repeat(32) } }), submit: async (type, op) => { sent.push({ type, op }); return { jobId: 'j1' }; }, claimStatus: async () => 'pending' };
+  const bl = makeBitcoinLocker({ seed: new Uint8Array(32).fill(1), now: () => realNow, policy: { csvBlocks: CSV, minClaimSecs: 3600 }, store, btc, evm, counter: {} });
+  await bl.step(rec); await bl.step(recs.get(rec.id));
+  assert.equal(sent.length, 0, 'no claim went out');
+  assert.equal(recs.get(rec.id).phase, 'refund-wait');
+  assert.match(recs.get(rec.id).why, /too little time/);
+});
+
+const agreeing = ({ ts = null, root = null, fail = false } = {}) => ({
+  head: async () => 0x100,
+  agree: async (m, p, norm) => {
+    if (fail) throw Object.assign(new Error('the Ethereum nodes do not agree on this read: read again'), { quorum: true });
+    if (m === 'eth_getBlockByNumber') { const b = { timestamp: '0x' + ts.toString(16) }; norm(b); return b; }
+    if (m === 'eth_getStorageAt' && p[1] === '0x55') return root;
+    throw new Error('stub quorum: ' + m);
+  },
+});
+test('with a quorum, the chain\'s time is the time the nodes agree on, and never earlier than the one node: a node two hours behind does not move a deadline', async () => {
+  const real = 1_800_000_000;
+  const behind = makeEvm([], { latest: real - 7200, quorum: agreeing({ ts: real }) });
+  assert.equal(await behind.now(), real);
+  const ahead = makeEvm([], { latest: real + 30, quorum: agreeing({ ts: real }) });
+  assert.equal(await ahead.now(), real + 30, 'a node a block ahead of the agreed one is taken');
+  await assert.rejects(() => makeEvm([], { latest: real, quorum: agreeing({ fail: true }) }).now(), (e) => e.quorum === true, 'nodes that do not agree give no time');
+});
+
+test('with a quorum, a lock\'s position counts only when the lock set it comes from builds the lock root the nodes agree on', async () => {
+  const leaf = '0x' + '11'.repeat(32), good = '0x' + '5a'.repeat(32), madeUp = '0x' + '66'.repeat(32);
+  const asked = [];
+  const lockSet = (root) => async (a) => { asked.push(a.opts && a.opts.toBlock); return { lIndex: 3, lPath: [], lockSetRoot: root }; };
+  const real = makeEvm([], { quorum: agreeing({ root: good }), lockSet: lockSet(good) });
+  assert.deepEqual(await real.lockPosition(leaf), { lIndex: 3, lPath: [], lockSetRoot: good });
+  assert.deepEqual(asked, [0x100], 'read at the block the nodes agree on');
+  const fake = makeEvm([], { quorum: agreeing({ root: good }), lockSet: lockSet(madeUp) });
+  await assert.rejects(() => fake.lockPosition(leaf), (e) => e.quorum === true && /lock root/.test(e.message), 'a lock set one node made up is not built on');
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

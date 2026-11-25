@@ -184,6 +184,10 @@ export function makeBitcoinLocker(ctx) {
     return null;
   }
 
+  // The clock a claim is handed out by: the chain's (evm.now, the time the nodes agree on) or this machine's, whichever is later. A claim gives t to the side that
+  // holds the pre-signature, so a node that is behind (or lies) must not make a deadline look further away than it is; a machine whose clock runs ahead only claims
+  // sooner. Whether a claim can still land is the chain's alone (claimVerdict, the deadline check while claiming): the pool takes one until its own clock passes.
+  const claimClock = async () => Math.max(await evm.now(), Math.floor(Number(ctx.now())));
   // What the pool shows of this side's claim, once one was sent: 'landed' (the lock spent by a claim, final), 'missed' (the nodes agree it was refunded, or
   // that it is unspent at a block past the deadline, when no claim can land any more), or 'unread' (not settled yet). A read that cannot be made throws (nodes
   // that disagree with `quorum` set), and the step keeps its phase; a spend not yet final is waited for quietly.
@@ -266,7 +270,7 @@ export function makeBitcoinLocker(ctx) {
           if (ctx.now() - rec.offeredAt > policy.offerWaitSecs) return save(rec, { phase: 'refund-wait', why: evmOffer ? 'the offered lock never showed in the pool' : 'no Ethereum lock arrived' });
           return rec;
         }
-        const nowSecs = await evm.now();
+        const chainNow = await evm.now(), nowSecs = Math.max(chainNow, Math.floor(Number(ctx.now())));   // (claimClock: the later of the two decides)
         const sec = secrets(rec), recipient = await evm.recipient(rec.id);
         const v = X.verifyEvmOffer(evmOffer, {
           mine: { T: sec.T, recipient: hx(recipient.xonly), rOut: sec.rOut },
@@ -274,11 +278,11 @@ export function makeBitcoinLocker(ctx) {
         });
         if (!v.ok) return save(rec, { phase: 'refund-wait', why: 'offer: ' + v.reasons.join('; ') });
         if (evmOffer.deadline - nowSecs > policy.maxEvmWindowSecs) return save(rec, { phase: 'refund-wait', why: 'offer: the deadline is further out than this side accepts' });
-        return save(rec, { phase: 'claiming', evmOffer, position, claimStartedAt: nowSecs });
+        return save(rec, { phase: 'claiming', evmOffer, position, claimStartedAt: chainNow });
       }
       case 'claiming': {
         // Held back near the deadline, a claim keeps t to this side. Once the lock is spent t is out already, so the claim is sent while any time is left.
-        const tooLate = async () => { const left = rec.evmOffer.deadline - (await evm.now()); return state === 'spent' ? left <= 0 : left < policy.minClaimSecs; };
+        const tooLate = async () => { const left = rec.evmOffer.deadline - (await claimClock()); return state === 'spent' ? left <= 0 : left < policy.minClaimSecs; };
         if (!rec.claim) {
           if (await tooLate()) return save(rec, { phase: 'refund-wait', why: 'too little time left to claim safely' });
           const position = (await evm.lockPosition(rec.evmOffer.lockLeaf)) || rec.position;
