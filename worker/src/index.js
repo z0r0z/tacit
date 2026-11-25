@@ -666,7 +666,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/community/beat', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify', '/metrics', '/metrics/event']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/community/beat', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/nodes/list', '/nodes/status', '/nodes/records', '/nodes/relay', '/nodes/ad', '/nodes/credits', '/gas/done', '/outpoints/classify', '/metrics', '/metrics/event']);
 // Usage counts (worker/src/metrics.js): one instance per environment, writing to the same store as the rest.
 const _metricsOfEnv = new WeakMap();
 function metricsOf(env) { let m = _metricsOfEnv.get(env); if (!m) { m = makeMetrics({ kv: env.REGISTRY_KV }); _metricsOfEnv.set(env, m); } return m; }
@@ -4307,6 +4307,21 @@ async function handleSaltPool(req, env, url, cors) {
 
 // GET /oracle/proof, POST /oracle/proof { publicValues, proof }: the verifier contract checks a posted proof (an eth_call of verifyProof, as the proof
 // pool does), against the program key the oracles are deployed with.
+// Community nodes: only these paths and methods are passed on, with a bounded body; nothing of the visitor's but the address (for the service's rate limit) is sent.
+const NODES_PATHS = { '/nodes/list': 'GET', '/nodes/status': 'GET', '/nodes/records': 'GET', '/nodes/credits': 'GET', '/nodes/relay': 'POST', '/nodes/ad': 'POST' };
+async function handleNodesForward(req, env, url, cors) {
+  const origin = String(env.NODES_ORIGIN || '').replace(/\/+$/, '');
+  const h = { ...cors, 'cache-control': 'no-store' };
+  const json = (o, status) => new Response(JSON.stringify(o), { status, headers: { ...h, 'content-type': 'application/json' } });
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: h });
+  if (!/^https:\/\//.test(origin) || NODES_PATHS[url.pathname] !== req.method) return json({ error: 'not found' }, 404);
+  let body;
+  if (req.method === 'POST') { body = await req.text(); if (body.length > 8192) return json({ error: 'too large' }, 413); }
+  try {
+    const r = await fetch(origin + url.pathname + url.search, { method: req.method, headers: { 'content-type': 'text/plain', 'x-forwarded-for': req.headers.get('CF-Connecting-IP') || '' }, body });
+    return new Response(await r.text(), { status: r.status, headers: { ...h, 'content-type': 'application/json' } });
+  } catch { return json({ error: 'the node service did not answer' }, 502); }
+}
 async function handleOracleProof(req, env, cors) {
   const nostore = { ...cors, 'Cache-Control': 'no-store' };
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
@@ -29012,6 +29027,8 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/prover/salt' || url.pathname.startsWith('/prover/salt/')) return handleSaltPool(req, env, url, cors);
     // The newest TacProvenOracle proof (worker/src/oracle-proof.js): the prover box posts it, the keeper and the vault page read it.
     if (url.pathname === '/oracle/proof') return handleOracleProof(req, env, cors);
+    // Community nodes (node-prober/): the signed list and status, ads, and the allowlisted relay, passed to the prober service named by NODES_ORIGIN (unset: not found).
+    if (url.pathname.startsWith('/nodes/')) return handleNodesForward(req, env, url, cors);
     if (url.pathname === '/prover/blocks' && req.method === 'GET') return handleChainBlocks(req, env, url, cors);
     if (url.pathname === '/prover/rollup' && req.method === 'GET') return handleRollup(req, env, url, cors);
     if (url.pathname === '/pool/snapshot' && req.method === 'GET') return handlePoolSnapshot(req, env, url, cors);
