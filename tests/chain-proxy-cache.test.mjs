@@ -113,5 +113,22 @@ console.log('\nwith every explorer cooling, one probe in each 1.5 s still goes o
   ok('a second read inside the 1.5 s is refused at once, with no upstream call', second.status === 429 && upstreamCalls === mid, second.status + ' calls ' + (upstreamCalls - mid));
 }
 
+console.log('\nthe chain tip and fees come from our own node when one is set:');
+{
+  const own = { ...env, OWN_ESPLORA: 'https://own.test/btc/api' };
+  const seen = [];
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, init) => { if (String(url).startsWith('https://own.test/')) { seen.push(String(url)); return new Response('977500', { status: 200 }); } return prev(url, init); };
+  const before = upstreamCalls;
+  const r = await worker.default.fetch(new Request('https://api.test/chain/blocks/tip/height?network=mainnet&own=1'), own, { waitUntil() {} });
+  ok('the tip is answered by our node, marked own, with no public explorer asked', r.status === 200 && (await r.text()) === '977500' && upstreamCalls === before, seen.join());
+  const t2 = await worker.default.fetch(new Request('https://api.test/chain/tx/' + T1 + '?network=mainnet&own=1'), own, { waitUntil() {} });
+  ok('a read our node cannot serve is not asked of it', !seen.some((u) => u.includes('/tx/')) && t2.status > 0);
+  globalThis.fetch = async (url, init) => { if (String(url).startsWith('https://own.test/')) throw new Error('down'); return prev(url, init); };
+  const f = await worker.default.fetch(new Request('https://api.test/chain/blocks/tip/height?network=mainnet&own=2'), own, { waitUntil() {} });
+  ok('with our node down the read does not fail on it', typeof f.status === 'number' && (await f.text()).length > 0);
+  globalThis.fetch = prev;
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

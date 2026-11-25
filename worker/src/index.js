@@ -5116,6 +5116,34 @@ function _upstreamCooldownMs(base) {
   if (left <= 0) { _upstreamHealth.delete(base); return 0; }
   return left;
 }
+// Upstream explorer requests this process has made, by host and kind of read, since it started: what is spending the public explorers' allowance for this
+// address shows up here (it is printed with a refused /chain read).
+const _upCount = new Map(), _upStartedAt = Date.now();
+function _countUp(url) {
+  try {
+    const u = new URL(url);
+    const p = u.pathname.replace(/^\/(signet\/)?api/, '');
+    const kind = /^\/blocks\/tip\//.test(p) ? 'tip' : /fee/.test(p) ? 'fees' : /^\/block\/[0-9a-f]+\/raw$/i.test(p) ? 'block-raw' : /^\/block/.test(p) ? 'block' : /^\/tx\/[0-9a-f]+\/outspend/i.test(p) ? 'outspend' : /^\/tx\//.test(p) ? 'tx' : /\/utxo$/.test(p) ? 'utxo' : /^\/address\//.test(p) ? 'address-txs' : /^\/scripthash\//.test(p) ? 'scripthash' : 'other';
+    const k = u.hostname + ' ' + kind;
+    _upCount.set(k, (_upCount.get(k) || 0) + 1);
+  } catch {}
+}
+function _upStats() { return { sinceSec: Math.round((Date.now() - _upStartedAt) / 1000), calls: Object.fromEntries([..._upCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 24)) }; }
+// Our own Bitcoin node (a pruned bitcoind behind the node gateway, OWN_ESPLORA) answers the few reads it can for free, before any public explorer is asked: the chain tip, the fee
+// estimates and a block's hash by height. These are what every page polls, and none of them needs an index.
+const OWN_ESPLORA_PATHS = /^\/(blocks\/tip\/(height|hash)|fee-estimates|block-height\/\d+)$/;
+async function _ownEsplora(env, path) {
+  const base = String(env.OWN_ESPLORA || '').replace(/\/+$/, '');
+  if (!base || !OWN_ESPLORA_PATHS.test(path)) return null;
+  try {
+    const r = await fetch(base + path, { signal: AbortSignal.timeout(4000) });
+    if (!r.ok) return null;
+    const body = await r.text();
+    if (!body || /^\s*[<{]/.test(body) && /error/i.test(body)) return null;
+    _upCount.set('own ' + path.split('/')[1], (_upCount.get('own ' + path.split('/')[1]) || 0) + 1);
+    return { body, contentType: r.headers.get('Content-Type') || 'text/plain' };
+  } catch { return null; }
+}
 // When every explorer is cooling, one request in each 1.5 s is still let through to the one that recovers soonest (the rest are refused at once): refusing
 // everything until the last cooldown ran out turned a few slow answers into a blackout for every reader, and a probe is how the cooldowns end early.
 let _chainProbeAt = 0;
@@ -5182,6 +5210,7 @@ function _hedgedUpstreamFetch(bases, pathQuery, mkInit, hedgeMs, timeoutMs) {
       a.timer = setTimeout(() => { st.tried.push(new URL(base).hostname + ':timeout'); st.lastErr = new Error('upstream timeout'); _recordUpstream(base, false); _markUpstreamCooling(base, 4_000, 'timeout'); try { ctrl.abort(); } catch {} retry(); }, timeoutMs);
       if (hedgeMs > 0 && next < bases.length) a.hedge = setTimeout(launch, hedgeMs);
       const { init } = mkInit(ctrl.signal);
+      _countUp(`${base}${pathQuery}`);
       fetch(`${base}${pathQuery}`, init).then(async (r) => {
         clearTimeout(a.timer);
         if (done || a.ended) { try { await r.text(); } catch {} return; }
@@ -5238,6 +5267,7 @@ async function esploraFailoverFetch(bases, path, mkInit) {
   for (const base of _orderedUpstreams(bases, path)) {
     const { init, cleanup } = mkInit();
     try {
+      _countUp(`${base}${path}`);
       const r = await fetch(`${base}${path}`, init);
       if (r.status === 429 || r.status >= 500) {
         _markUpstreamCooling(base, r.status === 429 ? _retryAfterMs(r.headers, 30_000) : 15_000, r.status === 429 ? 'rate-limited' : String(r.status));
@@ -10008,6 +10038,7 @@ function _buildUpstreamInit(opts) {
 // hiccup instead of a hard failure. Callers that explicitly don't want
 // the retry pass `abortRetry: false`.
 async function _fetchUpstreamWithAbortRetry(url, opts) {
+  _countUp(url);
   const allowRetry = opts.abortRetry !== false;
   const { init: init1, cleanup: cleanup1 } = _buildUpstreamInit(opts);
   try {
@@ -13856,6 +13887,8 @@ async function _handleChainProxyUncached(req, env, network, cors) {
   // extras) so a throttled or blocked host rotates through every healthy leg,
   // not just a single blockstream fallback. Path-hashed start spreads load
   // across the hosts while keeping each path sticky for edge-cache coherence.
+  { const own = await _ownEsplora(env, path);
+    if (own) { const h = new Headers(cors); h.set('Content-Type', own.contentType); h.set('X-Chain-Source', 'own'); return new Response(own.body, { status: 200, headers: h }); } }
   const proxyUpstreamBases = proxyBases(env, network);
   const allCoolingMs = _allUpstreamsCoolingMs(proxyUpstreamBases);
   if (allCoolingMs > 1000 && !_chainProbeSlot()) {
@@ -13895,7 +13928,7 @@ async function _handleChainProxyUncached(req, env, network, cors) {
     const respHeaders = new Headers(cors);
     respHeaders.set('Content-Type', 'application/json');
     if (lastRetryAfter) respHeaders.set('Retry-After', lastRetryAfter);
-    return new Response(JSON.stringify({ error: 'all upstreams rate-limited', path, tried: res.tried }), {
+    return new Response(JSON.stringify({ error: 'all upstreams rate-limited', path, tried: res.tried, stats: _upStats() }), {
       status: 429,
       headers: respHeaders,
     });
