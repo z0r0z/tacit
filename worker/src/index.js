@@ -4412,6 +4412,8 @@ async function gasOrderUsed(env, payer, nonce) {
 const GAS_USED_SEL = 'ad04dc3f';   // used(address,uint256)
 async function handleGasRelay(req, env, url, cors) {
   const nostore = { ...cors, 'Cache-Control': 'no-store' };
+  // The browser's preflight before a POST /gas/order: without a 2xx here the page's order never leaves it.
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
   const board = gasBoard(env);
   if (!board) return jsonResponse({ error: 'the gas relay is not configured' }, 404, nostore);
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
