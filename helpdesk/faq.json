@@ -75,11 +75,11 @@
  {
   "q": "Is the Bitcoin to Ethereum bridge run by a multisig or a federation?",
   "src": "README.md",
-  "a": "No. No multisig, federation or attestor set signs a bridge message; SP1 zero-knowledge proofs carry state between the chains. Separately, the periphery contracts (CollateralEngine, FarmManager) are governed by a 2-of-4 ops multisig with a built-in one-hour delay.",
+  "a": "No. No multisig, federation or attestor set signs a bridge message; SP1 zero-knowledge proofs carry state between the chains. Separately, the periphery contracts (CollateralEngine, FarmManager) are governed by a 2-of-5 ops multisig with a built-in one-hour delay.",
   "facts": [
    "No multisig, federation",
    "SP1 zero-knowledge proofs",
-   "2-of-4 ops multisig",
+   "2-of-5 ops multisig",
    "one-hour delay"
   ]
  },
@@ -230,6 +230,29 @@
    "the link between the deposit and the payout",
    "The payout address and amount are public",
    "matched by timing while the pool is small"
+  ]
+ },
+ {
+  "q": "What is the Tacit Praxis ceremony?",
+  "src": "ceremony-phase2/README.md",
+  "a": "It is a public ceremony anyone can join. It adds contributions to the Groth16 Phase-2 setup of SP1 v6.1.0's wrapper circuit, the one circuit that checks an SP1 proof of any program, continuing from Succinct's last file. It produces a new key for that circuit. It does not change Succinct's deployed SP1 verifier or its key. The new key is the setup for future Tacit Praxis work, which is in progress and has not been reviewed, so nothing rests on it today.",
+  "facts": [
+   "adds new contributions to the public Groth16 Phase-2 setup of SP1 v6.1.0's wrapper circuit",
+   "the one circuit that checks an SP1 proof of any program",
+   "It does not change Succinct's deployed SP1 verifier",
+   "which is in progress and has not been reviewed",
+   "Nothing rests on it today"
+  ]
+ },
+ {
+  "q": "How do I contribute to the Praxis ceremony, and when is the key safe?",
+  "src": "ceremony-phase2/README.md",
+  "a": "You need about 16 GB of RAM, about 2.2 GB of free disk, and to download and upload about 1 GB (each file is 1,040,779,531 bytes). Download the release binary for your computer, or build the tool yourself, and run its contribute command. The key is sound as long as at least one contributor in the whole chain was honest: one of the first 54 Perpetual Powers of Tau contributors, and one Phase 2 contributor (one of Succinct's 18, or one in this ceremony). So your contribution only needs to be honest to help.",
+  "facts": [
+   "about 16 GB of RAM, about 2.2 GB of free disk",
+   "1,040,779,531 bytes",
+   "at least one of the first 54 contributors to the Perpetual Powers of Tau (Phase 1) was honest",
+   "at least one Phase 2 contributor was honest"
   ]
  }
 ]
