@@ -1,0 +1,44 @@
+name: Stuck-TAC bounty supporting tests
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  btc-swap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out bounty submission
+        uses: actions/checkout@v4
+      - name: Check out upstream Tacit
+        uses: actions/checkout@v4
+        with:
+          repository: z0r0z/tacit
+          ref: e4bb9297880502d5b8a341383b0baf69eefff509
+          path: tacit-upstream
+      - name: Record pinned upstream revision
+        working-directory: tacit-upstream
+        run: test "$(git rev-parse HEAD)" = "e4bb9297880502d5b8a341383b0baf69eefff509" && git rev-parse HEAD
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tacit-upstream/package-lock.json
+      - name: Run lab offline inventory model tests
+        run: node bounty-lab/tests/rebalance-model.test.mjs
+      - name: Check Signet deployment readiness (offline, no broadcast)
+        run: node bounty-lab/tests/signet-readiness.test.mjs tacit-upstream
+      - name: Install upstream locked dependencies
+        working-directory: tacit-upstream
+        run: npm ci
+      - name: Run complete Bitcoin swap simulation
+        working-directory: tacit-upstream
+        run: node tests/btcswap-sim.test.mjs
+      - name: Run reflection/key-path compatibility test
+        working-directory: tacit-upstream
+        run: node tests/btcswap-reflect.test.mjs
