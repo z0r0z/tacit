@@ -48,9 +48,10 @@ export const PAIR_POLICY = {
   // the market reading a quote is judged against: from at least this many sources that agree, and no further than maxMarketJumpBps from the last good reading of
   // the past marketMemoSecs (ETH / BTC does not move that far in a day; a reading that does is taken for a wrong one until it holds for that long)
   minMarketSources: 2, maxMarketJumpBps: 1500, marketMemoSecs: 86400,
-  // the providers asked for one quote: the best `maxAsk` by their advertised terms, those that failed or timed out lately (strikes, kept for strikeSecs) after the
-  // others, and those with maxStrikes left out while any other can be asked
-  maxAsk: 8, strikeSecs: 1800, maxStrikes: 3,
+  // the providers asked for one quote: every one the page knows (the site's own, one /fast/lp.json names, one this key finished a swap with), and of the rest the best
+  // `maxOtherAsk` by their advertised terms, up to `maxAsk` in all; those that failed or timed out lately (strikes, kept for strikeSecs) after the others, and those with
+  // maxStrikes left out while any other can be asked
+  maxAsk: 8, maxOtherAsk: 4, strikeSecs: 1800, maxStrikes: 3,
   // a Bitcoin fee above this share of the amount (in basis points) is said, and a start needs it accepted (q.feeAccepted)
   maxFeeShareBps: 200,
 };
@@ -240,6 +241,8 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       const rev = p.reverse && e2bFrom(p) ? p.reverse : null;        // (ETH for Bitcoin only of a provider the site names: e2bFrom above)
       return {
         id: p.id, name: p.name || 'Provider', ref: p.ref, dirs: ['b2e', ...(rev ? ['e2b'] : [])],
+        // the site's own key (its ads are signed by it), or one /fast/lp.json names (reached over HTTP, or marked pinned)
+        own: !!OWN_PROVIDERS[strip((p.ref && p.ref.claimPub) || p.id)], pinned: p.http === true || p.pinned === true || (!!p.ref && p.ref.kind === 'http'),
         fees: { b2e: { feeBps: Number(p.terms.feeBps) || 0, flatFee: BigInt(p.terms.flatFee ?? 0) }, e2b: rev ? { feeBps: Number(rev.feeBps) || 0, flatFee: BigInt(rev.flatFee ?? 0) } : null },
         minSats: BigInt(p.terms.minAmount), maxSats: BigInt(p.terms.maxAmount), b2e: { min: BigInt(p.terms.minAmount), max: BigInt(p.terms.maxAmount), available: p.terms.available == null ? null : BigInt(p.terms.available) },
         e2b: rev ? { min: BigInt(rev.minAmount), max: BigInt(rev.maxAmount), available: rev.available == null ? null : BigInt(rev.available) } : null,
@@ -327,11 +330,16 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   }
 
   // ── e2b: the provider locks sats first ──
+  // (a quote is asked with the quote's own wait, as b2e's is: a provider reached through a board is not polled for longer than that; the rest of a swap keeps the transport's own)
+  const reverseCall = (ref) => {
+    const slow = reverseCallFor(ref), quick = reverseCallFor(ref, { timeoutMs: policy.askMs });
+    return (method, path, body) => (path === '/reverse/quote' ? quick : slow)(method, path, body);
+  };
   const revClients = new Map();
   const revFor = (p) => {
     if (!revClients.has(p.id)) {
       revClients.set(p.id, makeReverseClient({
-        lp: makeReverseCounter(p.ref && p.ref.kind === 'recovered' ? noCall : reverseCallFor(p.ref)), btc, evm, seed, now, store: stores.swaps(p.id), quoteStore: stores.quotes(p.id),
+        lp: makeReverseCounter(p.ref && p.ref.kind === 'recovered' ? noCall : reverseCall(p.ref)), btc, evm, seed, now, store: stores.swaps(p.id), quoteStore: stores.quotes(p.id),
         pins: { btcAsset: SATS_ASSET, evmAsset: ETH }, confsOf: confsForSats,
         // the two sides are different units: the price is judged against the market (below), so here only that the payout is something and the fee is not the amount
         valueCheck: () => ({ fee: 0n, highFee: false }),
@@ -359,21 +367,42 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   }
 
   // ── the quote the lane shows ──
+  // Whether a provider can be asked for a quote of `want` in `dir`: it offers that direction and the amount is inside its terms
+  const eligible = (dir, p, want) => { const s = dir === 'b2e' ? p.b2e : p.e2b; return !!s && want >= s.min && want <= s.max; };
+  // The keys this one finished a swap with: a b2e record names its provider's key, an e2b swap is kept under the provider it was asked of
+  async function finishedWith() {
+    const out = new Set();
+    for (const r of await stores.fwd.list().catch(() => [])) if (FWD_DONE.has(r.phase) && r.provider && r.provider.claimPub) out.add(strip(r.provider.claimPub));
+    for (const p of await revProviders().catch(() => [])) {
+      if (p.id === RECOVERED.id) continue;
+      if ((await stores.swaps(p.id).list().catch(() => [])).some((r) => r.phase === 'done')) { out.add(strip(p.id)); if (p.ref && p.ref.claimPub) out.add(strip(p.ref.claimPub)); }
+    }
+    return out;
+  }
+  // A provider the page knows is always asked; an ad anyone can post is one of a few more, so a run of ads that never answer cannot crowd the known ones out
+  async function toAsk(dir, list, want) {
+    const done = await finishedWith();
+    const known = (p) => p.own || p.pinned || done.has(strip(p.id)) || (!!p.ref && !!p.ref.claimPub && done.has(strip(p.ref.claimPub)));
+    const feeAt = (p) => { const f = p.fees && p.fees[dir]; return f ? (want * BigInt(f.feeBps)) / 10000n + f.flatFee : 0n; };
+    // the best by what they advertise, those that failed lately after the rest
+    const order = (ps) => ps.map((p) => ({ p, k: strikesOf(p.id), fee: feeAt(p) })).sort((a, b) => a.k - b.k || (a.fee < b.fee ? -1 : a.fee > b.fee ? 1 : 0)).map((x) => x.p);
+    // (one struck three times or more is left out while another of its kind can be asked, and an ad while any provider can be)
+    const usable = (ps) => { const ok = ps.filter((p) => strikesOf(p.id) < policy.maxStrikes); return ok.length ? ok : ps; };
+    const mine = order(usable(list.filter(known))).slice(0, policy.maxAsk), others = list.filter((p) => !known(p));
+    const ok = others.filter((p) => strikesOf(p.id) < policy.maxStrikes), rest = ok.length ? ok : mine.length ? [] : others;
+    return [...mine, ...order(rest).slice(0, Math.max(0, Math.min(policy.maxOtherAsk, policy.maxAsk - mine.length)))];
+  }
   async function quote({ dir, amount }) {
     if (dir !== 'b2e' && dir !== 'e2b') throw new Error('the direction is not one this page makes');
     const want = BigInt(amount);
     if (want <= 0n) throw new Error('enter an amount');
     const market = await reference();
     const all = await providers();
-    const eligible = all.filter((p) => (dir === 'b2e' ? p.b2e : p.e2b) && want >= (dir === 'b2e' ? p.b2e : p.e2b).min && want <= (dir === 'b2e' ? p.b2e : p.e2b).max);
+    const can = all.filter((p) => eligible(dir, p, want));
     if (!all.length) throw new Error('no provider is offering Bitcoin for ETH right now');
     if (dir === 'e2b' && !all.some((p) => p.e2b)) throw new Error('no provider is offering ETH for Bitcoin right now');
-    if (!eligible.length) throw new Error('no provider takes that amount');
-    // the best few by what they advertise, those that failed lately after the rest (and left out while three or more are struck and others can be asked)
-    const feeAt = (p) => { const f = p.fees && p.fees[dir]; return f ? (want * BigInt(f.feeBps)) / 10000n + f.flatFee : 0n; };
-    const ok = eligible.filter((p) => strikesOf(p.id) < policy.maxStrikes);
-    const asked = (ok.length ? ok : eligible).map((p) => ({ p, k: strikesOf(p.id), fee: feeAt(p) }))
-      .sort((a, b) => a.k - b.k || (a.fee < b.fee ? -1 : a.fee > b.fee ? 1 : 0)).slice(0, policy.maxAsk).map((x) => x.p);
+    if (!can.length) throw new Error('no provider takes that amount');
+    const asked = await toAsk(dir, can, want);
     const got = await Promise.all(asked.map(async (p) => {
       try { return await (dir === 'b2e' ? quoteFwd(p, want) : quoteRev(p, want)); } catch (error) { strike(p.id); return { p, error }; }
     }));

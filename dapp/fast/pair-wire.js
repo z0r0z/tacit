@@ -20,7 +20,7 @@ import { makeBoardClient } from '/fastbridge-board-client.js?cb=129356b4';
 import { makeLocalStore } from '/fastbridge-client.js?cb=8b4b5fae';
 import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=d17e5e07';
 import { makeRateFeed, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
-import { discoverProviders } from '/fast/discover.js?cb=4a1bb265';
+import { discoverProviders } from '/fast/discover.js?cb=78e9e463';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
 import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=7685c97f';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
@@ -63,9 +63,10 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   const plainStorage = storage;
   if (storage && storage === globalThis.localStorage) storage = await keptStorage(prefix, storage);
   const stores = { fwd: makeLocalStore(`${prefix}fwd:`, storage), index: makeLocalStore(`${prefix}providers:`, storage), swaps: (id) => makeLocalStore(`${prefix}${id}:swaps:`, storage), quotes: (id) => makeLocalStore(`${prefix}${id}:quotes:`, storage) };
-  const reverseCallFor = (ref) => (ref && ref.kind === 'mailbox'
-    ? makeMailboxCall({ board: makeBoardClient({ base: ref.boardBase, fetchImpl }), gateway: ref.gateway, claimPub: ref.claimPub || null, ...(now ? { now } : {}) })
-    : makeHttpCall({ base: ref && ref.base, fetchImpl }));
+  // (`timeoutMs`: how long a call waits for its answer, for a quote that is not waited on for longer than the quote's own wait)
+  const reverseCallFor = (ref, o = {}) => (ref && ref.kind === 'mailbox'
+    ? makeMailboxCall({ board: makeBoardClient({ base: ref.boardBase, fetchImpl }), gateway: ref.gateway, claimPub: ref.claimPub || null, ...(now ? { now } : {}), ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) })
+    : makeHttpCall({ base: ref && ref.base, fetchImpl, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) }));
   // one page at a time takes the steps of a key's swaps (the others show what is kept): a pass that finds the lock held by another tab only reads
   const tend = (work, passive) => {
     const locks = typeof navigator !== 'undefined' ? navigator.locks : null;

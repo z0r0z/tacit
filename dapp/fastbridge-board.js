@@ -191,7 +191,8 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       checkAd(ad, now());
       const have = adsBy.get(ad.claimPub);
       if (have && have.at >= ad.at) return { ok: true, kept: true };
-      if (!have && adsBy.size >= L.maxAds) throw new BoardError(503, 'the board has all the ads it takes');
+      // (the site's own keys are taken whatever else is on the board: no run of other ads keeps them off it)
+      if (!have && adsBy.size >= L.maxAds && !OWN_PROVIDERS[ad.claimPub]) throw new BoardError(503, 'the board has all the ads it takes');
       // `since`: when this key first named this gateway in an ad that has stood since, which orders the ads of one gateway for a page that names no key
       const since = have && have.gateway === ad.gateway ? have.since : now();
       adsBy.set(ad.claimPub, Object.defineProperty({ ...ad }, 'since', { value: since, enumerable: false }));

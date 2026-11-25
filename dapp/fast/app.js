@@ -8,7 +8,7 @@ import { mountFast } from '/fast/ui.js?cb=d6734a28';
 import { mountProvide } from '/fast/provide.js?cb=f205b95a';
 import { mountBound } from '/fast/bound.js?cb=f0f32804';
 import { mountReverse } from '/fast/reverse.js?cb=826337bd';
-import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=4a1bb265';
+import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=78e9e463';
 import { makeWants } from '/fast/want.js?cb=4c56ebdc';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { invaderSvg } from '/prove/invader.js';
