@@ -107,8 +107,15 @@ const lane = makeAtomicLane({
   onRecs: (recs) => { paintMine(recs); panel?.paint(); },
   onBal: () => panel?.paint(),
   onOpen: () => panel?.paint(),
+  // a finished swap's "Send BTC": the panel's send, the amount that arrived filled in
+  onNext: ({ act, sats }) => { if (act === 'send') panel?.openSend({ sats }); },
 });
 panel = mountSendPanel({ host: $('yb'), lane, notify });
+// what the lane reads once the key opens is read ahead as soon as the visitor shows an interest in it (a link that names an amount, a hover, a tap): the
+// signature then has less to wait on. Signing in does the same.
+const warm = () => lane.warm();
+if (first.amt) warm();
+for (const ev of ['pointerenter', 'focusin', 'touchstart']) $('atomic').addEventListener(ev, warm, { once: true, passive: true });
 
 // (the swaps of an earlier visit are looked for on the chains for a minute or two after the wallet opens: until that ends the list says so, never 'No swaps yet')
 function paintMine(recs) {

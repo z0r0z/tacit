@@ -6,9 +6,11 @@
 //   checks: the page (title, the two marks, one line, the lane), the providers (each way's limits, what is available, the fee, the totals), becoming a provider,
 //   an estimate before the wallet opens, the swaps after it opens (steps, when to be back, a copy to save), links (?dir=e2b&amt=, ?from=ETH&to=BTC) and the address,
 //   stepping while the tab is hidden, the leave guard, a phone width and the dark scheme; the front page's ?from=BTC&to=ETH&from-at=btc opens the lane.
-//   Add ETH (btc/add-eth.js, the real module, over stand-ins of the deposit (teth/wrap.js), the relay's quote (teth/read.js) and the Ethereum wallet (trade/wallet.js)):
-//   the shortfall as the button, one wallet transaction, its steps, the balance read until the swap can be made, a wallet that holds too little (and says how much it
-//   holds), a declined transaction, no wallet at all, and a deposit kept across a reload that is finished. Send BTC (btc/panel.js and btc/send.js, the real modules,
+//   One press (btc/add-eth.js, the real module, over stand-ins of the deposit (teth/wrap.js), the relay's quote (teth/read.js) and the Ethereum wallet (trade/wallet.js)):
+//   the swap as the button when the private balance is short, one wallet transaction, the swap started once the deposit is mined (named as coming) and its first step
+//   done once it lands, one card and one time for all of it, Cancel only before the provider is asked and "locked in" after, a renewed quote that gives less waiting
+//   for a yes, a wallet that holds too little, a declined transaction and no wallet at all starting nothing, a deposit kept across a reload that is finished, and a
+//   finished swap's next steps (Send BTC with the amount that arrived, to a Taproot address; the Bitcoin order book; the wallet sheet). Send BTC (btc/panel.js and btc/send.js, the real modules,
 //   signing with a test key that holds nothing): addresses refused and why, the fee choices, Max, the review, the signed transaction's outputs, coins of a swap under
 //   way left out, a refused broadcast, the sent list across a reload. And, with no browser, btc/send.js: address checksums (BIP 173 and 350 vectors, base58check),
 //   the coins a send may take, the fee and Max, the transaction signed, and the ETH a swap is short of.
@@ -98,7 +100,7 @@ export function makeWallet() {
   return { state, restore: async () => false, available: () => (A.noWallet ? [] : [{ info: { name: 'Test wallet', uuid: 'w1' }, provider: {} }]),
     connect: async () => { state.account = A.account; A.connects++; return true; },
     sendTx: async (tx) => { A.asked.push({ to: tx.to, value: String(tx.value), from: tx.from }); if (A.reject) throw new UserStopped(); return '0x' + 'ab'.repeat(32); },
-    receipt: async (h) => ({ status: '0x1', transactionHash: h }) };
+    receipt: async (h) => { if (A.holdReceipt) await new Promise((r) => { A.mine = r; }); return { status: '0x1', transactionHash: h }; } };
 }`;
 const FAKE = `
 (() => {
@@ -118,9 +120,13 @@ const FAKE = `
     providers: async () => [{ id: 'p1', name: 'Test provider', dirs: ['b2e', 'e2b'], b2e: { min: 50000n, max: 100000000n, available: 30000000n }, e2b: { min: 1000000n, max: 3000000000n, available: 200000000n } }],
     reference: async () => ({ ethPerBtc: 30.62, at: now(), source: 'test' }),
     balances: async () => ({ sats: S.bal.sats, eth: S.bal.eth, ethHeld: S.bal.eth, pendingSats: 0n }),
-    quote: async ({ dir, amount }) => { calls.quote.push({ dir, amount: String(amount) }); const b2e = dir === 'b2e';
-      return { dir, provider: { id: 'p1', name: 'Test provider' }, pay: amount, get: b2e ? (amount * 304n) / 10n : (amount * 10n) / 304n, rate: 30.4, market: 30.62, vsMarketBps: -72, feeBps: 72, etaSecs: 1500, networkFeeSats: b2e ? 1200 : null, takeFeeSats: b2e ? null : 500, expiresAt: now() + 300, warnings: [], blocked: null, ref: {} }; },
-    start: async (q) => { calls.start.push(q); return { id: 'sw9' }; },
+    // (S.cut: quotes give 1% less from then on; S.ttl: how long a quote lasts)
+    quote: async ({ dir, amount }) => { calls.quote.push({ dir, amount: String(amount) }); const b2e = dir === 'b2e', get = b2e ? (amount * 304n) / 10n : (amount * 10n) / 304n;
+      return { dir, provider: { id: 'p1', name: 'Test provider' }, pay: amount, get: S.cut ? (get * 99n) / 100n : get, rate: 30.4, market: 30.62, vsMarketBps: -72, feeBps: 72, etaSecs: 1500, networkFeeSats: b2e ? 1200 : null, takeFeeSats: b2e ? null : 500, expiresAt: now() + (S.ttl || 300), warnings: [], blocked: null, ref: {} }; },
+    // (a start of ETH for BTC lists its swap, as the pair client does; what was coming into the private balance at the start is kept)
+    start: async (q, o) => { calls.start.push(q); (calls.coming ||= []).push(o && o.coming != null ? String(o.coming) : null);
+      if (q.dir === 'e2b') S.recs = [{ id: 'sw9', dir: 'e2b', state: 'working', title: 'The provider is locking BTC for you', detail: 'Its lock goes out first and waits for one Bitcoin confirmation, about ten minutes. Your ETH is locked only after that.', pay: q.pay, get: q.get, steps: steps('e2b', 0, 'working'), etaSecs: 1710, at: now(), refundAt: null, backBy: null }, ...S.recs];
+      return { id: 'sw9' }; },
     pump: async () => { calls.pump++; return S.recs; },
     records: async () => { calls.records++; return S.recs; },
     // (recoverHold: the look for earlier swaps waits for S.release(); recoverFail: that many looks fail first)
@@ -389,58 +395,133 @@ for (const scheme of ['light', 'dark']) {
   await page.close();
 }
 
-console.log('Add ETH: a swap of ETH the private balance is short of');
+console.log('One press: a swap of ETH the private balance is short of (the ETH made private first, then swapped)');
 {
   const { page, errs, csp } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', init: 'window.__atom.bal.eth = 0n;' });
   await page.click('#a-go');
-  await page.waitForFunction(() => /^Add 0\.05 ETH$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
-  ok(!(await page.$eval('#a-go', (e) => e.disabled)), 'with no private ETH the button adds the amount itself, as one note of exactly it');
-  ok(/deposit from your wallet is public\. The swap and your Bitcoin address are not linked to it on chain\./.test(await text(page, '#a-q')), 'what the deposit shows on chain is said under the button');
+  await page.waitForFunction(() => /^Swap 0\.05 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  ok(!(await page.$eval('#a-go', (e) => e.disabled)), 'with no private ETH the one button swaps the amount, which it first makes private as one note of exactly it');
+  const hint = await text(page, '#a-q');
+  ok(/^One wallet transaction\. Your ETH is made private first\./.test(hint) && /deposit from your wallet is public\. The swap and your Bitcoin address are not linked to it on chain\./.test(hint), `under the button: what one press does, and what its deposit shows on chain (${hint})`);
+  ok((await atom(page, 'A.calls.quote.length')) >= 1, 'the quote is asked for before the press: the button swaps on it');
   const unit = await page.evaluate(async () => { const m = await import('/btc/add-eth.js'); const a = await import('/swap/atomic.js'); return [m.addUnits(5000000n, 0n), m.addUnits(5000000n, 3000000n), m.addUnits(5000000n, 5000000n), m.addUnits(5000000n, null), a.addUnits(5000000n, 1n), m.leastFor(100000000000000n)].map(String); });
   ok(JSON.stringify(unit) === JSON.stringify(['5000000', '2000000', '0', '5000000', '4999999', '200000']), `the shortfall math: the amount with nothing available, else what is short, nothing when covered; the lane's copy agrees; the least deposit a tip allows (${unit})`);
-  await SHOT(page, 'add-eth-ask');
+  const spans = await page.evaluate(async () => { const a = await import('/swap/atomic.js'); return [a.etaSpan(1770), a.etaSpan(1410), a.etaSpan(600)]; });
+  ok(JSON.stringify(spans) === JSON.stringify(['about 20–30 minutes', 'about 15–25 minutes', 'about 10 minutes']), `the time a swap of ETH has left: a range while two Bitcoin blocks are ahead, one figure nearer the end (${spans})`);
+  await SHOT(page, 'oneclick-ask');
+  // the relay holds the deposit after it is mined: the swap is started on it meanwhile
   await page.evaluate(() => { window.__add.hold = true; });
   await page.click('#a-go');
-  await page.waitForFunction(() => window.__add.release, null, { timeout: 15000 });
-  ok(/^Adding ETH to your private balance…$/.test(await text(page, '#a-go')) && await page.$eval('#a-go', (e) => e.disabled), 'while it lands the button says so and waits');
-  ok(/The relay is finishing it/.test(await text(page, '#a-q')) && (await page.$$('#a-q a[href^="https://etherscan.io/tx/0xabab"]')).length === 1, 'the line says where it is, with the deposit linked');
+  await page.waitForFunction(() => window.__atom.calls.start.length === 1 && document.querySelector('#mine-list [data-rec="sw9"]'), null, { timeout: 15000 });
   const add = await page.evaluate(() => window.__add);
-  ok(add.wraps.length === 1 && add.wraps[0].wei === '50000000000000000' && add.wraps[0].tip === '100000000000000' && add.wraps[0].priv === 32 && add.asked.length === 1 && add.asked[0].value === '50100000000000000', `one wallet transaction: 0.05 ETH and the relay's tip, from the key the lane opened (${JSON.stringify(add.asked)})`);
-  ok(await page.evaluate(() => !!localStorage.getItem('tacit-btc-add-eth-v1:02' + 'ab'.repeat(32))), 'the deposit is kept in this browser while it lands');
-  await SHOT(page, 'add-eth-landing');
+  ok(add.wraps.length === 1 && add.wraps[0].wei === '50000000000000000' && add.asked.length === 1 && add.asked[0].value === '50100000000000000', `one wallet transaction: 0.05 ETH and the relay's tip, from the key the lane opened (${JSON.stringify(add.asked)})`);
+  await page.waitForFunction(() => window.__add.release, null, { timeout: 15000 });
+  ok((await atom(page, 'A.calls.coming[0]')) === '5000000' && (await page.evaluate(() => window.__atom.bal.eth)) === 0n, `once the deposit is mined the swap starts, while the relay is still settling it: the deposit is named as coming (${await atom(page, 'A.calls.coming[0]')})`);
+  const card = await text(page, '#mine-list [data-rec="sw9"]');
+  const steps = await page.$$eval('#mine-list [data-rec="sw9"] .stp li', (ls) => ls.map((l) => `${l.textContent}:${l.className}`));
+  ok(steps.length === 5 && steps[0] === 'Made private:active' && steps[1] === 'They lock BTC:active', `one view of the whole swap: its ETH being made private, alongside the provider's lock (${steps})`);
+  ok(/about 20–30 minutes/.test(card) && /The provider is locking BTC for you/.test(card), `one time for all of it, as a range (${card.slice(0, 160)})`);
+  ok(/Locked in: the provider has been asked, so this swap can no longer be cancelled\./.test(card) && !(await page.$('#mine-list [data-press-cancel]')) && !(await page.$('#a-q [data-press-cancel]')), 'the provider has been asked: no Cancel, and the card says it is locked in');
+  ok((await page.inputValue('#a-amt')) === '' && /^Adding ETH to your private balance…$/.test(await text(page, '#a-go')), 'the lane is cleared for the next swap, which waits while the deposit lands');
+  await SHOT(page, 'oneclick-started');
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.$eval('#mine', (e) => e.scrollIntoView());
+  ok(!(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)), 'at 390 px the five steps fit, with no sideways scroll');
+  await SHOT(page, 'oneclick-started-390', false);
+  await page.setViewportSize({ width: 1200, height: 1000 });
   await page.evaluate(() => window.__add.release());
-  await page.waitForFunction(() => /^Swap ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 20000 });
-  ok(!(await page.evaluate(() => localStorage.getItem('tacit-btc-add-eth-v1:02' + 'ab'.repeat(32)))) && /Balance 0\.05 ETH/.test(await text(page, '#a-bal')), 'once it lands the balance is read again and the button swaps; the kept deposit is let go');
+  await page.waitForFunction(() => document.querySelector('#mine-list [data-rec="sw9"] .stp li')?.className === 'done', null, { timeout: 15000 });
+  ok(!(await page.evaluate(() => localStorage.getItem('tacit-btc-add-eth-v1:02' + 'ab'.repeat(32)))), 'once it lands its step is done, and the kept deposit is let go');
   ok(errs.length === 0 && csp.length === 0, `no page errors or CSP violations (${errs.concat(csp).join(' | ')})`);
   await page.close();
 }
 {
-  // some private ETH already: the shortfall only, which brings what can be locked to the amount
+  // some private ETH already: the shortfall only; a wallet that holds too little, and a deposit declined, start nothing
   const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', init: 'window.__atom.bal.eth = 3000000n;' });
   await page.click('#a-go');
-  await page.waitForFunction(() => /^Add 0\.02 ETH$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
-  ok(true, 'with 0.03 ETH available the button adds 0.02 ETH');
+  await page.waitForFunction(() => /^Swap 0\.05 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
   RPCV.balance = 10n ** 16n;
   await page.click('#a-go');
   await page.waitForFunction(() => document.querySelector('#a-q').classList.contains('err'), null, { timeout: 15000 });
   const said = await text(page, '#a-q');
-  ok(/Your wallet 0x1212…1212 holds 0\.01 ETH\. This needs 0\.0201 ETH and about 0\.00012 ETH network fee\. Nothing was sent\./.test(said), `a wallet that holds too little: how much it holds, and what this needs (${said})`);
-  ok((await page.evaluate(() => window.__add.asked.length)) === 0 && /^Add 0\.02 ETH$/.test(await text(page, '#a-go')), 'the wallet was never asked, and the button offers it again');
+  ok(/Your wallet 0x1212…1212 holds 0\.01 ETH\. This needs 0\.0201 ETH and about 0\.00012 ETH network fee\. Nothing was sent\./.test(said), `with 0.03 ETH private, the press adds 0.02: a wallet that holds too little says how much it holds, and what this needs (${said})`);
+  ok((await page.evaluate(() => window.__add.asked.length)) === 0 && (await atom(page, 'A.calls.start.length')) === 0 && /^Swap 0\.05 ETH → BTC$/.test(await text(page, '#a-go')), 'the wallet was never asked, no swap was started, and the button offers it again');
   RPCV.balance = 10n ** 18n;
   await page.evaluate(() => { window.__add.reject = true; });
   await page.click('#a-go');
   await page.waitForFunction(() => /^Nothing was sent\.$/.test(document.querySelector('#a-q').textContent), null, { timeout: 15000 });
-  ok((await page.evaluate(() => window.__add.asked.length)) === 1 && !(await page.evaluate(() => localStorage.getItem('tacit-btc-add-eth-v1:02' + 'ab'.repeat(32)))), 'declined in the wallet: nothing was sent, nothing is kept');
+  ok((await page.evaluate(() => window.__add.asked.length)) === 1 && (await atom(page, 'A.calls.start.length')) === 0 && !(await page.evaluate(() => localStorage.getItem('tacit-btc-add-eth-v1:02' + 'ab'.repeat(32)))), 'declined in the wallet: nothing was sent, nothing is kept, and no swap was started');
+  await page.close();
+}
+{
+  // Cancel, while it costs the provider nothing: the deposit sent but not mined, so the provider has not been asked
+  const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', init: 'window.__atom.bal.eth = 0n; window.__add.holdReceipt = true;' });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Swap 0\.05 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__add.mine && document.querySelector('#a-q [data-press-cancel]'), null, { timeout: 15000 });
+  const press = await text(page, '#mine-list [data-rec="press"]');
+  ok(/Adding your ETH privately/.test(press) && /about 20–30 minutes/.test(press) && (await page.$$('#mine-list [data-rec="press"] .stp li')).length === 5 && !!(await page.$('#mine-list [data-rec="press"] [data-press-cancel]')), `while the deposit waits for a block: one card for the whole swap, its first step under way, with a Cancel (${press.slice(0, 140)})`);
+  ok(/The deposit is sent/.test(await text(page, '#a-q')) && /^Adding your ETH privately…$/.test(await text(page, '#a-go')), 'the line says where the deposit is; the button waits');
+  await SHOT(page, 'oneclick-cancel-offered');
+  await page.click('#a-q [data-press-cancel]');
+  ok(/Cancelled: no swap starts\. The deposit is already sent, so its ETH lands in your private balance/.test(await text(page, '#a-q')) && !(await page.$('[data-press-cancel]')), 'cancelled: no swap will start, and the deposit is said to stay in the private balance');
+  await page.evaluate(() => window.__add.mine());
+  await page.waitForFunction(() => /Your ETH is in your private balance\. No swap was started\./.test(document.querySelector('#a-q').textContent), null, { timeout: 20000 });
+  ok((await atom(page, 'A.calls.start.length')) === 0 && !(await page.$('#mine-list [data-rec="press"]')), 'mined and landed: the provider was never asked');
+  await page.close();
+}
+{
+  // the quote ran out while the deposit was mined, and the new one gives less: nothing starts until the new price is accepted
+  const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', init: 'window.__atom.bal.eth = 0n; window.__add.holdReceipt = true; window.__atom.ttl = 100;' });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Swap 0\.05 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__add.mine, null, { timeout: 15000 });
+  await page.evaluate(() => { window.__atom.cut = true; window.__add.mine(); });
+  await page.waitForFunction(() => /^Accept the new price$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  const said = await text(page, '#a-q');
+  ok((await atom(page, 'A.calls.start.length')) === 0 && /The price moved while your ETH was made private: 0\.00163973 → 0\.00162328 BTC\. Accept the new price to go on/.test(said) && !!(await page.$('#a-q [data-press-cancel]')), `a renewed quote that gives less is not swapped on: old and new are shown, with a way to keep the ETH private instead (${said})`);
+  await SHOT(page, 'oneclick-worse');
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__atom.calls.start.length === 1, null, { timeout: 15000 });
+  ok((await atom(page, 'String(A.calls.start[0].get)')) === String((5000000n * 10n * 99n) / 304n / 100n), 'accepted: the swap starts on the new quote');
+  await page.close();
+}
+{
+  // a finished swap of ETH for BTC: what to do with the BTC, in its card
+  const { page, errs, csp } = await fresh({ init: `window.__atom.recs = [{ id: 'swD', dir: 'e2b', state: 'done', title: 'Done', detail: 'The BTC is at your Bitcoin address.', pay: 4000000n, get: 111000n, got: 110500n, steps: ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 60, refundAt: null, backBy: null },
+    { id: 'swL', dir: 'e2b', state: 'working', title: 'Waiting for the provider to claim', detail: 'The provider is claiming the ETH you locked.', pay: 4000000n, get: 111000n, steps: ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: i < 2 ? 'done' : i === 2 ? 'active' : 'todo' })), etaSecs: 840, at: Math.floor(Date.now() / 1000) - 900, refundAt: Math.floor(Date.now() / 1000) + 3 * 3600, backBy: Math.floor(Date.now() / 1000) + 3 * 3600 }];` });
+  await page.click('#a-go');
+  await page.waitForFunction(() => document.querySelector('#mine-list [data-rec="swD"] .nx'), null, { timeout: 15000 });
+  const done = await text(page, '#mine-list [data-rec="swD"]');
+  ok(/0\.04 ETH → 0\.001105 BTC/.test(done) && /Send it to any wallet \(UniSat/.test(done), `done: what arrived, the lock less the take's fee (${done.slice(0, 120)})`);
+  ok((await page.getAttribute('#mine-list [data-rec="swD"] [data-next="book"]', 'href')) === '/trade/tac/?lane=btc' && (await page.getAttribute('#mine-list [data-rec="swD"] [data-next="elsewhere"]', 'href')) === '/#wallet', 'next: the Bitcoin order book of TAC, and the wallet sheet for the key to use elsewhere');
+  const locked = await text(page, '#mine-list [data-rec="swL"]');
+  ok(/Locked in: it goes through, or if the provider has not claimed by \d{1,2}:\d\d(?: [AP]M)? (today|tomorrow), your ETH returns to your private balance\./.test(locked) && !/If it stops/.test(locked), `once the ETH is locked: locked in, and when the ETH comes back if the provider does not claim (${locked.slice(0, 260)})`);
+  await page.$eval('#mine', (e) => e.scrollIntoView());
+  await SHOT(page, 'done-next', false);
+  await page.click('#mine-list [data-rec="swD"] [data-next="send"]');
+  await page.waitForFunction(() => !document.querySelector('#yb-form').hidden && document.querySelector('#yb-amt').value, null, { timeout: 15000 });
+  ok((await page.inputValue('#yb-amt')) === '0.001105' && /110,500 sats/.test(await text(page, '#yb-amt-say')), `Send BTC opens the send with the amount that arrived (${await page.inputValue('#yb-amt')})`);
+  await page.fill('#yb-to', 'bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297');
+  await page.$eval('#yb-to', (e) => e.blur());
+  await sleep(150);
+  ok(!/checksum|kind/.test(await text(page, '#yb-to-say')), `a UniSat Taproot address (bc1p) is taken (${await text(page, '#yb-to-say')})`);
+  await page.click('#yb-review');
+  await page.waitForFunction(() => !document.querySelector('#yb-rv').hidden, null, { timeout: 15000 });
+  ok(/To bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297/.test(await text(page, '#yb-dl')) && /Amount 0\.001105 BTC/.test(await text(page, '#yb-dl')), 'and reviewed for it');
+  ok(errs.length === 0 && csp.length === 0, `no page errors or CSP violations (${errs.concat(csp).join(' | ')})`);
   await page.close();
 }
 {
   const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', init: 'window.__atom.bal.eth = 0n; window.__add.noWallet = true;' });
   await page.evaluate(() => { window.__btc.mode = 'passkey'; });
   await page.click('#a-go');
-  await page.waitForFunction(() => /^Add 0\.05 ETH$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  await page.waitForFunction(() => /^Swap 0\.05 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
   await page.click('#a-go');
   await page.waitForFunction(() => /no Ethereum wallet/.test(document.querySelector('#a-q').textContent), null, { timeout: 15000 });
-  ok(/Your Tacit wallet opened with a passkey, and this browser has no Ethereum wallet to add ETH from\. Open this page in your wallet app’s browser, or shield ETH into this same Tacit wallet on the tETH page/.test(await text(page, '#a-q')) && (await page.$$('#a-q a[href="/teth/"]')).length === 1, 'a passkey wallet with no Ethereum wallet here: the way to add ETH, linked');
+  ok(/Your Tacit wallet opened with a passkey, and this browser has no Ethereum wallet to add ETH from\. Open this page in your wallet app’s browser, or shield ETH into this same Tacit wallet on the tETH page/.test(await text(page, '#a-q')) && (await page.$$('#a-q a[href="/teth/"]')).length === 1 && (await atom(page, 'A.calls.start.length')) === 0, 'a passkey wallet with no Ethereum wallet here: the way to add ETH, linked, and nothing started');
   await SHOT(page, 'add-eth-passkey');
   await page.close();
 }

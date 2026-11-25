@@ -167,6 +167,22 @@ html .lane #atomic .rcpt dd { text-wrap: balance; }      /* a fact that has to b
 #mine-say:empty { display: none; }
 #mine .row { margin-top: 12px; }
 #mine-st { font-size: 12px; color: var(--mute); }
+/* one press: what it does under the button, then what its deposit shows, smaller */
+html .lane #atomic .q.hint { color: var(--ink); }
+html .lane #atomic .q small { display: block; margin-top: 2px; color: var(--mute); font-size: 11.5px; }
+html .lane #atomic .q button.link, #mine .snt button.link.cx { padding: 0 2px; font: 500 12px var(--mono); color: var(--ink); text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; cursor: pointer; }
+/* a swap started with one press has five steps: one row where they fit, three and two where they do not, two a row on a phone */
+#mine .snt.atm .stp.s5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 640px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 420px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* locked in, said plainly; and a finished swap's next steps for its BTC */
+#mine .snt small.sure { color: var(--ink); }
+#mine .snt .nx { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+#mine .snt .nx-b { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 0 16px; font: 500 12.5px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 10px; cursor: pointer; text-decoration: none; }
+#mine .snt .nx-b:hover { border-color: var(--ink); }
+#mine .snt .nx-b.main { color: var(--card); background: var(--ink); border-color: var(--ink); }
+@media (pointer: coarse), (max-width: 540px) { #mine .snt .nx-b { min-height: 42px; flex: 1 1 140px; } }
+#mine .snt small.nx-n { color: var(--mute); }
 
 /* your Bitcoin: the address, what it holds, and a send of it (btc/panel.js) */
 .sec-say { margin: 0; font-size: 13px; color: var(--mute); }

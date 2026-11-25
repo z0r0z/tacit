@@ -276,5 +276,20 @@ export function mountSendPanel({ host, lane, notify = () => {} }) {
     if (S.max) $('yb-max').click(); else paintTiers();
   });
 
-  return { paint };
+  // The send opened from a finished swap: the amount that arrived filled in, or Max when the coins do not cover that and the fee (the swap's BTC is the
+  // address's only coin, as it is for a new wallet). The address is left to the sender.
+  async function openSend({ sats = null } = {}) {
+    if (!bitcoin()) return;
+    if (!S.open) await open();
+    host.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+    $('yb-to').focus({ preventScroll: true });
+    const want = sats != null ? BigInt(sats) : null;
+    if (!want || !S.coins) return;
+    const r = rateNow(), have = S.coins.reduce((s, c) => s + BigInt(c.value), 0n);
+    const p = r ? planSend({ coins: S.coins, amount: want, rate: r, scriptLen: 22 }) : null;
+    if (r && (want >= have || (p && p.error === 'short'))) { $('yb-max').click(); return; }
+    S.max = false; $('yb-amt').value = btc(want); checkAmt(false); paintTiers();
+  }
+
+  return { paint, openSend };
 }
