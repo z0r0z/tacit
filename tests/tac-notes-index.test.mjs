@@ -67,7 +67,7 @@ const outsOf = (t) => parseTx(hexBytes(FIX[t].hex), dsha).outs;
   const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
   const liveOne = pays[0];
   const addrOf = (s) => bech32.encode('bc', [0, ...bech32.toWords(hexBytes(s.slice(4)))]);
-  kv.m.set('reflection:scan:mainnet', JSON.stringify({ snapshot: { height: 977000, liveTriples: [[pool.outpointKey('0x' + PURCHASE, liveOne.i), '0x00', '0x00', '0x00', 0]] } }));
+  kv.m.set('reflection:scan:mainnet', JSON.stringify({ snapshot: { height: 977000, liveTriples: [[pool.outpointKey('0x' + PURCHASE.match(/../g).reverse().join(''), liveOne.i)  /* internal byte order, as the reflection records it (checked against the live mainnet set) */, '0x00', '0x00', '0x00', 0]] } }));
   const env = { REGISTRY_KV: kv };
   const ask = (addr) => worker.fetch(new Request(`https://api.test/chain/tac/notes?network=mainnet&address=${addr}`), env, { waitUntil() {} });
   const r = await ask(addrOf(liveOne.s));

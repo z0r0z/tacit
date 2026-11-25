@@ -13814,7 +13814,9 @@ async function handleTacNotes(req, env, url, network, cors) {
   }
   const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
   const found = await tacArchive(env, network).notesAt(spk);
-  const notes = found.filter((n) => hit.keys.has(String(pool.outpointKey('0x' + n.txid, n.vout)).toLowerCase()));
+  // the live set records a txid in internal byte order, the reverse of the display order everything else uses
+  const internal = (txid) => String(txid).match(/../g).reverse().join('');
+  const notes = found.filter((n) => hit.keys.has(String(pool.outpointKey('0x' + internal(n.txid), n.vout)).toLowerCase()));
   return jsonResponse({ height: hit.height, notes }, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
 }
 
