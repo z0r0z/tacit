@@ -4,6 +4,11 @@ The Tacit Praxis ceremony adds new contributions to the public Groth16 Phase-2 s
 circuit** (the one circuit that checks an SP1 proof of any program), continuing from Succinct's last file, `phase2-17`.
 Phase 1 is the Hermez / Perpetual Powers of Tau file that Succinct's setup used.
 
+**What Praxis is.** Praxis is a practical witness encryption scheme (Tse, Vanjani and Vesely, ePrint 2026/2971). Witness encryption
+locks a message to a statement, so that anyone who holds a proof of that statement can unlock it, and no one else can. Praxis locks
+to a Groth16 verifier on BN254, which can express any statement a zero-knowledge proof can, so one key serves every statement.
+Its ciphertext is 7.88 GiB at 100-bit security. The verifier has to be set up honestly, and that setup is what this ceremony produces.
+
 The ceremony produces a **new key** for that circuit (a new delta). It does not change Succinct's deployed SP1 verifier
 (`VERIFIER_HASH 0x4388a21c…`) or its key, and does not add to the setup that verifier relies on. The new key is the
 setup for future Tacit Praxis work, which is in progress and has not been reviewed, and for other Groth16 verifiers of
