@@ -149,7 +149,10 @@ export const isProver = (r) => r?.name === 'tacit-prover';
 export const faceKey = (r) => (isAddress(r?.handle) ? r.handle : isAddress(r?.name) ? r.name : `0x${r?.contribution_hash}`);
 export const label = (s) => (isAddress(s) ? `${String(s).slice(0, 6)}…${String(s).slice(-4)}` : String(s ?? ''));
 // a receipt's name for the wall: the name, or the address shortened; a handle only when it says something else
-export const nameOf = (r) => label(isProver(r) && isAddress(r.handle) ? r.handle : r.name);
+// a name wrapped in <> is the command's placeholder left unchanged, which is no name at all
+export const isPlaceholder = (s) => /^<[^>]*>$/.test(String(s ?? '').trim());
+export const hasName = (r) => { const n = String(r?.name ?? '').trim(); return n !== '' && !isPlaceholder(n); };
+export const nameOf = (r) => label(isProver(r) && isAddress(r.handle) ? r.handle : hasName(r) ? r.name : isAddress(r?.handle) ? r.handle : 'Anonymous');
 
 export function ago(at, now = Date.now()) {
   const t = new Date(at).getTime();

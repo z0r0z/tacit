@@ -146,6 +146,15 @@ console.log('the whole chain, as masks');
   await ctx.close();
 }
 
+console.log('a name left as the command\'s placeholder');
+{
+  const mod = await import(new URL('../dapp/praxis/receipt.js', import.meta.url));
+  const A = '0xf33ce75baed614c6d41246ecb8d076e2ceedd3fe';
+  ok(mod.nameOf({ name: '<your name>', handle: A }) === '0xf33c…d3fe', 'a placeholder name shows the address instead');
+  ok(mod.nameOf({ name: '<your name>', handle: '' }) === 'Anonymous' && !mod.hasName({ name: '  ' }) && mod.hasName({ name: 'Ada' }), 'no name and no address reads Anonymous; a real name still counts');
+  ok(mod.nameOf({ name: 'Ada', handle: A }) === 'Ada', 'a real name is kept');
+}
+
 console.log('the banner on the landing page');
 {
   const land = readFileSync(join(DAPP, 'index.html'), 'utf8');

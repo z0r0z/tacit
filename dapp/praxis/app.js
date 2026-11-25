@@ -1,6 +1,6 @@
 // The Tacit Praxis ceremony page: the wall of contributors (each receipt's signature checked in the browser against the coordinator's key,
 // each face the zOrgz invader its address picks, as on the prover pool page), the stats, the rewards, and the command to take part.
-import { cleanName, COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl, SUCCINCT_LINKS } from '/praxis/receipt.js?cb=99cd235c';
+import { cleanName, hasName, COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl, SUCCINCT_LINKS } from '/praxis/receipt.js?cb=57754a0f';
 import { invaderSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { chime } from '/reward-pop.js?cb=88973dac';
 
@@ -70,7 +70,7 @@ function tile(r, fresh) {
   const tick = el('span', 'tick', '…');
   tick.title = 'checking the coordinator’s signature';
   const nm = el('span', 'nm', nameOf(r));
-  if (r.handle && String(r.handle).toLowerCase() !== String(r.name).toLowerCase() && !isProver(r)) nm.append(el('span', 'mute', ` ${label(r.handle)}`));
+  if (hasName(r) && r.handle && String(r.handle).toLowerCase() !== String(r.name).toLowerCase() && !isProver(r)) nm.append(el('span', 'mute', ` ${label(r.handle)}`));
   const meta = el('span', 'meta');
   const time = el('time', null, ago(r.at));
   time.dateTime = r.at;
@@ -108,7 +108,14 @@ function slot() {
 
 function drawWall(first) {
   const list = $('tiles');
-  list.replaceChildren(slot(), ...[...receipts].reverse().map((r) => tile(r, !first && !seen.has(r.index))));
+  const newest = receipts.length ? receipts[receipts.length - 1].index : -1;
+  list.replaceChildren(slot(), ...[...receipts].reverse().map((r, i) => {
+    const t = tile(r, !first && !seen.has(r.index));
+    t.style.setProperty('--i', String(Math.min(i + 1, 24)));             // the cascade on the first draw
+    if (r.index === newest) t.firstElementChild.classList.add('latest');
+    return t;
+  }));
+  if (first && !reduced) { list.classList.add('first'); setTimeout(() => list.classList.remove('first'), 2200); }
   for (const r of receipts) seen.add(r.index);
   const strip = $('strip');
   if (!strip.childElementCount) for (let i = 0; i < SUCCINCT_CONTRIBUTORS; i++) strip.append(el('i', 'dot'));
@@ -208,7 +215,7 @@ function drawYou() {
   // the address typed in the form (not a search of someone else's) marks a contribution as the visitor's own: once, if it is recent
   const own = isAddress($('addr').value.trim()) ? findReceipt(receipts, $('addr').value) : null;
   if (own && own.index === mine.index && Date.now() - new Date(own.at).getTime() < 48 * 3600e3) celebrate(own);
-  box.append(el('span', null, `You are #${mine.index}${mine.name && !isAddress(mine.name) ? `, ${mine.name}` : ''}. Thank you.`));
+  box.append(el('span', null, `You are #${mine.index}${hasName(mine) && !isAddress(mine.name) ? `, ${mine.name}` : ''}. Thank you.`));
   const a = el('a', 'btn');
   a.textContent = 'Share on X';
   a.href = shareUrl(mine.contribution_hash, mine.index);

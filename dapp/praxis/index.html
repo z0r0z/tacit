@@ -21,8 +21,8 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /praxis/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/praxis/app.js?cb=d99884c0">
-<link rel="modulepreload" href="/praxis/receipt.js?cb=99cd235c">
+<link rel="modulepreload" href="/praxis/app.js?cb=616d4298">
+<link rel="modulepreload" href="/praxis/receipt.js?cb=57754a0f">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/reward-pop.js?cb=88973dac">
@@ -179,6 +179,12 @@ code { font: inherit; }
 .tile .tick.bad { color: var(--err); }
 .tile.mine { border-color: var(--orange); box-shadow: 0 0 0 2px color-mix(in srgb, var(--orange) 45%, transparent); }
 .tile.new { animation: pop .7s ease-out; }
+/* the wall: tiles arrive in turn, the newest breathes, a face tilts under the pointer */
+.tiles.first > li { animation: lk-in .5s cubic-bezier(.2, .8, .3, 1) both; animation-delay: calc(var(--i, 0) * 45ms); }
+.tile.latest::after { content: ''; position: absolute; inset: -1px; border-radius: 18px; border: 1.5px solid var(--orange); pointer-events: none; opacity: 0; animation: breathe 3.4s ease-in-out infinite; }
+@keyframes breathe { 50% { opacity: .85; } }
+.tile .inv { transition: transform .22s cubic-bezier(.2, .8, .3, 1.3); }
+@media (hover: hover) { .tile:hover { box-shadow: 0 10px 26px -14px color-mix(in srgb, var(--orange) 60%, transparent); } .tile:hover .inv { transform: translateY(-3px) rotate(-3deg) scale(1.04); } }
 @keyframes pop { from { transform: scale(.82); opacity: 0; } }
 .tile.slot { border-style: dashed; border-color: var(--hair-2); align-items: center; justify-content: center; text-align: center; min-height: 168px; text-decoration: none; gap: 6px; }
 .tile.slot b { font: 400 26px/1 var(--serif); }
@@ -739,6 +745,6 @@ shasum -a 256 phase2-*</pre></div>
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/praxis/app.js?cb=d99884c0"></script>
+<script type="module" src="/praxis/app.js?cb=616d4298"></script>
 </body>
 </html>
