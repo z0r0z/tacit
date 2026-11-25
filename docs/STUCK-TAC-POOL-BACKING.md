@@ -235,7 +235,41 @@ Soundness of the shortened presentation rests on what the fold already checks fo
 cannot hide a gap: an unresolved outpoint is a dangling input the DAG already rejects, and an anchor is
 not free — it is either `C_0`, a cmint leaf, or an exit the ledger had to cover.
 
-## 6. The fold change
+## 6. What a provider holds after N bridges
+
+The brief asks for numbers. These are derived from the bounty's own count on 2026-11-22 — **230 of 4,546
+unspent notes (5.06%) over the history limit, pool exits not counted** — not from a fresh scan, and the
+pool-exit class is the one this design adds, so the real stuck share is **higher** than 5.06%.
+
+Assume a provider takes `L = 100 TAC` per bridge and screens nothing (`anyTac`). Stuck value is additive:
+`0.0506 · L` per bridge.
+
+| Bridges | Taken on Bitcoin | Stuck without this entry | Stuck with it (modelled) |
+| --- | --- | --- | --- |
+| 10 | 1 000 | 50.6 TAC | 0 |
+| 50 | 5 000 | 253 TAC | 0 |
+| 100 | 10 000 | 506 TAC | 0 |
+| 500 | 50 000 | 2 530 TAC | 0 |
+
+Read the share, not the absolute: stuck inventory is a **constant fraction** (≈5%) of Bitcoin-side
+holdings, not a growing percentage — every bridge contributes the same slice. What grows is the absolute
+dead balance, linearly with volume, and it is dead permanently: the regular bridge cannot carry it and
+nothing in the current system can turn it back into lendable TAC.
+
+With the entry, the covered classes become admissible again, so a provider that takes them does not leak
+capacity on them. That is the whole mechanism — no subsidy, no discount, no rebalancing loop:
+
+- **Pool exits (`0x6d`)** become provable because the exit is anchored against a ledger of verified
+  shields, which is supply the fold already accepts (§2).
+- **Histories past 256** become presentable by re-anchoring at an admitted exit note, a cmint leaf, or
+  `C_0` (§5).
+
+**What is not modelled here, stated plainly:** the 0 column assumes every stuck note is one of the two
+covered classes and that an anchor is in reach within 256 hops. A note past the cap with **no** admitted
+anchor within reach is still `Refused` — that residual is real, unbounded in principle, and I did not
+measure it. The honest claim is a bound on what this closes, not a claim that stuck TAC goes to zero.
+
+## 7. The fold change
 
 Three edits in `burn_deposit.rs`, none of them crypto:
 
@@ -257,7 +291,7 @@ Nothing here is a new acceptance rule. The DAG still resolves leaves the same wa
 unchanged, and a node that does not fold pool envelopes produces the same digests it does today — the
 ledger is additive state, which is what makes the change reviewable.
 
-## 7. What the 18 tests cover
+## 8. What the 18 tests cover
 
 All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, no pool).
 
@@ -285,7 +319,7 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 Run: `cd contracts/sp1/confidential/provenance-anchor && cargo +stable test --offline`
 Result: `test result: ok. 18 passed; 0 failed`.
 
-## 8. What this does not do
+## 9. What this does not do
 
 - **No deploy, no verifying key, no ELF change.** The crate is standalone; no guest links it, so the
   deployed reflection and settle ELFs are byte-identical.
@@ -297,7 +331,7 @@ Result: `test result: ok. 18 passed; 0 failed`.
 - **Not a soundness proof of the pool itself.** It assumes `verify_btc_pool_spend` is sound; if it is not,
   the ledger inherits that.
 
-## 9. Open questions a reviewer should push on
+## 10. Open questions a reviewer should push on
 
 1. **Which wire constant is right?** §3 + `worker` (89/861) or `btc-pool-core` (218/100). This entry pins
    §3 because it is what lands on Bitcoin, but the contradiction should be resolved in-tree.
