@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-c8tkEhki5zCQNhYIO4YTfavqVlS27FXrTX5y/uYyupY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-k1hMrva2BJIXHJrR67gDdduKq5qKcmAMlw4zM86z4Z0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -37,7 +37,7 @@
 <link rel="modulepreload" href="/address-id.js?cb=01f14d36">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
 <link rel="modulepreload" href="/qr.js?cb=7ca24213">
-<link rel="modulepreload" href="/gas-relay.js?cb=d87b3b06">
+<link rel="modulepreload" href="/gas-relay.js?cb=0dc734de">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/json-rpc.js">
 <link rel="modulepreload" href="/rpc-pace.js">
@@ -922,7 +922,7 @@ import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPass
 import { knownWallets } from '/tacit-wallet-known.js?cb=ec5b5193';
 import { makeEvmWallet, declinedWords } from '/evm-wallet.js?cb=ed67f38d';
 import { waitLine, cancellable } from '/sign-wait.js?cb=ab42ced1';
-import * as GR from '/gas-relay.js?cb=d87b3b06';
+import * as GR from '/gas-relay.js?cb=0dc734de';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=843803d6';
 import { makeTacitAddress, poolKeysOf } from '/tacit-address.js';
 import { bip352TaggedHash } from '/bip352.js';

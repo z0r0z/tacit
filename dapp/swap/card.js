@@ -12,7 +12,7 @@ import * as SV from '/swap/solvers.js?cb=669b2617';
 import { linkName, linkSides } from '/swap/link.js?cb=00bf0557';
 import { routeLine } from '/swap/route-name.js?cb=2a0317f3';
 import { calmText } from '/relay-outcome.js?cb=ad7c898d';
-import * as GR from '/gas-relay.js?cb=d87b3b06';
+import * as GR from '/gas-relay.js?cb=0dc734de';
 import { checkSnwapCall, SNWAP_EXECUTORS, SAFE_EXECUTOR } from '/zrouter-guard.js';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
 import { makePointsNote } from '/points-note.js?cb=40738db7';
@@ -1384,7 +1384,7 @@ async function relayGo(P, from, plan) {
     say('Sending it to the relay…');
     const before = await beforeP;
     const r = await fetch(`${API}/gas/order`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ order: { order, data, signature, inPermit, feePermit, p2 } }), signal: AbortSignal.timeout(15e3) }).then((q) => q.json()).catch(() => null);
-    if (r && !r.ok) throw new Error(`${calmText(r?.error) && calmText(r?.error) !== String(r?.error) ? calmText(r.error) : 'The relay did not take the order.'} Nothing was spent.`);
+    if (r && !r.ok) throw new Error(GR.orderRefusal(r, calmText));
     if (!r) say('The relay did not answer. Checking whether it took the order…');
     const usedSel = '0xad04dc3f' + addrWord(from) + BigInt(order.nonce).toString(16).padStart(64, '0');
     say('Waiting for the relay to send it. Nothing leaves your wallet unless the swap lands.');
