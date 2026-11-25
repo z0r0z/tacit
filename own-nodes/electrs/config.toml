@@ -1,0 +1,12 @@
+# romanz/electrs v0.12.1. The RPC password comes from the environment (ELECTRS_AUTH, docker-compose.yml), never from this file.
+network = "bitcoin"
+daemon_rpc_addr = "bitcoind:8332"
+db_dir = "/data"
+electrum_rpc_addr = "0.0.0.0:50001"
+monitoring_addr = "127.0.0.1:4224"
+db_parallelism = 4
+# An address with more transactions than this is refused (the gateway answers 501 and the pages read it from a public explorer) instead of
+# holding the index for minutes.
+index_lookup_limit = 10000
+# Index progress stays in the log; the per-request lines of the Electrum server do not (the privacy line: no record of which script was asked about)
+log_filters = "info,electrs::electrum=error"

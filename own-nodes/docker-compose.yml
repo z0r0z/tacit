@@ -1,23 +1,52 @@
-# Our own Ethereum and Bitcoin nodes behind one read-only gateway. See README.md.
+# One box: Ethereum (reth full + lighthouse) and Bitcoin (bitcoind + electrs) behind one read-only gateway. See README.md; bootstrap.sh runs it.
 #
-#   docker compose --profile eth --profile btc up -d --build      # both halves on this machine
-#   docker compose --profile eth up -d --build                    # only Ethereum (set BTC_ESPLORA_UPSTREAM= empty in .env)
+#   docker compose --profile eth --profile btc up -d --build
+#   docker compose --profile eth-snapshot run --rm reth-snapshot     # once, before reth's first start (bootstrap.sh does it)
 #
-# Only the peer-to-peer ports and 80/443 are published. The nodes' RPC ports (8545, 8551, 5052, 8332, 3000, 50001) stay on the
-# compose network: Docker publishes around the host firewall, so a port that is not listed here is not on the internet.
+# Only the peer-to-peer ports and 80/443 are published (8332 on loopback, for node-check over ssh). The nodes' RPC ports stay on the compose network:
+# Docker publishes around the host firewall, so a port that is not listed here is not on the internet.
+#
+# Memory (64 GB box): reth 24 + lighthouse 8 + bitcoind 14 + electrs 4 + gateway/Caddy 0.75 = ~51 GB of ceilings, the rest for the OS and page cache.
+# reth's database is memory-mapped: its file pages count against its ceiling and are reclaimed, not killed. CPU is shared by weight, not capped,
+# so whichever node is syncing gets the idle cores.
 name: tacit-nodes
 
 x-logging: &logging
   driver: local
   options: { max-size: 20m, max-file: "3" }
 
+networks:
+  default:
+    ipam:
+      config: [{ subnet: 172.28.0.0/16 }]   # bitcoin.conf's rpcallowip names it
+
 services:
-  # ── Ethereum: reth (execution) + lighthouse (consensus) ───────────────────────────────────────────────────────────────────────
+  # ── Ethereum ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  reth-snapshot:
+    profiles: [eth-snapshot]
+    image: ghcr.io/paradigmxyz/reth:v2.11.0@sha256:b3925840bbaaa63e58832deacf6bd05e080a47a3ded27e40d255de8f54a04b04
+    # reth's own snapshot (snapshots.reth.rs), only the parts reth.toml keeps: state + headers, bodies and receipts from the pool's deploy block, state
+    # history for the last 100,800 blocks. ~212 GB to download instead of executing 26M blocks. The state is checked by reth itself from the next
+    # block on (its root must match the header's), so a bad snapshot stops the node rather than serving wrong answers.
+    command:
+      - download
+      - --chain=mainnet
+      - --datadir=/data
+      - --non-interactive
+      - --with-txs-since=25998000
+      - --with-receipts-since=25998000
+      - --with-state-history-distance=100800
+    volumes:
+      - ${CHAIN_DIR:-/srv/chain}/reth:/data
+    logging: *logging
+
   reth:
     profiles: [eth]
-    image: ghcr.io/paradigmxyz/reth:v2.11.0
+    image: ghcr.io/paradigmxyz/reth:v2.11.0@sha256:b3925840bbaaa63e58832deacf6bd05e080a47a3ded27e40d255de8f54a04b04
     restart: unless-stopped
     stop_grace_period: 5m          # reth flushes on SIGTERM; a kill mid-flush costs a long repair
+    mem_limit: 24g
+    cpu_shares: 2048
     command:
       - node
       - --chain=mainnet
@@ -26,11 +55,12 @@ services:
       - --http
       - --http.addr=0.0.0.0
       - --http.port=8545
-      - --http.api=eth,net,web3     # no admin, debug, txpool, trace: the gateway refuses them too
+      - --http.api=eth,net,web3,debug,trace   # debug/trace for the gateway's keyed trace path only; the gateway refuses them to everyone else
       - --rpc.eth-proof-window=10000
       - --rpc.max-blocks-per-filter=50000
       - --rpc.max-logs-per-response=20000
       - --rpc.max-connections=500
+      - --rpc.max-tracing-requests=4
       - --authrpc.addr=0.0.0.0
       - --authrpc.port=8551
       - --authrpc.jwtsecret=/jwt/jwt.hex
@@ -46,9 +76,11 @@ services:
 
   lighthouse:
     profiles: [eth]
-    image: sigp/lighthouse:v8.3.3
+    image: sigp/lighthouse:v8.3.3@sha256:53f9063d98c3d3a2d290207873f019ea2298cfc02f8cd58d87c33b04aab856d1
     restart: unless-stopped
     depends_on: [reth]
+    mem_limit: 8g
+    cpu_shares: 1024
     command:
       - lighthouse
       - bn
@@ -59,7 +91,8 @@ services:
       - --http-port=5052
       - --execution-endpoint=http://reth:8551
       - --execution-jwt=/jwt/jwt.hex
-      - --checkpoint-sync-url=https://mainnet.checkpoint.sigp.io   # minutes to a synced head, instead of days
+      - --checkpoint-sync-url=https://mainnet.checkpoint.sigp.io   # minutes to a head; history back-fills only to the weak-subjectivity period
+      - --disable-upnp
       - --port=9000
     volumes:
       - ${CHAIN_DIR:-/srv/chain}/lighthouse:/data
@@ -70,75 +103,69 @@ services:
       - "9001:9001/udp"
     logging: *logging
 
-  # ── Bitcoin: bitcoind (verified build) + electrs (the esplora REST our pages already speak) ──────────────────────────────────
+  # ── Bitcoin ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   bitcoind:
     profiles: [btc]
     build: ./bitcoind
     user: "1000:1000"
     restart: unless-stopped
     stop_grace_period: 3m
+    mem_limit: 14g
+    cpu_shares: 1024
     command:
-      - -server=1
-      - -disablewallet=1
-      - -txindex=0                  # electrs keeps its own index; the tweak index reads undo data, which needs the node unpruned, not txindex
-      - -prune=0
-      - -dbcache=${BTC_DBCACHE:-4000}
-      - -listen=1
-      - -maxconnections=40
-      - -printtoconsole=1
-      - -rpcbind=0.0.0.0
-      - -rpcallowip=172.16.0.0/12   # the compose network only
+      - -conf=/etc/bitcoin/bitcoin.conf
+      - -dbcache=${BTC_DBCACHE:-10000}          # 10 GB for the first sync; README: 2000 after
       - -rpcauth=${BTC_RPCAUTH:?run bootstrap.sh, or fill BTC_RPCAUTH in .env}
     volumes:
       - ${CHAIN_DIR:-/srv/chain}/bitcoin:/data
+      - ./bitcoin.conf:/etc/bitcoin/bitcoin.conf:ro
     ports:
       - "8333:8333"
-      - "127.0.0.1:8332:8332"      # loopback only, for tools/node-check.mjs --btc-rpc and an ssh tunnel; never the internet
+      - "127.0.0.1:8332:8332"      # loopback only, for tools/node-check.mjs --btc-rpc over an ssh tunnel; never the internet
     logging: *logging
 
   electrs:
     profiles: [btc]
-    image: mempool/electrs:v3.3.0
+    build: ./electrs
     restart: unless-stopped
     depends_on: [bitcoind]
-    command:
-      - -vv
-      - --network=mainnet
-      - --daemon-dir=/bitcoin
-      - --blocks-dir=/bitcoin/blocks   # reads the block files bitcoind wrote: much faster than fetching every block over RPC
-      - --daemon-rpc-addr=bitcoind:8332
-      - --cookie=${BTC_RPC_USER:-tacit}:${BTC_RPC_PASS:?run bootstrap.sh, or fill BTC_RPC_PASS in .env}
-      - --db-dir=/data
-      - --http-addr=0.0.0.0:3000
-      - --electrum-rpc-addr=0.0.0.0:50001
-      - --monitoring-addr=0.0.0.0:4224
-      - --utxos-limit=5000
-      - --electrum-txs-limit=5000
+    mem_limit: 4g
+    cpu_shares: 512
+    environment:
+      ELECTRS_AUTH: ${BTC_RPC_USER:-tacit}:${BTC_RPC_PASS:?run bootstrap.sh, or fill BTC_RPC_PASS in .env}
     volumes:
-      - ${CHAIN_DIR:-/srv/chain}/bitcoin:/bitcoin:ro
+      - ./electrs/config.toml:/etc/electrs/config.toml:ro
       - ${CHAIN_DIR:-/srv/chain}/electrs:/data
     logging: *logging
 
-  # ── the front door ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  # ── the front door ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   gateway:
     build: .
     restart: unless-stopped
+    mem_limit: 512m
+    cpu_shares: 1024
     environment:
       ETH_UPSTREAM: ${ETH_UPSTREAM:-}
-      BTC_ESPLORA_UPSTREAM: ${BTC_ESPLORA_UPSTREAM:-}
+      BTC_ESPLORA_UPSTREAM: ""
+      BTC_RPC_URL: ${BTC_RPC_URL:-}
+      BTC_RPC_AUTH: ${BTC_RPC_USER:-tacit}:${BTC_RPC_PASS:-}
+      ELECTRUM_URL: ${ELECTRUM_URL:-}
       ALLOW_ORIGINS: ${ALLOW_ORIGINS:-https://tacit.finance,https://www.tacit.finance}
       BUDGET_PER_MIN: ${BUDGET_PER_MIN:-600}
       LOGS_MAX_SPAN: ${LOGS_MAX_SPAN:-50000}
       ALLOW_BROADCAST: ${ALLOW_BROADCAST:-0}
       INTERNAL_KEYS: ${INTERNAL_KEYS:-}
       INTERNAL_SENDS: ${INTERNAL_SENDS:-0}
+      INTERNAL_TRACE: ${INTERNAL_TRACE:-1}
+      TRACE_POOLS: ${TRACE_POOLS:-0x000000000Ed1eabD231Be41d93b719056F7febFC}
       TRUST_PROXY: "1"
     logging: *logging
 
   caddy:
-    image: caddy:2
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     restart: unless-stopped
     depends_on: [gateway]
+    mem_limit: 256m
     environment:
       NODE_HOST: ${NODE_HOST:?set NODE_HOST in .env}
     volumes:

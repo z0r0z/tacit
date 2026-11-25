@@ -1,18 +1,27 @@
-# What our Ethereum node keeps. Stated here rather than left to `--full`, so the retention is exactly what our readers need and
-# `tools/node-check.mjs` can prove it (eth-proofs and eth-wide-logs).
+# What our Ethereum node keeps: a FULL node cut to what our readers ask of it, not an archive. Checked against reth v2.11.0 (`reth config --config
+# reth.toml` parses it). Sizes are the decompressed sizes in reth's own snapshot manifest at block 26,486,073 (2026-11-24); see README.
 #
-# State history ~40 h: the vault keeper asks for eth_getProof ~8 h back and eth_prove at a recent block; 12,000 blocks covers both
-# with room (the RPC's own window is set to 10,000 in docker-compose.yml, and may not exceed this).
-# Receipts kept from just before the pool's deploy block (25,998,736): the pool, vault and cBTC readers scan logs back to it, which no
-# free public node serves at width. About 480k blocks of receipts (Nov 2026), on the order of 10-15 GB; it grows with the chain (see README).
-# All block bodies stay (the transaction hash in a log answer comes from them). Transaction-hash lookup for ~3 months, so
-# eth_getTransactionByHash/Receipt works for anything a wallet recently sent.
+#   state + trie (always)                                       ~271 GB
+#   headers (always, all of them)                                ~15 GB
+#   block bodies + tx-hash lookup from the pool's deploy block   ~42 GB   the pool/vault/cBTC readers scan logs from 25,998,736, and a log names its
+#                                                                         transaction by hash, which comes from the body; any of our txs by hash
+#   receipts from the pool's deploy block                        ~28 GB   eth_getLogs back to the deploy block at 50,000-block spans
+#   state history, last 100,800 blocks (~14 days)                ~10 GB   debug_traceTransaction of a claim needs the state before its block: claims are
+#                                                                         read hours to ~2 days after landing, so 14 days is 7x the need for ~10 GB
+#                                                                         (it is ~0.73 + 2.85 GB per 50,000 blocks; 28 days would be ~20 GB). It also
+#                                                                         covers the vault keeper's eth_getProof ~8 h back.
+#   indices rebuilt for the above (tx lookup, history)          ~10-20 GB
+#   senders: not kept (recovered when needed)
+# Total ~380-390 GB today, growing ~1 GB a day (bodies + receipts since a fixed block): ~350 GB a year. An archive is ~1.9 TB compressed.
+#
+# Pre-deploy bodies and receipts are dropped. If a consumer ever needs earlier logs or transactions, lower the three `before` values and resync.
 [prune]
 block_interval = 5
 
 [prune.segments]
 sender_recovery = "full"
-transaction_lookup = { distance = 700_000 }
+transaction_lookup = { before = 25_998_000 }
+bodies_history = { before = 25_998_000 }
 receipts = { before = 25_998_000 }
-account_history = { distance = 12_000 }
-storage_history = { distance = 12_000 }
+account_history = { distance = 100_800 }
+storage_history = { distance = 100_800 }
