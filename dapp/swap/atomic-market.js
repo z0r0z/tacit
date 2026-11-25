@@ -11,6 +11,7 @@
 import { discoverProviders } from '/fast/discover.js?cb=4a1bb265';
 import { makeRateFeed, chainlinkEthBtc, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
 import { SATS_ASSET_ID, ETH_ASSET_ID } from '/swap/atomic-probe.js?cb=590d41c3';
+import { OWN_PROVIDERS } from '/fastbridge-board.js';
 
 const loadLists = async (fetchImpl) => {
   try {
@@ -40,7 +41,9 @@ export async function readMarket({ fetchImpl = (...a) => fetch(...a), lists = nu
     discoverProviders({ ...l, fetchImpl, assets: { btcAsset: SATS_ASSET_ID, evmAsset: ETH_ASSET_ID }, ...(now ? { now } : {}) }).catch(() => []),
     feed.refresh().then((c) => (c ? c.ethPerBtc : null), () => null),
   ]);
-  const providers = found.map((p) => ({ id: p.id, name: p.name || 'Provider', b2e: side(p.terms), e2b: side(p.reverse) }));
+  // (ETH for Bitcoin is shown only for a provider the site names, as the pair client asks only those: fastbridge-pair.js namedProvider)
+  const named = (p) => p.http === true || p.pinned === true || !!OWN_PROVIDERS[String((p.ref && p.ref.claimPub) || p.id || '').replace(/^0x/, '').toLowerCase()];
+  const providers = found.map((p) => ({ id: p.id, name: p.name || 'Provider', b2e: side(p.terms), e2b: named(p) ? side(p.reverse) : null }));
   return { rate, providers, totals: { b2e: totalOf(providers.map((p) => p.b2e)), e2b: totalOf(providers.map((p) => p.e2b)) }, at: Math.floor(Date.now() / 1000) };
 }
 

@@ -25,11 +25,16 @@
 //   exclusive(work)   runs a start with no other start of the key's under way, in any tab (fast/pair-wire.js: a Web Lock per key), so two never lock the same coin. Default: as it is
 //   strikes           { get(), put(map) }: the providers that failed lately ({ [id]: { n, at } }), kept across visits (a page's localStorage); default: this client's own
 //   memo              { get(), put({ ethPerBtc, at }) }: the last good market reading, kept across visits (a page's localStorage); default: this client's own
+//   e2bFrom(p)        whether ETH for Bitcoin may be asked of provider `p`; default: the site's own providers (OWN_PROVIDERS), the ones /fast/lp.json names (served over
+//                     HTTP, or marked `pinned`), and no other. In e2b the provider is the side that claims, and the user's sats come from reading its claim off the pool:
+//                     the pool keeps no record of a claim's kernel apart from the calldata that carried it, so a claim sent in a form no node will trace is not read.
+//                     Until a claim is read from a record of the pool's own, this direction is asked only of providers the site names.
 
 import { makeBitcoinLocker } from './fastbridge-bl.js';
 import { makeFastBridgeClient } from './fastbridge-client.js';
 import { makeReverseClient, makeReverseCounter, coversWith } from './fastbridge-reverse-client.js';
 import { recordFromLockMemo } from './fastbridge-el.js';
+import { OWN_PROVIDERS } from './fastbridge-board.js';
 import * as X from './adaptor-xswap.js';
 import { bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 
@@ -175,7 +180,10 @@ const said = (e, fallback) => {
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('the provider did not answer in time')), ms))]);
 
 // `ethAsset` is the pool's asset for ETH (a test's pool has a stand-in)
-export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), exclusive = (work) => work(), ethAsset = ETH_ASSET, memo = null, strikes: strikeStore = null }) {
+// The providers ETH for Bitcoin is asked of by default (see e2bFrom above)
+export const namedProvider = (p) => !!p && (p.http === true || p.pinned === true || !!OWN_PROVIDERS[strip((p.ref && p.ref.claimPub) || p.id || '')]);
+
+export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), exclusive = (work) => work(), ethAsset = ETH_ASSET, memo = null, strikes: strikeStore = null, e2bFrom = namedProvider }) {
   const policy = { ...PAIR_POLICY, ...policyIn };
   const ETH = strip(ethAsset);
   const isPairProvider = (p) => !!p && !!p.assets && strip(p.assets.btcAsset || '') === SATS_ASSET && strip(p.assets.evmAsset || '') === ETH;
@@ -209,12 +217,15 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
 
   async function providers() {
     const all = (await discover()).filter(isPairProvider);
-    return all.map((p) => ({
-      id: p.id, name: p.name || 'Provider', ref: p.ref, dirs: ['b2e', ...(p.reverse ? ['e2b'] : [])],
-      fees: { b2e: { feeBps: Number(p.terms.feeBps) || 0, flatFee: BigInt(p.terms.flatFee ?? 0) }, e2b: p.reverse ? { feeBps: Number(p.reverse.feeBps) || 0, flatFee: BigInt(p.reverse.flatFee ?? 0) } : null },
-      minSats: BigInt(p.terms.minAmount), maxSats: BigInt(p.terms.maxAmount), b2e: { min: BigInt(p.terms.minAmount), max: BigInt(p.terms.maxAmount), available: p.terms.available == null ? null : BigInt(p.terms.available) },
-      e2b: p.reverse ? { min: BigInt(p.reverse.minAmount), max: BigInt(p.reverse.maxAmount), available: p.reverse.available == null ? null : BigInt(p.reverse.available) } : null,
-    }));
+    return all.map((p) => {
+      const rev = p.reverse && e2bFrom(p) ? p.reverse : null;        // (ETH for Bitcoin only of a provider the site names: e2bFrom above)
+      return {
+        id: p.id, name: p.name || 'Provider', ref: p.ref, dirs: ['b2e', ...(rev ? ['e2b'] : [])],
+        fees: { b2e: { feeBps: Number(p.terms.feeBps) || 0, flatFee: BigInt(p.terms.flatFee ?? 0) }, e2b: rev ? { feeBps: Number(rev.feeBps) || 0, flatFee: BigInt(rev.flatFee ?? 0) } : null },
+        minSats: BigInt(p.terms.minAmount), maxSats: BigInt(p.terms.maxAmount), b2e: { min: BigInt(p.terms.minAmount), max: BigInt(p.terms.maxAmount), available: p.terms.available == null ? null : BigInt(p.terms.available) },
+        e2b: rev ? { min: BigInt(rev.minAmount), max: BigInt(rev.maxAmount), available: rev.available == null ? null : BigInt(rev.available) } : null,
+      };
+    });
   }
   // `sats` and `eth` are what can be put into a swap (confirmed coins; notes less the relay fee to cut one); `ethHeld` is what the key holds, `pendingSats` what has reached
   // the address and is waiting for a block
@@ -325,6 +336,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     const all = await providers();
     const eligible = all.filter((p) => (dir === 'b2e' ? p.b2e : p.e2b) && want >= (dir === 'b2e' ? p.b2e : p.e2b).min && want <= (dir === 'b2e' ? p.b2e : p.e2b).max);
     if (!all.length) throw new Error('no provider is offering Bitcoin for ETH right now');
+    if (dir === 'e2b' && !all.some((p) => p.e2b)) throw new Error('no provider is offering ETH for Bitcoin right now');
     if (!eligible.length) throw new Error('no provider takes that amount');
     // the best few by what they advertise, those that failed lately after the rest (and left out while three or more are struck and others can be asked)
     const feeAt = (p) => { const f = p.fees && p.fees[dir]; return f ? (want * BigInt(f.feeBps)) / 10000n + f.flatFee : 0n; };

@@ -18,9 +18,29 @@ import { fetched, te } from './lib/btc-sim.mjs';
 import { pool, sha256, ASSET } from './lib/chain-sim.mjs';
 import { memStore } from './lib/fastbridge-world.mjs';
 import { pairWorld, SATS, UNITS, strip } from './lib/pair-world.mjs';
+import { namedProvider } from '../dapp/fastbridge-pair.js';
+import { OWN_PROVIDERS } from '../dapp/fastbridge-board.js';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
+
+test('ETH for Bitcoin is asked only of a provider the site names (its own keys, or one /fast/lp.json lists); Bitcoin for ETH of any', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.providerNamed = false;                                        // an ad on a board, from a key the site does not name
+  assert.deepEqual((await w.pair.providers()).map((p) => [p.id, p.dirs, p.e2b]), [['lp1', ['b2e'], null]]);
+  await assert.rejects(() => w.pair.quote({ dir: 'e2b', amount: UNITS }), /no provider is offering ETH for Bitcoin/);
+  w.providerNamed = true;
+  assert.deepEqual((await w.pair.providers()).map((p) => [p.id, p.dirs]), [['lp1', ['b2e', 'e2b']]]);
+  const own = Object.keys(OWN_PROVIDERS)[1];
+  assert.equal(namedProvider({ id: own, ref: { kind: 'mailbox', claimPub: own } }), true, 'the site\'s own key, from a board ad');
+  assert.equal(namedProvider({ id: 'ab'.repeat(33), ref: { kind: 'mailbox', claimPub: 'ab'.repeat(33) } }), false, 'any other key from a board ad');
+  assert.equal(namedProvider({ id: 'ab'.repeat(33), http: true, ref: { kind: 'http', claimPub: 'ab'.repeat(33) } }), true, 'one lp.json lists (served over HTTP)');
+  assert.equal(namedProvider({ id: 'ab'.repeat(33), pinned: true, ref: { kind: 'mailbox', claimPub: 'ab'.repeat(33) } }), true, 'one lp.json pins');
+  const open = w.makePair({ e2bFrom: () => true });
+  w.providerNamed = false;
+  assert.deepEqual((await open.providers()).map((p) => p.dirs), [['b2e', 'e2b']], 'a page may widen it');
+});
 
 test('Bitcoin for ETH, all the way: the quote is judged against the market, the sats are locked, the provider locks ETH, the claim publishes the secret, and the user ends with the ETH and the provider with the sats', async () => {
   const w = pairWorld();
@@ -258,7 +278,7 @@ test('the swap is kept: a new page over the same stores shows it, and a lock who
 test('of two providers the better quote wins, and one that fails to answer does not stop the other', async () => {
   const w = pairWorld();
   await w.ready();
-  const mk = (id, btcValue, ok = true) => ({ id, name: id, ref: { kind: 'http', base: id, claimPub: '02' + '11'.repeat(32) }, assets: { btcAsset: SATS_ASSET, evmAsset: ASSET }, terms: { minAmount: 1n, maxAmount: 10n ** 12n, available: null }, reverse: { feeBps: 0, flatFee: 0n, minAmount: 1n, maxAmount: 10n ** 12n, available: null }, ok, btcValue });
+  const mk = (id, btcValue, ok = true) => ({ id, name: id, ref: { kind: 'http', base: id, claimPub: '02' + '11'.repeat(32) }, pinned: true, assets: { btcAsset: SATS_ASSET, evmAsset: ASSET }, terms: { minAmount: 1n, maxAmount: 10n ** 12n, available: null }, reverse: { feeBps: 0, flatFee: 0n, minAmount: 1n, maxAmount: 10n ** 12n, available: null }, ok, btcValue });
   const list = [mk('cheap', 100_539n), mk('dear', 99_000n), mk('down', 0n, false)];
   const reply = (p) => async (method, path, body) => {
     if (!p.ok) throw new Error('the provider is unreachable');

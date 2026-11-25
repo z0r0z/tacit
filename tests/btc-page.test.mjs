@@ -276,12 +276,12 @@ console.log('the page: the marks, the line, the lane');
   console.log('providers, read with no wallet open');
   await listed(page);
   const live = await text(page, '#live');
-  ok(/1 BTC = 30\.62 ETH/.test(live) && /1 provider online/.test(live) && /up to 0\.30 BTC or 2\.0 ETH now/.test(live), `the line under the heading: the market, who is online, what can be swapped now, to two figures (${live})`);
+  ok(/1 BTC = 30\.62 ETH/.test(live) && /1 provider online/.test(live) && /up to 0\.30 BTC now/.test(live), `the line under the heading: the market, who is online, what can be swapped now, to two figures (${live})`);
   ok(await page.$$eval('#live > span', (ss) => ss.length === 3 && ss.every((s) => s.getClientRects().length === 1)), 'each part of that line is kept whole');
   const row = await text(page, '#pv-list li');
   ok(/Provider [0-9a-f]{12}\b/.test(row) && /BTC → ETH 0\.0005 to 1 BTC 0\.3 BTC available now fee 0\.4% \+ 800 sats \(2\.0% at the minimum\)/.test(row), `the forward terms: limits, available, the fee and what it is at the minimum (${row})`);
-  ok(/ETH → BTC 0\.01 to 30 ETH 2 ETH available now fee 0\.2% \+ 0\.0003 ETH \(3\.2% at the minimum\)/.test(row), 'the reverse terms, in ETH');
-  ok(/up to 0\.3 BTC for ETH, and up to 2 ETH for BTC/.test(await text(page, '#cap')), `the totals (${await text(page, '#cap')})`);
+  ok(/ETH → BTC not offered/.test(row), 'ETH to BTC is not shown for a provider the site does not name (a board ad from any key), though its ad has the terms');
+  ok(/up to 0\.3 BTC for ETH, and no ETH for BTC/.test(await text(page, '#cap')), `the totals (${await text(page, '#cap')})`);
 
   await page.waitForFunction(() => !document.querySelector('#pv-fund').hidden, null, { timeout: 10000 });
   const fundLine = await text(page, '#pv-fund');
@@ -390,8 +390,9 @@ console.log('links');
   const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05' });
   ok(/From.*Ethereum, private/.test(await text(page, '#a-pay')) && (await page.inputValue('#a-amt')) === '0.05', '/btc/?dir=e2b&amt=0.05 opens ETH to BTC with the amount');
   await listed(page);
-  await page.waitForFunction(() => /^≈/.test(document.querySelector('#a-out').textContent), null, { timeout: 8000 });
-  ok(/^≈ 0\.0016\d+$/.test(await text(page, '#a-out')) && /Limits\s*0\.01 to 30 ETH/.test(await text(page, '#a-rcpt')), `and estimates it the other way, with that way's limits (${await text(page, '#a-out')})`);
+  await sleep(3000);
+  // (the test's provider is a board ad from a key the site does not name, so ETH to BTC is not offered by it: fastbridge-pair.js namedProvider)
+  ok(!/^≈/.test(await text(page, '#a-out')) && !/Limits\s*0\.01 to 30 ETH/.test(await text(page, '#a-rcpt')), `and gives no estimate the other way from a provider the site does not name (${await text(page, '#a-out')})`);
   await page.close();
   const two = await fresh({ path: '/btc/?from=ETH&to=BTC' });
   ok(/From.*Ethereum, private/.test(await text(two.page, '#a-pay')), 'the card\'s own words (?from=ETH&to=BTC) open it the same way');

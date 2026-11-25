@@ -99,7 +99,7 @@ test('openPair: the page\'s own price is Chainlink read at one block from severa
   assert.deepEqual([...new Set(calls.map(([u]) => u))].sort(), NODES, 'each node is asked');
   assert.ok(calls.every(([, , p]) => p[1] === '0x' + (0x1500000 - 2).toString(16)), 'all at one block a little behind the tip');
   const ps = await pair.providers();
-  assert.deepEqual(ps.map((p) => [p.id, p.dirs, p.minSats, p.maxSats]), [[pairAd(4).claimPub, ['b2e', 'e2b'], 50000n, 5000000n]], 'the TAC provider on the same board is not offered Bitcoin for ETH');
+  assert.deepEqual(ps.map((p) => [p.id, p.dirs, p.minSats, p.maxSats]), [[pairAd(4).claimPub, ['b2e'], 50000n, 5000000n]], 'the TAC provider on the same board is not offered Bitcoin for ETH (and ETH for Bitcoin is asked only of a provider the site names)');
   assert.deepEqual(await pair.records(), [], 'a key that has swapped nothing has nothing to show');
 });
 
