@@ -284,6 +284,49 @@ test('a claim sent from the provider\'s own account is seen as landed after a re
   assert.equal(await makeEvm([tx], { selfSettle: async () => { throw new Error('no'); } }).jobStatus('own-adaptorclaim-def-1', other), 'pending', 'a kernel the pool does not show is not taken for this claim');
 });
 
+// ── 4. One explorer alone ──
+test('three explorers refuse and one shows the counterparty\'s lock confirmed: the Ethereum locker waits for a second, however long, and ends the swap unlocked when its wait runs out', async () => {
+  const W = makeBtcWallet({ priv: bigintToBytes32(scalar('el/one-explorer')), hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('offline'); }, fetchFeeRate: async () => 3 });
+  const txid = 'aa'.repeat(32), spk = '5120' + 'bb'.repeat(32), T0 = 1_800_000_000;
+  let second = false;
+  const fetchImpl = async (url) => {
+    const ok = (body) => ({ ok: true, status: 200, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)), json: async () => body, headers: { get: () => null } });
+    const host = url.startsWith('https://one') ? 'https://one' : second && url.startsWith('https://two') ? 'https://two' : null;
+    if (!host) return { ok: false, status: 429, text: async () => 'Too Many Requests', headers: { get: () => null } };
+    const p = url.slice(host.length);
+    if (p === `/tx/${txid}/status`) return ok({ confirmed: true, block_height: 1000 });
+    if (p === '/blocks/tip/height') return ok('1001');
+    if (p === `/tx/${txid}/outspend/0`) return ok({ spent: false });
+    if (p === `/tx/${txid}`) return ok({ txid, status: { confirmed: true, block_height: 1000, block_hash: 'ff'.repeat(32) }, vin: [{ txid: 'cc'.repeat(32), vout: 0 }], vout: [{ value: 100000, scriptpubkey: spk }] });
+    if (p === '/block-height/1000') return ok('ff'.repeat(32));
+    if (p === `/block/${'ff'.repeat(32)}`) return ok({ timestamp: T0 });
+    return { ok: false, status: 404, text: async () => 'not found', headers: { get: () => null } };
+  };
+  let now = T0 + 600;
+  const chain = makeEsploraBtcChain({ bases: ['https://one', 'https://two', 'https://three', 'https://four'], prims: W.prims, builder: null, fetchImpl, nowMs: () => now * 1000, coolMs: 1 });
+  const recs = new Map();
+  const rec = { v: 1, role: 'el', id: 'cc'.repeat(32) + '00000000', phase: 'accepted', created: now, quoteId: 'q', offer: { btc: { asset: X.SATS_ASSET, value: '100000' } }, lockTxid: txid, lockVout: 0, lockValue: 100000, lockSpk: spk, csvBlocks: 96 };
+  recs.set(rec.id, rec);
+  const store = { get: async (id) => recs.get(id) || null, put: async (r) => { recs.set(r.id, r); }, list: async () => [...recs.values()] };
+  const policy = { minConfsFor: () => 1, evmWindowSecs: 4 * 3600, roundSecs: 600, minClaimSecs: 3600, claimSlackSecs: 7200, maxConfirmWaitSecs: 6 * 3600 };
+  const el = makeEthereumLocker({ seed: new Uint8Array(32).fill(3), store, now: () => now, policy, quotes: { get: async () => null }, btc: chain, evm: { now: async () => now }, counter: {} });
+  await el.step(recs.get(rec.id));
+  assert.equal(recs.get(rec.id).phase, 'accepted', 'at first it waits for a second explorer');
+  assert.ok(recs.get(rec.id).thinSince != null);
+  for (const dt of [301, 3600, 3600]) { now += dt; await el.step(recs.get(rec.id)); assert.equal(recs.get(rec.id).phase, 'accepted', 'and goes on waiting'); }
+  now += 6 * 3600;
+  await el.step(recs.get(rec.id));
+  assert.equal(recs.get(rec.id).phase, 'aborted', 'nothing locked, and the swap ends');
+  assert.match(recs.get(rec.id).why, /second explorer/);
+  // a second explorer that shows the lock alike is all it waits for
+  const again = { v: 1, role: 'el', id: 'dd'.repeat(32) + '00000000', phase: 'accepted', created: now, quoteId: 'q', offer: { btc: { asset: X.SATS_ASSET, value: '100000' } }, lockTxid: txid, lockVout: 0, lockValue: 100000, lockSpk: spk, csvBlocks: 96 };
+  recs.set(again.id, again);
+  second = true;
+  await el.step(recs.get(again.id));
+  assert.doesNotMatch(recs.get(again.id).why || '', /explorer/, 'past the explorers (this lock\'s block is too old for a deadline now, which is another check)');
+  assert.equal(recs.get(again.id).thinSince, undefined, 'two alike: no wait');
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

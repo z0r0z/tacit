@@ -155,7 +155,7 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   // The lock as the explorers see it, before this side locks anything against it: the transaction (its inputs and outputs), the block it is in, the tip, and
   // whether the lock output is spent. Ordinary reads take the first explorer that answers; this one asks them all. Two that show the same lock agree. An
   // explorer that does not answer (a refusal for too many requests, a timeout) is silent, which is not a contradiction: one explorer that answers alone
-  // gives `thin: true`, and the caller waits a while for a second before it goes on. An explorer that says the lock is not there or not in a block, or two
+  // gives `thin: true`, and the caller waits for a second before it goes on (dapp/fastbridge-el.js locks nothing on one explorer's word). An explorer that says the lock is not there or not in a block, or two
   // that show it differently, is a contradiction: it throws (to be asked again). With one explorer configured, that one is the source.
   async function lockAgreed(txid, vout) {
     need(txid);

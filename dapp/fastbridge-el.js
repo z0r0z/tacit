@@ -195,9 +195,9 @@ export function makeEthereumLocker(ctx) {
           return rec;
         }
         if (await btc.outspend(rec.lockTxid, rec.lockVout)) return save(rec, { phase: 'aborted', why: 'the lock output was spent before it could be answered' });
-        // Before anything is locked against it, the lock is read again from every explorer: two that answer show the same transaction in the same block,
-        // its output unspent, or one answers alone and none says otherwise, in which case a second is waited for a while (`thinGraceSecs`, five minutes: the
-        // explorers of a busy host often refuse most requests). One that says the lock is not there, or two that differ, keep the swap waiting. The height they
+        // Before anything is locked against it, the lock is read again from every explorer: two that answer must show the same transaction in the same block,
+        // its output unspent. One that answers alone (the explorers of a busy host often refuse most requests) is waited on until a second does: one explorer's
+        // word is not enough to lock ETH against. One that says the lock is not there, or two that differ, keep the swap waiting. The height they
         // agree on is the one the windows count from. This is asked at most every `agreeEverySecs`, so a wait does not add to the refusals it is waiting out.
         let height = st.height;
         if (btc.lockAgreed) {
@@ -208,9 +208,12 @@ export function makeEthereumLocker(ctx) {
           if (a.spent) return save(rec, { phase: 'aborted', why: 'the lock output was spent before it could be answered' });
           if (a.value !== rec.lockValue || (rec.lockSpk && strip(a.scriptpubkey) !== strip(rec.lockSpk))) return save(rec, { phase: 'aborted', why: 'the explorers do not show the lock this offer named' });
           if (a.confirmations < need) return rec;
+          // ETH is locked only against a lock two explorers show alike: one that answers alone is waited on until a second does (or the swap's wait for
+          // its confirmations runs out, before anything is locked), never taken on its word.
           if (a.thin) {
             if (rec.thinSince == null) await save(rec, { thinSince: ctx.now() });
-            if (ctx.now() - rec.thinSince < (policy.thinGraceSecs ?? 300)) return rec;
+            if (ctx.now() - rec.created > (policy.maxConfirmWaitSecs ?? 43200)) return save(rec, { phase: 'aborted', why: 'no second explorer showed the lock in time' });
+            return rec;
           }
           height = a.height;
         }
