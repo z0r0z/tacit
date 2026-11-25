@@ -77,10 +77,10 @@ const stepsOf = (dir, at, state) => STEP_TITLES[dir].map((title, i) => ({
   key: KEYS[i], title, state: state === 'done' ? 'done' : state === 'returned' ? (i === 0 && dir === 'b2e' ? 'done' : 'todo') : i < at ? 'done' : i === at && state === 'working' ? 'active' : 'todo',
 }));
 const FWD_SAYS = {
-  built: [0, 'Sending your BTC', 'The lock transaction is being sent.', 900],
-  broadcast: [0, 'Waiting for Bitcoin', 'The lock needs a confirmation, about ten minutes.', 800],
-  offered: [1, 'The provider is locking ETH for you', 'It locks the ETH in the pool against your lock, then you can claim it.', 300],
-  claiming: [2, 'Claiming your ETH', 'Your claim is being settled in the pool.', 120],
+  built: [0, 'Sending your BTC', 'The lock transaction is being sent.', 1050],
+  broadcast: [0, 'Waiting for Bitcoin', 'Your lock waits for a Bitcoin block, about ten minutes, some sooner, some later.', 1020],
+  offered: [1, 'The provider is locking ETH for you', 'It locks the ETH in the pool against your lock, then you can claim it.', 420],
+  claiming: [2, 'Claiming your ETH', 'Your claim is being settled in the pool.', 210],
   claimed: [3, 'Finishing', 'The ETH is yours in the pool. The provider collects the BTC next.', 0],
   done: [4, 'Done', 'The ETH is in your private balance.', 0],
   'counter-took': [4, 'Done', 'The ETH is in your private balance, and the provider collected the BTC.', 0],
@@ -122,7 +122,8 @@ export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000)) {
   const lockAt = rec.lockAt || rec.confirmedAt || null;
   return {
     id: rec.id, dir: 'b2e', state, title, detail: andNodes(rec.phase === 'refund-wait' ? withWhy(detail, rec.why) : detail, rec, now()),
-    pay: BigInt(rec.amount), get: BigInt(rec.evmAmount || 0), steps: stepsOf('b2e', at, state), etaSecs: state === 'working' ? eta : 0, at: rec.created,
+    // (what is left, to the ETH in the private balance: the wait for the lock's block counts down from its send, and never says less than a minute plus what follows)
+    pay: BigInt(rec.amount), get: BigInt(rec.evmAmount || 0), steps: stepsOf('b2e', at, state), etaSecs: state !== 'working' || eta == null ? 0 : rec.phase === 'broadcast' && rec.broadcastAt ? 420 + Math.max(60, 600 - Math.max(0, now() - Number(rec.broadcastAt))) : eta, at: rec.created,
     refundAt: state === 'working' && lockAt ? lockAt + rec.csvBlocks * 600 : null, lockTxid: rec.lock ? rec.lock.txid : null, error: rec.lastError || null, provider: rec.providerName || null,
     // the ETH has to be claimed by the pool deadline of the provider's lock; missed, nothing is lost, and the BTC returns at refundAt
     backBy: state === 'working' && rec.evmOffer && Number(rec.evmOffer.deadline) > 0 ? Number(rec.evmOffer.deadline) : null,
@@ -269,14 +270,14 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       throw e;
     }
   }
-  async function startFwd(q) {
+  async function startFwd(q, paid = null) {
     const r = q.ref.r, bl = blFor(q.ref.p.ref);
     const held = await counterFor(q.ref.p.ref).reserve({ quoteId: r.id });
     // (a provider that cannot hold its own quote is asked after the others for a while, and the page asks for a new quote: the next best, whose numbers are shown again)
     if (!held || held.ok === false) { strike(q.ref.p.id); throw Object.assign(new Error('the provider cannot hold that amount just now: a new quote is being asked for'), { requote: true }); }
     cleared(q.ref.p.id);
     policy.csvBlocks = r.csvBlocks;
-    const rec = await bl.start({ asset: hexToBytes(SATS_ASSET), amount: r.btcValue, counterClaimPub: hexToBytes(r.claimPub), evmAsset: r.evmAsset, evmAmount: r.evmAmount, quoteId: r.id, avoid: await heldCoins() });
+    const rec = await bl.start({ asset: hexToBytes(SATS_ASSET), amount: r.btcValue, counterClaimPub: hexToBytes(r.claimPub), evmAsset: r.evmAsset, evmAmount: r.evmAmount, quoteId: r.id, avoid: await heldCoins(), ...(paid ? { first: paid } : {}) });
     rec.provider = q.ref.p.ref; rec.providerName = q.ref.p.name;
     await stores.fwd.put(rec);
     await bl.step(rec).catch(() => {});                 // the lock is stored: a send that fails is tried again by the next pass
@@ -365,22 +366,26 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     const highFee = feeSats != null && feeOn > 0n && BigInt(Math.ceil(Number(feeSats))) * 10000n > feeOn * BigInt(policy.maxFeeShareBps) ? { sats: Number(feeSats), bps: Number((BigInt(Math.ceil(Number(feeSats))) * 10000n) / feeOn) } : null;
     return {
       dir, provider: { id: best.p.id, name: best.p.name }, pay: best.pay, get: best.get, takeFeeSats, highFee, rate, market: market && versus != null ? market.ethPerBtc : null, vsMarketBps: versus,
-      feeBps: versus == null ? 0 : Math.max(0, -versus), etaSecs: dir === 'b2e' ? 1500 : REV_SAYS.accepted[3] + 120, networkFeeSats, expiresAt: Number(best.r.validUntil), warnings, blocked, short, ref: best,
+      feeBps: versus == null ? 0 : Math.max(0, -versus), etaSecs: dir === 'b2e' ? FWD_SAYS.built[3] + 60 : REV_SAYS.accepted[3] + 120, networkFeeSats, expiresAt: Number(best.r.validUntil), warnings, blocked, short, ref: best,
     };
   }
 
   // one start of the key's at a time: the coins and notes a swap holds are read inside, so a second start picks others or stops
   // `coming` (e2b): pool units of a deposit of the user's that is mined and is being settled into a note, which the lock is made from once it lands
-  const start = (q, { coming = null } = {}) => exclusive(() => startOnce(q, coming));
-  async function startOnce(q, coming = null) {
+  // `coins` (b2e): coins just paid to the address and not yet in a block (arriving, below), which the lock spends first: lock and payment then confirm
+  // together, rather than the lock waiting a block for the payment
+  const start = (q, { coming = null, coins = null } = {}) => exclusive(() => startOnce(q, coming, coins));
+  async function startOnce(q, coming = null, coins = null) {
+    const paid = q.dir === 'b2e' && Array.isArray(coins) && coins.length ? coins : null;
     if (q.blocked) throw new Error(q.blocked);
     if (q.highFee && !q.feeAccepted) throw new Error(`the Bitcoin fee is about ${q.highFee.sats} sats, ${(q.highFee.bps / 100).toFixed(1)}% of the amount: accept it to go on`);
-    if (q.short) throw new Error(`your Bitcoin address holds ${q.short.have} sats and this needs ${q.short.need}, the amount and the network fee`);
+    if (q.short && !paid) throw new Error(`your Bitcoin address holds ${q.short.have} sats and this needs ${q.short.need}, the amount and the network fee`);
     if (!(q.expiresAt > now() + policy.quoteMarginSecs)) throw new Error('the quote expired: ask again');
     if (q.dir === 'b2e') {
       const b = await balances();
-      if (b.sats != null && b.sats < q.pay) throw new Error('your Bitcoin address does not hold that many sats');
-      return startFwd(q);
+      const more = paid ? paid.reduce((s, c) => s + BigInt(c.value), 0n) : 0n;
+      if (b.sats != null && b.sats + more < q.pay) throw new Error('your Bitcoin address does not hold that many sats');
+      return startFwd(q, paid);
     }
     // a note of exactly the amount is locked as it is: what `available` keeps back for a cut is not needed then (evm.covers); a mined deposit counts (coversWith)
     if (!(await coversWith(evm, q.pay, coming))) throw new Error('your private ETH does not cover that amount');
@@ -491,6 +496,20 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     return n;
   }
 
+  // The coins a payment to this address made (`txid`), in a block or not yet, still unspent: for a lock started on a payment that has just been sent
+  async function arriving(txid) {
+    if (!/^[0-9a-f]{64}$/.test(strip(txid))) return [];
+    const tx = await btc.fetchTx(strip(txid)).catch(() => null);
+    if (!tx || !Array.isArray(tx.vout)) return [];
+    const mine = bytesToHex(btc.prims.p2wpkhScript(btc.wallet.pub)), out = [];
+    for (const [vout, o] of tx.vout.entries()) {
+      if (strip(o.scriptpubkey || '') !== mine || !(Number(o.value) > 546)) continue;
+      const spent = await btc.outspend(strip(txid), vout).catch(() => undefined);
+      if (spent === null) out.push({ txid: strip(txid), vout, value: Number(o.value) });
+    }
+    return out;
+  }
+
   // whether a lock of `amount` pool units can be made now (an exact note needs no cut), for a page that shows it before the start refuses
   const covers = async (amount) => (evm.covers ? evm.covers(BigInt(amount)) : (await balances()).eth >= BigInt(amount));
   // For a page that sends the address's own sats: the coins a swap under way holds ("txid:vout", never to be spent elsewhere), and this key's swap locks on Bitcoin
@@ -502,5 +521,5 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     for (const p of [...(await revProviders()), RECOVERED]) for (const r of await stores.swaps(p.id).list().catch(() => [])) if (r.lockSpk) out.push({ spk: strip(r.lockSpk) });
     return out;
   }
-  return { providers, reference, balances, covers, quote, start, prepare, pump, records, recover, heldCoins: holdsCoins, lockOutputs, address: () => ({ btc: btc.address }), claimPub: claimPubHex };
+  return { providers, reference, balances, covers, quote, start, prepare, arriving, pump, records, recover, heldCoins: holdsCoins, lockOutputs, address: () => ({ btc: btc.address }), claimPub: claimPubHex };
 }

@@ -28,6 +28,7 @@ type ClientOptions struct {
 	Coordinator    string        // the coordinator's URL
 	CoordinatorKey string        // hex ed25519 public key the receipt must be signed with
 	Name, Handle   string        // as they will appear in the transcript
+	Lane           string        // "" for a person; "pool" for a prover-pool machine, which waits behind every person
 	Workdir        string        // where the head and the contribution are written (removed by Cleanup)
 	Poll           time.Duration // how often to poll; zero: as the coordinator asks
 	Log            func(string)  // status lines
@@ -173,7 +174,11 @@ func (c *Client) join(ctx context.Context) error {
 		Poll  int    `json:"poll_seconds"`
 	}
 	err := retry(ctx, 6, c.o.Log, "joining the queue", func() error {
-		return c.call(ctx, "POST", "/api/join", map[string]string{"name": c.o.Name, "handle": c.o.Handle}, &j)
+		body := map[string]string{"name": c.o.Name, "handle": c.o.Handle}
+		if c.o.Lane != "" {
+			body["lane"] = c.o.Lane
+		}
+		return c.call(ctx, "POST", "/api/join", body, &j)
 	})
 	if err != nil {
 		return fmt.Errorf("could not join the queue: %w", err)

@@ -87,9 +87,11 @@ export function makeBitcoinLocker(ctx) {
   // The same lock for plain sats (asset X.SATS_ASSET): the wallet's own coins, picked here, go into the lock output of one ordinary
   // transaction, and the first coin's outpoint is the swap id. No note, no commit, no coin kept for the fee of the counterparty's
   // take: a take or a refund pays its fee out of the lock output.
-  async function buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId = null, avoid = null, validUntil = null, csvBlocks: csvIn = null }) {
+  // `first`: coins of this address to spend before its listed ones (a payment to it just sent, not yet in a block: the lock spends it at once)
+  async function buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId = null, avoid = null, validUntil = null, csvBlocks: csvIn = null, first = null }) {
     const feeRate = await btc.feeRate();
-    const coins = (await btc.satsUtxos()).filter((u) => !avoid || !avoid.has(`${u.txid}:${u.vout}`));
+    const listed = await btc.satsUtxos(), at = (u) => `${u.txid}:${u.vout}`, early = (first || []).filter((c) => Number.isSafeInteger(c.value) && c.value > 0);
+    const coins = [...early, ...listed.filter((u) => !early.some((c) => at(c) === at(u)))].filter((u) => !avoid || !avoid.has(at(u)));
     const picked = btc.tx.pickSats({ amount, satsUtxos: coins, feeRate });
     const swapId = X.swapIdOf(picked[0].txid, picked[0].vout), id = hx(swapId);
     const sec = X.deriveSwapSecrets({ seed, swapId });

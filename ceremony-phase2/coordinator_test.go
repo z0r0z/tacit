@@ -710,3 +710,99 @@ func TestOfflineUpload(t *testing.T) {
 		t.Fatal("no place was taken")
 	}
 }
+
+// Pool machines fill idle time: a person who joins goes ahead of every pool machine that has not claimed its slot, and a
+// pool machine that has claimed keeps it.
+func TestPoolLaneWaitsBehindPeople(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	c.PerIP = -1
+	p1, _, _ := c.JoinLane("0x1111111111111111111111111111111111111111", "", "192.0.2.1", "pool")
+	p2, _, _ := c.JoinLane("0x2222222222222222222222222222222222222222", "", "192.0.2.2", "pool")
+	if st, _ := c.Poll(p1); st.State != "claim" {
+		t.Fatalf("with nobody else waiting, a pool machine gets the slot: %+v", st)
+	}
+	alice, st, err := c.Join("alice", "", "192.0.2.3")
+	if err != nil || st.Ahead != 0 || st.State != "claim" {
+		t.Fatalf("a person goes ahead of a pool machine that has not claimed: %+v %v", st, err)
+	}
+	if st, _ := c.Poll(p1); st.Ahead != 1 || st.State != "waiting" {
+		t.Fatalf("the pool machine moves back: %+v", st)
+	}
+	if _, err := c.Claim(alice); err != nil {
+		t.Fatal(err)
+	}
+	bob, st, _ := c.Join("bob", "", "192.0.2.4")
+	if st.Ahead != 1 {
+		t.Fatalf("a person waits behind a claimed slot, ahead of the pool: %+v", st)
+	}
+	if st, _ := c.Poll(p2); st.Ahead != 3 {
+		t.Fatalf("pool machines keep their order behind people: %+v", st)
+	}
+	_ = bob
+	if _, _, err := c.JoinLane("x", "", "192.0.2.9", "vip"); err == nil {
+		t.Fatal("an unknown lane is refused")
+	}
+	// a pool machine that claimed keeps its slot when a person joins
+	c2 := newFixture(t).chain(t)
+	c2.PerIP = -1
+	p, _, _ := c2.JoinLane("pool", "", "192.0.2.1", "pool")
+	c2.Claim(p)
+	if _, st, _ := c2.Join("carol", "", "192.0.2.2"); st.Ahead != 1 {
+		t.Fatalf("a claimed pool slot is not taken over: %+v", st)
+	}
+}
+
+// One address may contribute AcceptedPerIP times over the ceremony; the count survives a restart.
+func TestAcceptedPerIPCap(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	c.AcceptedPerIP = 1
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	tok := joinHTTP(t, srv, "alice")
+	call(t, srv, "POST", "/api/claim", tok, nil, -1)
+	out := filepath.Join(f.dir, "next")
+	if _, err := Contribute(c.path(17), out); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(out)
+	if r := call(t, srv, "PUT", "/api/upload", tok, bytes.NewReader(data), int64(len(data))); r.Code != 200 {
+		t.Fatalf("upload: %d %v", r.Code, r.Body)
+	}
+	if r := call(t, srv, "POST", "/api/join", "", strings.NewReader(`{"name":"alice again"}`), -1); r.Code != 429 {
+		t.Fatalf("a second contribution from the same address is refused: %d", r.Code)
+	}
+	c2, err := Open(c.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2.AcceptedPerIP = 1
+	if _, _, err := c2.Join("alice", "", "127.0.0.1"); err == nil {
+		t.Fatal("the count survives a restart")
+	}
+	if _, _, err := c2.Join("bob", "", "192.0.2.7"); err != nil {
+		t.Fatalf("another address may join: %v", err)
+	}
+}
+
+// A coordinator short of disk refuses an upload before writing it (503), and the slot is kept.
+func TestUploadRefusedWhenDiskShort(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	c.MinFree = 1 << 62
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	tok := joinHTTP(t, srv, "alice")
+	call(t, srv, "POST", "/api/claim", tok, nil, -1)
+	data, _ := os.ReadFile(c.path(17))
+	if r := call(t, srv, "PUT", "/api/upload", tok, bytes.NewReader(data), int64(len(data))); r.Code != 503 {
+		t.Fatalf("an upload with the disk short: %d %v", r.Code, r.Body)
+	}
+	if left := uploadsLeft(t, c.Dir); len(left) != 0 {
+		t.Fatalf("nothing written: %v", left)
+	}
+	if r := call(t, srv, "GET", "/api/slot", tok, nil, -1); r.Code != 200 {
+		t.Fatal("the slot is kept")
+	}
+}

@@ -1845,12 +1845,12 @@ async function lookForShielded(status) {
 render.btc = () => {
   const el = $('#btc-body');
   if (!needKey(el, 'Your key’s own Bitcoin wallet: hold BTC and TAC, send them to anyone, and get paid privately at your tacit1 address.', 'btc')) return;
-  const b = BTC.pub === S.key.pubHex ? BTC : null, last = b || BTC.err ? null : lastSeen('btc');
+  const b = BTC.pub === S.key.pubHex ? BTC : null, last = b ? null : lastSeen('btc');
   if (!b && !BTC.loading && !BTC.err) loadBtc().then(() => rerender('btc')).catch(() => {});
   mount(el, html`
     <div class="bal">
       <svg class="tk md" aria-hidden="true"><use href="#tk-btc"/></svg>
-      <div><div class="v num">${b ? fmt(b.sats + b.silent, 8, 8) : BTC.err ? html`<span class="err">—</span>` : last != null ? html`<span class="stale">${fmt(last, 8, 8)}</span>` : html`<span class="sk" style="--w:10ch"></span>`}</div>
+      <div><div class="v num">${b ? fmt(b.sats + b.silent, 8, 8) : last != null ? html`<span class="stale">${fmt(last, 8, 8)}</span>` : BTC.err ? html`<span class="err">—</span>` : html`<span class="sk" style="--w:10ch"></span>`}</div>
         <div class="u">BTC${b?.pending ? ` · ${fmt(b.pending, 8, 8)} arriving` : ''}${!b || b.got === 3 ? '' : b.part ? ' · checking silent payments…' : ' · could not check silent payments'}</div></div>
       <div class="side">${b || BTC.err ? html`<button class="link" type="button" id="btc-re">${BTC.err || !b ? 'retry' : 'refresh'}</button>` : 'updating…'}</div>
     </div>

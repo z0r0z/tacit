@@ -13697,10 +13697,25 @@ async function handleTacImport(req, env, network, cors) {
 // multiplies that by hundreds of txs. This keeps immutable responses in a bounded in-process LRU and collapses
 // concurrent identical requests into one upstream call. Responses that can still change (unconfirmed tx, address
 // state, a spend not yet confirmed) are never stored.
-const CHAIN_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const CHAIN_CACHE_MAX_BYTES = 128 * 1024 * 1024;
 const _chainCache = new Map(); // key -> { body, status, contentType, exp, size }
 let _chainCacheBytes = 0;
 const _chainInflight = new Map(); // key -> Promise<{ body, status, contentType, cached }>
+// The last good answer for each path, kept past its freshness and served only when every explorer has just refused (a rate limit or an outage), so a wallet shows
+// what the chain said a little while ago instead of nothing. Marked X-Chain-Cache: stale.
+const CHAIN_STALE_MAX = 4000, CHAIN_STALE_MAX_AGE_MS = 6 * 3600_000, CHAIN_STALE_MAX_BODY = 256 * 1024;
+const _chainStale = new Map(); // key -> { body, status: 200, contentType, at }
+function _chainStalePut(key, out) {
+  if (out.status !== 200 || out.body.length > CHAIN_STALE_MAX_BODY) return;
+  _chainStale.delete(key); _chainStale.set(key, { body: out.body, status: 200, contentType: out.contentType, at: Date.now() });
+  while (_chainStale.size > CHAIN_STALE_MAX) _chainStale.delete(_chainStale.keys().next().value);
+}
+function _chainStaleGet(key) {
+  const e = _chainStale.get(key);
+  if (!e) return null;
+  if (Date.now() - e.at > CHAIN_STALE_MAX_AGE_MS) { _chainStale.delete(key); return null; }
+  return e;
+}
 const _chainCacheStats = { hit: 0, miss: 0, coalesced: 0, stored: 0 };
 function _chainCacheGet(key) {
   const e = _chainCache.get(key);
@@ -13732,7 +13747,7 @@ function _chainCacheTtlMs(path, body) {
     let j; try { j = JSON.parse(body); } catch { return 0; }
     const confirmed = /\/outspend\//.test(p) ? (j && j.spent === true && j.status && j.status.confirmed === true) : (j && j.confirmed === true) || (j && j.status && j.status.confirmed === true);
     if (!confirmed) return 0;
-    return 30 * 60_000;
+    return 6 * 3600_000; // a confirmed answer only changes in a reorg; six hours keeps a wallet's re-reads off the public explorers (which rate-limit this host)
   }
   return 0;
 }
@@ -13755,6 +13770,11 @@ async function handleChainProxy(req, env, network, cors) {
     const r = await _handleChainProxyUncached(req, env, network, cors);
     const body = await r.text();
     const out = { body, status: r.status, contentType: r.headers.get('Content-Type'), retryAfter: r.headers.get('Retry-After'), ttl: 0 };
+    if (r.status === 200) _chainStalePut(key, out);
+    if (r.status === 429 || r.status >= 500) {
+      const old = _chainStaleGet(key);
+      if (old) { _chainCacheStats.stale = (_chainCacheStats.stale || 0) + 1; return { ...old, ttl: 0, stale: true }; }
+    }
     if (r.status === 200) {
       const ttl = _chainCacheTtlMs(u.pathname.slice('/chain'.length), body);
       if (ttl > 0) { out.ttl = ttl; _chainCachePut(key, { ...out, exp: Date.now() + ttl, size: body.length }); }
@@ -13763,7 +13783,7 @@ async function handleChainProxy(req, env, network, cors) {
   })();
   _chainInflight.set(key, job);
   _chainCacheStats.miss++;
-  try { return mk(await job, 'miss'); } finally { _chainInflight.delete(key); }
+  try { const o = await job; return mk(o, o.stale ? 'stale' : 'miss'); } finally { _chainInflight.delete(key); }
 }
 async function _handleChainProxyUncached(req, env, network, cors) {
   const u = new URL(req.url);

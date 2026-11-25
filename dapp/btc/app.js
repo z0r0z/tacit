@@ -2,13 +2,14 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=4d45fa0c';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=e5f9d26e';
 import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=870f37d8';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
 import { makeAddEth } from '/btc/add-eth.js?cb=eae599fd';
 import { mountSendPanel } from '/btc/panel.js?cb=d25967e5';
+import { makePayout } from '/btc/payout.js?cb=c002bd08';
 
 const $ = (id) => document.getElementById(id);
 const MARKET_MS = 60000;
@@ -99,16 +100,19 @@ function paintProviders(m) {
 const getUx = async () => { const ux = await loadUx(); ux.useWallet?.(() => connectedInjected()); return ux; };
 const first = asked();
 // ETH short for a swap of ETH: added from the Ethereum wallet in one transaction (btc/add-eth.js), and the address's own BTC sent anywhere (btc/panel.js)
+// and the ETH of a swap of BTC sent on to an Ethereum address once it has arrived, if the visitor asks (btc/payout.js)
 let panel = null;
+const payout = makePayout({ getUx });
 const lane = makeAtomicLane({
   host: $('atomic'), recsHost: $('mine-list'), notify, wallet: () => null, provider: () => connectedInjected(), getUx, market, dir: first.dir,
-  shield: makeAddEth({ getUx }),
+  shield: makeAddEth({ getUx }), payout,
   onState: () => follow(lane.state()),
   onRecs: (recs) => { paintMine(recs); panel?.paint(); },
   onBal: () => panel?.paint(),
   onOpen: () => panel?.paint(),
   // a finished swap's "Send BTC": the panel's send, the amount that arrived filled in
-  onNext: ({ act, sats }) => { if (act === 'send') panel?.openSend({ sats }); },
+  // and a finished swap of BTC's "Send to an Ethereum address": where, and the relay's fee, asked first
+  onNext: ({ act, sats, id, units }) => { if (act === 'send') panel?.openSend({ sats }); else if (act === 'withdraw') withdraw({ id, units }).catch(() => {}); },
 });
 panel = mountSendPanel({ host: $('yb'), lane, notify });
 // what the lane reads once the key opens is read ahead as soon as the visitor shows an interest in it (a link that names an amount, a hover, a tap): the
@@ -116,6 +120,37 @@ panel = mountSendPanel({ host: $('yb'), lane, notify });
 const warm = () => lane.warm();
 if (first.amt) warm();
 for (const ev of ['pointerenter', 'focusin', 'touchstart']) $('atomic').addEventListener(ev, warm, { once: true, passive: true });
+
+// The ETH of a finished swap of BTC, sent from the private balance to an Ethereum address: the key's own (the wallet sheet's) or one typed and checked, with
+// what arrives after the relay's fee said before the press. The lane then sends it and says so on the swap's card.
+async function withdraw({ id, units }) {
+  const { overlay } = await import('/trade/sheet.js?cb=d857446c');
+  const o = overlay({ title: 'Send to an Ethereum address' });
+  const own = lane.ethAddress();
+  o.body.innerHTML = `<p style="margin:0 0 12px">${esc(fmt(units))} ETH from this swap, from your private balance to an Ethereum address. The relay sends it and takes its fee from it.</p>
+    <div class="pt" style="display:grid;gap:8px">
+      ${own ? `<label style="display:flex;gap:8px;align-items:baseline"><input type="radio" name="wd-to" value="own" checked><span>Your Tacit Ethereum address <code>${esc(own.slice(0, 6))}…${esc(own.slice(-4))}</code></span></label>` : ''}
+      <label style="display:flex;gap:8px;align-items:baseline"><input type="radio" name="wd-to" value="other"${own ? '' : ' checked'}><span>Another address</span></label>
+      <input data-addr placeholder="0x…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Ethereum address" style="min-height:40px;padding:6px 10px;font:13px var(--mono, monospace)"${own ? ' hidden' : ''}>
+    </div>
+    <p data-say role="status" style="margin:12px 0 0">Reading the relay’s fee…</p>
+    <p class="note" style="margin:8px 0 0">Sent there, it is public from that address on. Sending all of it right after the swap makes the two easy to match by amount and time.</p>
+    <div class="bsheet-actions" style="margin-top:14px"><button class="btn" type="button" data-go disabled>Send</button><button class="btn ghost" type="button" data-x>Cancel</button></div>`;
+  const q = (s) => o.body.querySelector(s), addr = q('[data-addr]'), say = q('[data-say]'), go = q('[data-go]');
+  let fee = null;
+  const target = () => (o.body.querySelector('input[name="wd-to"]:checked')?.value === 'own' ? own : payout.checkAddress(addr.value).address || null);
+  const paint = () => {
+    const other = o.body.querySelector('input[name="wd-to"]:checked')?.value !== 'own', t = target(), chk = payout.checkAddress(addr.value);
+    addr.hidden = !other;
+    go.disabled = !t || !fee;
+    say.textContent = other && addr.value.trim() && !chk.ok ? chk.why : fee ? `The relay’s fee is about ${fmt(fee.fee)} ETH: about ${fmt(fee.net)} ETH arrives${t ? ` at ${t.slice(0, 6)}…${t.slice(-4)}` : ''}.` : 'Reading the relay’s fee…';
+  };
+  o.body.addEventListener('change', paint); addr.addEventListener('input', paint);
+  q('[data-x]').onclick = () => o.close();
+  go.onclick = () => { const t = target(); if (!t) return; lane.payTo(id, t); o.close(); };
+  try { fee = await payout.quote(units); } catch { say.textContent = 'The relay’s fee could not be read just now. Try again in a moment.'; return; }
+  if (!o.closed) paint();
+}
 
 // (the swaps of an earlier visit are looked for on the chains for a minute or two after the wallet opens: until that ends the list says so, never 'No swaps yet')
 function paintMine(recs) {

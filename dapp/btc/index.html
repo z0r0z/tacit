@@ -22,8 +22,8 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=6b0c98f6">
-<link rel="modulepreload" href="/swap/atomic.js?cb=4d45fa0c">
+<link rel="modulepreload" href="/btc/app.js?cb=583f0109">
+<link rel="modulepreload" href="/swap/atomic.js?cb=e5f9d26e">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -54,6 +54,8 @@
 <link rel="modulepreload" href="/btc/add-eth.js?cb=eae599fd">
 <link rel="modulepreload" href="/btc/panel.js?cb=d25967e5">
 <link rel="modulepreload" href="/btc/send.js?cb=990d748a">
+<link rel="modulepreload" href="/btc/payout.js?cb=c002bd08">
+<link rel="modulepreload" href="/evm-account.js">
 <!-- preload:end -->
 <link rel="stylesheet" href="/swap/card.css?cb=a36205be">
 <style>
@@ -176,6 +178,21 @@ html .lane #atomic .q button.link, #mine .snt button.link.cx { padding: 0 2px; f
 #mine .snt.atm .stp.s5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 @media (max-width: 640px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 420px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* a swap of BTC: where its ETH goes (kept private, or sent on to an Ethereum address), and what became of it on the swap's card */
+html .lane #atomic .payto { margin: 12px 0 0; }
+html .lane #atomic .pt { display: grid; gap: 7px; min-width: 0; margin: 0; padding: 10px 12px 12px; background: var(--field); border: 1px solid var(--hair); border-radius: 12px; }
+html .lane #atomic .pt legend { padding: 0 4px; font-size: 12px; color: var(--mute); }
+html .lane #atomic .pt label { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--ink); cursor: pointer; }
+html .lane #atomic .pt input[type="radio"] { accent-color: var(--ink); }
+html .lane #atomic .pt code { font: 12px var(--mono); color: var(--mute); }
+html .lane #atomic #a-pt-addr { width: 100%; min-height: 40px; padding: 6px 10px; font: 13px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 10px; outline: none; }
+html .lane #atomic #a-pt-addr:focus { border-color: var(--ink); }
+html .lane #atomic .pt-say { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--mute); white-space: normal; overflow-wrap: anywhere; }
+html .lane #atomic .pt label span { white-space: normal; min-width: 0; overflow-wrap: anywhere; }
+html .lane #atomic .pt-say:empty { display: none; }
+html .lane #atomic .pt-say.err { color: var(--err); }
+#mine .snt small.paid { color: var(--ink); }
+#mine .snt small.paid.err { color: var(--err); }
 /* locked in, said plainly; and a finished swap's next steps for its BTC */
 #mine .snt small.sure { color: var(--ink); }
 #mine .snt .nx { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
@@ -688,6 +705,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/btc/app.js?cb=6b0c98f6"></script>
+<script type="module" src="/btc/app.js?cb=583f0109"></script>
 </body>
 </html>

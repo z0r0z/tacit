@@ -14,15 +14,18 @@
 //             pending, relayWords, warm), or null, and the button then says the balance is short. With it, a swap of ETH the private balance is short of is
 //             one press: the shortfall made private and the swap started on it (see "one press" below). onBal(bal) hears each read of the balances; onOpen(opened)
 //             the pair opener's answer once the key is open (its `bitcoin` is what a page sends the address's own sats with).
-//   onNext    ({ act: 'send', sats }) from a finished swap of ETH for BTC: the page sends the BTC that arrived (its card also links the Bitcoin order book of TAC and
+//   payout    where the ETH of a swap of BTC goes (btc/payout.js makePayout), or null: with it the lane asks "Receive as" (kept private, or sent on to an
+//             Ethereum address once it has arrived) and carries the choice out. A swap of BTC the address is short of is one press when a Bitcoin wallet is in
+//             this browser (the door's sendIn: see "one press of BTC" below).
+//   onNext    ({ act: 'send', sats }) from a finished swap of ETH for BTC, ({ act: 'withdraw', id, units }) from one of BTC whose ETH was kept private: the page sends the BTC that arrived (its card also links the Bitcoin order book of TAC and
 //             the wallet sheet); null shows no next steps
 //
 // A swap under way is stepped while the lane is open, the tab hidden or not (a hidden tab's timers run about once a minute, and a claim or a take that waits for the tab
 // to be seen again can miss its window); and the page asks before it is left while one is under way.
 import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 
-const BTC_MODULE = '/trade/btc.js?cb=0ca9eea7';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=623cec00';
+const BTC_MODULE = '/trade/btc.js?cb=c1705f0b';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=af2423a1';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
 // A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
@@ -35,11 +38,14 @@ const DISMISS_KEY = 'tacit-atomic-dismissed-v1';
 const LOCK_GUESS_SATS = 3000;                                     // what Max keeps back for the Bitcoin fee until a quote has said what it is
 const SHIELD_NOTE = 'The deposit from your wallet is public. The swap and your Bitcoin address are not linked to it on chain.';
 const ONE_PRESS = 'One wallet transaction. Your ETH is made private first.';
+const ONE_PRESS_BTC = 'One payment from your Bitcoin wallet, straight into the swap.';
+const BTC_NOTE = 'A Bitcoin payment is public, as every one is. The ETH arrives private, in your Tacit wallet.';
 // A swap of ETH for BTC started with one press (the ETH made private first): its first step, then the swap's own (fastbridge-pair.js names them the same way)
 const PRIVATE_STEP = 'Made private';
 const E2B_STEPS = ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'];
 // About how long a press's deposit takes to be mined and the provider to be asked, before the swap's own time (fastbridge-pair.js: 1710 s from the ask)
-const PRESS_SECS = 60, E2B_SECS = 1710;
+const PRESS_SECS = 60, E2B_SECS = 1710, B2E_SECS = 1050;
+const B2E_STEPS = ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'];
 // Where a finished swap's BTC can go next on Tacit: the Bitcoin order book of TAC (the trade page opens the same key in this tab), and the wallet sheet,
 // whose "Use this wallet's Bitcoin and Ethereum elsewhere" gives the Bitcoin key for another wallet
 const BTC_BOOK = '/trade/tac/?lane=btc', WALLET_SHEET = '/#wallet';
@@ -57,11 +63,11 @@ export const etaText = (secs) => {
   const m = Math.max(1, Math.round(Number(secs) / 60));
   return Number(secs) < 90 ? 'about a minute' : m < 90 ? `about ${m} minutes` : `about ${Math.round(m / 60)} hours`;
 };
-// The time a swap of ETH for BTC has left, in words: while two Bitcoin blocks are still ahead (the provider's lock and the take), a range, since a block comes
-// about every ten minutes but some come much sooner or later (the live swaps of 11-25 took 19 and 26 minutes); nearer the end, one figure.
+// The time a swap has left, in words: while a Bitcoin block is still ahead, a range, since a block comes about every ten minutes but some come much sooner
+// or later (the live swaps of ETH for BTC of 11-25 took 19 and 26 minutes, those of BTC for ETH about 13); nearer the end, one figure.
 export const etaSpan = (secs) => {
   const s = Number(secs);
-  if (!(s >= 1200)) return etaText(s);
+  if (!(s >= 900)) return etaText(s);
   const lo = Math.max(5, Math.round((s * 0.7) / 300) * 5), hi = Math.max(lo + 5, Math.round((s * 1.1) / 300) * 5);
   return `about ${lo}\u2060–\u2060${hi} minutes`;                         // (kept on one line: the range does not break at its dash)
 };
@@ -117,6 +123,9 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange, busy = 
     get pubHex() { return bitcoin?.session.unlocked ? bitcoin.session.key?.pubHex || null : null; },
     async signIn() { await load(); await bitcoin.signIn(); },
     fund(o) { bitcoin?.fund(o); },
+    // a Bitcoin wallet in this browser pays sats to the key's own address, in one prompt of its own (trade/btc.js sendIn)
+    canSendIn() { return !!(bitcoin?.session.unlocked && bitcoin.canSendIn?.()); },
+    sendIn(sats) { if (!bitcoin?.sendIn) throw new Error('No Bitcoin wallet in this browser.'); return bitcoin.sendIn(sats); },
     // the open key, for a deposit into its private balance: its private bytes (a copy), its public key and how it was opened
     key() { const s = bitcoin?.session; if (!s?.unlocked || !T?.wallet?.priv) return null; return { priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, mode: s.key.mode || null, address: s.key.address || null }; },
     // the pair opener's modules, read before the key opens, so the lane is ready sooner after it does
@@ -132,10 +141,10 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange, busy = 
   };
 }
 
-export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, provider = () => null, getUx = null, door = null, onState = () => {}, dir = 'b2e', now = nowSecs, recsHost = null, market = null, onRecs = () => {}, shield = null, onBal = () => {}, onOpen = () => {}, onNext = null }) {
+export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, provider = () => null, getUx = null, door = null, onState = () => {}, dir = 'b2e', now = nowSecs, recsHost = null, market = null, onRecs = () => {}, shield = null, onBal = () => {}, onOpen = () => {}, onNext = null, payout = null }) {
   // (a swap under way, or a press that is still making the ETH private, keeps the key open: the page has steps to take for it)
   const D = door || bitcoinDoor({ notify, wallet, provider, getUx, onChange: () => keyChanged(), busy: () => !!L.chain || !!L.adding || L.recs.some((r) => r.state === 'working') });
-  const L = { dir: dir === 'e2b' ? 'e2b' : 'b2e', amt: '', q: null, qErr: '', bal: { sats: null, eth: null, ethHeld: null, pending: 0n }, recs: [], busy: false, open: false, line: '', cls: '', unlocked: false, loaded: false, terms: null, mk: null, fits: null, chain: null };
+  const L = { dir: dir === 'e2b' ? 'e2b' : 'b2e', amt: '', q: null, qErr: '', bal: { sats: null, eth: null, ethHeld: null, pending: 0n }, recs: [], busy: false, open: false, line: '', cls: '', unlocked: false, loaded: false, terms: null, mk: null, fits: null, chain: null, payTo: { mode: 'private', address: null } };
   let fundAsk = null, addAsk = null, pair = null, pairP = null, pairKey = null, gen = 0, opened = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, marketTimer = 0, recovered = false, recovering = null, lookFailed = false, reading = null, began = null;
   // the swaps started with one press, by id: their first step (the ETH made private) is shown before the swap's own, until the deposit has landed
   const chains = new Map();
@@ -158,6 +167,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     </div>
     <dl class="rcpt" id="a-rcpt" hidden></dl>
     <div class="snt atm" id="a-sent" hidden></div>
+    <div class="payto" id="a-payto" hidden></div>
     <div class="act">
       <button class="go" id="a-go" type="button" disabled>Open your Tacit wallet</button>
       <p class="q" id="a-q" role="status"></p>
@@ -354,7 +364,16 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (t && amount > t.max) return { label: `Most a provider takes is ${fmt(t.max)} ${c.sym}`, off: true };
     const held = heldOf(pk), exact = pk === 'eth' && L.fits && L.fits.amt === amount && L.fits.ok;
     if (bal != null && amount > bal && !exact) {
-      if (pk === 'btc') { const need = amount + BigInt(q?.networkFeeSats ?? LOCK_GUESS_SATS); return { label: `Add ${fmt(need - bal)} BTC`, act: 'fund', fund: { sats: Number(need - bal), need: Number(need) } }; }
+      if (pk === 'btc') {
+        // with a Bitcoin wallet in this browser, one press pays what is short into the address and swaps it (see "one press" below); else the way to add it
+        if (D.canSendIn?.()) {
+          if (L.qErr) return { label: 'No quote', off: true };
+          if (!q) return { label: 'Getting a quote…', off: true };
+          const p1 = pressGate(q, amount, bal); if (p1) return p1;
+        }
+        const need = amount + BigInt(q?.networkFeeSats ?? LOCK_GUESS_SATS);
+        return { label: `Add ${fmt(need - bal)} BTC`, act: 'fund', fund: { sats: Number(need - bal), need: Number(need) } };
+      }
       // With a way to add ETH from an Ethereum wallet, one press makes the shortfall private (exactly: addUnits) and swaps: so it asks for a quote fit to
       // swap on first, as the swap's own press does. Else the button says what is short.
       const add = shield ? addUnits(amount, bal) : 0n;
@@ -373,8 +392,23 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (q.blocked) return { label: 'Not at this price', off: true };
     if (q.renewed) return { label: 'Accept the new price', act: 'accept' };
     if (q.highFee && !q.feeAccepted) return { label: 'Accept the Bitcoin fee', act: 'acceptFee' };
-    if (L.dir === 'b2e' && bal != null && q.networkFeeSats != null && amount + BigInt(q.networkFeeSats) > bal) { const need = amount + BigInt(q.networkFeeSats); return { label: 'Add sats for the Bitcoin fee', act: 'fund', fund: { sats: Number(need - bal), need: Number(need) } }; }
+    if (L.dir === 'b2e' && bal != null && q.networkFeeSats != null && amount + BigInt(q.networkFeeSats) > bal) {
+      if (D.canSendIn?.()) { const p1 = pressGate(q, amount, bal); if (p1) return p1; }
+      const need = amount + BigInt(q.networkFeeSats); return { label: 'Add sats for the Bitcoin fee', act: 'fund', fund: { sats: Number(need - bal), need: Number(need) } };
+    }
+    if (payout && L.dir === 'b2e' && L.payTo.mode !== 'private' && !L.payTo.address) return { label: 'Enter the Ethereum address', off: true };
     return { label: `Swap ${COINS[SIDES[L.dir][0]].sym} → ${COINS[SIDES[L.dir][1]].sym}`, act: 'swap' };
+  }
+  // One press of BTC: the quote must be fit to swap on (as the swap's own press asks), and the press pays the amount and the lock's fee, with half the fee
+  // again in hand (a fee that rises before the lock is made; what is left stays at the address), less what the address holds already
+  function pressGate(q, amount, bal) {
+    if (q.blocked) return { label: 'Not at this price', off: true };
+    if (q.renewed) return { label: 'Accept the new price', act: 'accept' };
+    if (q.highFee && !q.feeAccepted) return { label: 'Accept the Bitcoin fee', act: 'acceptFee' };
+    if (L.payTo.mode !== 'private' && !L.payTo.address) return { label: 'Enter the Ethereum address', off: true };
+    const fee = BigInt(q.networkFeeSats ?? LOCK_GUESS_SATS), send = amount + (fee * 3n + 1n) / 2n - (bal ?? 0n);
+    if (send <= 546n) return null;
+    return { label: `Swap ${fmt(amount)} BTC → ETH`, act: 'bpress', fund: { sats: Number(send) } };
   }
   const rows = (rs) => rs.map(([k, v, c]) => `<div><dt>${esc(k)}</dt><dd${c ? ` class="${c}"` : ''}>${esc(v)}</dd></div>`).join('');
   // Before a quote: the market, what the providers take and hold, and who; the firm price comes once the wallet is open
@@ -406,7 +440,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       ['Provider', q.provider?.name || 'Provider', ''],
       ...(Number(q.networkFeeSats) > 0 ? [['Bitcoin fee', `about ${Number(q.networkFeeSats).toLocaleString('en-US')} sats`, '']] : []),
       ...(L.dir === 'e2b' && Number(q.takeFeeSats) > 0 ? [['Bitcoin fee', `about ${Number(q.takeFeeSats).toLocaleString('en-US')} sats, from the lock when you take it`, '']] : []),
-      ['Time', L.dir === 'e2b' ? etaSpan(q.etaSecs) : etaText(q.etaSecs), ''],
+      ['Time', etaSpan(q.etaSecs), ''],
       ['If it stops', L.dir === 'b2e' ? 'your BTC returns to you within about a day' : 'your ETH returns to your private balance after about 4 hours', ''],
       ...(q.warnings || []).map((w) => ['Note', w, 'warn']),
     ];
@@ -415,12 +449,23 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   }
   // A press under way, before its swap has started: shown as the swap it becomes, its first step (the ETH made private) under way, the rest to come
   function pressCard(C) {
+    if (C.dir === 'b2e') return pressCardBtc(C);
     const waits = C.phase === 'paused', sent = C.mined ? 'The deposit is in a block. The swap is being started with the provider.' : C.sent ? 'The deposit is sent and waits for a block. The swap starts with the provider as soon as it is in one.' : 'Confirm the deposit in your wallet.';
     return {
       id: 'press', dir: 'e2b', state: 'working', title: waits ? 'Waiting for you' : 'Adding your ETH privately', press: true,
       detail: waits ? 'Your ETH is in your private balance. Nothing has been asked of the provider yet.' : C.cancelled ? 'Cancelled: no swap starts. A deposit that was sent stays in your private balance.' : sent,
       pay: C.amount, get: C.q ? C.q.get : 0n, steps: [{ key: 'private', title: PRIVATE_STEP, state: waits ? 'done' : 'active' }, ...E2B_STEPS.map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'todo' }))],
       etaSecs: waits ? 0 : (C.mined ? 0 : PRESS_SECS) + E2B_SECS, refundAt: null, backBy: null,
+    };
+  }
+  function pressCardBtc(C) {
+    const waits = C.phase === 'paused';
+    const said = waits ? 'Your BTC is at your Tacit wallet’s Bitcoin address. Nothing has been asked of the provider yet.' : C.cancelled ? 'Cancelled: no swap starts. Sats that were sent stay at your Tacit wallet’s Bitcoin address.'
+      : C.mined ? 'The payment has arrived. Your lock is being made from it, so the two confirm together.' : C.sent ? 'The payment is sent. The swap starts as soon as Bitcoin shows it.' : 'Confirm the payment in your Bitcoin wallet.';
+    return {
+      id: 'press', dir: 'b2e', state: 'working', title: waits ? 'Waiting for you' : 'Sending your BTC', press: true, detail: said,
+      pay: C.amount, get: C.q ? C.q.get : 0n, steps: B2E_STEPS.map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: i === 0 && !waits ? 'active' : 'todo' })),
+      etaSecs: waits ? 0 : PRESS_SECS + B2E_SECS, refundAt: null, backBy: null,
     };
   }
   // what a swap of ETH started with one press shows: the step that made its ETH private first, done once the deposit has landed
@@ -442,10 +487,17 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   // Tacit's Bitcoin order book (same key, same tab), or hold it in another wallet (the wallet sheet gives the Bitcoin key).
   const RECENT_SECS = 3 * 86400;
   function nextSteps(r) {
+    if (r.dir === 'b2e') return payNext(r);
     if (!onNext || r.dir !== 'e2b' || r.state !== 'done' || !(r.get > 0n) || (r.at && now() - r.at > RECENT_SECS)) return '';
     const got = r.got != null && r.got > 0n ? r.got : r.get;
     return `<div class="nx"><button class="nx-b main" type="button" data-next="send" data-sats="${esc(String(got))}">Send BTC</button><a class="nx-b" href="${BTC_BOOK}" data-next="book">Use it on Tacit</a></div>`
       + `<small class="nx-n">Send it to any wallet (UniSat, Sparrow, an exchange), or bid for TAC with it on Tacit’s Bitcoin order book. To keep it in another wallet instead, import this wallet’s Bitcoin key: <a href="${WALLET_SHEET}" data-next="elsewhere">Use this wallet’s Bitcoin elsewhere</a>.</small>`;
+  }
+  // a finished swap of BTC whose ETH was kept private: one button sends it on to an Ethereum address (the page asks where, and shows the fee first)
+  function payNext(r) {
+    const k = D.key ? D.key() : null;
+    if (!payout || !onNext || !k || r.state !== 'done' || !(r.get > 0n) || (r.at && now() - r.at > RECENT_SECS) || payout.want(k.pubHex, r.id)) return '';
+    return `<div class="nx"><button class="nx-b" type="button" data-next="withdraw" data-id="${esc(r.id)}" data-units="${esc(String(r.get))}">Send to an Ethereum address</button></div>`;
   }
   function paintRecs() {
     const box = recsHost || $('a-sent'), gone = dismissed(), recs = L.recs.filter((r) => !gone.has(r.id)).map(withPress);
@@ -460,7 +512,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       const side = (v, k) => (v > 0n ? `${fmt(v)} ${COINS[k].sym}` : COINS[k].sym);
       const got = r.state === 'done' && r.got != null && r.got > 0n ? r.got : r.get;
       const what = r.pay > 0n || r.get > 0n ? `${side(r.pay, pk)} → ${r.pay > 0n && r.get > 0n && r.state !== 'done' ? 'about ' : ''}${side(got, gk)}` : '';
-      const eta = r.state === 'working' && r.etaSecs ? (r.dir === 'e2b' ? etaSpan(r.etaSecs) : etaText(r.etaSecs)) : '';
+      const eta = r.state === 'working' && r.etaSecs ? etaSpan(r.etaSecs) : '';
       const sure = lockedIn(r);
       // the Bitcoin lock under way, linked: the provider's (e2b, once it says its txid) or the user's own (b2e)
       const lockAt = r.state === 'working' && /^[0-9a-f]{64}$/.test(String(r.lockTxid || '')) ? ` <a href="https://mempool.space/tx/${esc(r.lockTxid)}" target="_blank" rel="noopener noreferrer">${r.dir === 'e2b' ? 'The provider’s lock' : 'Your lock'} ↗</a>` : '';
@@ -474,7 +526,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       // (a press may be cancelled only while that costs the provider nothing: before it is asked, which is before the deposit is mined, or while new numbers wait)
       const cancel = r.press && !L.chain.cancelled && (L.chain.phase === 'paused' || (L.chain.phase === 'adding' && !L.chain.mined)) ? ' <button class="link cx" type="button" data-press-cancel>Cancel</button>' : '';
       return `<div class="${cls}${r.press ? ' press' : ''}" data-rec="${esc(r.id)}"><span><i class="dot" aria-hidden="true"></i><b>${esc(r.title)}</b></span><span>${eta ? esc(eta) : ''}${r.state === 'working' || r.press ? cancel : ` <button class="link" type="button" data-dismiss="${esc(r.id)}" aria-label="Dismiss">×</button>`}</span>
-        ${what ? `<span class="what">${esc(what)}</span>` : ''}${steps ? `<ol class="stp${r.steps.length === 5 ? ' s5' : ''}">${steps}</ol>` : ''}${r.detail || back ? `<small>${esc([r.detail, back].filter(Boolean).join(' '))}${lockAt}</small>` : ''}${sure ? `<small class="sure">${esc(sure)}</small>` : ''}${stay && !r.press ? `<small class="stay${by ? ' by' : ''}">${esc(stay)}</small>` : ''}${nextSteps(r)}</div>`;
+        ${what ? `<span class="what">${esc(what)}</span>` : ''}${steps ? `<ol class="stp${r.steps.length === 5 ? ' s5' : ''}">${steps}</ol>` : ''}${r.detail || back ? `<small>${esc([r.detail, back].filter(Boolean).join(' '))}${lockAt}</small>` : ''}${sure ? `<small class="sure">${esc(sure)}</small>` : ''}${stay && !r.press ? `<small class="stay${by ? ' by' : ''}">${esc(stay)}</small>` : ''}${payLine(r)}${nextSteps(r)}</div>`;
     }).join('');
   }
   function paint() {
@@ -505,7 +557,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     go.textContent = gt.label; go.disabled = !!gt.off; go.dataset.act = gt.act || ''; fundAsk = gt.fund || null; addAsk = gt.add || null;
     // what one press does, and what its deposit from the wallet shows on chain, said under the button
     if (gt.act === 'oneclick' && !L.busy && (!L.line || L.cls === 'hint')) say(`${ONE_PRESS}<small>${esc(SHIELD_NOTE)}</small>`, 'hint');
-    else if (gt.act !== 'oneclick' && L.cls === 'hint') say('');
+    else if (gt.act === 'bpress' && !L.busy && (!L.line || L.cls === 'hint')) say(`${ONE_PRESS_BTC}<small>${esc(BTC_NOTE)}</small>`, 'hint');
+    else if (gt.act !== 'oneclick' && gt.act !== 'bpress' && L.cls === 'hint') say('');
+    paintPayTo();
     // (nothing of a press under way changes under it: the amount and the way round wait for it)
     $('a-amt').disabled = !!L.chain;
     if (L.chain) { /* a press under way says its own steps */ }
@@ -514,6 +568,62 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     else if (L.q?.highFee && !L.q.feeAccepted && !L.q.renewed && !L.busy) say(esc(`The Bitcoin fee is about ${L.q.highFee.sats.toLocaleString('en-US')} sats, ${(L.q.highFee.bps / 100).toFixed(1)}% of the amount. Accept it to go on, or swap a larger amount.`), 'warn');
     else if (L.cls === 'err' && !L.busy && !L.sticky) say('');
   }
+
+  // ── "Receive as" (a swap of BTC, with btc/payout.js): the ETH kept private, or sent on to an Ethereum address once it has arrived ──
+  // Drawn once while it shows and changed in place (what is typed stays), the relay's fee read for the amount and said before the press.
+  let ptShown = '', ptFee = { units: null, fee: null, net: null, at: 0 };
+  const ptShort = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+  function paintPayTo() {
+    const box = $('a-payto');
+    const k = payout && D.unlocked && D.key ? D.key() : null, q = L.q;
+    const on = !!(k && pair && L.dir === 'b2e' && !L.chain && amountBase());
+    box.hidden = !on;
+    if (!on) return;
+    const own = payout.tacitAddress(k.priv);
+    if (ptShown !== k.pubHex) {
+      ptShown = k.pubHex;
+      box.innerHTML = `<fieldset class="pt"><legend>Receive as</legend>
+        <label><input type="radio" name="a-pt" value="private" checked><span>Private ETH in your Tacit wallet</span></label>
+        <label><input type="radio" name="a-pt" value="tacit"><span>Sent to your Tacit Ethereum address <code class="num" id="a-pt-own"></code></span></label>
+        <label><input type="radio" name="a-pt" value="other"><span>Sent to another Ethereum address</span></label>
+        <input id="a-pt-addr" placeholder="0x…" autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Ethereum address" hidden>
+        <p class="pt-say" id="a-pt-say" role="status"></p></fieldset>`;
+      L.payTo = { mode: 'private', address: null };
+    }
+    $('a-pt-own').textContent = ptShort(own);
+    $('a-pt-own').title = own;
+    const mode = L.payTo.mode;
+    $('a-pt-addr').hidden = mode !== 'other';
+    const ptSay = $('a-pt-say');
+    if (mode === 'private') { ptSay.textContent = ''; ptSay.className = 'pt-say'; return; }
+    if (mode === 'other' && !L.payTo.address) {
+      const t = $('a-pt-addr').value.trim(), c = payout.checkAddress(t);
+      ptSay.textContent = t && !c.ok ? c.why : 'The ETH goes there once it arrives; the relay takes its fee from it.'; ptSay.className = `pt-say${t && !c.ok ? ' err' : ''}`;
+      return;
+    }
+    const units = q && q.dir === 'b2e' ? q.get : null;
+    if (units && (ptFee.units !== units || Date.now() - ptFee.at > 60000)) {
+      ptFee = { units, fee: null, net: null, at: Date.now() };
+      payout.quote(units).then((f) => { if (ptFee.units === units) { ptFee = { ...ptFee, ...f }; paintPayTo(); } }, () => {});
+    }
+    const fee = ptFee.units === units ? ptFee : null;
+    ptSay.className = 'pt-say';
+    ptSay.textContent = `${fee && fee.fee != null ? `The relay’s fee, about ${fmt(fee.fee)} ETH, comes out of it: about ${fmt(fee.net)} ETH arrives at ${ptShort(L.payTo.address)}.` : 'Reading the relay’s fee…'} `
+      + 'Sent there, it is public from that address on. Sending all of it right after the swap makes the two easy to match by amount and time; kept private, they are not.';
+  }
+  host.addEventListener('change', (e) => {
+    if (e.target.name !== 'a-pt') return;
+    const k = D.key ? D.key() : null, mode = e.target.value;
+    L.payTo = { mode, address: mode === 'tacit' && k && payout ? payout.tacitAddress(k.priv) : mode === 'other' ? (payout.checkAddress($('a-pt-addr').value).address || null) : null };
+    paint();
+    if (mode === 'other') $('a-pt-addr').focus();
+  });
+  host.addEventListener('input', (e) => {
+    if (e.target.id !== 'a-pt-addr') return;
+    const c = payout.checkAddress(e.target.value);
+    L.payTo = { mode: 'other', address: c.ok ? c.address : null };
+    paint();
+  });
 
   // ── actions ──
   // What the lane reads first once a key opens, read ahead while the visitor signs in or before (once): the pair opener's modules, the pool's history (which
@@ -540,8 +650,10 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     try {
       const r = await p.start(q);
       if (g !== gen) return;
+      const to = payToNow();
       L.amt = ''; $('a-amt').value = ''; L.q = null; L.qErr = '';
       say('');
+      payChosen(r.id, to);
       const recs = await (recovering ? Promise.reject() : p.pump()).catch(async () => p.records().catch(() => L.recs));
       if (g !== gen) return;
       L.recs = recs;
@@ -598,6 +710,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   // failed starts nothing. A quote that ran out meanwhile is renewed; one that gives less than the press saw, or asks a large Bitcoin fee not accepted, waits
   // for a yes. Until the provider is asked, the press can be cancelled: the deposit (if it was sent) stays in the private balance.
   const cancelLink = () => ' <button class="link" type="button" data-press-cancel>Cancel</button>';
+  // where a press's money stays when no swap starts: the private balance (ETH), or the Tacit wallet's Bitcoin address (BTC, sent anywhere with Send BTC)
+  const keptLine = (C) => (C.dir === 'b2e' ? 'Your BTC stays at your Tacit wallet’s Bitcoin address: nothing was swapped.' : 'Your ETH stays in your private balance: nothing was swapped.');
   function pressSay(C, h, cls = '') {
     if (L.chain !== C) return;
     say(`${h}${!C.cancelled && C.phase === 'adding' && !C.mined ? cancelLink() : ''}`, cls);
@@ -617,12 +731,13 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       slowTimer = setTimeout(() => { if (L.chain === C && !C.mined) pressSay(C, `The deposit${ethLink(d)} is still waiting for a block: Ethereum is slow right now. Nothing needs to be sent again.`); }, 3 * 60e3);
     } else if (k === 'mined') pressSay(C, `The deposit is in${ethLink(d.hash)}. Starting the swap…`);
   }
-  const cancelledLine = (C) => (C.sent ? 'Cancelled: no swap starts. The deposit is already sent, so its ETH lands in your private balance, ready for a later swap.'
+  const cancelledLine = (C) => (C.dir === 'b2e' ? (C.sent ? 'Cancelled: no swap starts. The payment is already sent, so its sats arrive at your Tacit wallet’s Bitcoin address; Send BTC below sends them anywhere.' : 'Cancelled: no swap starts. Decline the payment in your wallet and nothing is sent.')
+    : C.sent ? 'Cancelled: no swap starts. The deposit is already sent, so its ETH lands in your private balance, ready for a later swap.'
     : 'Cancelled: no swap starts. Decline the deposit in your wallet and nothing is sent; if it goes ahead, its ETH stays in your private balance.');
   function cancelPress() {
     const C = L.chain;
     if (!C || C.cancelled) return;
-    if (C.phase === 'paused') { endPress(C, 'Kept private: nothing was swapped. Your ETH is in your private balance.', ''); return; }
+    if (C.phase === 'paused') { endPress(C, C.dir === 'b2e' ? 'Nothing was swapped. Your BTC is at your Tacit wallet’s Bitcoin address.' : 'Kept private: nothing was swapped. Your ETH is in your private balance.', ''); return; }
     if (C.phase !== 'adding' || C.mined) return;                     // the provider is being asked: from here the swap goes through or returns
     C.cancelled = true; L.sticky = true;
     pressSay(C, cancelledLine(C));
@@ -638,7 +753,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const k = D.key ? D.key() : null, q = L.q, amount = amountBase();
     if (!k || !shield || L.chain || L.busy || L.adding || !add || !q || !amount || q.blocked || q.renewed || (q.highFee && !q.feeAccepted)) return;
     const g = gen;
-    const C = L.chain = { phase: 'adding', amount, add, q, sent: false, mined: false, landed: false, cancelled: false, coming: add, id: null };
+    const C = L.chain = { dir: 'e2b', phase: 'adding', amount, add, q, sent: false, mined: false, landed: false, cancelled: false, coming: add, id: null, payTo: null };
     L.adding = true; L.sticky = false; paint();
     let minedNow;
     const mined = new Promise((r) => { minedNow = r; });
@@ -693,20 +808,21 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       if (g !== gen || L.chain !== C) return;
       if (!q || q.expiresAt - now() < START_SECS) {
         let nq;
-        try { nq = await p.quote({ dir: 'e2b', amount: C.amount }); } catch (e) { if (g === gen) endPress(C, `${plainError(e)} Your ETH stays in your private balance: nothing was swapped.`); return; }
+        try { nq = await p.quote({ dir: C.dir, amount: C.amount }); } catch (e) { if (g === gen) endPress(C, `${plainError(e)} ${keptLine(C)}`); return; }
         if (g !== gen || L.chain !== C) return;
-        if (nq.blocked) { endPress(C, `${nq.blocked.charAt(0).toUpperCase()}${nq.blocked.slice(1)}. Your ETH stays in your private balance: nothing was swapped.`); return; }
+        if (nq.blocked) { endPress(C, `${nq.blocked.charAt(0).toUpperCase()}${nq.blocked.slice(1)}. ${keptLine(C)}`); return; }
         if (worseThan(C.q, nq)) { pausePress(C, nq, 'price'); return; }
         if (nq.highFee && !C.q.feeAccepted) { pausePress(C, nq, 'fee'); return; }
         q = { ...nq, feeAccepted: !!C.q.feeAccepted };
       }
       try {
-        const r = await p.start(q, { coming: C.landed ? null : C.coming });
+        const r = await p.start(q, C.dir === 'b2e' ? { coins: C.coins } : { coming: C.landed ? null : C.coming });
         if (g !== gen) return;
-        C.phase = 'started'; C.id = r.id; chains.set(r.id, C); L.chain = null; clearTimeout(slowTimer);
+        C.phase = 'started'; C.id = r.id; if (C.dir === 'e2b') chains.set(r.id, C); L.chain = null; clearTimeout(slowTimer);
+        payChosen(r.id, C.payTo);
         L.amt = ''; $('a-amt').value = ''; L.q = null; L.qErr = ''; L.sticky = false;
         say('');
-        if (C.landed && pair) pair.prepare?.(C.amount)?.catch?.(() => {});
+        if (C.dir === 'e2b' && C.landed && pair) pair.prepare?.(C.amount)?.catch?.(() => {});
         const recs = await (recovering ? Promise.reject() : p.pump()).catch(async () => p.records().catch(() => L.recs));
         if (g !== gen) return;
         L.recs = recs; known.set(r.id, 'working');
@@ -717,7 +833,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         if (g !== gen) return;
         // a provider that could not hold its quote: the next best is asked for, and taken only if it is no worse (else it waits for a yes)
         if (e && e.requote && tries < 1) { q = null; continue; }
-        endPress(C, `${plainError(e)} Your ETH stays in your private balance: nothing was swapped.`);
+        endPress(C, `${plainError(e)} ${keptLine(C)}`);
         return;
       }
     }
@@ -727,9 +843,10 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     L.q = why === 'price' ? { ...nq, renewed: { get: C.q.get } } : nq;
     L.sticky = true;
     const arrives = (x) => (Number(x.takeFeeSats) > 0 && x.get > BigInt(x.takeFeeSats) ? x.get - BigInt(x.takeFeeSats) : x.get);
+    const keep = C.dir === 'b2e' ? 'keep your BTC at your Tacit wallet’s address' : 'keep your ETH private', gets = COINS[SIDES[C.dir][1]].sym;
     const h = why === 'price'
-      ? `The price moved while your ETH was made private: ${esc(fmt(arrives(C.q)))} → ${esc(fmt(arrives(nq)))} BTC. Accept the new price to go on, or cancel and keep your ETH private.`
-      : `The Bitcoin fee is now about ${esc(nq.highFee.sats.toLocaleString('en-US'))} sats, ${esc((nq.highFee.bps / 100).toFixed(1))}% of the amount. Accept it to go on, or cancel and keep your ETH private.`;
+      ? `The price moved ${C.dir === 'b2e' ? 'while your BTC was on its way' : 'while your ETH was made private'}: ${esc(fmt(arrives(C.q)))} → ${esc(fmt(arrives(nq)))} ${gets}. Accept the new price to go on, or cancel and ${keep}.`
+      : `The Bitcoin fee is now about ${esc(nq.highFee.sats.toLocaleString('en-US'))} sats, ${esc((nq.highFee.bps / 100).toFixed(1))}% of the amount. Accept it to go on, or cancel and ${keep}.`;
     say(`${h}${cancelLink()}`, 'warn');
     paint();
   }
@@ -739,6 +856,97 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     C.q = { ...C.next, renewed: null, feeAccepted: C.why === 'fee' ? true : !!C.q.feeAccepted }; C.next = null;
     L.sticky = false; say('Starting the swap…');
     startPress(C);
+  }
+
+  // ── one press of BTC: paid in from a Bitcoin wallet, then swapped ──
+  // The Bitcoin wallet in this browser pays the amount and the lock's fee to the Tacit wallet's own Bitcoin address, in one prompt of its own (its coin choice
+  // is the wallet's: a coin with an inscription or a rune is never spent here). As soon as the explorers show the payment, the swap's lock is made from it,
+  // not waiting for its block: the payment and the lock then confirm together (only the payer could undo the payment, and the provider locks nothing until
+  // the lock is in a block). A payment declined starts nothing. Until the lock is made the press can be cancelled, and the sats stay at the address.
+  const btcOf = (sats) => `${tidy(fmtUnits(BigInt(sats), 8, 8))} BTC`;
+  const ARRIVE_TRIES = 40, ARRIVE_MS = 3000;
+  async function oneClickBtc(fund) {
+    const q = L.q, amount = amountBase(), sats = Number(fund?.sats || 0);
+    if (L.chain || L.busy || !q || !amount || !(sats > 546) || q.blocked || q.renewed || (q.highFee && !q.feeAccepted) || !D.sendIn) return;
+    const g = gen, p = pair;
+    const C = L.chain = { dir: 'b2e', phase: 'adding', amount, q, sats, sent: false, mined: false, landed: true, cancelled: false, coins: null, id: null, payTo: payToNow() };
+    L.sticky = false; paint();
+    pressSay(C, `Confirm in your Bitcoin wallet: ${esc(btcOf(sats))} (${esc(sats.toLocaleString('en-US'))} sats) to your Tacit wallet’s Bitcoin address. It goes straight into the swap. Your wallet adds its network fee.`);
+    let sent;
+    try { sent = await D.sendIn(sats); } catch (e) {
+      if (g !== gen || L.chain !== C) return;
+      const m = String(e?.message || e || '');
+      endPress(C, /reject|cancel|denied|declin|user/i.test(m) ? 'Nothing was sent.' : `${plainError(e)} Nothing was sent.`, /reject|cancel|denied|declin|user/i.test(m) ? '' : 'err');
+      return;
+    }
+    if (g !== gen || L.chain !== C) return;
+    C.sent = true; C.txid = sent.txid;
+    const link = /^[0-9a-f]{64}$/.test(C.txid || '') ? ` <a href="https://mempool.space/tx/${esc(C.txid)}" target="_blank" rel="noopener noreferrer">${esc(C.txid.slice(0, 10))}…↗</a>` : '';
+    pressSay(C, `Sent${link}. The swap starts as soon as Bitcoin shows the payment, in a few seconds.`);
+    // the payment as the explorers show it: the coins it made at this address
+    for (let i = 0; i < ARRIVE_TRIES && g === gen && L.chain === C && !C.cancelled; i++) {
+      const cs = /^[0-9a-f]{64}$/.test(C.txid || '') ? await p.arriving(C.txid).catch(() => []) : [];
+      if (cs.length) { C.coins = cs; break; }
+      await new Promise((r) => setTimeout(r, ARRIVE_MS));
+    }
+    if (g !== gen || L.chain !== C) return;
+    if (C.cancelled) { endPress(C, 'Cancelled: no swap starts. The sats are at your Tacit wallet’s Bitcoin address; Send BTC below sends them anywhere.', ''); readMe(true); return; }
+    if (!C.coins) { endPress(C, `The payment${link ? '' : ''} is not showing on Bitcoin yet. Nothing was swapped: once it arrives, its sats are at your Tacit wallet’s Bitcoin address, and the swap can be pressed again.`); return; }
+    C.mined = true;
+    await startPress(C);
+  }
+
+  // ── where the ETH of a swap of BTC goes (btc/payout.js): the private balance, or an Ethereum address once it has arrived ──
+  const payToNow = () => (payout && L.dir === 'b2e' && L.payTo.mode !== 'private' && L.payTo.address ? L.payTo.address : null);
+  function payChosen(id, to) {
+    const k = D.key ? D.key() : null;
+    if (!payout || !to || !k) return;
+    payout.choose(k.pubHex, id, { to, state: 'waiting' });
+  }
+  // A swap of BTC whose ETH has been claimed, with an address chosen for it: the relay withdraws it there, one at a time (and one tab at a time), a
+  // withdrawal the relay has not finished is asked again a little later
+  let paying = false;
+  async function payDue() {
+    const k = D.key ? D.key() : null;
+    if (!payout || paying || !k) return;
+    const due = L.recs.find((r) => {
+      if (r.dir !== 'b2e' || !(r.get > 0n) || !(r.steps || []).some((s) => s.key === 'claim' && s.state === 'done')) return false;
+      const w = payout.want(k.pubHex, r.id);
+      return w && (w.state === 'waiting' || (w.state === 'sending' && Date.now() - Number(w.tried || 0) > 15 * 60e3)) && Date.now() >= Number(w.nextAt || 0);
+    });
+    if (!due) return;
+    const run = async () => {
+      const w = payout.want(k.pubHex, due.id);
+      if (!w || w.state === 'sent') return;
+      paying = true;
+      payout.choose(k.pubHex, due.id, { state: 'sending', tried: Date.now() }); paintRecs();
+      try {
+        const r = await payout.send({ key: k, units: due.get, to: w.to });
+        payout.choose(k.pubHex, due.id, { state: 'sent', tx: r.txHash, net: String(r.net), fee: String(r.fee) });
+        notify('ETH sent to your address');
+      } catch (e) {
+        payout.choose(k.pubHex, due.id, e?.retry ? { state: 'waiting', nextAt: Date.now() + 30000 } : { state: 'failed', why: plainError(e) });
+      } finally { paying = false; paintRecs(); }
+    };
+    const locks = typeof navigator !== 'undefined' ? navigator.locks : null;
+    if (locks && typeof locks.request === 'function') await locks.request(`tacit-btc-payout:${k.pubHex}`, { ifAvailable: true }, (l) => (l ? run() : null));
+    else await run();
+  }
+  // what the card of a swap of BTC says of its ETH's way on: chosen, being sent, sent (linked), or a send that failed (with a way to try again)
+  function payLine(r) {
+    const k = D.key ? D.key() : null;
+    if (!payout || !k || r.dir !== 'b2e') return '';
+    const w = payout.want(k.pubHex, r.id);
+    if (!w) return '';
+    const to = `${w.to.slice(0, 6)}…${w.to.slice(-4)}`;
+    if (w.state === 'sent') return `<small class="paid">Sent to ${esc(to)}${w.net && w.net !== '0' ? `: ${esc(fmt(BigInt(w.net)))} ETH` : ''}.${/^0x[0-9a-f]{64}$/i.test(w.tx || '') ? ` <a href="https://etherscan.io/tx/${esc(w.tx)}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a>` : ''}</small>`;
+    if (w.state === 'failed') return `<small class="paid err">Could not send to ${esc(to)}: ${esc(w.why || 'try again')} <button class="link" type="button" data-pay-retry="${esc(r.id)}">Try again</button></small>`;
+    return `<small class="paid">${w.state === 'sending' ? `Sending the ETH to ${esc(to)}…` : `Then sent to ${esc(to)}, once the ETH has arrived.`}</small>`;
+  }
+  function payRetry(id) {
+    const k = D.key ? D.key() : null;
+    if (!payout || !k) return;
+    payout.choose(k.pubHex, id, { state: 'waiting', why: null, nextAt: 0 }); paintRecs(); payDue();
   }
 
   // a deposit this browser kept (a reload, or a wait that ran out) is finished while the key is open
@@ -773,6 +981,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
           known.set(r.id, r.state);
         }
         L.recs = next; paintRecs();
+        payDue();
       } catch { /* the next pass */ }
       if (g === gen) follow(document.hidden ? HIDDEN_POLL_MS : POLL_MS);
     }, wait);
@@ -788,11 +997,12 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   host.addEventListener('click', (e) => {
     const t = e.target;
     if (t.closest('[data-press-cancel]')) { cancelPress(); return; }
+    if (t.closest('[data-pay-retry]')) { payRetry(t.closest('[data-pay-retry]').dataset.payRetry); return; }
     if (t.closest('#a-flip')) { if (L.busy || L.chain) return; L.dir = L.dir === 'b2e' ? 'e2b' : 'b2e'; L.amt = ''; $('a-amt').value = ''; L.q = null; L.qErr = ''; seq++; L.sticky = false; say(''); onState(); paint(); return; }
     const dm = t.closest('[data-dismiss]');
     if (dm) { dismiss(dm.dataset.dismiss); return; }
     const qk = t.closest('[data-quick]'); if (qk && !L.chain) { $('a-amt').value = qk.dataset.quick; setAmt(qk.dataset.quick); return; }
-    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'oneclick') oneClick(addAsk); else if (a === 'chainGo') acceptPress(); else if (a === 'swap') swap(); else if (a === 'reread') { L.unread = null; paint(); readMe(); } else if (a === 'accept' && L.q) { L.q = { ...L.q, renewed: null }; L.sticky = false; say(''); paint(); } else if (a === 'acceptFee' && L.q) { L.q = { ...L.q, feeAccepted: true }; say(''); paint(); } }
+    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'oneclick') oneClick(addAsk); else if (a === 'bpress') oneClickBtc(fundAsk); else if (a === 'chainGo') acceptPress(); else if (a === 'swap') swap(); else if (a === 'reread') { L.unread = null; paint(); readMe(); } else if (a === 'accept' && L.q) { L.q = { ...L.q, renewed: null }; L.sticky = false; say(''); paint(); } else if (a === 'acceptFee' && L.q) { L.q = { ...L.q, feeAccepted: true }; say(''); paint(); } }
   });
   recsHost?.addEventListener('click', (e) => {
     const dm = e.target.closest('[data-dismiss]'); if (dm) { dismiss(dm.dataset.dismiss); return; }
@@ -800,6 +1010,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     // a finished swap's next step: the page sends the BTC (its own panel); the links go where they say
     const nx = e.target.closest('[data-next="send"]');
     if (nx && onNext) { try { onNext({ act: 'send', sats: BigInt(nx.dataset.sats) }); } catch { /* the page's hook */ } }
+    const wd = e.target.closest('[data-next="withdraw"]');
+    if (wd && onNext) { try { onNext({ act: 'withdraw', id: wd.dataset.id, units: BigInt(wd.dataset.units) }); } catch { /* the page's hook */ } }
+    const pr = e.target.closest('[data-pay-retry]'); if (pr) payRetry(pr.dataset.payRetry);
   });
 
   return {
@@ -814,6 +1027,11 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     hide() { L.open = false; clearInterval(refreshTimer); clearTimeout(poll); clearTimeout(qTimer); clearTimeout(marketTimer); },
     // read ahead what the lane needs once the key opens (a page calls it when the visitor shows an interest; signing in does too)
     warm,
+    // a finished swap of BTC's ETH, sent on to `to` by the relay (the page asked where, and showed the fee)
+    payTo: (id, to) => { payChosen(id, to); paintRecs(); payDue(); },
+    payout: () => payout,
+    // the Ethereum address the open key makes (the wallet sheet's), or null
+    ethAddress: () => { const k = D.key ? D.key() : null; return k && payout ? payout.tacitAddress(k.priv) : null; },
     // the pair and amount a link names
     set({ dir: d, amt } = {}) {
       if (d && d !== L.dir && !L.busy && !L.chain) { L.dir = d === 'e2b' ? 'e2b' : 'b2e'; L.q = null; L.qErr = ''; seq++; }

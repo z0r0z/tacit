@@ -681,6 +681,36 @@ test('the note a lock spends is cut to its amount at the start, while the provid
   assert.deepEqual(later, [String(UNITS)], 'the page asks once the deposit has landed');
 });
 
+test('one press from a Bitcoin wallet: a payment to the address not yet in a block funds the lock at once (the two confirm together), and the swap ends done', async () => {
+  const w = pairWorld();
+  await w.ready();
+  const out = w.fwd.quoter.price(SATS).evmAmount;
+  w.lEvm.fund(out, 'inv0');
+  // the payment has reached the address but no block has it: the address's confirmed coins do not list it
+  const unconfirmed = Object.assign(Object.create(Object.getPrototypeOf(w.uBtc)), w.uBtc, { satsUtxos: async () => [], satsCoins: async () => ({ coins: [], pending: 200_000 }) });
+  const pair = w.makePair({ btc: unconfirmed });
+  const q = await pair.quote({ dir: 'b2e', amount: SATS });
+  assert.ok(q.short && q.short.have === 0n, 'the confirmed coins are short of the lock: the quote says so');
+  await assert.rejects(() => pair.start(q), /your Bitcoin address holds 0 sats/, 'with nothing paid in, nothing starts');
+  const { id } = await pair.start(q, { coins: [w.uCoins[0]] });
+  assert.equal(id, bytesToHex(X.swapIdOf(w.uCoins[0].txid, w.uCoins[0].vout)), 'the lock spends the payment first (the swap is named by it)');
+  w.pair = pair;
+  await w.run(async () => (await pair.records()).some((r) => r.id === id && r.state === 'done'));
+  assert.deepEqual(w.evm.submitted.map((j) => j.type), ['adaptorlock', 'adaptorclaim'], 'the provider locked ETH, the user claimed it');
+});
+
+test('the coins a payment made to this address are read from its transaction, in a block or not, and only those still unspent', async () => {
+  const wallet = { pub: new Uint8Array(33).fill(2) };
+  const mine = '0014' + 'ab'.repeat(20);
+  const tx = { vout: [{ scriptpubkey: '0014' + 'cd'.repeat(20), value: 90000 }, { scriptpubkey: mine, value: 150000 }, { scriptpubkey: mine, value: 500 }, { scriptpubkey: mine, value: 70000 }] };
+  const btc = { wallet, prims: { p2wpkhScript: () => hexToBytes(mine) }, fetchTx: async (t) => (t === 'ee'.repeat(32) ? tx : null), outspend: async (t, v) => (v === 3 ? 'ff'.repeat(32) : null) };
+  const mem = () => ({ list: async () => [], get: async () => null, put: async () => {} });
+  const pc = makePairClient({ btc, evm: {}, seed: new Uint8Array(32), discover: async () => [], counterFor: () => null, reverseCallFor: () => null, feed: {}, stores: { fwd: mem(), index: mem(), swaps: () => mem(), quotes: () => mem() } });
+  assert.deepEqual(await pc.arriving('ee'.repeat(32)), [{ txid: 'ee'.repeat(32), vout: 1, value: 150000 }], 'its output to this address; not dust, not another address, not one spent');
+  assert.deepEqual(await pc.arriving('11'.repeat(32)), [], 'a transaction no explorer has yet: nothing');
+  assert.deepEqual(await pc.arriving('not a txid'), []);
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   const t0 = Date.now();

@@ -77,7 +77,8 @@ func token(r *http.Request) string { return strings.TrimSpace(r.Header.Get(Token
 //
 //	GET    /api/head                          the head: index, sha256, size, file url, closed, queue length
 //	GET    /f/phase2-<n>                      a file of the chain (byte ranges supported)
-//	POST   /api/join      {name, handle}      a place in the queue -> {token, ahead, state, poll_seconds}
+//	POST   /api/join      {name, handle, lane?} a place in the queue -> {token, ahead, state, poll_seconds}; lane "pool": a
+//	                                          prover-pool machine, which waits behind every person
 //	GET    /api/slot      (token header)      poll: {ahead, state, claim_by | expires, poll_seconds}; polling keeps the place
 //	POST   /api/claim     (token header)      at the head: claim the slot -> {index, sha256, size, url, expires}
 //	PUT    /api/upload    (token header)      the contribution, exactly the head's size -> the receipt, or why it was refused
@@ -128,12 +129,12 @@ func (c *Coordinator) Handler() http.Handler {
 			writeJSON(w, 415, map[string]string{"error": "send the body as application/json"})
 			return
 		}
-		var body struct{ Name, Handle string }
+		var body struct{ Name, Handle, Lane string }
 		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "a name of 1 to 64 printable characters"})
 			return
 		}
-		tok, st, err := c.Join(body.Name, body.Handle, c.clientIP(r))
+		tok, st, err := c.JoinLane(body.Name, body.Handle, c.clientIP(r), body.Lane)
 		if err != nil {
 			writeErr(w, err)
 			return
