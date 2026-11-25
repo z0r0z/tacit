@@ -1,0 +1,19 @@
+{
+    "discountBps": {
+        "long-history": 3680,
+        "pool-exit": 4255
+    },
+    "enabled": true,
+    "floorBps": {
+        "long-history": 4000,
+        "pool-exit": 2500
+    },
+    "quote": {
+        "maxAmount": "100000000000",
+        "maxDayOut": "500000000000",
+        "maxShareBps": 2000,
+        "minAmount": "100000000",
+        "reserveBps": 1000
+    },
+    "validSecs": 600
+}
