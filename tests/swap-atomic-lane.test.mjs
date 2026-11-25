@@ -78,6 +78,12 @@ const FAKE = `
       const b2e = dir === 'b2e', blocked = S.mode === 'blocked';
       const q = { dir, provider: { id: 'p1', name: 'Test provider' }, pay: amount, get: ((b2e ? (amount * 304n) / 10n : (amount * 10n) / 304n) * (S.cut ? 99n : 100n)) / 100n, rate: blocked ? 29.4 : 30.4, market: 30.62, vsMarketBps: blocked ? -410 : -72, feeBps: 40, etaSecs: 780,
         networkFeeSats: b2e ? 1200 : 0, takeFeeSats: b2e ? null : 500, expiresAt: now() + (S.ttl || 300), highFee: S.highFee ? { sats: 1200, bps: 1200 } : null, warnings: S.warn ? ['The provider holds less than this right now.'] : [], blocked: blocked ? 'the provider quotes 4.1% under the market' : null, ref: { n: calls.quote.length } };
+      // (a swap that three providers fill: the plan beside the quote, as fastbridge-pair.js shapes it)
+      if (S.mode === 'split') {
+        const part = (name, pay) => ({ provider: { id: name, name }, pay, get: (pay * 304n) / 10n, ref: {} });
+        const each = amount / 3n;
+        q.provider = { id: 'split', name: '3 providers' }; q.split = { legs: [part('Alpha', each), part('Bravo', each), part('Charlie', amount - 2n * each)], single: null };
+      }
       calls.quotes.push(q);
       return q;
     },
@@ -213,6 +219,32 @@ console.log('a provider: the switch appears, and the lane opens');
   await type(page, '0.013');
   ok(/Note\s*The provider holds less than this right now\./.test(await text(page, '#a-rcpt')) && !(await page.$eval('#a-go', (e) => e.disabled)), 'a note from the provider is shown and does not stop the swap');
   await atom(page, '(A.warn = false, 0)');
+
+  console.log('the lane: a swap that several providers fill');
+  await atom(page, '(A.mode = "split", 0)');
+  await type(page, '0.015');
+  await page.waitForFunction(() => /Best price across 3 providers/.test(document.querySelector('#a-rcpt').textContent), null, { timeout: 5000 });
+  const sr = await text(page, '#a-rcpt');
+  ok(/Providers\s*Best price across 3 providers/.test(sr) && /Alpha\s*0\.005 BTC → 0\.152 ETH/.test(sr) && /Charlie\s*0\.005 BTC → 0\.152 ETH/.test(sr), `the plan is shown before the press: each provider, what it is given and what it pays out (${sr.slice(0, 260)})`);
+  ok(/One provider\s*none takes this much/.test(sr) && /Bitcoin fee\s*about 1,200 sats, one transaction for all/.test(sr), 'and that no one provider takes it, and one fee for the one transaction');
+  ok(/^Swap BTC → ETH$/.test(await text(page, '#a-go')) && !(await page.$eval('#a-go', (e) => e.disabled)), 'the button is as it is for one provider');
+  await SHOT(page, 'lane-split-quote');
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__atom.calls.start.length >= 1, null, { timeout: 5000 });
+  ok((await atom(page, 'A.calls.start.at(-1).split.legs.length')) === 3, 'one press starts the split with its three legs');
+  await sleep(500);
+  // the one card: three parts inside, one time, and what became of each part said by itself
+  const leg = (id, provider, state, title, detail, o = {}) => ({ id, provider, state, title, detail, pay: 500000n, get: 15200000n, got: null, refundAt: null, steps: [], etaSecs: 0, k: 0, ...o });
+  await atom(page, `(A.recs = [{ id: 'batch:b1', dir: 'b2e', state: 'working', title: 'Swapping across 3 providers', detail: '3 parts from one Bitcoin transaction. Each part is a swap of its own.', pay: 1500000n, get: 45600000n, steps: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: i === 0 ? 'done' : i === 1 ? 'active' : 'todo' })), etaSecs: 700, at: Math.floor(Date.now() / 1000), refundAt: Math.floor(Date.now() / 1000) + 86000, lockTxid: null, error: null, provider: '3 providers', backBy: null, batch: { id: 'b1', n: 3, legs: [${[['l0', 'Alpha', 'done', 'Done', 'The ETH is in your private balance.', ', got: 15200000n'], ['l1', 'Bravo', 'working', 'Returning your BTC', 'The lock returns to your Bitcoin address when its timelock ends.', ', refundAt: Math.floor(Date.now() / 1000) + 80000'], ['l2', 'Charlie', 'working', 'Waiting for Bitcoin', 'Your lock waits for a Bitcoin block.', '']].map(([i, p, st, t, d, o]) => `{ id: '${i}', provider: '${p}', state: '${st}', title: '${t}', detail: '${d}', pay: 500000n, get: 15200000n, got: null, refundAt: null, steps: [], etaSecs: 0, k: 0 ${o} }`).join(', ')}] } }], 0)`);
+  await page.waitForFunction(() => /Swapping across 3 providers/.test(document.querySelector('#a-sent').textContent), null, { timeout: 9000 });
+  ok((await page.$$('#a-sent [data-rec]')).length === 1 && (await page.$$('#a-sent details.legs li')).length === 3, 'the three swaps are one card with three parts folded inside');
+  ok(/0\.015 BTC → about 0\.456 ETH/.test(await text(page, '#a-sent')), `the card says the total it pays and gets (${(await text(page, '#a-sent')).slice(0, 200)})`);
+  await page.click('#a-sent details.legs summary');
+  const lt = await text(page, '#a-sent details.legs');
+  ok(/Alpha 0\.005 BTC → 0\.152 ETH/.test(lt) && /Bravo[^]*The lock returns to your Bitcoin address when its timelock ends/.test(lt) && /Charlie[^]*Waiting for Bitcoin/.test(lt), `each part says what became of it, the returning one plainly (${lt.slice(0, 300)})`);
+  await SHOT(page, 'lane-split-card');
+  await atom(page, "(A.recs = [], A.mode = \"ok\", A.calls.start.length = 0, 0)");
+  await page.waitForFunction(() => !document.querySelector('#a-sent [data-rec]'), null, { timeout: 9000 }).catch(() => {});
 
   console.log('the lane: more than is held, the fee, flipping');
   await type(page, '0.6');

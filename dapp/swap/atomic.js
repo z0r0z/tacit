@@ -25,7 +25,7 @@
 import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=a7fdac4a';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=965cc42b';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=bb58cbc9';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
 // A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
@@ -34,6 +34,8 @@ const RENEW_SECS = 150, START_SECS = 125;
 const MARKET_MODULE = '/swap/atomic-market.js?cb=6380a2f8';
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
+// the most providers one BTC-for-ETH swap is split among (fastbridge-pair.js splitLegs)
+const SPLIT_LEGS = 4;
 const DISMISS_KEY = 'tacit-atomic-dismissed-v1';
 const LOCK_GUESS_SATS = 3000;                                     // what Max keeps back for the Bitcoin fee until a quote has said what it is
 const SHIELD_NOTE = 'The deposit from your wallet is public. The swap and your Bitcoin address are not linked to it on chain.';
@@ -186,7 +188,10 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   const termsFor = (d) => {
     const ts = (L.terms || L.mk?.providers || []).map((p) => p && p[d]).filter(Boolean);
     if (!ts.length) return null;
-    return { min: ts.reduce((a, t) => (t.min < a ? t.min : a), ts[0].min), max: ts.reduce((a, t) => { const m = t.available != null && t.available < t.max ? t.available : t.max; return m > a ? m : a; }, 0n) };
+    const caps = ts.map((t) => (t.available != null && t.available < t.max ? t.available : t.max)).sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
+    // (BTC for ETH is filled by several providers together when one cannot take it: the most is what the best few take, as the plan sums them; the quote says if they cannot)
+    const max = d === 'b2e' ? caps.slice(0, SPLIT_LEGS).reduce((a, c) => a + c, 0n) : caps[0];
+    return { min: ts.reduce((a, t) => (t.min < a ? t.min : a), ts[0].min), max, one: caps[0] };
   };
   const coin = (c) => `<svg class="tk" aria-hidden="true"><use href="#${c.mark}"/></svg>${c.sym}`;
 
@@ -361,7 +366,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     // a provider that holds less than its own minimum cannot take any swap: say so, instead of a minimum nobody can meet and then a maximum under it
     if (t && t.max < t.min) return { label: 'No provider has enough to swap right now', off: true };
     if (t && amount < t.min) return { label: `Minimum ${fmt(t.min)} ${c.sym}`, off: true };
-    if (t && amount > t.max) return { label: `Most a provider takes is ${fmt(t.max)} ${c.sym}`, off: true };
+    if (t && amount > t.max) return { label: `Most ${L.dir === 'b2e' && t.max > t.one ? 'the providers take' : 'a provider takes'} is ${fmt(t.max)} ${c.sym}`, off: true };
     const held = heldOf(pk), exact = pk === 'eth' && L.fits && L.fits.amt === amount && L.fits.ok;
     if (bal != null && amount > bal && !exact) {
       if (pk === 'btc') {
@@ -429,6 +434,16 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (amount && !D.unlocked) out.push(['Firm price', 'once your wallet is open', '']);
     return out;
   }
+  // The plan of a swap that several providers fill, said before the press: the best price across them, what each is given and what each pays out, and, when one provider
+  // could take it all, what that would give
+  function splitRows(q) {
+    const n = q.split.legs.length, sym = COINS.eth.sym, bsym = COINS.btc.sym;
+    return [
+      ['Providers', `Best price across ${n} providers`, ''],
+      ...q.split.legs.map((l) => [l.provider?.name || 'Provider', `${fmt(l.pay)} ${bsym} → ${fmt(l.get)} ${sym}`, '']),
+      ...(q.split.single ? [['One provider', `${fmt(q.split.single.get)} ${sym} (${q.split.single.provider?.name || 'Provider'})`, '']] : [['One provider', 'none takes this much', '']]),
+    ];
+  }
   function paintRcpt() {
     const rc = $('a-rcpt'), q = L.q;
     if (!q) { const pv = !pair ? preview() : null; rc.hidden = !pv; rc.innerHTML = pv ? rows(pv) : ''; return; }
@@ -437,8 +452,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       ['Market', q.market ? (L.dir === 'b2e' ? rateText(q.market) : `1 ETH = ${tidy((1 / q.market).toFixed(6))} BTC`) : 'not available', q.market ? '' : 'warn'],
       ...(mk ? [['You get', mk, q.blocked ? 'err' : q.vsMarketBps < -100 ? 'warn' : '']] : []),
       // (what a quote costs against the market is the row above: the engine's feeBps is that, not a fee the provider named, so it is not called one here)
-      ['Provider', q.provider?.name || 'Provider', ''],
-      ...(Number(q.networkFeeSats) > 0 ? [['Bitcoin fee', `about ${Number(q.networkFeeSats).toLocaleString('en-US')} sats`, '']] : []),
+      ...(q.split ? splitRows(q) : [['Provider', q.provider?.name || 'Provider', '']]),
+      ...(Number(q.networkFeeSats) > 0 ? [['Bitcoin fee', `about ${Number(q.networkFeeSats).toLocaleString('en-US')} sats${q.split ? ', one transaction for all' : ''}`, '']] : []),
       ...(L.dir === 'e2b' && Number(q.takeFeeSats) > 0 ? [['Bitcoin fee', `about ${Number(q.takeFeeSats).toLocaleString('en-US')} sats, from the lock when you take it`, '']] : []),
       ['Time', etaSpan(q.etaSecs), ''],
       ['If it stops', L.dir === 'b2e' ? 'your BTC returns to you within about a day' : 'your ETH returns to your private balance after about 4 hours', ''],
@@ -526,8 +541,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       const steps = (r.steps || []).map((s) => `<li class="${esc(s.state)}" data-step="${esc(s.key)}"><i aria-hidden="true"></i>${esc(s.title)}</li>`).join('');
       // (a press may be cancelled only while that costs the provider nothing: before it is asked, which is before the deposit is mined, or while new numbers wait)
       const cancel = r.press && !L.chain.cancelled && (L.chain.phase === 'paused' || (L.chain.phase === 'adding' && !L.chain.mined)) ? ' <button class="link cx" type="button" data-press-cancel>Cancel</button>' : '';
+      const legs = r.batch && Array.isArray(r.batch.legs) ? `<details class="legs"><summary>${esc(r.batch.legs.length)} parts, one per provider</summary><ul>${r.batch.legs.map((l) => `<li data-leg="${esc(l.id)}" class="${esc(l.state)}"><b>${esc(l.provider || 'Provider')}</b> ${esc(`${fmt(l.pay)} ${COINS.btc.sym} → ${l.state === 'returned' || l.state === 'stopped' ? 'returned' : `${l.state === 'done' && l.got > 0n ? '' : 'about '}${fmt(l.state === 'done' && l.got > 0n ? l.got : l.get)} ${COINS.eth.sym}`}`)}<br><small>${esc([l.title, l.detail, l.state === 'working' && l.refundAt ? `If it stops, this part’s BTC returns ${untilText(l.refundAt, now())} at the latest.` : ''].filter(Boolean).join('. ').replace(/\.\./g, '.'))}</small></li>`).join('')}</ul></details>` : '';
       return `<div class="${cls}${r.press ? ' press' : ''}" data-rec="${esc(r.id)}"><span><i class="dot" aria-hidden="true"></i><b>${esc(r.title)}</b></span><span>${eta ? esc(eta) : ''}${r.state === 'working' || r.press ? cancel : ` <button class="link" type="button" data-dismiss="${esc(r.id)}" aria-label="Dismiss">×</button>`}</span>
-        ${what ? `<span class="what">${esc(what)}</span>` : ''}${steps ? `<ol class="stp${r.steps.length === 5 ? ' s5' : ''}">${steps}</ol>` : ''}${r.detail || back ? `<small>${esc([r.detail, back].filter(Boolean).join(' '))}${lockAt}</small>` : ''}${sure ? `<small class="sure">${esc(sure)}</small>` : ''}${r.stuck && r.slow ? `<small class="slow">${esc(r.slow)} <button class="link" type="button" data-check-again="${esc(r.id)}">Check again</button></small>` : ''}${stay && !r.press ? `<small class="stay${by ? ' by' : ''}">${esc(stay)}</small>` : ''}${payLine(r)}${nextSteps(r)}</div>`;
+        ${what ? `<span class="what">${esc(what)}</span>` : ''}${steps ? `<ol class="stp${r.steps.length === 5 ? ' s5' : ''}">${steps}</ol>` : ''}${r.detail || back ? `<small>${esc([r.detail, back].filter(Boolean).join(' '))}${lockAt}</small>` : ''}${legs}${sure ? `<small class="sure">${esc(sure)}</small>` : ''}${r.stuck && r.slow ? `<small class="slow">${esc(r.slow)} <button class="link" type="button" data-check-again="${esc(r.id)}">Check again</button></small>` : ''}${stay && !r.press ? `<small class="stay${by ? ' by' : ''}">${esc(stay)}</small>` : ''}${payLine(r)}${nextSteps(r)}</div>`;
     }).join('');
   }
   function paint() {

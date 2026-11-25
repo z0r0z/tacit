@@ -256,6 +256,13 @@
 .swc .recent { margin: 8px 2px 0; font-size: 12px; color: var(--mute); }
 .swc .recent summary { width: fit-content; list-style: none; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .swc .recent summary::-webkit-details-marker { display: none; }
+/* the parts of a swap that several providers fill: collapsed under the card, one line each */
+.swc .snt.atm .legs { grid-column: 1 / -1; margin: 2px 0 0; font-size: 12.5px; }
+.swc .snt.atm .legs summary { cursor: pointer; color: var(--mute); }
+.swc .snt.atm .legs ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.swc .snt.atm .legs li { padding-left: 8px; border-left: 2px solid color-mix(in srgb, var(--ink) 14%, transparent); line-height: 1.35; }
+.swc .snt.atm .legs li.done { border-left-color: var(--ok, currentColor); }
+.swc .snt.atm .legs li.returned, .swc .snt.atm .legs li.stopped { border-left-color: var(--warn, currentColor); }
 .swc .recent ol { display: grid; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
 .swc .recent li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .swc .recent a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--hair-2); overflow-wrap: break-word; }
