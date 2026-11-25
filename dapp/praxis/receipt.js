@@ -134,6 +134,22 @@ export function rewardView(v) {
   return { each, total, left, count: left / each, paidFrac: Number((total - left) * 10000n / total) / 10000 };
 }
 
+// The address a contribution is credited to (its handle, else its name), lower-cased, or null: the same rule the points feed applies.
+export const addressOf = (r) => {
+  const h = String(r?.handle ?? '').trim(), n = String(r?.name ?? '').trim();
+  return /^0x[0-9a-fA-F]{40}$/.test(h) ? h.toLowerCase() : /^0x[0-9a-fA-F]{40}$/.test(n) ? n.toLowerCase() : null;
+};
+// What is earned but not yet paid: a credit is counted once its UTC day is over, so contributions made today show as earned first.
+// paid + pending never passes the pot.
+export function rewardProgress(view, addresses) {
+  const credited = view.total - view.left;
+  let pending = BigInt(addresses) * view.each - credited;
+  if (pending < 0n) pending = 0n;
+  if (pending > view.left) pending = view.left;
+  const leftAfter = view.left - pending;
+  return { pending, leftAfter, count: leftAfter / view.each, pendFrac: Number(pending * 10000n / view.total) / 10000 };
+}
+
 // whole TAC, or two decimals when it is not whole: 5, 600, 12.5
 export function tac(wei) {
   const cents = wei / (WAD / 100n);

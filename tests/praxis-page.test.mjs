@@ -155,6 +155,17 @@ console.log('a name left as the command\'s placeholder');
   ok(mod.nameOf({ name: 'Ada', handle: A }) === 'Ada', 'a real name is kept');
 }
 
+console.log('earned, not yet paid');
+{
+  const mod = await import(new URL('../dapp/praxis/receipt.js', import.meta.url));
+  const view = mod.rewardView({ enabled: true, pocket: { totalWei: String(1250n * W), creditedWei: '0', remainingWei: String(1250n * W) }, terms: { capWeiPerPoint: String(5n * W / 100n) } });
+  const p = mod.rewardProgress(view, 3);
+  ok(p.pending === 15n * W && p.leftAfter === 1235n * W && p.count === 247n && p.pendFrac > 0, 'three addresses earned 15 TAC that is not paid yet: it shows on the bar and comes off what is left');
+  const q = mod.rewardProgress(mod.rewardView({ enabled: true, pocket: { totalWei: String(1250n * W), creditedWei: String(15n * W), remainingWei: String(1235n * W) }, terms: { capWeiPerPoint: String(5n * W / 100n) } }), 3);
+  ok(q.pending === 0n && q.leftAfter === 1235n * W, 'once they are paid, nothing is counted twice');
+  ok(mod.addressOf({ name: 'x', handle: ' 0xAbCdEf0123456789abcdef0123456789ABCDEF01 ' }) === '0xabcdef0123456789abcdef0123456789abcdef01' && mod.addressOf({ name: 'Tacit', handle: '@tacitfinance' }) === null, 'the address a contribution is credited to is its handle, else its name');
+}
+
 console.log('the banner on the landing page');
 {
   const land = readFileSync(join(DAPP, 'index.html'), 'utf8');

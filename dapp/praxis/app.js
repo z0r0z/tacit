@@ -1,6 +1,6 @@
 // The Tacit Praxis ceremony page: the wall of contributors (each receipt's signature checked in the browser against the coordinator's key,
 // each face the zOrgz invader its address picks, as on the prover pool page), the stats, the rewards, and the command to take part.
-import { cleanName, hasName, COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl, SUCCINCT_LINKS } from '/praxis/receipt.js?cb=57754a0f';
+import { cleanName, hasName, addressOf, rewardProgress, COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl, SUCCINCT_LINKS } from '/praxis/receipt.js?cb=e43d425d';
 import { invaderSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { chime } from '/reward-pop.js?cb=88973dac';
 
@@ -353,7 +353,12 @@ async function drawRewards() {
     eachWei = v.each;
     $('rw-each').textContent = `up to ${tac(v.each)}`;
     $('cta-each').textContent = `up to ${tac(v.each)}`;
-    $('rw-left').textContent = `${tac(v.left)} TAC left · about ${v.count.toLocaleString('en-US')} more contribution${v.count === 1n ? '' : 's'}`;
+    const addrs = new Set(receipts.map(addressOf).filter(Boolean)).size;
+    const pr = rewardProgress(v, addrs);
+    $('rw-left').textContent = `${tac(pr.leftAfter)} TAC left · about ${pr.count.toLocaleString('en-US')} more contribution${pr.count === 1n ? '' : 's'}`;
+    $('rw-pend').style.width = `${Math.round(pr.pendFrac * 100)}%`;
+    $('rw-earned').hidden = pr.pending === 0n;
+    $('rw-earned').textContent = `${addrs.toLocaleString('en-US')} contributor${addrs === 1 ? '' : 's'} earned ${tac(pr.pending)} TAC so far, paid once the UTC day is over.`;
     $('rw-pot').textContent = `of a ${tac(v.total)} TAC pot`;
     $('rw-fill').style.width = `${Math.round(v.paidFrac * 100)}%`;
     $('rw-bar').setAttribute('aria-label', `${Math.round(v.paidFrac * 100)}% of the ${tac(v.total)} TAC pot is paid out`);
