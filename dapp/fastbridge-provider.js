@@ -125,6 +125,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const budget = (cap, perSecs) => { let n = cap, at = null; return () => { const t = now(); if (at != null) n = Math.min(cap, n + ((t - at) * cap) / perSecs); at = t; if (n < 1) return false; n -= 1; return true; }; };
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
   const lateRead = budget(hold.lateReads ?? 30, 60);
+  // An offer for a lock that is not the one /extend named for its quote costs explorer reads that nothing held pays for: those share a budget, and a transaction
+  // found missing is not looked for again for `offerMissSecs`. (An offer through a board comes with no address, so no per-address bucket stands in front of it.)
+  const offerRead = budget(config.offerReads ?? 30, 60), offerMisses = new Map(), offerMissSecs = config.offerMissSecs ?? 30;
   const counter = { publishEvmOffer: async (id, offer) => { published.set(id, offer); } };
   const graceSecs = Number(config.quote?.graceSecs) || 0;
   // A quote priced from the market (`quote.rate` a function) is not answered at its old price for long after its time: past `graceSecs` (and any hold) an offer
@@ -527,9 +530,22 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
         if (!/^[0-9a-f]{72}$/.test(sid)) return reply(said(await judgeOffer(body, q, sid)));
         for (const [k, c] of checking) if (c.done && now() - c.at > 600) checking.delete(k);
         let c = checking.get(sid);
+        const txid = String((body.offer.btc && body.offer.btc.txid) || '').toLowerCase();
+        if (!c && q && !(await swaps.get(sid))) {
+          const r = reservations.get(q.id), named = (r && r.until > now() && r.txid) || q.seenTxid || null;
+          if (txid !== named) {
+            for (const [k, until] of offerMisses) if (until <= now()) offerMisses.delete(k);
+            if ((offerMisses.get(txid) || 0) > now()) return reply({ ok: false, retry: true, why: 'the lock transaction is not visible yet' });
+            if (!offerRead()) return reply({ ok: false, retry: true, why: 'the provider is busy just now: ask again shortly' });
+          }
+        }
         if (!c) {
           c = { done: false, at: now() };
-          c.p = judgeOffer(body, q, sid).then((r) => { c.done = true; c.at = now(); return said(r); });
+          c.p = judgeOffer(body, q, sid).then((r) => {
+            c.done = true; c.at = now();
+            if (!r.ok && r.retry && /not on the chain|not visible/.test(String(r.why || '')) && offerMisses.size < 4096) offerMisses.set(txid, now() + offerMissSecs);
+            return said(r);
+          });
           checking.set(sid, c);
         }
         const r = await Promise.race([c.p, sleepMs(offerBudgetMs).then(() => null)]);

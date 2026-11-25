@@ -263,6 +263,32 @@ test('provider: the reverse side lets go of the quotes no swap uses once they ha
   assert.deepEqual([...w.stores.rv.quotes.m.keys()], [ids[0]], 'only the quote that started a swap is kept');
 });
 
+test('provider: offers for locks that no /extend named share a budget of explorer reads, and a transaction found missing is not looked for again at once', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.lEvm.fund(10n * UNITS, 'inv0');
+  let reads = 0;
+  const fetchTx = w.lBtc.fetchTx;
+  w.lBtc.fetchTx = async (txid) => { reads++; return fetchTx(txid); };
+  const q = (await w.fwd.handle({ method: 'POST', path: '/quote', body: { amount: String(SATS) } })).body;
+  const offer = (txid, sid) => w.fwd.handle({ method: 'POST', path: '/offer', body: { quoteId: q.id, offer: { swapId: sid, btc: { txid, vout: 0, value: String(SATS), csvBlocks: 144 }, evm: { amount: q.evmAmount } } } });
+  const hexOf = (n, len) => n.toString(16).padStart(len, '0');
+  // the same transaction again and again: looked for once
+  for (let i = 0; i < 10; i++) assert.equal((await offer('ab'.repeat(32), hexOf(1, 72))).body.ok, false);
+  assert.equal(reads, 1, 'one read for one missing transaction');
+  // a new transaction every time: the budget, then no more reads
+  reads = 0;
+  for (let i = 0; i < 100; i++) await offer(hexOf(i + 100, 64), hexOf(i + 100, 72));
+  assert.ok(reads <= 30, `${reads} reads for 100 offers of transactions no /extend named`);
+  const last = (await offer(hexOf(999, 64), hexOf(999, 72))).body;
+  assert.equal(last.retry, true);
+  // it fills again with time
+  w.clock.advance(60);
+  reads = 0;
+  await offer(hexOf(1000, 64), hexOf(1000, 72));
+  assert.equal(reads, 1);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log('ok   ' + name); } catch (e) { failed++; console.log('FAIL ' + name + '\n     ' + String((e && e.stack) || e).split('\n').slice(0, 6).join('\n     ')); }
