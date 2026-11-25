@@ -191,7 +191,7 @@ const TASKS_CB_FILES = ['tasks/verify.js', 'tasks/app.js', 'tasks/index.html'];
 // dapp/discord/ is where the verification panel sends a holder: shared message/holdings helpers, then app.js, then the page.
 const DISCORD_CB_FILES = ['discord/message.js', 'discord/holdings.js', 'discord/app.js', 'discord/index.html'];
 // dapp/praxis/ is the Tacit Praxis ceremony's page: the receipts' check and share link, then app.js, then the page.
-const PRAXIS_CB_FILES = ['praxis/receipt.js', 'praxis/app.js', 'praxis/index.html'];
+const PRAXIS_CB_FILES = ['praxis/browser/core.js', 'praxis/browser/pool.js', 'praxis/browser/flow.js', 'praxis/browser/worker.js', 'praxis/receipt.js', 'praxis/web.js', 'praxis/app.js', 'praxis/index.html'];
 // dapp/face/ is the FACE RACE sale page: its config and drawing helpers, the catch-up recorder, then app.js, then the page.
 // dapp/shop/ is where a buyer takes an address from the shop: the shelf (its events and calls), then app.js, then the page.
 const SHOP_CB_FILES = ['shop/shelf.js', 'shop/app.js', 'shop/index.html'];

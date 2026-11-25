@@ -1,6 +1,6 @@
 // The Tacit Praxis ceremony page: the wall of contributors (each receipt's signature checked in the browser against the coordinator's key,
 // each face the zOrgz invader its address picks, as on the prover pool page), the stats, the rewards, and the command to take part.
-import { COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl, SUCCINCT_LINKS } from '/praxis/receipt.js?cb=99cd235c';
+import { cleanName, COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl, SUCCINCT_LINKS } from '/praxis/receipt.js?cb=99cd235c';
 import { invaderSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { chime } from '/reward-pop.js?cb=88973dac';
 
@@ -265,6 +265,33 @@ $('cta-go').addEventListener('click', (e) => {
   setTimeout(() => $('addr').focus({ preventScroll: true }), reduced ? 0 : 450);
 });
 
+// ── contribute in this browser (beta): shown once the ceremony's window says the coordinator takes it
+let webRun = null;
+async function startWeb() {
+  const handleRaw = $('addr').value.trim();
+  const handle = isAddress(handleRaw) ? handleRaw : '';
+  const name = (cleanName($('name').value) || (handle ? '' : 'a browser')) || handle;
+  const web = await import('/praxis/web.js?cb=7eaa74c7');
+  const ac = new AbortController();
+  webRun = ac;
+  $('web-go').disabled = true; $('web-prog').hidden = false; $('web-msg').textContent = 'Joining the queue…';
+  const warn = (e) => { e.preventDefault(); e.returnValue = ''; };
+  addEventListener('beforeunload', warn);
+  try {
+    const r = await web.contributeHere({ name, handle, signal: ac.signal, onStatus: (s) => { $('web-msg').textContent = web.statusText(s); $('web-fill').style.width = `${Math.round(100 * web.fraction(s))}%`; } });
+    $('web-msg').textContent = 'Accepted. You are in the chain.';
+    await refresh();
+    celebrate(r);
+  } catch (e) {
+    $('web-msg').textContent = ac.signal.aborted ? 'Stopped.' : `That did not finish: ${e.message || e}. Your place is released; you can start again, or use the command above.`;
+  } finally {
+    removeEventListener('beforeunload', warn);
+    webRun = null; $('web-go').disabled = false; $('web-stop').hidden = false;
+  }
+}
+$('web-go').addEventListener('click', startWeb);
+$('web-stop').addEventListener('click', () => webRun?.abort());
+
 async function drawQueue() {
   try {
     const r = await fetch('https://tacit-praxis-ceremony.onrender.com/api/coordinator', { cache: 'no-store', signal: AbortSignal.timeout(6000) });
@@ -272,6 +299,7 @@ async function drawQueue() {
     if (/^https?:\/\/[^\s"'<>]+$/.test(v.coordinator || '')) { coordinator = v.coordinator; drawCommand(); }
     $('queue').textContent = v.open === false ? 'Closed.' : waitText(v.queue);
     if (Number.isInteger(v.queue)) setNum($('n-queue'), v.queue);
+    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=7eaa74c7'); $('web').hidden = !web.capable(); }
   } catch { $('queue').textContent = ''; }
 }
 

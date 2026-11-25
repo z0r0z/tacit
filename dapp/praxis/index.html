@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://tacit-praxis-ceremony.onrender.com https://tacit-points.onrender.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' https://tacit-praxis-ceremony.onrender.com https://tacit-points.onrender.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit praxis</title>
 <meta name="description" content="The Tacit Praxis ceremony: new public contributions to the Groth16 Phase 2 setup of SP1 v6.1.0's verifier circuit, for a new key. Take part in about 20 minutes.">
@@ -21,7 +21,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /praxis/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/praxis/app.js?cb=1c1b2954">
+<link rel="modulepreload" href="/praxis/app.js?cb=427213fb">
 <link rel="modulepreload" href="/praxis/receipt.js?cb=99cd235c">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -82,6 +82,13 @@ code { font: inherit; }
 .brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
 
 /* the head */
+.web { margin-top: 18px; display: grid; gap: 8px; justify-items: start; }
+.web small { font-size: 12px; opacity: .75; max-width: 56ch; }
+.web em { font-style: normal; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; opacity: .7; margin-left: 6px; }
+.prog { display: grid; gap: 8px; width: min(520px, 100%); }
+.prog .bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, currentColor 14%, transparent); overflow: hidden; }
+.prog .bar i { display: block; height: 100%; width: 0; background: var(--orange); transition: width .4s; }
+.prog p { margin: 0; font-size: 13px; }
 .hero { padding: 30px 0 6px; }
 .hero h1 { font: 400 clamp(44px, 8vw, 84px)/.92 var(--serif); letter-spacing: -.03em; margin: 0; }
 .hero h1 em { font-style: italic; }
@@ -619,6 +626,15 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 chmod +x tacit-ceremony-darwin-arm64
 ./tacit-ceremony-darwin-arm64 contribute --coordinator http://143.55.45.86:53874 --name '&lt;your name&gt;'</pre></div></div></div>
       </div>
+      <div class="web" id="web" hidden>
+        <button class="btn big ghost" type="button" id="web-go">Contribute in this browser <em>beta</em></button>
+        <small>No download. Leave this tab open: it takes about an hour of your computer's time once it is your turn, and 1 GB each way.</small>
+        <div class="prog" id="web-prog" hidden>
+          <div class="bar"><i id="web-fill"></i></div>
+          <p id="web-msg" role="status" aria-live="polite"></p>
+          <button class="btn ghost" type="button" id="web-stop">Cancel</button>
+        </div>
+      </div>
       <p class="alt">Run <a href="/prove/">tacit-prover</a> (v0.7.0 or later) with mining on, and it takes its turn by itself while idle, behind everyone in the queue.</p>
     </section>
 
@@ -715,6 +731,6 @@ shasum -a 256 phase2-*</pre></div>
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/praxis/app.js?cb=1c1b2954"></script>
+<script type="module" src="/praxis/app.js?cb=427213fb"></script>
 </body>
 </html>

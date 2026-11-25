@@ -10,10 +10,16 @@ if (node) {
   port = { on: (f) => { self.onmessage = (e) => f(e.data); }, post: (m, t) => self.postMessage(m, t) };
 }
 await import('./wasm_exec.js');
+// streaming needs the application/wasm type; a host that serves it as something else still works through the buffer
+async function fetchWasm(url, imports) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`the wasm answered ${r.status}`);
+  try { return await WebAssembly.instantiateStreaming(r.clone(), imports); } catch { return WebAssembly.instantiate(await r.arrayBuffer(), imports); }
+}
 const go = new Go();
 const inst = node
   ? await WebAssembly.instantiate(wasmBytes, go.importObject)
-  : await WebAssembly.instantiateStreaming(fetch(new URL('./g.wasm', import.meta.url)), go.importObject);
+  : await fetchWasm(new URL('./g.wasm', import.meta.url), go.importObject);
 go.run(inst.instance);
 await new Promise((r) => setTimeout(r, 20));
 const G = globalThis.tacitGo;
