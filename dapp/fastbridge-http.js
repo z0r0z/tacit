@@ -25,8 +25,9 @@ export function makeCounter(call) {
       if (r.status !== 200 || !r.body) throw fail(r, 'the liquidity provider did not give its terms');
       return r.body;
     },
-    async quote(amount) {
-      const r = await call('POST', '/quote', { amount: String(amount) });
+    async quote(amount, noteInputs = null, checkId = null) {
+      const r = await call('POST', '/quote', { amount: String(amount), ...(noteInputs ? { noteInputs } : {}), ...(checkId ? { checkId } : {}) });
+      if (r.status === 202 && noteInputs && r.body?.lineagePending === true) return r.body;
       if (r.status !== 200 || !r.body) throw fail(r, 'no quote');
       return r.body;
     },

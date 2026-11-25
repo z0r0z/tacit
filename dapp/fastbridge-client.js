@@ -1,4 +1,5 @@
 
+import { sameNoteInputs } from './fastbridge-stuck-pricing.js';
 import { makeBitcoinLocker } from './fastbridge-bl.js';
 import { makeHttpCounter } from './fastbridge-http.js';
 import * as X from './adaptor-xswap.js';
@@ -60,8 +61,16 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return t;
   }
 
-  async function quote(amount) {
-    const q = await counter.quote(amount);
+  async function quote(amount, noteInputs = null, checkId = null) {
+    const q = await counter.quote(amount, noteInputs, checkId);
+    if (noteInputs && q?.lineagePending === true) {
+      if (q.checkId !== null && !/^[0-9a-f]{32}$/.test(q.checkId)) throw new Error('the provider sent an invalid TAC history check');
+      if (checkId && q.checkId !== checkId) throw new Error('the provider changed the TAC history check');
+      return q;
+    }
+    if (noteInputs && (!sameNoteInputs(noteInputs, q?.noteInputs) || !['clean', 'long', 'shielded'].includes(q.noteClass))) {
+      throw new Error('the provider did not quote for the selected TAC notes');
+    }
     if (!q || typeof q.id !== 'string' || q.id.length > 128 || !isHex(q.claimPub, 66) || !isHex(q.btcAsset, 64) || !isHex(q.evmAsset, 64)) throw new Error('the provider\'s quote is not readable');
     for (const k of ['claimPub', 'btcAsset', 'evmAsset']) if (pinned(k) && pinned(k) !== strip(q[k])) throw new Error(`the provider's ${k === 'claimPub' ? 'key' : 'asset'} is not the one this page expects`);
     const btcValue = big(q.btcValue, 'amount'), evmAmount = big(q.evmAmount, 'payout');
@@ -97,11 +106,16 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return held.size ? notes.filter((n) => !held.has(`${n.txid}:${n.vout}`)) : notes;
   }
 
+  const checkQuoteInputs = (q, pick) => {
+    if (q.noteInputs && !sameNoteInputs(q.noteInputs, pick.notes)) throw new Error('the quoted TAC notes are no longer available');
+  };
+
   // `avoid` (a Set of "txid:vout") are coins this lock must not fund itself from: by default the notes given, which carry TAC. A part of a split
   // bridge names more: every note of the key, and the fee coins the parts before it spent.
   async function cost({ quote: q, notes, avoid = null }) {
     const pick = pickNotes(await freeNotes(notes), q.btcValue);
     if (!pick) return { short: false, noNotes: true };
+    checkQuoteInputs(q, pick);
     const take = Number(q.takeSats ?? 0);
     policy.csvBlocks = q.csvBlocks;
     try {
@@ -129,6 +143,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     const notes = await freeNotes(all);
     const pick = pickNotes(notes, q.btcValue);
     if (!pick) throw new Error(notes.length < all.length ? 'fastbridge: this note is already part of a swap' : 'these notes do not cover the amount');
+    checkQuoteInputs(q, pick);
     const swapId = bytesToHex(X.swapIdOf(pick.notes[0].txid, pick.notes[0].vout));
     // One start of a note at a time across this browser's tabs: a second tab that presses the same note waits here, then finds the first one's record.
     return locked(`tacit-fast-start:${swapId}`, async () => {
@@ -205,7 +220,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
 }
 
 export const QUOTE_WAIT_MS = 12000;
-export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy, now, counterFor, makeClient = makeFastBridgeClient }) {
+export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy, now, counterFor, makeClient = makeFastBridgeClient, waitForQuote = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   const clients = new Map();
   const keyOf = (ref) => (ref ? JSON.stringify([ref.kind, ref.claimPub || '', ref.gateway || ref.base || '']) : 'none');
   function clientFor(ref) {
@@ -213,15 +228,49 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
     if (!clients.has(k)) clients.set(k, makeClient({ lp: counterFor(ref), btc, evm, store, seed, pins: { ...pins, claimPub: ref && ref.claimPub ? ref.claimPub : undefined }, policy, provider: ref, ...(now ? { now } : {}) }));
     return clients.get(k);
   }
-  const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('the provider did not answer in time')), ms))]);
+  async function withTimeout(p, ms) {
+    let timer;
+    try {
+      const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('the provider did not answer in time')), ms); });
+      return await Promise.race([p, timeout]);
+    } finally { clearTimeout(timer); }
+  }
+
+  async function checkedQuote(client, amount, inputs, { timeoutMs, onQuoteProgress, quoteActive }) {
+    const deadline = Date.now() + 11 * 60_000;
+    let checkId = null, restarted = false;
+    while (quoteActive() && Date.now() < deadline) {
+      let q;
+      try { q = await withTimeout(client.quote(amount, inputs, checkId), timeoutMs); }
+      catch (error) {
+        if (!checkId || error.status !== 410 || restarted) throw error;
+        checkId = null;
+        restarted = true;
+        continue;
+      }
+      if (!q.lineagePending) return q;
+      checkId = q.checkId;
+      if (!quoteActive()) break;
+      onQuoteProgress?.(q);
+      const seconds = Math.min(10, Math.max(5, Number(q.retryAfter) || 5));
+      await waitForQuote(seconds * 1000);
+    }
+    throw new Error(quoteActive() ? 'TAC history is still being checked. Ask for the quote again to resume.' : 'the amount or wallet changed');
+  }
 
   // Each quote is also checked against the provider's own terms (`aboveTerms`: it keeps more than its ad says) and against the most the holder said
   // it will pay (`maxFeeBps`, a kept want's price: `aboveWant`). Quotes are ranked by what they cost the holder: one with a take above fair or a fee
   // above its word comes after every one without, then the most paid out first.
-  async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS, maxFeeBps = null } = {}) {
+  async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS, maxFeeBps = null, selectNoteInputs = null, onQuoteProgress = null, quoteActive = () => true } = {}) {
     const got = await Promise.all(providers.map(async (provider) => {
       try {
-        const q = await withTimeout(clientFor(provider.ref).quote(amount), timeoutMs);
+        const client = clientFor(provider.ref);
+        let q = await withTimeout(client.quote(amount), timeoutMs);
+        if (q.lineagePricing && selectNoteInputs) {
+          if (!quoteActive()) throw new Error('the amount or wallet changed');
+          const inputs = await selectNoteInputs(provider, q);
+          q = await checkedQuote(client, amount, inputs, { timeoutMs, onQuoteProgress, quoteActive });
+        }
         let aboveTerms = false;
         // (for one asset on both sides the fee is what is not paid out; a provider that lists no terms is judged as before)
         try { aboveTerms = !!provider.terms && q.btcAsset === q.evmAsset && q.fee > feeOf(provider.terms, q.btcValue); } catch { }
@@ -235,12 +284,12 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   }
   // `confirmed`: the quote the holder pressed for. Only quotes no worse than it are tried, so a provider that cannot hold its payout is passed over
   // only for one that pays as much on the same terms.
-  async function start({ quotes: all, notes, confirmed = null }) {
+  async function start({ quotes: all, notes, confirmed = null, avoid = null }) {
     const quotes = confirmed ? all.filter((x) => noWorse(x.quote, confirmed)) : all;
     if (confirmed && all.length && !quotes.length) throw Object.assign(new Error('the quote changed'), { code: 'quote-changed' });
     let last = null;
     for (const { provider, quote } of quotes) {
-      try { return { rec: await clientFor(provider.ref).start({ quote, notes }), provider }; } catch (e) {
+      try { return { rec: await clientFor(provider.ref).start({ quote, notes, ...(avoid ? { avoid } : {}) }), provider }; } catch (e) {
         last = e;
         if (!/cannot hold that amount/.test(String((e && e.message) || e))) throw e;
       }

@@ -4,6 +4,7 @@ export const takeSatsAt = (feeRate) => 546 + Math.ceil(TAKE_VB * feeRate * 2);
 const FEE_WARM_MS = 30000;
 
 import { makeEthereumLocker } from './fastbridge-el.js';
+import { canonicalNoteInputs, sameNoteInputs } from './fastbridge-stuck-pricing.js';
 import { isSats } from './adaptor-xswap.js';
 import { deriveLock } from './adaptor-btc-lock.js';
 import { secp, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
@@ -21,22 +22,28 @@ export function makeQuoter({ store, now, params }) {
     return { num: BigInt(r?.num ?? 1), den: BigInt(r?.den ?? 1) };
   };
 
-  function price(amount) {
+  function price(amount, extraFee = 0n) {
     const a = BigInt(amount);
     if (a < min || a > max) throw Object.assign(new Error(`the amount must be between ${min} and ${max}`), { status: 400 });
     const { num, den } = rateNow();
-    const fee = (a * bps) / 10000n + flat;
+    const baseFee = (a * bps) / 10000n + flat;
+    // The class haircut is added to the normal fee, so the provider keeps its
+    // base margin and is separately compensated for the expected loss on the
+    // stuck TAC it will hold (a loss it can never bill twice).
+    const fee = baseFee + extraFee;
     const out = ((a - fee) * num) / den;
     if (a <= fee || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
     return { btcValue: a, evmAmount: out, fee };
   }
 
-  async function quote(amount) {
-    const { btcValue, evmAmount } = price(amount);
+  async function quote(amount, { extraFee, noteInputs, noteClass, lineagePricing } = {}) {
+    const { btcValue, evmAmount } = price(amount, extraFee);
     const q = {
       id: randomHex(16), btcAsset: p.btcAsset, btcValue: String(btcValue), evmAsset: p.evmAsset, evmAmount: String(evmAmount),
       claimPub: p.claimPub, csvBlocks: p.csvBlocks, evmWindowSecs: p.evmWindowSecs, minConfs: p.minConfsFor(btcValue),
       takeSats: p.takeSats ? await p.takeSats() : 0, created: now(), validUntil: now() + (p.validSecs ?? 600),
+      ...(noteInputs ? { noteInputs, noteClass } : {}),
+      ...(lineagePricing ? { lineagePricing: true } : {}),
     };
     // a provider that takes the fee of its take from a second output of the lock's own script says so; a page that does not know the word locks as it always did
     if (p.takeInLock === true && q.takeSats > 0) q.takeInLock = true;
@@ -63,6 +70,7 @@ const cannotTake = () => Object.assign(new Error('the provider cannot take that 
 export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   // a lock of plain sats pays no coin to the provider for its take: the take's fee comes out of the lock itself (dapp/adaptor-btc-tx.js claimSats)
   const sats = isSats(config.quote.btcAsset);
+  const stuck = config.stuckPricing;
   const takeSats = btc.feeRate && !sats ? async () => takeSatsAt(await btc.feeRate()) : null;
   const quoter = makeQuoter({ store: quoteStore, now, params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats } });
   // `perClient`: the reservations with no lock named yet that one client address holds at once (`perBoard` for the requests that come through a board,
@@ -108,7 +116,36 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       return q;
     },
   };
-  const el = makeEthereumLocker({ seed, now, store: swaps, quotes, btc, evm, counter, policy: config.policy });
+  const el = makeEthereumLocker({ seed, now, store: swaps, quotes, btc, evm, counter, policy: config.policy, stuckPricing: stuck });
+  // Each reservation becomes an accepted swap in the existing durable stores.
+  // Track completed and uncertain swaps until an operator reconciles inventory.
+  const riskOf = (q) => q.noteClass && q.noteClass !== 'clean' ? { kind: q.noteClass, amount: BigInt(q.btcValue) } : null;
+  async function checkRisk(risk) {
+    if (!risk) return;
+    const used = { long: 0n, shielded: 0n }, recorded = new Set();
+    const add = (entry) => { if (entry) used[entry.kind] += BigInt(entry.amount); };
+    for (const rec of await swaps.list()) {
+      recorded.add(rec.quoteId);
+      // A refunded or lost swap holds no stuck TAC: refunded returns both sides,
+      // and lost means the pool lock was claimed with no t, so the Bitcoin lock
+      // was never taken. An aborted or rejected swap without a lock never
+      // committed. A completed swap keeps its exposure until an operator verifies
+      // recovery in `recoveredSwaps` (its loss from a lost lock is alerted separately).
+      if (stuck?.recovered(rec) || rec.phase === 'refunded' || rec.phase === 'lost' || (!rec.lock && ['aborted', 'rejected'].includes(rec.phase))) continue;
+      add(rec.stuckExposure);
+    }
+    if (swaps.problems?.().length || quoteStore.problems?.().length) {
+      throw Object.assign(new Error('the provider’s exposure records could not be read'), { status: 503 });
+    }
+    for (const h of pending.values()) if (h.risk && !recorded.has(h.quoteId)) {
+      add(h.risk);
+      recorded.add(h.quoteId);
+    }
+    for (const [id, r] of reservations) if (r.until > now() && !recorded.has(id)) add(r.risk);
+    if (!stuck || !stuck.fits(used, risk.kind, risk.amount)) {
+      throw Object.assign(new Error('the provider’s stuck TAC exposure limit is reached'), { status: 409 });
+    }
+  }
   const health = { ok: true, lastTick: 0, lastError: null };
   const reported = new Set(), lastAlert = new Map(), unreadSince = new Map();
 
@@ -144,7 +181,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     }
     for (const [id, h] of pending) {
       if (h.until <= t) pending.delete(id);
-      else { sum += h.amount; count++; }
+      else if (!h.quoteId || !(reservations.get(h.quoteId)?.until > t)) { sum += h.amount; count++; }
     }
     return { sum, count };
   }
@@ -193,7 +230,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (!(q.reservedUntil > now()) || used.has(q.id)) continue;
       if (q.reservedTxid && txids.has(q.reservedTxid)) { await quoteStore.put({ ...q, reservedUntil: 0, reservedTxid: null }); continue; }
       if (q.reservedTxid) txids.add(q.reservedTxid);
-      reservations.set(q.id, { amount: BigInt(q.evmAmount), until: q.reservedUntil, txid: q.reservedTxid || null });
+      reservations.set(q.id, { amount: BigInt(q.evmAmount), until: q.reservedUntil, txid: q.reservedTxid || null, risk: riskOf(q) });
     }
     await dropDeadHolds().catch(() => {});
   }
@@ -329,7 +366,18 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     try {
       if (q && !(await swaps.get(sid))) {
         const have = reservations.get(q.id);
-        if (have && have.until > now() && (!have.swapId || have.swapId === sid)) have.swapId = sid;
+        const risk = riskOf(q);
+        if (risk) {
+          const refused = await exclusive(() => {
+            if (!have || reservations.get(q.id) !== have || have.until <= now()) return 'the classified quote needs a live reservation';
+            if ((have.txid && have.txid !== body.offer.btc?.txid) || (have.swapId && have.swapId !== sid)) return 'the classified quote is already held for another lock';
+            have.swapId = sid;
+            pending.set(sid, { amount: BigInt(q.evmAmount), until: Infinity, quoteId: q.id, risk });
+            held = true;
+            return null;
+          });
+          if (refused) return { ok: false, retry: false, why: refused };
+        } else if (have && have.until > now() && (!have.swapId || have.swapId === sid)) have.swapId = sid;
         else {
           try { await exclusive(async () => { await capacity(BigInt(q.evmAmount)); pending.set(sid, { amount: BigInt(q.evmAmount), until: now() + hold.reserveSecs }); held = true; }); } catch (e) { if (e.status) return { ok: false, retry: !!e.retry, why: e.message }; throw e; }
         }
@@ -349,6 +397,34 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   // a whole number of base units, written plainly: a decimal string with no leading zeros, or a safe integer
   const amountOk = (a) => (typeof a === 'string' && /^(0|[1-9]\d{0,29})$/.test(a)) || (Number.isSafeInteger(a) && a >= 0);
 
+  const lineageChecks = new Map();
+  let lineageInFlight = null;
+  function startLineageCheck(amount, noteInputs, checkId) {
+    const key = JSON.stringify([String(amount), noteInputs]);
+    for (const [k, record] of lineageChecks) if (record.doneAt != null && now() - record.doneAt >= 60) lineageChecks.delete(k);
+    const existing = lineageChecks.get(key);
+    if (checkId != null && (!existing || existing.id !== checkId)) {
+      throw Object.assign(new Error('the TAC history check expired'), { status: 410 });
+    }
+    if (existing) return existing;
+    if (lineageInFlight) return null;
+    // Bound retained results as well as trace concurrency. The board and
+    // HTTP requests only observe this state; neither stays open for a trace.
+    if (lineageChecks.size >= 64) lineageChecks.delete(lineageChecks.keys().next().value);
+    const record = { id: randomHex(16), transfersRead: 0, doneAt: null };
+    lineageChecks.set(key, record);
+    lineageInFlight = record;
+    const signal = AbortSignal.timeout(10 * 60_000 + 15_000);
+    stuck.classify(noteInputs, {
+      background: true, signal,
+      onProgress: (read) => {
+        if (Number.isSafeInteger(read) && read >= 0) record.transfersRead = Math.max(record.transfersRead, read);
+      },
+    }).then((kind) => { record.kind = kind; }, (error) => { record.error = error; })
+      .finally(() => { record.doneAt = now(); lineageInFlight = null; });
+    return record;
+  }
+
   async function handle({ method, path, body, client = null }) {
     try {
       if (method === 'GET' && path === '/health') return reply({ ok: health.ok, lastTick: health.lastTick, error: health.lastError }, health.ok ? 200 : 503);
@@ -359,7 +435,31 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (method === 'POST' && path === '/quote') {
         if (!body || !amountOk(body.amount)) return reply({ error: 'amount must be a whole number' }, 400);
         if (quotesHeld !== null && quotesHeld >= maxQuotes) return reply({ error: 'the provider holds too many open quotes just now: ask again shortly' }, 503);
-        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount).evmAmount); const made = await quoter.quote(body.amount); if (quotesHeld !== null) quotesHeld++; return made; }));
+        const options = {};
+        let check = null;
+        if (stuck && body.noteInputs === undefined) options.lineagePricing = true;
+        if (stuck && body.noteInputs !== undefined) {
+          if (body.checkId != null && !isId(body.checkId)) return reply({ error: 'invalid TAC history check ID' }, 400);
+          quoter.price(body.amount);
+          options.noteInputs = canonicalNoteInputs(body.noteInputs);
+          check = startLineageCheck(body.amount, options.noteInputs, body.checkId);
+          if (!check || check.doneAt == null) {
+            return reply({ lineagePending: true, checkId: check?.id ?? null, transfersRead: check?.transfersRead ?? 0, retryAfter: 5 }, 202);
+          }
+          if (check.error) throw check.error;
+          options.noteClass = check.kind;
+          options.extraFee = stuck.haircutFee(BigInt(body.amount), options.noteClass);
+        }
+        return reply(await exclusive(async () => {
+          if (check?.quote) return check.quote;
+          if (quotesHeld !== null && quotesHeld >= maxQuotes) throw Object.assign(new Error('the provider holds too many open quotes just now'), { status: 503 });
+          await capacity(quoter.price(body.amount, options.extraFee).evmAmount);
+          await checkRisk(riskOf({ ...options, btcValue: body.amount }));
+          const made = await quoter.quote(body.amount, options);
+          if (check) check.quote = made;
+          if (quotesHeld !== null) quotesHeld++;
+          return made;
+        }));
       }
       if (method === 'POST' && path === '/reserve') {
         if (!body || !isId(body.quoteId)) return reply({ error: 'quoteId is required' }, 400);
@@ -370,16 +470,21 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           if (now() > q.validUntil) return no('quote expired');
           // the client's oldest holds past its allowance make room for this one, and are kept if this one cannot be made
           const who = client ? `ip:${client}` : 'board', cap = Number(client ? hold.perClient : hold.perBoard) || 0;
-          const mine = [...reservations].filter(([, r]) => r.who === who && !r.txid && r.until > now()).sort((a, b) => a[1].seq - b[1].seq);
+          const mine = [...reservations].filter(([, r]) => r.who === who && !r.txid && !pending.has(r.swapId) && r.until > now()).sort((a, b) => a[1].seq - b[1].seq);
           const out = cap > 0 ? mine.slice(0, Math.max(0, mine.length - cap + 1)) : [];
           for (const [id] of out) reservations.delete(id);
-          try { await capacity(BigInt(q.evmAmount)); if (!(await unbackedFits(BigInt(q.evmAmount)))) throw cannotTake(); } catch (e) {
+          const risk = riskOf(q);
+          try {
+            await capacity(BigInt(q.evmAmount));
+            if (!(await unbackedFits(BigInt(q.evmAmount)))) throw cannotTake();
+            await checkRisk(risk);
+          } catch (e) {
             for (const [id, r] of out) reservations.set(id, r);
             if (e.status) return no(e.message);
             throw e;
           }
           const until = now() + hold.reserveSecs;
-          reservations.set(q.id, { amount: BigInt(q.evmAmount), until, txid: null, who, seq: ++holdSeq });
+          reservations.set(q.id, { amount: BigInt(q.evmAmount), until, txid: null, who, seq: ++holdSeq, risk });
           for (const [id] of out) await keep(id);
           await keep(q.id);
           return reply({ ok: true, until });
@@ -390,7 +495,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
         const held = reservations.get(body.quoteId);
         if (!held || held.until <= now()) return no('no reservation');
         if (held.txid === body.txid) return reply({ ok: true, until: held.until });
-        if (held.txid) return no('this reservation is held for another transaction');
+        if (held.txid || pending.has(held.swapId)) return no('this reservation is held for another transaction');
         // each transaction looked at is a read from the explorers, so a reservation looks at a few, not at any number
         if ((held.looks = (held.looks || 0) + 1) > (hold.maxLooks ?? 20)) return no('this reservation has looked at enough transactions');
         const tx = await btc.fetchTx(body.txid).catch(() => null);
@@ -403,6 +508,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           // a lock of a note spends the note as its second input (the first is its commit); a lock of plain sats is an ordinary transaction
           if (!tx.vin || tx.vin.length < (sats ? 1 : 2)) return no('that is not a lock transaction');
           const q = await quoter.get(body.quoteId), take = Number((q && q.takeSats) || 0);
+          if (q?.noteInputs && !sameNoteInputs(q.noteInputs, tx.vin.slice(1))) return no('these TAC inputs differ from the classified quote');
           if (take > 0 && btc.prims && btc.wallet) {
             const own = [...btc.prims.p2wpkhScript(btc.wallet.pub)].map((b) => b.toString(16).padStart(2, '0')).join('');
             // the fee of the take is paid to this address, or locked with the lock: an output of the lock's own script (the one the extension names)

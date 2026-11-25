@@ -77,6 +77,36 @@ const signIn = async (m) => { await until(() => !m.$('fx-go').hidden, 'the butto
 const press = async (m) => { await until(() => !m.$('fx-go').disabled, 'a quote'); m.$('fx-go').click(); await until(() => m.$('fx-go').textContent === 'Press again to bridge', 'the confirmation'); m.$('fx-go').click(); };
 const typeIn = (m, v) => { m.$('fx-amt').value = v; m.$('fx-amt').dispatchEvent(new m.dom.window.Event('input')); };
 
+test('slow TAC history shows progress and cannot lock an amount the user replaced', async () => {
+  const stub = sessionStub(), ordinary = stub.session.quoteAll;
+  let release, active;
+  const hold = new Promise((resolve) => { release = resolve; });
+  stub.session.quoteAll = async (providers, units, options) => {
+    if (units === 100n * TAC && options.allowLineage) {
+      active = options.quoteActive;
+      options.onQuoteProgress({ transfersRead: 214 });
+      await hold;
+    }
+    return ordinary(providers, units);
+  };
+  const m = mount({ session: stub });
+  try {
+    await signIn(m);
+    m.$('fx-lineage').checked = true;
+    typeIn(m, '100');
+    await until(() => /214 transfers read/.test(text(m.root)), 'progress for the first amount');
+    assert.equal(m.$('fx-go').disabled, true);
+    typeIn(m, '200');
+    await until(() => !m.$('fx-go').disabled, 'the new quote');
+    assert.equal(active(), false);
+    release();
+    await tick();
+    await press(m);
+    await until(() => stub.calls.starts.length === 1, 'the replacement amount starts');
+    assert.equal(stub.calls.starts[0].quotes[0].quote.btcValue, 200n * TAC);
+  } finally { release(); m.ui.destroy(); }
+});
+
 test('amounts: shown with thousands and up to four places, read back exactly, and refused when they are not amounts', () => {
   assert.equal(fmtTac(0n), '0'); assert.equal(fmtTac(5n * TAC), '5'); assert.equal(fmtTac(123_456_789_012n), '1,234.5678');
   assert.equal(fmtTac(1n), '0.00000001', 'a small amount shows as it is'); assert.equal(fmtTac(150_000_000n), '1.5');

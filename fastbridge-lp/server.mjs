@@ -37,8 +37,9 @@ const { makeBtcWallet } = await import('../dapp/bitcoin-taproot-wallet.js');
 const { makeAdaptorBtcTx, tacitKit } = await import('../dapp/adaptor-btc-tx.js');
 const { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES, AGREE_NODES } = await import('../dapp/fastbridge-evm.js');
 const { makeFileStore, makeFileLogStore, makeMemoryStore } = await import('./lib/store.mjs');
-const { makeNodeBtcChain } = await import('./lib/btc-chain.mjs');
+const { makeNodeBtcChain, makeTacitLineageReader } = await import('./lib/btc-chain.mjs');
 const { makeLpService } = await import('./lib/service.mjs');
+const { makeStuckPricing } = await import('../dapp/fastbridge-stuck-pricing.js');
 const { makeHttpServer } = await import('./lib/http.mjs');
 const { makeAlert } = await import('./lib/alert.mjs');
 const { makeSerial } = await import('./lib/serial.mjs');
@@ -103,7 +104,15 @@ if (PAIR) {
 const confs = (C.policy.confs || [['0', 1]]).map(([from, n]) => [BigInt(from), n]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
 // TAC with up to 8 places, as the pool's units (8 places) and as the token's wei (18)
 const tacUnits = (t) => { const [whole, frac = ''] = String(t).split('.'); return BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8)); };
+const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
+const isTac = (asset) => String(asset).toLowerCase().replace(/^0x/, '') === TAC;
+if (C.stuckPricing && (PAIR || !isTac(C.btcAsset) || !isTac(C.evmAsset))) throw new Error('stuckPricing is supported only for TAC-to-TAC');
+if (C.stuckPricing && BigInt(C.quote.rate?.num ?? 1) !== BigInt(C.quote.rate?.den ?? 1)) {
+  throw new Error('stuckPricing requires a 1:1 TAC conversion rate');
+}
+const stuckPricing = C.stuckPricing ? makeStuckPricing(C.stuckPricing, makeTacitLineageReader({ tacit, btc, assetId: TAC })) : null;
 const config = {
+  stuckPricing, ...(stuckPricing ? { anyTac: false } : {}),
   claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
   lowFree: (PAIR ? C.lowFreeEth : C.lowFreeTac) != null ? tacUnits(PAIR ? C.lowFreeEth : C.lowFreeTac) : null,    // what is left to lend, an amount with up to 8 places (TAC, or ETH for a pair provider)
   lowEth: C.lowEth != null ? tacUnits(C.lowEth) * 10n ** 10n : null,        // an ETH amount ("0.002") in wei: the units helper reads up to 8 places
@@ -117,6 +126,8 @@ const config = {
 };
 const data = resolve(C.dataDir || 'fastbridge-lp/data');
 const alert = makeAlert({ log, webhook: process.env.FB_LP_ALERT_WEBHOOK || null, name: C.name || undefined });
+// a configured opening exposure already past a cap accepts no new stuck TAC: warn, don't stop
+if (stuckPricing?.blocked) alert({ level: 'alert', msg: stuckPricing.blocked });
 // a pair provider with no price quotes nothing: said, and again each alertSecs while it stays so, and once when the price is back
 if (PAIR) {
   let priced = true, saidAt = -Infinity;

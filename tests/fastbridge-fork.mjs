@@ -41,17 +41,19 @@ export async function resolve(spec, ctx, next) {
 }`));
 
 const require = createRequire(new URL('../worker-relay/package.json', import.meta.url));
-const { encodeFunctionData, parseAbi, keccak256 } = require('viem');
+const { decodeFunctionResult, encodeFunctionData, parseAbi, keccak256 } = require('viem');
 const FORK = process.env.FORK || 'https://mainnet.gateway.tenderly.co';
 const PORT = 25700 + Math.floor(Math.random() * 300), RPC = `http://127.0.0.1:${PORT}`, RPORT = PORT + 400, RELAY = `http://127.0.0.1:${RPORT}`;
 const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', SP1_VERIFIER = '0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2';
-const SETTLER = '0x00000000000000000000000000000000005e771e', FROM = '0x00000000000000000000000000000000000dE921';
+const SETTLER = '0x00000000000000000000000000000000005e771e', FROM = '0x00000000000000000000000000000000000De921';
 const ETH_ID = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const E10 = 10n ** 10n;
 let n = 0, fails = 0;
 // SCENARIOS=A,B runs those; unset runs A, B and C. E (Ethereum -> Bitcoin) is run only when named: it has not yet been run to the end against the fork (the pool's history is now
 // large enough that a cold run reads hundreds of MB through a public node: use the default FORK, the Tenderly gateway, and let FORK_CACHE warm over a few runs).
-const runs = (s) => (process.env.SCENARIOS ? process.env.SCENARIOS.split(',').includes(s) : s !== 'E');
+// SCENARIOS=F runs the classified quote against the fork's actual TAC pool.
+const classifiedRun = process.env.SCENARIOS === 'F';
+const runs = (s) => (process.env.SCENARIOS ? process.env.SCENARIOS.split(',').includes(s) : s !== 'E' && s !== 'F');
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const hex = (v) => '0x' + BigInt(v).toString(16);
@@ -186,7 +188,7 @@ const routed = async (url, init) => {
   const rel = /^(?:https:\/\/api\.tacit\.finance|http:\/\/localhost(?::80)?)(\/confidential\/.*)$/.exec(u);
   if (rel) return realFetch(RELAY + rel[1], init);
   if (/^https:\/\/api\.tacit\.finance\//.test(u) || /^http:\/\/localhost(?::80)?\//.test(u)) return new Response('{}', { status: 404 });
-  if (/^https?:\/\/[^/]*(rpc|node|gateway|eth\.|llama|ankr|drpc|merkle|infura|alchemy|cloudflare|1rpc)/i.test(u) && init?.method === 'POST') {
+  if (/^https?:\/\/[^/]*(rpc|node|gateway|eth[-.]|llama|ankr|drpc|merkle|infura|alchemy|cloudflare|1rpc)/i.test(u) && init?.method === 'POST') {
     // a busy upstream answers some reads with an error body; those are asked again, as the page's wallet would ask another node
     for (let i = 0; ; i++) {
       const r = await again(() => realFetch(RPC, { ...init, signal: AbortSignal.timeout(180_000) }), 'the fork');
@@ -214,6 +216,8 @@ const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, fetchIm
 const { makeFastBridgeEvm } = await import('../dapp/fastbridge-evm.js');
 const { makeBitcoinLocker } = await import('../dapp/fastbridge-bl.js');
 const { makeEthereumLocker } = await import('../dapp/fastbridge-el.js');
+const { makeLpService } = await import('../dapp/fastbridge-provider.js');
+const { makeStuckPricing } = await import('../dapp/fastbridge-stuck-pricing.js');
 const { makeBtcWallet } = await import('../dapp/bitcoin-taproot-wallet.js');
 const { makeAdaptorBtcTx, tacitKit } = await import('../dapp/adaptor-btc-tx.js');
 const { bigintToBytes32 } = await import('../dapp/bulletproofs.js');
@@ -231,9 +235,26 @@ const wallet = {
 // ── the LP's inventory: 0.04 ETH made private (one note), so that each swap of 0.01 ETH needs a note cut to size ──
 const UNITS = 4_000_000n, AMOUNT = 1_000_000n;
 const t0 = Date.now(), t00 = t0;
-await wrapEth({ priv: () => lpPriv, wei: UNITS * E10, tip: 60000000000000n, to: SETTLER, from: FROM, wallet, ux });
-const held0 = ((await ux.balance(lpPriv)).byAsset[ETH_ID] || { notes: [] }).notes;
-ok(held0.length === 1 && BigInt(held0[0].value) === UNITS, `the LP holds one private ETH note of ${UNITS} units, found from its key alone (${Math.round((Date.now() - t0) / 1000)} s)`);
+const laneAsset = classifiedRun ? String(ux.assetByTicker.TAC.assetId).toLowerCase() : ETH_ID;
+if (classifiedRun) {
+  const token = ux.assetByTicker.TAC.underlying, amount = UNITS * E10;
+  if (!token) throw new Error('this fork does not list the TAC token');
+  // On the local fork only, mint the test funding through the token's
+  // ordinary mint so the balance and total supply agree before wrapping.
+  const erc20 = parseAbi(['function MINTER() view returns (address)', 'function mint(address to, uint256 amount)']);
+  const getMinter = encodeFunctionData({ abi: erc20, functionName: 'MINTER' });
+  const minter = decodeFunctionResult({ abi: erc20, functionName: 'MINTER', data: await rpcA('eth_call', [{ to: token, data: getMinter }, 'latest']) });
+  await rpcA('anvil_impersonateAccount', [minter]);
+  await rpcA('anvil_setBalance', [minter, hex(100n * 10n ** 18n)]);
+  await send(minter, token, encodeFunctionData({ abi: erc20, functionName: 'mint', args: [FROM, amount] }));
+  const built = ux.buildWrap({ walletPriv: lpPriv, amountWei: amount, ticker: 'TAC', index: 0 });
+  const { hash } = await send(FROM, POOL, built.calldata);
+  await ux.submitWrapSettle({ built, depositTx: hash });
+} else {
+  await wrapEth({ priv: () => lpPriv, wei: UNITS * E10, tip: 60000000000000n, to: SETTLER, from: FROM, wallet, ux });
+}
+const held0 = ((await ux.balance(lpPriv)).byAsset[laneAsset] || { notes: [] }).notes;
+ok(held0.length === 1 && BigInt(held0[0].value) === UNITS, `the LP holds one private ${classifiedRun ? 'TAC' : 'ETH'} note of ${UNITS} units, found from its key alone (${Math.round((Date.now() - t0) / 1000)} s)`);
 
 // ── time: the simulated Bitcoin and the fork share one clock ──
 const headTs = async () => parseInt((await rpcA('eth_getBlockByNumber', ['latest', false])).timestamp, 16);
@@ -243,7 +264,7 @@ async function syncChain() {
   if (clock.now() > ts) { await rpcA('evm_setNextBlockTimestamp', [clock.now()]); await rpcA('evm_mine'); } else if (ts > clock.now()) clock.advance(ts - clock.now());
 }
 
-function world(tag, { value = AMOUNT, self = null } = {}) {
+function world(tag, { value = AMOUNT, self = null, usePricing = false } = {}) {
   const btc = chainSim.makeBitcoinSim(clock);
   const kit = tacitKit(sim.tacit);
   const wal = (name) => makeBtcWallet({ priv: bigintToBytes32(sim.scalar(`${tag}/${name}/btc-wallet`)), hrp: 'tb', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('offline'); }, fetchFeeRate: async () => 3 });
@@ -261,13 +282,21 @@ function world(tag, { value = AMOUNT, self = null } = {}) {
   ux.identity(userPriv);
   const userSeed = chainSim.sha256(userPriv), lpSeed = chainSim.sha256(new Uint8Array([...lpPriv, 1]));
   const own = (who) => (self ? { selfSettle: self(who), openGraceMs: 2000, log: (o) => note(`${tag} ${who}: ${o.msg}`) } : {});
-  const evmU = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: userPriv, seed: userSeed, asset: ETH_ID, poolAddress: POOL, ...own('user') });
-  const evmL = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: lpPriv, seed: lpSeed, asset: ETH_ID, poolAddress: POOL, ...own('lp') });
+  const evmU = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: userPriv, seed: userSeed, asset: laneAsset, poolAddress: POOL, ...own('user') });
+  const evmL = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: lpPriv, seed: lpSeed, asset: laneAsset, poolAddress: POOL, ...own('lp') });
 
-  const quote = { id: 'q1', btcAsset: Buffer.from(etch.asset).toString('hex'), btcValue: value, evmAsset: ETH_ID, evmAmount: AMOUNT, validUntil: clock.now() + 1e6 };
+  const quote = { id: 'q1', btcAsset: Buffer.from(etch.asset).toString('hex'), btcValue: value, evmAsset: laneAsset, evmAmount: AMOUNT, validUntil: clock.now() + 1e6 };
   const offers = new Map();
   const w = { btc, etch, note, uW, lW, userPriv, quote, userStore: memStore(), lpStore: memStore(), userOnline: true, lpOnline: true };
-  const toLp = { sendOffer: async (msg) => w.lp.receive(msg), getEvmOffer: async (id) => offers.get(id) || null };
+  const toLp = usePricing ? {
+    sendOffer: async (msg) => {
+      const result = await w.service.handle({ method: 'POST', path: '/offer', body: msg });
+      w.lastOffer = result.body;
+      return result.body;
+    },
+    getEvmOffer: (id) => w.service.offerOf(id),
+    extend: async (body) => (await w.service.handle({ method: 'POST', path: '/extend', body })).body,
+  } : { sendOffer: async (msg) => w.lp.receive(msg), getEvmOffer: async (id) => offers.get(id) || null };
   const toUser = { publishEvmOffer: async (id, o) => { offers.set(id, o); } };
   w.offers = offers;
   w.user = makeBitcoinLocker({
@@ -275,13 +304,32 @@ function world(tag, { value = AMOUNT, self = null } = {}) {
     policy: { csvBlocks: 144, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600 },
     evm: { now: evmU.now, lockPosition: evmU.lockPosition, recipient: evmU.recipient, claimOp: evmU.claimOp, submit: evmU.submit, claimStatus: evmU.claimStatus, findClaim: evmU.findClaim, lockNullifier: evmU.lockNullifier },
   });
-  w.lp = makeEthereumLocker({
-    seed: lpSeed, now: clock.now, store: w.lpStore, quotes: { get: async (id) => (id === quote.id ? quote : null) }, btc: lBtc, counter: toUser,
-    policy: { minCsv: 72, minConfsFor: () => 1, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, minAmount: 1000, maxAmount: 100_000_000, roundSecs: 600 },
-    evm: { now: evmL.now, lockNullifier: evmL.lockNullifier, prepare: evmL.prepare, lockOp: evmL.lockOp, refundOp: evmL.refundOp, submit: evmL.submit, jobStatus: evmL.jobStatus, lockPosition: evmL.lockPosition, findClaim: evmL.findClaim, refundKey: evmL.refundKey },
-  });
+  const lpEvm = { now: evmL.now, lockNullifier: evmL.lockNullifier, prepare: evmL.prepare, lockOp: evmL.lockOp, refundOp: evmL.refundOp, submit: evmL.submit, jobStatus: evmL.jobStatus, lockPosition: evmL.lockPosition, findClaim: evmL.findClaim, refundKey: evmL.refundKey };
+  const policy = { minCsv: 72, minConfsFor: () => 1, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, minAmount: 1000, maxAmount: 100_000_000, roundSecs: 600 };
+  if (usePricing) {
+    const stuckPricing = makeStuckPricing({
+      longHaircutBps: 800, shieldedHaircutBps: 1500, longLimit: '2000000', shieldedLimit: '2000000', totalLimit: '2000000',
+      openingLong: '0', openingShielded: '0',
+    }, async (notes) => new Map(notes.map((n) => [`${n.txid}:${n.vout}`, { state: 'long' }])));
+    w.service = makeLpService({
+      seed: lpSeed, now: clock.now, swaps: w.lpStore, quoteStore: memStore(), btc: lBtc, evm: { ...lpEvm, available: evmL.available },
+      config: {
+        stuckPricing, claimPub: Buffer.from(lW.wallet.pub).toString('hex'), csvBlocks: 144, policy,
+        reserve: { reserveSecs: 1200 },
+        quote: { btcAsset: quote.btcAsset, evmAsset: laneAsset, minAmount: 1000, maxAmount: 2_000_000, validSecs: 1200, feeBps: 100, flatFee: '1000' },
+      },
+    });
+  } else {
+    w.lp = makeEthereumLocker({
+      seed: lpSeed, now: clock.now, store: w.lpStore, quotes: { get: async (id) => (id === quote.id ? quote : null) },
+      btc: lBtc, counter: toUser, policy, evm: lpEvm,
+    });
+  }
   w.evmU = evmU; w.evmL = evmL;
-  w.start = () => w.user.start({ asset: etch.asset, amount: value, notes: [note], counterClaimPub: lW.wallet.pub, evmAsset: ETH_ID, evmAmount: AMOUNT, quoteId: quote.id });
+  w.start = (q = quote) => w.user.start({
+    asset: etch.asset, amount: value, notes: [note], counterClaimPub: lW.wallet.pub, evmAsset: q.evmAsset,
+    evmAmount: BigInt(q.evmAmount), quoteId: q.id, takeSats: Number(q.takeSats ?? 0), validUntil: q.validUntil,
+  });
   w.rec = async (which) => (await w[which + 'Store'].list())[0];
   let ticks = 0;
   const seen = { user: null, lp: null };
@@ -291,7 +339,10 @@ function world(tag, { value = AMOUNT, self = null } = {}) {
       if (await until()) return i;
       await syncChain();
       if (w.userOnline) for (const r of await w.userStore.list()) await w.user.step(r);
-      if (w.lpOnline) for (const r of await w.lpStore.list()) await w.lp.step(r);
+      if (w.lpOnline) {
+        if (w.service) await w.service.tick();
+        else for (const r of await w.lpStore.list()) await w.lp.step(r);
+      }
       await note_('user'); await note_('lp');
       await sleep(250);
       clock.advance(20); ticks++;
@@ -305,7 +356,7 @@ function memStore() {
   const m = new Map();
   return { get: async (id) => (m.has(id) ? JSON.parse(m.get(id)) : null), put: async (r) => { m.set(r.id, JSON.stringify(r)); }, list: async () => [...m.values()].map((v) => JSON.parse(v)) };
 }
-const heldOf = async (priv) => ((await ux.balance(priv)).byAsset[ETH_ID] || { notes: [] }).notes.map((x) => BigInt(x.value));
+const heldOf = async (priv) => ((await ux.balance(priv)).byAsset[laneAsset] || { notes: [] }).notes.map((x) => BigInt(x.value));
 
 // ── A. the swap: the LP cuts the note to size, locks it in the live pool, the user claims, the LP reads t from the settle and takes the Bitcoin ──
 if (runs('A')) {
@@ -469,6 +520,42 @@ if (runs('E')) {
     ok(!mine.some((j) => j.error), 'no relayed job failed');
     ok((await call('GET', '/reverse/info')).body.open === 0, 'the provider has nothing open any more');
   }
+}
+
+if (classifiedRun) {
+  async function reserveQuote(w, note) {
+    const send = (path, body) => w.service.handle({ method: 'POST', path, body });
+    const input = { txid: note.txid, vout: note.vout };
+    const body = { amount: String(AMOUNT), noteInputs: [input] };
+    const check = await send('/quote', body);
+    if (check.status !== 202) throw new Error(`classifying quote: ${JSON.stringify(check.body)}`);
+    let quote = check;
+    for (let i = 0; i < 50 && quote.status === 202; i++) {
+      await sleep(5);
+      quote = await send('/quote', { ...body, checkId: check.body.checkId });
+    }
+    if (quote.status !== 200 || quote.body.noteClass !== 'long') throw new Error(`classified quote: ${JSON.stringify(quote.body)}`);
+    const reserve = await send('/reserve', { quoteId: quote.body.id });
+    if (!reserve.body.ok) throw new Error(`reserve: ${JSON.stringify(reserve.body)}`);
+    return quote.body;
+  }
+
+  const accepted = world('F-paid', { usePricing: true });
+  const quote = await reserveQuote(accepted, accepted.note);
+  ok(quote.evmAmount === '909000', 'the classified quote adds normal 10000 and flat 1000 to haircut 80000 on 1000000 units');
+  await accepted.start(quote);
+  await accepted.run(async () => (await accepted.rec('user'))?.phase === 'done' && (await accepted.rec('lp'))?.phase === 'done');
+  const userNotes = await heldOf(accepted.userPriv);
+  ok(userNotes.length === 1 && userNotes[0] === BigInt(quote.evmAmount), 'the actual Ethereum pool on the fork paid the quoted private TAC amount');
+  ok((await accepted.rec('lp'))?.stuckExposure?.amount === String(AMOUNT), 'the accepted swap retains its classified exposure');
+
+  const refused = world('F-refused', { usePricing: true });
+  const wrongQuote = await reserveQuote(refused, world('F-other').note);
+  const beforeJobs = jobsSeen.length;
+  await refused.start(wrongQuote);
+  await refused.run(() => refused.lastOffer && refused.lastOffer.retry === false);
+  ok(refused.lastOffer.ok === false && /inputs differ/.test(refused.lastOffer.why), 'the provider refuses a valid lock whose Bitcoin input differs from the quote');
+  ok(!await refused.rec('lp') && jobsSeen.length === beforeJobs, 'the refused lock created no provider swap and submitted no Ethereum proof');
 }
 
 console.log(`\nfork reads: ${proxy.stats.hits} from the cache, ${proxy.stats.misses} asked of the upstream, ${proxy.stats.retries} asked again`);

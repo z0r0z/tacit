@@ -33,6 +33,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     <div id="fx-form" hidden>
       <p class="eyebrow"><span>You bridge</span><span class="who num" id="fx-bal"></span></p>
       <div class="fx-amt"><input id="fx-amt" inputmode="decimal" placeholder="0" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" aria-label="TAC to bridge"><span>TAC</span><button class="linkbtn" id="fx-max" type="button" hidden>Max</button></div>
+      <label><input id="fx-lineage" type="checkbox"> Request quotes for hard-to-bridge TAC (shares selected Bitcoin note IDs with participating providers)</label>
       <div class="fx-out" id="fx-out" hidden>
         <p class="eyebrow"><span>You receive, private</span><span class="who">in your Tacit wallet</span></p>
         <div class="fx-big"><output class="num" id="fx-big" for="fx-amt">0</output><span>TAC</span></div>
@@ -117,6 +118,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
   function paintForm() {
     const signed = !!S.sess, form = $('fx-form'), go = $('fx-go'), recv = $('fx-recv'), out = $('fx-out'), wt = $('fx-wait');
     form.hidden = !signed;
+    $('fx-lineage').disabled = S.busy;
     go.hidden = false;
     $('fx-bal').textContent = signed && S.bal != null ? `${fmtTac(S.bal)} TAC on Bitcoin` : '';
     $('fx-max').hidden = !(signed && S.bal > 0n);
@@ -331,6 +333,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     clearTimeout(S.timer); clearInterval(S.watch); S.seq++;
     Object.assign(S, { sess: null, pub: null, bal: null, quotes: [], quote: null, best: null, amt: '', recs: [], busy: false, opening: null, want: null, told: false, cost: null, sure: null, checking: false, anyOnly: null, split: null });
     $('fx-amt').value = '';
+    $('fx-lineage').checked = false;
     note(text || '');
     paint();
   }
@@ -381,7 +384,22 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     return quotes;
   };
   // a kept want's price, for the amount it waits for
-  const wantPrice = (units) => (S.want && S.want.maxFeeBps != null && units === S.want.amount ? { maxFeeBps: S.want.maxFeeBps } : {});
+  const wantPrice = (units) => {
+    const seq = S.seq, sess = S.sess;
+    const quoteActive = () => seq === S.seq && sess === S.sess;
+    return {
+      ...(S.want && S.want.maxFeeBps != null && units === S.want.amount ? { maxFeeBps: S.want.maxFeeBps } : {}),
+      allowLineage: $('fx-lineage').checked,
+      quoteActive,
+      onQuoteProgress: ({ transfersRead }) => {
+        if (!quoteActive()) return;
+        S.checking = true;
+        const count = Number.isSafeInteger(transfersRead) && transfersRead > 0 ? ` ${transfersRead.toLocaleString('en-US')} transfers read so far.` : '';
+        note('Checking TAC history before quoting…' + count);
+        paintForm();
+      },
+    };
+  };
   function typed() {
     readProviders();
     S.amt = $('fx-amt').value; S.quotes = []; S.quote = null; S.best = null; S.note = ''; S.cost = null; S.sure = null; S.checking = false; S.anyOnly = null; S.split = null; S.pinNote = '';
@@ -399,6 +417,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
         }
         const r = await S.sess.quoteAll(eligible, units, wantPrice(units));
         if (seq !== S.seq) return;
+        if (S.checking) { S.checking = false; S.note = ''; paintForm(); }
         if (!r.quotes.length) { note(r.failed[0] ? wording(r.failed[0].error) : 'No provider can take that amount right now.', true); return; }
         S.quotes = pinFirst(r.quotes); S.quote = S.quotes[0].quote; S.best = S.quotes[0].provider; paintForm();
         if (S.sess.cost) {
@@ -451,6 +470,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
   };
 
   $('fx-amt').addEventListener('input', typed);
+  $('fx-lineage').addEventListener('change', typed);
   $('fx-back').addEventListener('click', async (ev) => {
     if (!ev.target.closest('#fx-back-open')) return;
     try { await signIn(); } catch (e) { if (!e?.unlockCancelled) note(wording(e), true); }
@@ -519,39 +539,50 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     const sure = () => {
       const who = S.best && S.best.name ? `${S.best.name} (${keyTag(S.best.id)})` : 'the provider';
       S.sure = { key: `${S.quote.id}|${S.quote.btcValue}`, at: Date.now() };
-      note(`${highTake(S.quote) ? `High Bitcoin fee: ${who} asks ${Number(S.quote.takeSats).toLocaleString('en-US')} sats for its take, well above what it costs at the current rate. ` : ''}${highFee(S.quote) ? `High fee: ${who} keeps ${fmtTac(S.quote.fee)} TAC (${pct(S.quote.fee, S.quote.btcValue)}). ` : ''}${S.quote.aboveTerms ? `${who} quotes more than the fee it lists. ` : ''}This locks ${fmtTac(S.quote.btcValue)} TAC on Bitcoin until ${who} has paid you ${fmtTac(S.quote.evmAmount)} private TAC in the pool, in about ${minutesFor(S.quote.minConfs)} minutes. If it does not, the lock returns to your address after ${timelockText(S.quote.csvBlocks)}. Press again to bridge.`);
+      note(`${highTake(S.quote) ? `High Bitcoin fee: ${who} asks ${Number(S.quote.takeSats).toLocaleString('en-US')} sats for its take, well above what it costs at the current rate. ` : ''}${highFee(S.quote) ? `High fee: ${who} keeps ${fmtTac(S.quote.fee)} TAC (${pct(S.quote.fee, S.quote.btcValue)}). ` : ''}${S.quote.noteClass === 'long' ? 'The fee includes a surcharge for long transfer history. ' : S.quote.noteClass === 'shielded' ? 'The fee includes a surcharge for a Bitcoin shielded-pool exit. ' : S.quote.aboveTerms ? `${who} quotes more than the fee it lists. ` : ''}This locks ${fmtTac(S.quote.btcValue)} TAC on Bitcoin until ${who} has paid you ${fmtTac(S.quote.evmAmount)} private TAC in the pool, in about ${minutesFor(S.quote.minConfs)} minutes. If it does not, the lock returns to your address after ${timelockText(S.quote.csvBlocks)}. Press again to bridge.`);
     };
     if (!(S.sure && S.sure.key === `${S.quote.id}|${S.quote.btcValue}` && Date.now() - S.sure.at < 180e3)) { sure(); paintForm(); return; }
     S.sure = null;
+    const sess = S.sess, seq = S.seq, confirmed = S.quote;
+    const current = () => sess === S.sess && seq === S.seq;
     S.busy = true; note('Locking your TAC on Bitcoin…'); paintForm();
     let again = false, quotes = S.quotes, fits = [];
     try {
       const soon = Math.floor(Date.now() / 1000) + 150;
       if (quotes.some((x) => Number(x.quote.validUntil) <= soon)) {
-        const r = await S.sess.quoteAll(quotes.map((x) => x.provider), S.quote.btcValue, wantPrice(S.quote.btcValue));
-        if (!r.quotes.length) throw new Error('the quote expired');
+        const r = await sess.quoteAll(quotes.map((x) => x.provider), confirmed.btcValue, wantPrice(confirmed.btcValue));
+        if (!current()) return;
+        S.checking = false;
+        if (!r.quotes.length) throw r.failed[0]?.error || new Error('the quote expired');
         quotes = pinFirst(r.quotes);
       }
       if (!quotes.length) throw new Error('the quote expired');
       // only quotes no worse than the one confirmed are started: one that pays less or asks more is shown, and needs another press
-      fits = quotes.filter((x) => noWorse(x.quote, S.quote));
+      fits = quotes.filter((x) => noWorse(x.quote, confirmed));
       if (!fits.length) { S.quotes = quotes; S.quote = quotes[0].quote; S.best = quotes[0].provider; again = true; return; }
-      await S.sess.start({ quotes: fits });
+      if (!current()) return;
+      await sess.start({ quotes: fits });
+      if (!current()) return;
       if (S.want) { const pub = S.pub; S.want = null; S.told = false; clearInterval(S.watch); wants.stop(pub).catch(() => {}); }
-      S.recs = await S.sess.records(); S.quotes = []; S.quote = null; S.best = null; S.amt = ''; $('fx-amt').value = '';
+      const recs = await sess.records();
+      if (!current()) return;
+      S.recs = recs; S.quotes = []; S.quote = null; S.best = null; S.amt = ''; $('fx-amt').value = '';
       const unsent = S.recs[0] && S.recs[0].phase === 'built' && S.recs[0].error;
       note(unsent ? 'Signed, but Bitcoin has not taken the lock yet. It is listed below and sent again by itself while this page is open.' : 'Started. It is listed below, and each step is taken as Bitcoin confirms.');
       S.sess.balance().then((b) => { S.bal = b; paintForm(); }).catch(() => {});
     } catch (e) {
+      if (!current()) return;
       const rest = /cannot hold that amount/.test(String((e && e.message) || e)) ? quotes.filter((x) => !fits.includes(x)) : [];
       if (rest.length) { S.quotes = rest; S.quote = rest[0].quote; S.best = rest[0].provider; again = true; } else note(wording(e), true);
     } finally {
-      if (again) {
+      if (current()) S.checking = false;
+      if (current() && again) {
         S.cost = null;
         if (S.sess && S.sess.cost) { const sess = S.sess, seq = S.seq, c = await sess.cost({ quote: S.quote, provider: S.best }).catch(() => null); if (seq === S.seq && S.sess === sess && c) S.cost = c; }
       }
-      S.busy = false; paint();
-      if (again && S.quote) { if (S.cost && S.cost.short) note(`The quote changed. ${shortText(S.cost)}`, true); else { sure(); note(`The quote changed. ${S.note}`); } paintForm(); }
+      if (sess === S.sess) S.busy = false;
+      paint();
+      if (current() && again && S.quote) { if (S.cost && S.cost.short) note(`The quote changed. ${shortText(S.cost)}`, true); else { sure(); note(`The quote changed. ${S.note}`); } paintForm(); }
     }
   }
   $('fx-go').addEventListener('click', go);
@@ -624,6 +655,6 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
   readProviders(true).then(() => { if (keyS.unlocked && !S.sess && !S.opening) openSession(); });
   return {
     lock: (text) => reset(text),
-    destroy: () => { if (S.stop) S.stop(); clearTimeout(S.timer); clearInterval(S.watch); clearInterval(S.depthTimer); },
+    destroy: () => { S.seq++; if (S.stop) S.stop(); clearTimeout(S.timer); clearInterval(S.watch); clearInterval(S.depthTimer); },
   };
 }
