@@ -15,7 +15,7 @@ const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
 const SETTLE_SELECTOR = '717fd7f2';
 const TRACE_PER_LOOK = 24;
 const TX_READS_AT_ONCE = 4;                              // findClaim's reads of the window's transactions, at once
-const TRACE_RETRY_MS = 15000, TRACE_RETRY_MAX_MS = 10 * 60 * 1000;
+const TRACE_RETRY_MS = 15000, TRACE_RETRY_MAX_MS = 60 * 1000;     // (a trace no node gave is asked again within a minute: a claim's secret may be in it)
 const UNREAD_SAY_MS = 30 * 60 * 1000;
 
 // `trace(txHash)` -> the calls a transaction made, [{ to, input }] (makeTxTracer): how a claim settled through another contract is read when its calldata does not show it
@@ -113,7 +113,11 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   }
   const inputs = new Map();
   async function txOf(h) {
-    if (!inputs.has(h)) { const t = await rpc('eth_getTransactionByHash', [h]); inputs.set(h, t && t.input ? { input: t.input, to: String(t.to || '').toLowerCase() } : null); cap(inputs, 256); }
+    // (a transaction a node does not have yet is not kept as one that is not there: only what was read is kept, and a miss is asked again next time)
+    if (inputs.has(h)) return inputs.get(h);
+    const t = await rpc('eth_getTransactionByHash', [h]);
+    if (!(t && t.input)) return null;
+    inputs.set(h, { input: t.input, to: String(t.to || '').toLowerCase() }); cap(inputs, 256);
     return inputs.get(h);
   }
   const poolTo = String(poolAddress).toLowerCase(), relayerTo = String(relayerAddress).toLowerCase();
@@ -648,7 +652,14 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     try { return BigInt(await ux.rpc('eth_getBalance', [ownAccount.address, 'latest'])); } catch { return null; }
   }
 
-  return { now, lockNullifier, lockPosition, findClaim, spentAgreed, lockAbsent, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, covers, heldFree, cutReserve, recipient, claimOp, ownEth, proveAhead, provenStatus, postProven };
+  // Every read kept that could stand between a swap and its next step is let go, so the next look reads the chains afresh: what a swap that has not moved for
+  // longer than it should asks for (a watchdog, or a person pressing 'Check again'). What was read stays true; only what was not found, or is waited on, goes.
+  function forget() {
+    misses.clear(); positions.clear(); traceMiss.clear(); refusals.clear(); readyAt = -Infinity;
+    if (typeof ux.forgetLockSet === 'function') ux.forgetLockSet();
+  }
+
+  return { forget, now, lockNullifier, lockPosition, findClaim, spentAgreed, lockAbsent, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, covers, heldFree, cutReserve, recipient, claimOp, ownEth, proveAhead, provenStatus, postProven };
 }
 
 // ── reads that two nodes or more must agree on ──
