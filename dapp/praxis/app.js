@@ -286,7 +286,7 @@ async function startWeb() {
   if (handleRaw && !isAddress(handleRaw) && !confirm('That does not look like a 0x address (0x and 40 letters or digits), so no TAC could be sent to it. Continue without one?')) { $('addr').focus(); return; }
   const handle = isAddress(handleRaw) ? handleRaw : '';
   const name = (cleanName($('name').value) || (handle ? '' : 'a browser')) || handle;
-  const web = await import('/praxis/web.js?cb=b4611fcf');
+  const web = await import('/praxis/web.js?cb=4cf9b484');
   web.resetClock();
   const ac = new AbortController();
   webRun = ac;
@@ -318,7 +318,10 @@ async function startWeb() {
     const said = String(e.message || e);
     $('web-msg').textContent = ac.signal.aborted ? 'Stopped. Nothing was lost; you can start again any time.'
       : /already contributed|may not join/.test(said) ? `${said.charAt(0).toUpperCase()}${said.slice(1)}.`
-      : `Something interrupted it (${said}). Your place was released and nothing was lost. Tap the button to try again.`;
+      : /already holds a place/.test(said) ? 'An earlier attempt from this address still holds a place in the line. Give it a minute to clear, then press the button again.'
+      : /dropped this place/.test(said) ? 'You were dropped from the line because this tab stopped checking in. Press the button to rejoin; keep the tab open while you wait.'
+      : /queue is full/.test(said) ? 'The line is full right now. Try again in a few minutes.'
+      : `Something interrupted it (${said}). Nothing was lost on our side. Press the button to try again.`;
     $('web-go').textContent = 'Try again'; $('web-go').hidden = false;
     $('web-stop').hidden = true;
   } finally {
@@ -339,7 +342,7 @@ async function drawQueue() {
     if (/^https?:\/\/[^\s"'<>]+$/.test(v.coordinator || '')) { coordinator = v.coordinator; drawCommand(); }
     $('queue').textContent = v.open === false ? 'Closed.' : waitText(v.queue);
     if (Number.isInteger(v.queue)) setNum($('n-queue'), v.queue);
-    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=b4611fcf'); const can = web.capable(); $('web').hidden = !can; if (can && !webRun) $('cmd-alt').open = false; }
+    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=4cf9b484'); const can = web.capable(); $('web').hidden = !can; if (can && !webRun) $('cmd-alt').open = false; }
   } catch { $('queue').textContent = ''; }
 }
 

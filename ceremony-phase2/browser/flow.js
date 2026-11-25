@@ -63,11 +63,18 @@ const hex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, '0')).join('')
 
 // opts: api, name, handle, spawn (a worker factory), workers, getRandom, onStatus, signal, partSize
 export async function runContribution(opts) {
-  const { api, name, handle = '', spawn, workers = 4, getRandom = (b) => crypto.getRandomValues(b), onStatus = () => {}, signal, partSize = 16 << 20 } = opts;
+  const { api, name, handle = '', spawn, spawnBeat, workers = 4, getRandom = (b) => crypto.getRandomValues(b), onStatus = () => {}, signal, partSize = 16 << 20 } = opts;
   const joined = await call(api, 'POST', '/join', null, { name, handle }, signal);
   const token = joined.token;
   let state = joined, lost = null, finished = false;
-  const beat = (async () => {
+  // in a page the poll runs in a worker (see beat.js), so a background tab keeps its place; elsewhere it runs here
+  let beatW = null;
+  if (spawnBeat) {
+    beatW = spawnBeat();
+    beatW.onmessage((m) => { if (m.lost) lost = new Refused('the coordinator dropped this place in the queue', 404); else if (m.state) state = { ...state, ...m.state }; });
+    beatW.post({ api, token, every: Math.max(3, state.poll_seconds || 10) * 1000 });
+  }
+  const beat = spawnBeat ? Promise.resolve() : (async () => {
     while (!finished && !signal?.aborted) {
       await sleep(Math.max(2, state.poll_seconds || 10) * 1000, signal).catch(() => {});
       if (finished || signal?.aborted) return;
@@ -144,5 +151,6 @@ export async function runContribution(opts) {
   } finally {
     finished = true;
     pool?.terminate(); hasher?.terminate();
+    if (beatW) { beatW.post({ stop: true }); beatW.terminate(); }
   }
 }
