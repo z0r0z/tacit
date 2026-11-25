@@ -11,10 +11,10 @@
 const CSS = `
 .hw { position: fixed; z-index: 800; right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); font: 13px/1.5 var(--mono, ui-monospace, monospace); letter-spacing: -.01em; }
 .hw[hidden], .hw [hidden] { display: none !important; }
-.hw-b { display: grid; place-items: center; width: 52px; height: 52px; padding: 0; cursor: pointer; border-radius: 50%; border: 0; color: var(--card, #f2ebd4); background: var(--ink, #1a1a1a);
+.hw-b { display: grid; place-items: center; width: 52px; height: 52px; padding: 0; cursor: pointer; border-radius: 50%; border: 0; color: var(--ink, #1a1a1a); background: color-mix(in srgb, var(--ink, #1a1a1a) 10%, var(--card, #f2ebd4));
   box-shadow: 0 0 0 1px var(--hair-2, rgba(26, 26, 26, .28)), 0 10px 24px -10px rgba(0, 0, 0, .55); -webkit-tap-highlight-color: transparent; transition: transform .2s var(--spring, ease), box-shadow .2s; }
 .hw-b svg { width: 24px; height: 24px; }
-.hw-b .d { fill: var(--ink, #1a1a1a); }
+.hw-b .d { fill: color-mix(in srgb, var(--ink, #1a1a1a) 10%, var(--card, #f2ebd4)); }
 .hw-b[aria-expanded="true"] svg { transform: scale(.92); }
 @media (hover: hover) { .hw-b:hover { transform: translateY(-2px); box-shadow: 0 0 0 1px var(--hair-2, rgba(26, 26, 26, .28)), 0 14px 28px -10px rgba(0, 0, 0, .6); } }
 .hw-b:active { transform: scale(.95); }
@@ -38,7 +38,7 @@ const CSS = `
 @media print { .hw { display: none; } }
 `;
 
-const BUBBLE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3C6.9 3 3 6.6 3 11.2c0 2.2.9 4.1 2.4 5.5-.1 1.3-.6 2.4-1.4 3.3-.2.3 0 .7.4.7 1.9-.1 3.4-.8 4.5-1.7 1 .3 2 .4 3.1.4 5.1 0 9-3.6 9-8.2S17.1 3 12 3z"/><circle class="d" cx="8" cy="11.3" r="1.15"/><circle class="d" cx="12" cy="11.3" r="1.15"/><circle class="d" cx="16" cy="11.3" r="1.15"/></svg>';
+const BUBBLE = '<svg viewBox="0 0 24 24" aria-hidden="true" style="opacity:.85"><path fill="currentColor" d="M12 3C6.9 3 3 6.6 3 11.2c0 2.2.9 4.1 2.4 5.5-.1 1.3-.6 2.4-1.4 3.3-.2.3 0 .7.4.7 1.9-.1 3.4-.8 4.5-1.7 1 .3 2 .4 3.1.4 5.1 0 9-3.6 9-8.2S17.1 3 12 3z"/><circle class="d" cx="8" cy="11.3" r="1.15"/><circle class="d" cx="12" cy="11.3" r="1.15"/><circle class="d" cx="16" cy="11.3" r="1.15"/></svg>';
 
 const doc = document;
 if (!doc.getElementById('hw')) {
