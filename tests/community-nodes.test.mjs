@@ -35,8 +35,7 @@ test('with no key pinned nothing is asked and nothing is offered', async () => {
   assert.deepEqual(c.tail('eth_gasPrice', []), []);
   await c.load();
   assert.equal(n.calls.length, 0);
-  assert.deepEqual(L.PROBER_PUBS, [], 'the shipped build pins none until the prober key is made');
-  assert.deepEqual(communityTail('eth_gasPrice', []), [], 'the page-wide instance does nothing in a build with no key');
+  assert.deepEqual(L.PROBER_PUBS, ['0395b90336f231fa491b9519eed9d06d3e2359ba848fd54c26255dac127dc1f34a'], 'the shipped build pins the prober key');
 });
 
 test('a verified list gives fee reads as extra last hosts, one per independent group; nothing else', async () => {
