@@ -12,8 +12,8 @@ import { verifyReceipt, brokenLink, BASE_INDEX, BASE_SHA256, COORDINATOR_KEY } f
 
 // The receipts that may be copied: from the pinned base, each linked to the one before and signed by the pinned key.
 // The link to the coordinator is plain HTTP, so nothing it says is believed without these checks.
-export async function trustedFiles(t, key = COORDINATOR_KEY) {
-  if (t.base_index !== BASE_INDEX || t.base_sha256 !== BASE_SHA256 || t.coordinator_pubkey !== key) return { files: [], why: 'the transcript is not the pinned chain' };
+export async function trustedFiles(t, key = COORDINATOR_KEY, base = { index: BASE_INDEX, sha256: BASE_SHA256 }) {
+  if (t.base_index !== base.index || t.base_sha256 !== base.sha256 || t.coordinator_pubkey !== key) return { files: [], why: 'the transcript is not the pinned chain' };
   const rs = t.receipts || [];
   const bad = brokenLink(t);
   const upto = bad === -1 ? rs.length : bad;

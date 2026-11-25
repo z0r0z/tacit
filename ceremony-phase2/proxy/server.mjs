@@ -6,8 +6,12 @@
 //
 // With MIRROR_BUCKET (and MIRROR_ENDPOINT, MIRROR_KEY, MIRROR_SECRET) set, it also copies each accepted file and the
 // transcript to that bucket (mirror.mjs); GET /api/mirror lists what is copied, with IPFS CIDs where the store gives them.
+//
+// GET /api/credits?day=<n> is the ceremony's points feed (credits.mjs): one credit per 0x address, from signed receipts only;
+// CEREMONY_POINTS (100) points a credit, CEREMONY_EXCLUDE a comma-separated list of addresses never credited.
 import { createServer } from 'node:http';
 import { startMirror } from './mirror.mjs';
+import { dayTally, DAY_MS } from './credits.mjs';
 
 const UPSTREAM = String(process.env.COORDINATOR_URL || '').replace(/\/$/, '');
 const PORT = Number(process.env.PORT || 10000);
@@ -19,6 +23,9 @@ const mirror = process.env.MIRROR_BUCKET
   ? startMirror({ upstream: UPSTREAM, bucket: process.env.MIRROR_BUCKET, endpoint: process.env.MIRROR_ENDPOINT || 'https://s3.filebase.com',
       key: process.env.MIRROR_KEY, secret: process.env.MIRROR_SECRET })
   : null;
+
+const CREDIT_POINTS = Number(process.env.CEREMONY_POINTS || 100);
+const EXCLUDE = String(process.env.CEREMONY_EXCLUDE || '').split(',').map((s) => s.trim()).filter(Boolean);
 
 const cache = new Map();                      // path -> { at, status, body }
 const inflight = new Map();                   // path -> the one fetch under way, shared by every request meanwhile
@@ -51,6 +58,15 @@ createServer(async (req, res) => {
   if (req.method === 'GET' && path === '/api/mirror') {
     res.writeHead(mirror ? 200 : 404, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30', ...cors });
     return res.end(JSON.stringify(mirror ? { bucket: process.env.MIRROR_BUCKET, files: mirror.status() } : { error: 'no mirror' }));
+  }
+  if (req.method === 'GET' && path === '/api/credits') {
+    const day = Number(new URL(req.url, 'http://x').searchParams.get('day'));
+    const today = Math.floor(Date.now() / DAY_MS);
+    const send = (code, v) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...cors }); res.end(JSON.stringify(v)); };
+    if (!Number.isSafeInteger(day) || day < 0 || day > today) return send(400, { error: 'day must be a UTC day number, today or before' });
+    const v = await upstream('/api/transcript');
+    if (v.status !== 200 || v.stale) return send(502, { error: 'the coordinator did not answer' });
+    return send(200, await dayTally(JSON.parse(v.body), day, { points: CREDIT_POINTS, exclude: EXCLUDE }));
   }
   if (req.method !== 'GET' || !['/api/head', '/api/transcript'].includes(path)) { res.writeHead(404, { 'Content-Type': 'application/json', ...cors }); return res.end('{"error":"not found"}'); }
   const v = await upstream(path);

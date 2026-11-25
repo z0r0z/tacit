@@ -26,3 +26,43 @@ test('a receipt with a changed field, a broken link or another key stops the cop
   other.coordinator_pubkey = '11'.repeat(32);
   assert.deepEqual((await trustedFiles(other)).files, []);
 });
+
+test('credits: one per 0x address, on its receipt day, only from signed receipts', async () => {
+  const { dayTally, credited, addressOf } = await import('./credits.mjs');
+  assert.equal(addressOf({ name: 'Tacit', handle: '@tacitfinance' }), null);
+  assert.equal(addressOf({ name: 'x', handle: ' 0xAbCdEf0123456789abcdef0123456789ABCDEF01 ' }), '0xabcdef0123456789abcdef0123456789abcdef01');
+  // the live transcript's one receipt (name Tacit, handle @tacitfinance) has no address: nobody is credited
+  assert.deepEqual(await credited(t), []);
+  const day = Math.floor(Date.parse(t.receipts[0].at) / 86_400_000);
+  const tally = await dayTally(t, day, { nowMs: Date.now() });
+  assert.deepEqual(tally, { day, over: true, miners: [] });
+  // a receipt whose handle was changed to an address no longer verifies, so it credits nothing
+  const forged = structuredClone(t);
+  forged.receipts[0].handle = '0x' + '11'.repeat(20);
+  assert.deepEqual(await credited(forged), []);
+});
+
+test('credits from a signed chain: the first contribution per address, its day, excluded addresses skipped', async () => {
+  const { generateKeyPairSync, sign, createHash } = await import('node:crypto');
+  const { signedBytes } = await import('../../dapp/praxis/receipt.js');
+  const { dayTally } = await import('./credits.mjs');
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const key = publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('hex');
+  const h = (s) => createHash('sha256').update(s).digest('hex');
+  const base = { index: 17, sha256: h('base') };
+  const A = '0x' + 'aa'.repeat(20), B = '0x' + 'bb'.repeat(20), HOUSE = '0x' + 'cc'.repeat(20);
+  const rows = [[A, '2026-11-26T10:00:00Z'], [A, '2026-11-26T11:00:00Z'], [B, '2026-11-27T01:00:00Z'], [HOUSE, '2026-11-27T02:00:00Z']];
+  let prev = base.sha256;
+  const receipts = rows.map(([addr, at], i) => {
+    const r = { index: 18 + i, name: 'someone', handle: addr, contribution_hash: h(String(i)), file_sha256: h(String(i)), prev_file_sha256: prev, at };
+    r.signature = sign(null, Buffer.from(signedBytes(r)), privateKey).toString('hex');
+    prev = r.file_sha256;
+    return r;
+  });
+  const t = { base_index: 17, base_sha256: base.sha256, head_index: 21, head_sha256: prev, coordinator_pubkey: key, receipts };
+  const d1 = Math.floor(Date.parse('2026-11-26T00:00:00Z') / 86_400_000);
+  const opts = { key, base, exclude: [HOUSE], nowMs: Date.parse('2026-11-28T00:00:00Z') };
+  assert.deepEqual(await dayTally(t, d1, opts), { day: d1, over: true, miners: [{ miner: A, proofs: 1, points: 100 }] });
+  assert.deepEqual((await dayTally(t, d1 + 1, opts)).miners, [{ miner: B, proofs: 1, points: 100 }], 'B credited; HOUSE excluded; A not twice');
+  assert.equal((await dayTally(t, d1 + 1, { ...opts, nowMs: Date.parse('2026-11-27T12:00:00Z') })).over, false, 'today is not over');
+});
