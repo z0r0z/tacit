@@ -22,7 +22,7 @@ import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=b7
 import { makeRateFeed, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
 import { discoverProviders } from '/fast/discover.js?cb=ba6128db';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=7685c97f';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=8972373a';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();
