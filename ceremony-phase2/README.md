@@ -152,8 +152,8 @@ are copied to the mirror as they are accepted. To bring the chain up on a new ma
 4. Point the HTTPS window (`COORDINATOR_URL` of the proxy) and the page at the new address.
 
 Contributors' clients pin the coordinator key, so the chain continues under the same key. If the key itself were lost,
-the chain would continue from the same head under a new key, announced with a signature by the old one where possible;
-receipts already issued stay checkable with the old key.
+the chain would continue from the same head under a new key, published here and on the page; receipts already issued
+stay checkable with the old key.
 
 ## Release binaries
 
