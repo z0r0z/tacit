@@ -20,6 +20,13 @@ export const SAFE_RATIOS = [250, 200, 175];
 export const NEAR_FALL = 10, NEAR_CLEAR = 3;
 export const fallToLiq = (ratio, liq) => (ratio > 0 && liq > 0 ? Math.max(0, (1 - liq / ratio) * 100) : null);
 export const fallText = (fall) => (fall < 1 ? 'less than 1%' : `${Math.floor(fall + 1e-9)}%`);
+// What a borrower is told when the ratio they chose is thin (under 175%): how far bitcoin may fall, and that a liquidation takes the whole collateral, which is worth up to
+// `liq` percent of the debt (the loan's equity over the debt goes with it). `ratio` and `liq` are percentages; null when there is nothing to say.
+export function riskNote(ratio, liq) {
+  if (!(ratio > 0) || !(liq > 0) || ratio >= 175 || ratio <= liq) return null;
+  const fall = fallToLiq(ratio, liq);
+  return `At ${Math.round(ratio)}%, bitcoin falling ${fallText(fall)} makes this loan liquidatable. A liquidation takes all of the cBTC behind it, not only the debt: you would lose about ${Math.round(liq - 100)}% of the loan's value on top of repaying it. 200% or more leaves much more room.`;
+}
 export function loanHealth({ sats, debt, usdBtc, floor, liq }) {
   const coll = Number(sats) / 1e8, owed = Number(debt) / 1e8;
   if (!(coll > 0) || !(owed > 0) || !(usdBtc > 0)) return { ratio: null, liqAt: null, fall: null, near: false, level: '' };
@@ -143,6 +150,24 @@ export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, 
       debtNotes: picked.map((n) => ({ cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path, owner: n.owner, nk: n.secret })),
     };
   }
+  // Adds one of the key's own private notes to a loan's collateral (the protocol's top-up): the same debt, more behind it. `note` is a whole note of an asset
+  // (cBTC for a loan against cBTC): it joins that asset's leg of the basket, or becomes a leg of its own. The note's amount is added as it stands.
+  function topupArgs(t, priv, { p, ownerPriv, basket, tree, index, note }) {
+    const leg = { asset: note.asset, cx: note.cx, cy: note.cy, value: note.value, blinding: note.blinding, leafIndex: note.leafIndex, path: note.path, owner: note.owner, nk: note.secret };
+    return {
+      controller: p.controller, debtValue: BigInt(p.debtValue), rateSnapshot: p.rateSnapshot, oldBasket: basket.map((l) => ({ asset: l.asset, value: BigInt(l.value) })),
+      addedCollateral: [leg], positionIndex: index, positionPath: tree.pathFor(index).path, spendRoot: note.root, cdpPositionRoot: tree.root,
+      positionOwner: p.positionOwner, positionOwnerPriv: ownerPriv,
+    };
+  }
+  // The basket after a top-up, as a loan record keeps it (values as strings).
+  function toppedBasket(basket, note) {
+    const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+    const out = basket.map((l) => ({ asset: l.asset, value: String(BigInt(l.value)) }));
+    const leg = out.find((l) => same(l.asset, note.asset));
+    if (leg) leg.value = String(BigInt(leg.value) + BigInt(note.value)); else out.push({ asset: note.asset, value: String(BigInt(note.value)) });
+    return out;
+  }
   // The key that closes a loan: derived from the Tacit key and the loan's own nonce; for a loan opened before keys were derived that
   // way, the copy this browser kept of it, sealed under the Tacit key. → the key, or null when neither gives it.
   async function ownerKey(ps, priv, p) {
@@ -254,5 +279,5 @@ export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, 
     return { ...built, sent: true };
   }
 
-  return { positions, nextKeyNonce, fresh, openArgs, opened, positionLeaf, ownerKey, repayArgs, repaid, mintArgs, lockMaker, lock, resumeLocks, takeBack };
+  return { positions, nextKeyNonce, fresh, openArgs, opened, positionLeaf, ownerKey, repayArgs, topupArgs, toppedBasket, repaid, mintArgs, lockMaker, lock, resumeLocks, takeBack };
 }
