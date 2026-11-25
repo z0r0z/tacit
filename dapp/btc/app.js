@@ -2,13 +2,13 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=9fb5290f';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=f70ed45a';
 import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=a626d195';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
 import { makeAddEth } from '/btc/add-eth.js?cb=8b0ccea0';
-import { mountSendPanel } from '/btc/panel.js?cb=f2c12e0e';
+import { mountSendPanel } from '/btc/panel.js?cb=4e402acb';
 
 const $ = (id) => document.getElementById(id);
 const MARKET_MS = 60000;
@@ -70,9 +70,11 @@ const SYM = { b2e: 'BTC', e2b: 'ETH' };
 function side(s, dir) {
   const head = dir === 'b2e' ? '<b><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>BTC → ETH</b>' : '<b><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>ETH → BTC</b>';
   if (!s) return `<div class="d">${head}<span>not offered</span></div>`;
-  const n = takeable(s), u = SYM[dir];
+  const n = takeable(s), u = SYM[dir], f = feeTxt(s, dir), at = f.indexOf(' (');
+  // (what the fee is at the minimum stays whole: the line breaks before it)
+  const fee = at < 0 ? esc(f) : `${esc(f.slice(0, at))} <span class="nw">${esc(f.slice(at + 1))}</span>`;
   return `<div class="d">${head}<span class="num">${esc(fmt(s.min))} to ${esc(fmt(s.max))} ${u}</span>`
-    + `<span class="num${n >= s.min ? '' : ' off'}">${n >= s.min ? `${esc(fmt(n))} ${u} available now` : 'full right now'}</span><span>fee ${esc(feeTxt(s, dir))}</span></div>`;
+    + `<span class="num${n >= s.min ? '' : ' off'}">${n >= s.min ? `${esc(fmt(n))} ${u} available now` : 'full right now'}</span><span>fee ${fee}</span></div>`;
 }
 function paintProviders(m) {
   const list = $('pv-list'), cap = $('cap'), live = $('live');
@@ -136,11 +138,14 @@ $('keep-file').addEventListener('change', async (e) => {
   catch (err) { st.textContent = String(err?.message || 'That file could not be read.'); }
 });
 
-// the commands copy with one press
+// the commands copy with one press; each line is its own block, so a long one wraps under itself (the copy is the text as written)
 for (const pre of document.querySelectorAll('.cmd pre')) {
+  const cmd = pre.textContent;
+  // (and each word of it whole where it fits, so a line breaks between words, not inside a path or a --flag)
+  pre.innerHTML = cmd.split('\n').map((l) => `<span class="ln">${l.split(/( +)/).map((w) => (/^ *$/.test(w) ? w : `<span class="w">${esc(w)}</span>`)).join('')}</span>`).join('');
   const b = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Copy' });
   b.setAttribute('aria-label', 'Copy the command');
-  b.addEventListener('click', () => navigator.clipboard?.writeText(pre.textContent).then(() => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1500); }, () => { b.textContent = 'Select it'; }));
+  b.addEventListener('click', () => navigator.clipboard?.writeText(cmd).then(() => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1500); }, () => { b.textContent = 'Select it'; }));
   pre.parentElement.append(b);
 }
 

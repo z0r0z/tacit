@@ -64,7 +64,7 @@ const BTC_STUB = `
 const W = window.__btc = { unlocked: false, signIns: 0, funds: 0, fundAsk: null, mode: 'eth' };
 const T = { wallet: { priv: new Uint8Array(32).fill(7), address: () => 'bc1qtestaddress0000000000000000000000000' } };
 const session = { get unlocked() { return W.unlocked; }, get key() { return W.unlocked ? { pubHex: '02' + 'ab'.repeat(32), mode: W.mode, address: W.mode === 'eth' ? '0x' + '12'.repeat(20) : undefined } : null; }, get T() { return T; }, load: async () => T, turn: async (fn) => fn() };
-export function makeBitcoin({ onChange }) { return { session, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: (o) => { W.funds++; W.fundAsk = o || null; } }; }`;
+export function makeBitcoin({ onChange }) { W.change = onChange; return { session, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: (o) => { W.funds++; W.fundAsk = o || null; } }; }`;
 // (the address's own sats: a test key that holds nothing signs, the real signer; coins, the swaps' held coins, locks, fee rates and the broadcast are the test's)
 const WIRE_STUB = `import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 const { prims } = makeBtcWallet({ priv: new Uint8Array(32).fill(7), hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
@@ -464,7 +464,8 @@ console.log('Send BTC: the Tacit wallet\'s own bitcoin to any address');
   await page.waitForFunction(() => !document.querySelector('#yb-box').hidden && /0\.5 BTC/.test(document.querySelector('#yb-bal').textContent), null, { timeout: 15000 });
   const own = await text(page, '#yb-addr');
   ok(/^bc1q[0-9a-z]{38}$/.test(own), `its own address and balance (${own})`);
-  await page.click('#yb-send');
+  await sleep(200);
+  ok(await page.evaluate(() => { document.querySelector('#yb-send').click(); return document.querySelectorAll('#yb-tiers input:not([disabled])').length === 3; }), 'the fee estimates were read when the address showed: the form opens with them');
   await page.waitForFunction(() => document.querySelectorAll('#yb-tiers input:not([disabled])').length === 3 && document.querySelector('#yb-held').textContent, null, { timeout: 15000 });
   const tiers = await text(page, '#yb-tiers');
   ok(/Fast next block 12 sat\/vB/.test(tiers) && /Normal about 30 min 6 sat\/vB/.test(tiers) && /Slow about an hour 2 sat\/vB/.test(tiers) && (await page.$eval('input[name=yb-tier]:checked', (e) => e.value)) === 'normal', `three fee choices from the explorers' estimates, Normal chosen (${tiers})`);
@@ -492,6 +493,9 @@ console.log('Send BTC: the Tacit wallet\'s own bitcoin to any address');
   await page.waitForFunction(() => document.querySelectorAll('#yb-sent li').length === 1, null, { timeout: 15000 });
   const posted = await page.evaluate(() => window.__bit.posted);
   ok(posted.length === 1 && SEND.outputScript(posted[0], 0) === '0014751e76e8199196d454941c45d1b3a323f1433bd6' && SEND.outputScript(posted[0], 2) === null, 'one transaction broadcast: the recipient first, then change');
+  // the key's session stirs (it closes and opens again with the same key) and the lane opens its pair client again: the panel keeps what it showed meanwhile
+  const kept = await page.evaluate(() => { const W = window.__btc; W.unlocked = false; W.change(); W.unlocked = true; W.change(); return [document.querySelector('#yb-box').hidden, document.querySelector('#yb-sent').children.length, document.querySelector('#yb-bal').textContent]; });
+  ok(kept[0] === false && kept[1] === 1 && /^0\.5 BTC/.test(kept[2]), `while the pair client opens again for the same key, the address, the balance and the send stay shown (${kept})`);
   ok(posted[0].includes('a1'.repeat(32)) && !posted[0].includes('d4'.repeat(32)) && posted[0].includes('fdffffff'), 'it spends the largest coin, never the swap\'s, and signals replacement');
   ok(/Waiting for a confirmation/.test(await text(page, '#yb-sent')) && (await page.$$('#yb-sent a[href^="https://mempool.space/tx/"]')).length === 1 && await page.isHidden('#yb-rv') && await page.isHidden('#yb-form'), 'the send is listed with its explorer link, waiting for a confirmation; the form closes');
   await page.setViewportSize({ width: 390, height: 900 });

@@ -136,6 +136,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       <p class="q" id="a-q" role="status"></p>
     </div>`;
 
+  // an amount's length, for a page that sizes it to its field (--n)
+  const fit = (el) => el.style.setProperty('--n', String(Math.max(5, String(el.tagName === 'INPUT' ? el.value : el.textContent).length)));
   const say = (h, cls = '') => { L.line = h; L.cls = cls; const q = $('a-q'); q.className = `q${cls ? ` ${cls}` : ''}`; q.innerHTML = h; };
   const sides = () => SIDES[L.dir].map((k) => COINS[k]);
   const amountBase = () => { const v = parseUnits(L.amt, DEC); return v && v > 0n ? v : null; };
@@ -410,6 +412,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const est = !q && !pair && L.mk?.estimate && amountBase() ? L.mk.estimate(L.dir, amountBase()) : null;
     out.classList.toggle('est', !!est);
     if (q) { out.textContent = fmt(arrives); out.classList.remove('ph'); } else if (est) { out.textContent = `≈ ${tidy(fmtUnits(est.get, DEC, 6))}`; out.classList.remove('ph'); } else { out.textContent = '0'; out.classList.add('ph'); }
+    fit(out); fit($('a-amt'));
     paintRcpt(); paintRecs();
     const gt = gate(), go = $('a-go');
     go.textContent = gt.label; go.disabled = !!gt.off; go.dataset.act = gt.act || ''; fundAsk = gt.fund || null; addAsk = gt.add || null;
@@ -543,7 +546,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   // ── events ──
   function dismiss(id) { const s = dismissed(); s.add(id); try { localStorage.setItem(DISMISS_KEY, JSON.stringify([...s].slice(-50))); } catch { /* storage is a convenience */ } paintRecs(); }
   const setAmt = (v) => { L.amt = v; L.sticky = false; if (L.cls === 'err' && !L.busy) say(''); onState(); requote(); };
-  host.addEventListener('input', (e) => { if (e.target.id === 'a-amt') setAmt(e.target.value.trim()); });
+  host.addEventListener('input', (e) => { if (e.target.id === 'a-amt') { fit(e.target); setAmt(e.target.value.trim()); } });
   host.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'a-amt' && !$('a-go').disabled) $('a-go').click(); });
   host.addEventListener('click', (e) => {
     const t = e.target;
@@ -573,6 +576,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     },
     state: () => ({ dir: L.dir, amt: L.amt }),
     get unlocked() { return D.unlocked; },
+    // which key is open (null when none): what a page shows of the key's own may stay up while its pair client is opened again for the same key
+    get key() { return keyOf(); },
     // whether the swaps of an earlier visit are still being looked for: 'looking' from the key's opening until the look ends, 'failed' while one that failed waits
     // to be made again, else null (a page that lists the swaps says 'looking' then, not that there are none)
     get looking() { return !D.unlocked || recovered ? null : lookFailed && !recovering ? 'failed' : 'looking'; },
