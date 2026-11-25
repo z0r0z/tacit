@@ -14,8 +14,16 @@
 //     misses the deadline still publishes t
 //   - the Bitcoin refund is taken once the timelock has run and the lock is still unspent
 //
-// From the moment the timelock has run, a lock that is still unspent is refunded in any phase before the pool shows this side's claim, so
-// no stuck step (a claim job that never answers, an offer that cannot be read) holds the note; steps of one record run one at a time.
+// From the moment the timelock has run, a lock that is still unspent is refunded in any phase before this side has sent a claim, so no stuck step
+// (an offer that cannot be read, a counterparty that went away) holds the note; steps of one record run one at a time.
+//
+// Once a claim has been sent (to the relay, or from an account of this side's own), the lock is refunded only when the Ethereum nodes agree the claim did
+// not land: the pool lock spent by a refund, or still unspent at a block past its deadline, after which no claim can land. A claim the pool shows (final,
+// `finalDepth` blocks deep) ends the swap as done, whatever its job said and whenever it is read. A read that cannot be made (too few nodes, nodes that differ,
+// a spend not yet deep enough) is made again and refunds nothing, in either direction: a refund taken while the claim had landed would take back sats the
+// counterparty paid for (in BTC for ETH the user's page would end with both legs; in ETH for BTC the provider's refund would race the user's take with t).
+// Waiting costs time and not the sats: the relay proves a claim with a private input or not at all (worker-relay/src/lib/private-prove.js), so a claim that
+// did not land has not given t to the counterparty, which cannot take the lock without it.
 //
 // Phases:  built -> broadcast -> offered -> claiming -> claimed(-> done)       refund path from any phase before claimed:
 //          ... -> refund-wait -> refunded            counter-took  (the lock was spent by the counterparty with t)
@@ -176,6 +184,22 @@ export function makeBitcoinLocker(ctx) {
     return null;
   }
 
+  // What the pool shows of this side's claim, once one was sent: 'landed' (the lock spent by a claim, final), 'missed' (the nodes agree it was refunded, or
+  // that it is unspent at a block past the deadline, when no claim can land any more), or 'unread' (not settled yet). A read that cannot be made throws (nodes
+  // that disagree with `quorum` set), and the step keeps its phase; a spend not yet final is waited for quietly.
+  const claimSent = (rec) => !!(rec.claimSent || (rec.claim && rec.claim.jobId));
+  async function claimVerdict(rec) {
+    const nu = evm.lockNullifier(rec.evmOffer.lockLeaf);
+    const ownS = rec.claim && rec.claim.op && rec.claim.op.op && rec.claim.op.op.kernelS, mine = ownS ? (z) => BigInt(z) === BigInt(ownS) : null;
+    let zs;
+    try { zs = await evm.findClaim(nu, { sinceSecs: rec.claimStartedAt || 0, final: policy.finalDepth ?? 64, ...(mine ? { check: mine } : {}) }); } catch (e) { if (/not deep enough/.test(String((e && e.message) || e)) && !(e && e.quorum)) return 'unread'; throw e; }
+    if (zs && zs.length) return 'landed';               // (only this side's key opens the lock's claim: a claim the pool shows is this side's)
+    if (zs) return 'missed';                            // refunded
+    if ((await evm.now()) <= rec.evmOffer.deadline + margin) return 'unread';
+    if (!evm.spentAgreed) return 'missed';
+    return (await evm.spentAgreed(nu, { final: policy.unspentDepth ?? 12 })) ? 'unread' : 'missed';
+  }
+
   // Whether the lock is spent already, or unspent with its timelock run, for the phases that wait on the counterparty.
   async function lockState(rec) {
     const st = await btc.status(rec.lock.txid);
@@ -264,35 +288,41 @@ export function makeBitcoinLocker(ctx) {
         if (!rec.claim.jobId) {
           // a claim stored earlier is never sent with less than the minimum time left: it would publish t and miss the deadline
           if (await tooLate()) return save(rec, { phase: 'refund-wait', why: 'too little time left to claim safely' });
+          // (from here on the claim may land whatever its job says: the lock is refunded only on the pool's word that it did not, claimVerdict)
+          await save(rec, { claimSent: true });
           const { jobId } = await evm.submit('adaptorclaim', rec.claim.op);
           return save(rec, { claim: { ...rec.claim, jobId, at: await evm.now() } });
         }
         const st = await evm.claimStatus(rec.claim.jobId, { type: 'adaptorclaim', bundle: rec.claim.op, sinceSecs: rec.claimStartedAt });
         if (st === 'settled') return save(rec, { phase: 'claimed', claimedAt: ctx.now() });
         if (st === 'failed') return save(rec, { claim: { op: rec.claim.op }, claimFailures: (rec.claimFailures || 0) + 1 });
-        // a claim still unanswered after the deadline can no longer land
-        if ((await evm.now()) > rec.evmOffer.deadline + margin) return save(rec, { phase: 'refund-wait', why: 'the claim did not land before the deadline' });
+        // A claim still unanswered after the deadline can no longer land; whether one did is the pool's to say, read until the nodes agree on it
+        if ((await evm.now()) > rec.evmOffer.deadline + margin) {
+          const v = await claimVerdict(rec);
+          if (v === 'landed') return save(rec, { phase: 'claimed', claimedAt: ctx.now() });
+          if (v === 'missed') return save(rec, { phase: 'refund-wait', claimMissed: true, why: 'the claim did not land before the deadline' });
+        }
         return rec;
       }
       case 'claimed': {
-        // The Ethereum leg is done and the Bitcoin lock is the counterparty's, to take by its key path at any time. It is never refunded once the
-        // pool shows the Ethereum lock spent by a claim: only a claim the pool does not show (none landed, or the counterparty refunded) lets the
-        // timelock return the note here. A spend that cannot be read yet is read again; it is not taken for either.
+        // The Ethereum leg is done and the Bitcoin lock is the counterparty's, to take by its key path at any time. The claim is read from the pool on every
+        // step until it is final (`finalDepth` blocks deep, as the nodes agree), and the swap is then done. Only a pool that shows no claim of this side's after
+        // the deadline (claimVerdict 'missed') sends the swap to the refund; a read that cannot be made yet is made again, and refunds nothing.
         const spent = await btc.outspend(rec.lock.txid, rec.lock.vout);
         if (spent) return save(rec, { phase: 'done', takenBy: spent });
-        if ((await lockState(rec)) !== 'due') return rec;
-        // the claim the pool shows is this side's own (its kernel is the one this claim was built with), read once it is final (64 blocks deep) and as the
-        // Ethereum nodes agree on it. Nodes that do not agree hold back no refund: the timelock has run, and the refund is the default.
-        const ownS = rec.claim && rec.claim.op && rec.claim.op.op && rec.claim.op.op.kernelS, mine = ownS ? (z) => BigInt(z) === BigInt(ownS) : null;
-        let zs = null, held = null;
-        try { zs = await evm.findClaim(evm.lockNullifier(rec.evmOffer.lockLeaf), { sinceSecs: rec.claimStartedAt || 0, final: policy.finalDepth ?? 64, ...(mine ? { check: mine } : {}) }); } catch (e) { if (!(e && e.quorum)) throw e; held = e; }
-        if (zs && zs.length && (!mine || zs.some(mine))) return save(rec, { phase: 'done', why: 'paid on Ethereum; the Bitcoin lock is the counterparty\'s to take' });
-        const r = await maybeRefund(rec);
-        if (r) return save(rec, { phase: 'done', takenBy: r });
-        if (held) throw held;
+        const v = await claimVerdict(rec);
+        if (v === 'landed') return save(rec, { phase: 'done', why: 'paid on Ethereum; the Bitcoin lock is the counterparty\'s to take' });
+        if (v === 'missed') return save(rec, { phase: 'refund-wait', claimMissed: true, why: 'the pool shows no claim of this side\'s' });
         return rec;
       }
       case 'refund-wait': {
+        // once a claim was sent, the lock goes back only when the pool shows the claim did not land; a claim it shows ends the swap as claimed
+        if (claimSent(rec) && !rec.claimMissed && !(await btc.outspend(rec.lock.txid, rec.lock.vout))) {
+          const v = await claimVerdict(rec);
+          if (v === 'landed') return save(rec, { phase: 'claimed', claimedAt: ctx.now(), why: null });
+          if (v !== 'missed') return rec;
+          await save(rec, { claimMissed: true });
+        }
         const taken = await maybeRefund(rec);
         if (taken) {
           // a refund sent from another browser, or a lock found again from the key, is not the one kept here: a refund is the spend that waited out the timelock

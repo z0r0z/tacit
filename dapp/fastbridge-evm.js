@@ -360,6 +360,11 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   async function jobStatus(id, again = null) {
     if (isOwnJob(id)) {
       if (own.get(id) && own.get(id).done) return 'settled';
+      // the pool first: a claim this account sent before a restart is known by its lock spent with its kernel, not sent again (and refused) for ever
+      if (again && again.type === 'adaptorclaim' && (await claimLanded(again))) {
+        own.set(id, { ...(own.get(id) || { seen: 0, retryAt: 0, fails: 0, proof: null, sending: null }), done: true });
+        return 'settled';
+      }
       if (!selfSettle || !again || !again.bundle) return 'pending';
       return sendOwn(id, () => ux.relay.prove(specOf(again.type, again.bundle)), true);
     }

@@ -197,7 +197,8 @@ expect('claim status: the lock refunded in one call with another lock\'s claim -
 expect('claim status: this side\'s claim in a relayer call that did not land, then the lock refunded -> failed', (await claimLanded([ownClaimRefusedTx, refundTx])) === 'failed');
 expect('claim status: this side\'s claim landed through the relayer -> settled', (await claimLanded([ownClaimTx])) === 'settled');
 
-// the Bitcoin locker's 'claimed' phase with its timelock run: done only when the pool shows this side's own claim, else the Bitcoin is refunded
+// the Bitcoin locker's 'claimed' phase with its timelock run: done when the pool shows this side's own claim, refunded (a step later, from refund-wait) when it shows the
+// pool lock refunded
 {
   const cases = [
     ['refund only', [refundTx], 'refund'], ['refund and a call that did not land', [refundTx, strayTx], 'refund'], ['refund batched with another lock\'s claim', [batchedTx], 'refund'],
@@ -213,8 +214,9 @@ expect('claim status: this side\'s claim landed through the relayer -> settled',
     const btc = { status: async () => ({ confirmations: 300, height: 100 }), outspend: async () => null, tip: async () => 400, feeRate: async () => { refundTried = true; throw new Error('stop: the refund was being built'); } };
     const bl = makeBitcoinLocker({ seed: new Uint8Array(32).fill(5), store, policy: {}, btc, evm: { ...evm, lockNullifier: () => lockNu }, counter: {}, now: () => 1_800_000_000 });
     // (the stubbed btc has no wallet: reaching the refund's build throws, which is how a refund being made is seen here)
-    const after = await bl.step(rec);
-    const tried = refundTried || (after.phase === 'claimed' && !!after.lastError);
+    let after = await bl.step(rec);
+    if (after.phase === 'refund-wait') after = await bl.step(after);
+    const tried = refundTried || /xonly|refund was being built/.test(after.lastError || '');
     const got = after.phase === 'done' && !tried ? 'done' : tried ? 'refund' : after.phase;
     expect(`Bitcoin locker claimed and due, ${label} -> ${want}`, got === want, `phase=${after.phase}, why=${after.why || ''}, err=${(after.lastError || '').slice(0, 60)}`);
   }
@@ -318,20 +320,21 @@ expect('claim status: this side\'s claim landed through the relayer -> settled',
     const btc = { status: async () => ({ confirmations: 300, height: 100 }), outspend: async () => null, tip: async () => 400, feeRate: async () => { refundTried = true; throw new Error('stop: the refund was being built'); } };
     const bl = makeBitcoinLocker({ seed: new Uint8Array(32).fill(5), store, policy: {}, btc, evm: { ...evm, lockNullifier: () => lockNu }, counter: {}, now: () => 1_800_000_000 });
     // (the stubbed btc has no wallet: reaching the refund's build throws, which is how a refund being made is seen here)
-    const after = await bl.step(rec);
+    let after = await bl.step(rec);
+    if (after.phase === 'refund-wait') after = await bl.step(after);
     if (/xonly|refund was being built/.test(after.lastError || '')) refundTried = true;
     return after.phase === 'done' && !refundTried ? 'done' : refundTried ? 'refund' : after.phase;
   };
-  expect('two nodes: Bitcoin locker due, one node shows this side\'s claim, two show the lock unspent -> refund', (await blClaimed({ a: truth([ownClaimTx]), b: unspent(), c: unspent() })) === 'refund');
-  expect('two nodes: Bitcoin locker due, only one node answers -> refund (the timelock has run)', (await blClaimed({ a: truth([ownClaimTx]), b: { down: true }, c: { down: true } })) === 'refund');
+  expect('two nodes: Bitcoin locker due, one node shows this side\'s claim, two show the lock unspent -> no refund, the swap waits on the nodes', (await blClaimed({ a: truth([ownClaimTx]), b: unspent(), c: unspent() })) === 'claimed');
+  expect('two nodes: Bitcoin locker due, only one node answers -> no refund, the swap waits on the nodes', (await blClaimed({ a: truth([ownClaimTx]), b: { down: true }, c: { down: true } })) === 'claimed');
   expect('two nodes: Bitcoin locker due, every node shows this side\'s claim -> done', (await blClaimed({ a: truth([ownClaimTx]), b: truth([ownClaimTx]), c: truth([ownClaimTx]) })) === 'done');
   // this side's claim sent through a forwarder: read from a trace, which two trace nodes must give alike
   const fwdClaimTx = { ...claimTx, hash: '0x' + '0a'.repeat(32) };
   const all = { a: truth([fwdClaimTx]), b: truth([fwdClaimTx]), c: truth([fwdClaimTx]) };
   const traced = (h) => (h === fwdClaimTx.hash ? fwdClaimTx.traceCalls : null);
   expect('two nodes: this side\'s claim through a forwarder, two trace nodes alike -> done', (await blClaimed(all, { traceViews: [traced, traced] })) === 'done');
-  expect('two nodes: this side\'s claim through a forwarder, one trace node -> refund', (await blClaimed(all, { traceViews: [traced, () => null] })) === 'refund');
-  expect('two nodes: this side\'s claim through a forwarder, trace nodes differ -> refund', (await blClaimed(all, { traceViews: [traced, () => [{ to: FORWARDER.toLowerCase(), input: fwdClaimTx.input }]] })) === 'refund');
+  expect('two nodes: this side\'s claim through a forwarder, one trace node -> no refund, waits', (await blClaimed(all, { traceViews: [traced, () => null] })) === 'claimed');
+  expect('two nodes: this side\'s claim through a forwarder, trace nodes differ -> no refund, waits', (await blClaimed(all, { traceViews: [traced, () => [{ to: FORWARDER.toLowerCase(), input: fwdClaimTx.input }]] })) === 'claimed');
 }
 
 // the agreement itself: two or more answers, all alike, at one block under the nodes' heads

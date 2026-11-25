@@ -216,6 +216,74 @@ test('a claim the relay fails (no private prove) is sent again while time is lef
   assert.equal(rec.phase, 'built');
 });
 
+// ── 3. The Bitcoin locker's own claim, around its timelock ──
+test('the Bitcoin locker\'s claim landed, the Ethereum locker is away, and past the timelock the nodes do not agree: the lock is not refunded, and the Ethereum locker, back, takes it', async () => {
+  const w = satsWorld();
+  const rec = await w.start();
+  await w.run(async () => (await w.elRec())?.phase === 'offered');
+  w.elUp = false;                                                   // the page of ETH for BTC is closed after its lock
+  w.blCtx.findClaim = async () => { throw Object.assign(new Error('the Ethereum nodes do not agree on this read: read again'), { quorum: true }); };
+  await w.run(async () => (await w.blRec()).phase === 'claimed');
+  const nu = simPool.nullifier((await w.elRec()).lock.lockLeaf);
+  assert.equal(w.evm.claims.get(nu).length, 1, 'the claim is in the pool');
+  const height = (await w.blBtc.status(rec.lock.txid)).height;
+  await w.run(async () => (await w.blBtc.tip()) >= height + CSV + 12);
+  const bl = await w.blRec();
+  assert.equal(bl.phase, 'claimed', 'still waiting on the nodes');
+  assert.equal(await w.blBtc.outspend(rec.lock.txid, 0), null, 'the lock was not refunded');
+  assert.ok(bl.nodesSince != null, 'and the page can say it waits on the nodes');
+  w.elUp = true;
+  await w.run(async () => (await w.elRec()).phase === 'done' && (await w.blRec()).phase === 'done');
+  const spend = await w.btc.fetchTx((await w.blRec()).takenBy);
+  assert.notEqual(spend.vin[0].sequence, CSV, 'not by the refund leaf');
+  assert.equal(spend.vout[0].scriptpubkey, p2wpkh(w.elW), 'the sats are the Ethereum locker\'s');
+});
+
+test('the Bitcoin locker\'s claim landed but its job never reads as settled: past the deadline the pool is read, the swap is done, and the lock is not refunded', async () => {
+  const w = satsWorld();
+  w.blCtx.claimStatus = async () => 'pending';
+  const rec = await w.start();
+  await w.run(async () => (await w.elRec())?.phase === 'offered');
+  w.elUp = false;
+  await w.run(async () => ['refunded', 'counter-took', 'done'].includes((await w.blRec()).phase));
+  const bl = await w.blRec(), nu = simPool.nullifier((await w.elRec()).lock.lockLeaf);
+  assert.equal(w.evm.claims.get(nu).length, 1, 'the claim landed in the pool');
+  assert.equal(bl.phase, 'done');
+  assert.match(bl.why || '', /paid on Ethereum/);
+  assert.equal(await w.blBtc.outspend(rec.lock.txid, 0), null, 'the lock is left to the Ethereum locker');
+});
+
+test('a sent claim that did not land: the lock is refunded only once the pool shows the Ethereum lock refunded (or unspent past its deadline)', async () => {
+  const w = satsWorld();
+  w.evm.eager = false;
+  const submit = w.blCtx.submit;
+  w.blCtx.submit = async (type, op) => { const r = await submit(type, op); if (type === 'adaptorclaim') w.evm.jobs.get(r.jobId).status = 'held'; return r; };
+  w.blCtx.claimStatus = async () => 'pending';
+  const rec = await w.start();
+  await w.run(async () => !!(await w.blRec())?.claim?.jobId);
+  await w.run(async () => (await w.elRec()).phase === 'refunded');
+  await w.run(async () => ['refunded', 'counter-took', 'done'].includes((await w.blRec()).phase));
+  const bl = await w.blRec();
+  assert.equal(bl.phase, 'refunded');
+  assert.equal(bl.claimMissed, true, 'refunded on the pool\'s word that the claim did not land');
+  assert.equal((await w.btc.fetchTx(bl.takenBy)).vin[0].sequence, CSV);
+  assert.equal(rec.phase, 'built');
+});
+
+test('a claim sent from the provider\'s own account is seen as landed after a restart, read from the pool first', async () => {
+  const tx = { hash: '0x' + '06'.repeat(32), to: POOL.toLowerCase(), input: settle(realClaim) };
+  const again = { type: 'adaptorclaim', bundle: { op: { lockNullifier: lockNu, kernelS: zReal } }, sinceSecs: 1_700_000_000 };
+  const relayed = makeEvm([tx], { relayStatus: 'unknown' });
+  assert.equal(await relayed.jobStatus('job1', again), 'settled', 'a relay job the relay forgot is read from the pool');
+  let sent = 0;
+  const restarted = makeEvm([tx], { selfSettle: async () => { sent++; throw new Error('execution reverted: LockAlreadySpent'); } });
+  assert.equal(await restarted.jobStatus('own-adaptorclaim-abc-1', again), 'settled');
+  assert.equal(await restarted.jobStatus('own-adaptorclaim-abc-1', again), 'settled');
+  assert.equal(sent, 0, 'nothing is sent again');
+  const other = { ...again, bundle: { op: { lockNullifier: lockNu, kernelS: '0x' + '42'.repeat(32) } } };
+  assert.equal(await makeEvm([tx], { selfSettle: async () => { throw new Error('no'); } }).jobStatus('own-adaptorclaim-def-1', other), 'pending', 'a kernel the pool does not show is not taken for this claim');
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

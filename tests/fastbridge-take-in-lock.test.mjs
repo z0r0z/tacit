@@ -95,7 +95,7 @@ test('with the take locked, the swap runs to its end with a provider that holds 
   assert.equal(w.btc.spends.get(`${rec.lock.txid}:${rec.takeVout}`), lp.sweep.txid, 'the take output was spent by that sweep');
   assert.ok(lp.take && lp.take.coins.length && lp.take.coins.every((c) => c.txid === lp.sweep.txid), 'and the take of the note was funded from the sweep\'s coin alone');
   assert.ok(await w.noteOf(lp.take.txid, 0), 'the provider\'s Bitcoin note is valid');
-  assert.equal(user.takenBy, lp.take.txid);
+  assert.equal(w.btc.spends.get(`${rec.lock.txid}:${rec.lock.vout}`), lp.take.txid, 'the lock was taken by the provider');   // (the user's side is done once its claim is final)
   // nothing in the lock paid the provider's own address
   const sim = w.btc.txs.get(rec.lock.txid) || lockTx;
   if (sim) assert.ok(!sim.esplora.vout.some((o) => o.scriptpubkey === lpAddr(w) && o.value > 546), 'no output of the lock goes straight to the provider');
