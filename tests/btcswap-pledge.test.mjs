@@ -54,7 +54,9 @@ test('the provider loop: a stuck note swaps at the desk for tracked TAC, which b
   assert.equal(d.discountBps, 300, 'the discount is stated on the record');
   const mine = await w.noteOf(h.claim.txid, 0);
   assert.ok(mine, 'the holder\'s claimed note is valid');
-  assert.ok(w.follows.has(`${h.claim.txid}:0`) || (await w.desk.handle({ method: 'GET', path: '/info' })).body.pledges, 'the claimed note is tracked: it bridges in one burn');
+  // the claim is a one-signature key-path spend of the desk's lock: a key-path claim keeps the note tracked, so it
+  // bridges in one burn (a script-path claim would not)
+  assert.equal(w.reveals.get(h.claim.txid).inputs[1].witness.length, 1);
   assert.ok(await w.noteOf(d.take.txid, 0), 'the desk took the holder\'s stuck note');
   const p = await w.pledges.get(id);
   assert.equal(p.drawn, String(OUT), 'the desk drew exactly what the swap needed');
