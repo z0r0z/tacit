@@ -6,6 +6,9 @@
 //   /btc/api/… can instead be served from a PRUNED bitcoind's RPC (BTC_RPC_URL + BTC_RPC_AUTH, no BTC_ESPLORA_UPSTREAM): only what a pruned
 //                         node can answer truthfully (tip, block by height, headers, fee estimates, a transaction that is in the mempool, and
 //                         POST /tx), 501 for the rest, and 503 while the node is still syncing. Never a list for old transactions or address history.
+//   INTERNAL_TRACE=1      key holders may also trace one transaction (debug_traceTransaction with the pool-calls tracer for a TRACE_POOLS pool, or
+//                         callTracer; trace_transaction), capped in time, size and concurrency. Never on the visitors' path.
+//   ELECTRUM_URL          with BTC_RPC_URL on an UNPRUNED bitcoind (txindex=1): every esplora read the pages use, from bitcoind + electrs (btc-index.mjs)
 //   /k/<secret>/eth, /k/<secret>/btc/api/…   the same, for our own services: an INTERNAL_KEYS secret lifts the per-client budget
 //                         (for a caller that can set a URL and not a header; `x-tacit-key: <secret>` does the same)
 //
@@ -31,6 +34,18 @@ const READ_METHODS = {
   eth_getLogs: 10, eth_getProof: 10,
 };
 const FULL_TX_COST = 5; // eth_getBlockBy*(…, true) returns every transaction
+const TRACE_COST = 50;
+
+// Traces, for our own services only (INTERNAL_TRACE=1 and an internal key): how a claim settled through another contract is read
+// (dapp/fastbridge-evm.js makeTxTracer). Exactly the three forms that tracer sends: the JavaScript tracer that keeps the calls made to one pool,
+// for a pool in TRACE_POOLS (any other JavaScript is code run inside the node, and is refused), callTracer, and trace_transaction. One
+// transaction at a time, a capped timeout, a capped answer, a few at once. The text must stay equal to the dapp's (a test compares them).
+export const poolCallsTracer = (pool) => `{ pool: ${JSON.stringify(String(pool).toLowerCase())}, st: [], top: [],
+  enter: function (f) { var to = toHex(f.getTo()).toLowerCase(); this.st.push({ me: f.getType() === 'CALL' && to === this.pool ? { to: to, input: toHex(f.getInput()) } : null, calls: [] }); },
+  exit: function (r) { var f = this.st.pop(); if (r.getError()) return; var up = this.st.length ? this.st[this.st.length - 1].calls : this.top; if (f.me) up.push(f.me); for (var i = 0; i < f.calls.length; i++) up.push(f.calls[i]); },
+  fault: function () {},
+  result: function (ctx) { if (ctx.error) return []; var out = [], to = toHex(ctx.to).toLowerCase(); if (ctx.type === 'CALL' && to === this.pool) out.push({ to: to, input: toHex(ctx.input) }); for (var i = 0; i < this.top.length; i++) out.push(this.top[i]); return out; } }`;
+const TX_HASH = /^0x[0-9a-f]{64}$/i;
 
 const UTXO = '[0-9a-f]{64}';
 const TXS = '(txs(\\/(chain|mempool)(\\/' + UTXO + ')?)?|utxo)';
@@ -59,10 +74,14 @@ export function makeGateway(o = {}) {
     maxBatch: o.maxBatch ?? 20, maxBody: o.maxBody ?? 256 * 1024, maxTxBody: o.maxTxBody ?? 1024 * 1024,
     logsMaxSpan: o.logsMaxSpan ?? 50_000, headMs: o.headMs ?? 1500, tipMs: o.tipMs ?? 5000,
     timeoutMs: o.timeoutMs ?? 30_000, fetchImpl: o.fetchImpl || fetch,
+    internalTrace: !!o.internalTrace, traceTimeoutSec: o.traceTimeoutSec ?? 20, traceMaxBytes: o.traceMaxBytes ?? 4 * 1024 * 1024, traceConcurrency: o.traceConcurrency ?? 2,
+    tracers: new Set((o.tracePools || []).filter((p) => /^0x[0-9a-f]{40}$/i.test(p)).map(poolCallsTracer)),
+    electrumUrl: o.electrumUrl || '',
   };
+  let tracing = 0;
   const idKey = crypto.randomBytes(32);
   const buckets = new Map();   // hash -> { tokens, at }
-  const counters = { requests: 0, limited: 0, refused: 0, upstreamErrors: 0 };
+  const counters = { requests: 0, limited: 0, refused: 0, upstreamErrors: 0, ...(cfg.internalTrace ? { traced: 0 } : {}) };
   // What we refuse, by method NAME only (never params, addresses or who asked): the vocabulary is fixed, so a name outside it is 'other', and at most 30 are kept.
   const refusedBy = new Map();
   const noteRefused = (name) => { const k = /^[A-Za-z0-9_:]{1,40}$/.test(String(name)) ? String(name) : 'other'; if (refusedBy.has(k) || refusedBy.size < 30) refusedBy.set(k, (refusedBy.get(k) || 0) + 1); };
@@ -159,6 +178,7 @@ export function makeGateway(o = {}) {
     // Our own relays send through the same URL they read from (viem's one transport), so a holder of an internal key may send when the
     // operator has said so (INTERNAL_SENDS=1). Nobody else can: a visitor's page never sends through us.
     if (r.method === 'eth_sendRawTransaction' && cfg.internalSends && internal) return { cost: 5 };
+    if ((r.method === 'debug_traceTransaction' || r.method === 'trace_transaction') && cfg.internalTrace && internal) return vetTrace(r);
     if (!(r.method in READ_METHODS)) { noteRefused(r.method); return { err: rpcError(r.id, -32601, 'method not available here') }; }
     let cost = READ_METHODS[r.method];
     const p = r.params || [];
@@ -179,6 +199,46 @@ export function makeGateway(o = {}) {
     return { cost };
   };
 
+  // A trace request rewritten to what we allow, or refused. Nothing a caller adds beyond the tracer, its config and a timeout reaches the node.
+  const vetTrace = (r) => {
+    const p = r.params || [];
+    const bad = (m) => { noteRefused(r.method + ':' + m); return { err: rpcError(r.id, -32602, `trace not allowed here: ${m}`) }; };
+    if (!TX_HASH.test(String(p[0]))) return bad('hash');
+    if (r.method === 'trace_transaction') return p.length === 1 ? { cost: TRACE_COST, trace: { method: r.method, params: [p[0]] } } : bad('params');
+    const opt = p[1];
+    if (p.length !== 2 || !opt || typeof opt !== 'object' || Array.isArray(opt)) return bad('options');
+    if (Object.keys(opt).some((k) => !['tracer', 'tracerConfig', 'timeout'].includes(k))) return bad('options');
+    const asked = /^(\d{1,4})s$/.exec(String(opt.timeout ?? ''));
+    const timeout = `${Math.min(asked ? Number(asked[1]) : cfg.traceTimeoutSec, cfg.traceTimeoutSec)}s`;
+    if (opt.tracer === 'callTracer') {
+      const c = opt.tracerConfig ?? {};
+      if (typeof c !== 'object' || Array.isArray(c) || Object.entries(c).some(([k, v]) => !['onlyTopCall', 'withLog'].includes(k) || typeof v !== 'boolean')) return bad('tracerConfig');
+      return { cost: TRACE_COST, trace: { method: r.method, params: [p[0], { tracer: 'callTracer', tracerConfig: { onlyTopCall: !!c.onlyTopCall, withLog: !!c.withLog }, timeout }] } };
+    }
+    if (typeof opt.tracer === 'string' && cfg.tracers.has(opt.tracer) && opt.tracerConfig === undefined) return { cost: TRACE_COST, trace: { method: r.method, params: [p[0], { tracer: opt.tracer, timeout }] } };
+    return bad('tracer');
+  };
+  // One trace upstream, alone: its answer is read up to traceMaxBytes and no further (a large call tree is refused, not buffered).
+  const traceCall = async (t, id) => {
+    if (tracing >= cfg.traceConcurrency) return rpcError(id, -32005, 'traces busy; retry in 1s');
+    tracing++;
+    try {
+      const r = await cfg.fetchImpl(cfg.ethUpstream, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, ...t }), signal: AbortSignal.timeout((cfg.traceTimeoutSec + 10) * 1000) });
+      if (!r.ok) throw new Error('upstream');
+      const reader = r.body.getReader(); const parts = []; let n = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        n += value.length;
+        if (n > cfg.traceMaxBytes) { await reader.cancel().catch(() => {}); noteRefused(t.method + ':size'); return rpcError(id, -32000, `trace larger than ${cfg.traceMaxBytes} bytes`); }
+        parts.push(value);
+      }
+      const j = JSON.parse(Buffer.concat(parts).toString('utf8'));
+      counters.traced++;
+      return { ...j, id };
+    } catch { counters.upstreamErrors++; return rpcError(id, -32603, 'node unavailable'); } finally { tracing--; }
+  };
+
   async function handleEth(req, res, internal) {
     let body;
     try { body = JSON.parse(await readBody(req, cfg.maxBody)); } catch (e) {
@@ -189,18 +249,21 @@ export function makeGateway(o = {}) {
     if (!reqs.length || reqs.length > cfg.maxBatch) return send(res, 400, rpcError(null, -32600, `batch must hold 1 to ${cfg.maxBatch} requests`));
 
     const out = new Array(reqs.length);
-    const forward = [];
+    const forward = [], traces = [];
     let cost = 0;
     for (let i = 0; i < reqs.length; i++) {
       const v = await vet(reqs[i], internal);
-      if (v.err) { out[i] = v.err; counters.refused++; } else { cost += v.cost; forward.push(i); }
+      if (v.err) { out[i] = v.err; counters.refused++; } else { cost += v.cost; if (v.trace) traces.push([i, v.trace]); else forward.push(i); }
     }
-    if (forward.length) {
+    if (forward.length || traces.length) {
       const wait = spend(req, internal, cost);
       if (wait) {
         counters.limited++;
         return send(res, 429, batch ? reqs.map((r) => rpcError(r?.id, -32005, `rate limit exceeded; retry in ${wait}s`)) : rpcError(reqs[0]?.id, -32005, `rate limit exceeded; retry in ${wait}s`), 'application/json', { 'retry-after': String(wait) });
       }
+      await Promise.all(traces.map(async ([i, t]) => { out[i] = await traceCall(t, reqs[i].id ?? null); }));
+    }
+    if (forward.length) {
       try {
         // Our own ids go upstream so answers can be matched back whatever order the node returns them in.
         const up = await ethCall(forward.map((i, n) => ({ jsonrpc: '2.0', id: n, method: reqs[i].method, params: reqs[i].params || [] })));
@@ -373,6 +436,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     internalKeys: list(e.INTERNAL_KEYS), trustProxy: e.TRUST_PROXY === '1', clientIpHeader: e.CLIENT_IP_HEADER || '', whoami: e.WHOAMI === '1', allowBroadcast: e.ALLOW_BROADCAST === '1', internalSends: e.INTERNAL_SENDS === '1',
     budgetPerMin: Number(e.BUDGET_PER_MIN) || undefined, internalBudgetPerMin: Number(e.INTERNAL_BUDGET_PER_MIN) || undefined,
     logsMaxSpan: Number(e.LOGS_MAX_SPAN) || undefined,
+    internalTrace: e.INTERNAL_TRACE === '1', tracePools: list(e.TRACE_POOLS), traceTimeoutSec: Number(e.TRACE_TIMEOUT_SEC) || undefined,
+    traceMaxBytes: Number(e.TRACE_MAX_BYTES) || undefined, traceConcurrency: Number(e.TRACE_CONCURRENCY) || undefined,
+    electrumUrl: e.ELECTRUM_URL || '',
   });
   server.listen(Number(e.PORT) || 8080, '0.0.0.0', () => console.log(`gateway up (eth ${e.ETH_UPSTREAM ? 'on' : 'off'}, btc ${e.BTC_ESPLORA_UPSTREAM ? 'esplora' : e.BTC_RPC_URL ? 'pruned-rpc' : 'off'})`));
 }
