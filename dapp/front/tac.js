@@ -1672,7 +1672,7 @@ async function tcardChainCost(units, eth, head, to = null) {
   if (!units) return [head, true];
   const q = await chainQuote(eth ? 'withdraw' : 'pay', units).catch(() => null), most = q?.most ?? held;
   if (most != null && units > most && ctx.CH.settling && held != null && units < held) return [html`${head}<br>Your last payment is settling: this one goes once it lands, in about a minute.`, true];
-  if (most != null && units > most) return [html`${head}<br>${tcdErr(held != null && units <= held && most > 0n ? `With its fees, up to ${t4(most)} TAC.` : `You hold ${t4(held ?? 0n)} TAC on the Tacit chain.`)}${tcardMove(units)}`, false];
+  if (most != null && units > most) return [html`${head}<br>${tcdErr(held != null && units <= held && most > 0n ? `With its fees, up to ${t4(most)} TAC.` : (held == null ? 'Reading your balance…' : `You hold ${t4(held)} TAC on the Tacit chain.`))}${tcardMove(units)}`, false];
   if (to && !ctx.CH.settling) chainAhead(to, units);
   return [html`<p class="tcd-say">${head}</p>${tcdRows(tcdRow('Fee', q ? html`<span><span class="num">${t4(q.holders + q.fee)}</span> TAC</span><span class="mute"><span class="num">${t4(q.holders)}</span> of it to holders</span>` : 'a small fee'),
     tcdRow('Arrives', eth ? 'in their wallet, in about a minute' : html`<span>in seconds, <b>private</b></span>`))}`, true];
@@ -1718,7 +1718,7 @@ async function tcardOutSay(units) {
   if (held === 0n) return [html`No TAC on the Tacit chain yet. <button class="link" type="button" data-tcd-tab="shield">Shield some</button>`, false];
   if (!units) return [html`${where}${held != null ? ` You hold ${t4(held)} TAC there.` : ''}`, true];
   const q = await chainQuote(dest === 'wallet' ? 'withdraw' : 'hop', units).catch(() => null), most = q?.most ?? held;
-  if (most != null && units > most) return [tcdErr(held != null && units <= held && most > 0n ? `With its fees, up to ${t4(most)} TAC.` : `You hold ${t4(held ?? 0n)} TAC on the Tacit chain.`), false];
+  if (most != null && units > most) return [tcdErr(held != null && units <= held && most > 0n ? `With its fees, up to ${t4(most)} TAC.` : (held == null ? 'Reading your balance…' : `You hold ${t4(held)} TAC on the Tacit chain.`)), false];
   if (dest === 'wallet' && S.address && !ctx.CH.settling) chainAhead(S.address, units);
   return [html`<p class="tcd-say">${where}</p>${tcdRows(tcdRow('Arrives', html`<span><b class="num">${t4(units)} TAC</b>${dest === 'wallet' ? ` in ${your()}` : ', private'}</span>`),
     tcdRow('Fee', q ? html`<span><span class="num">${t4(q.holders + q.fee)}</span> TAC on top</span>` : 'a small fee, on top'), tcdRow('Takes', dest === 'btc' ? 'Two steps, about 10 minutes' : 'About a minute'))}`, true];
