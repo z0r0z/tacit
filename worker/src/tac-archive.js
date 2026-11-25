@@ -113,7 +113,13 @@ export function makeTacArchive({ kv, network, dsha256, isTacit }) {
     return n;
   }
   // Indexes a page of what the archive already holds, from where the last page stopped; { indexed, done } (done: the whole archive has been indexed).
-  async function indexPage({ limit = 100 } = {}) {
+  async function indexPage({ limit = 100, shouldStop = () => true } = {}) {
+    // a first page always runs; more follow while the caller's time allows
+    let total = 0, r;
+    do { r = await indexOnePage({ limit }); total += r.indexed; } while (!r.done && !shouldStop());
+    return { indexed: total, done: r.done };
+  }
+  async function indexOnePage({ limit = 100 } = {}) {
     const prefix = `tacarch:${network}:`;
     const cur = await kv.get(idxCursorKey, 'json').catch(() => null);
     if (cur && cur.done) return { indexed: 0, done: true };

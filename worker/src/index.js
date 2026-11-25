@@ -24938,7 +24938,10 @@ export async function tacArchiveCatchUp(env, network, { budget, keys, deadlineMs
       return { bytes: hexToBytes(hex), h: j.status.block_height, b: j.status.block_hash };
     };
     const res = await archive.catchUp({ ids, readTx, budget: reads, shouldStop: () => Date.now() - t0 > deadlineMs });
-    try { await archive.indexPage({ limit: 150 }); } catch { /* the address index fills a page a tick; a failed page is tried again */ }
+    try {
+      const ix = await archive.indexPage({ limit: 100, shouldStop: () => Date.now() - t0 > deadlineMs });
+      if (ix.indexed) console.log(`[tac-archive] address index ${network}: ${ix.indexed} outputs indexed${ix.done ? ', complete' : ''}`);
+    } catch (e) { console.log(`[tac-archive] address index ${network} failed: ${String(e && e.message || e).slice(0, 120)}`); }
     if (!res.stopped) { if (list.list_complete || !list.cursor) await kv.delete(cursorKey); else await kv.put(cursorKey, list.cursor); }
     if (res.kept || res.funding) console.log(`[tac-archive] catch-up ${network}: kept ${res.kept} transfers and ${res.funding} funding transactions (${res.failed} reads failed${res.stopped ? ', stopped for its budget' : ''})`);
     return res;
