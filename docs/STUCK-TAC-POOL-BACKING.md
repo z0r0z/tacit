@@ -336,7 +336,39 @@ Result: `test result: ok. 19 passed; 0 failed`.
 - **Not a soundness proof of the pool itself.** It assumes `verify_btc_pool_spend` is sound; if it is not,
   the ledger inherits that.
 
-## 10. Open questions a reviewer should push on
+## 10. Risks
+
+Stated the way the brief asks, worst first.
+
+1. **The ledger trusts a value the caller supplies.** `read_exit` takes `w.value` and `credit_shield` takes
+   `shielded` from the caller, and only binds them to the *boundary* (`depC = v·H + r·G`). That proves the
+   claim is the one the pool committed to — it does not prove the pool actually moved that much, because
+   this crate cannot run the range proof offline. **If the pool's own range check is unsound, the ledger
+   inherits that, and a caller can inflate either side.** The seam is deliberate (this is a design entry,
+   not a verifier), but it is the single largest trust assumption here and a merge would have to wire the
+   real check, not a stub.
+2. **The two idempotence sets grow without bound.** `shielded` and `exited_at` are `BTreeSet<[u8; 32]>`,
+   one entry per event, forever. At 4 546 unspent notes today that is nothing; over years it is the same
+   problem the spent set and burn set already have, inherited rather than solved. A production version
+   wants a rolling commitment or a nullifier set the pool already maintains.
+3. **There is no on-chain encoding in this crate.** §2 says the encoding is two `u64` fields that
+   saturate, and that is the intended shape — but nothing here writes it, so the claim is a design
+   statement, not code. A reader should not assume a serialization already exists.
+4. **`Lineage::Anchored` shortens a history, and shortening is where proofs go wrong.** The argument is
+   that an anchor is not free (it is `C_0`, a cmint leaf, or an exit the ledger had to cover) and that an
+   unresolved outpoint is a dangling input the DAG already rejects. I believe the argument, but it is an
+   argument, not a machine-checked proof, and the re-anchoring path is exercised only on synthetic
+   lineages in this crate — not against the real DAG.
+5. **Scope.** 1 700 lines for a design entry is more than the brief needs. If a maintainer wants less
+   surface to review, the survivable cut is the whole `Lineage` half (§5), leaving the ledger and the exit
+   reader: that is the part that is specific to pool exits, and it stands alone.
+6. **What I did not test.** No prover, no verifying key, no live pool, no signet round trip. The wire
+   format is pinned to `DESIGN-btc-shielded-pool.md` §3 and `worker/src/btc-shielded-pool.js` by reading,
+   not by parsing a real mainnet transaction. The N-bridge numbers in §6 are derived from the bounty's own
+   2026-11-22 count, not from a fresh scan, and the pool-exit class is not in that count. The residual in
+   §6 — a note past the cap with no admitted anchor in reach — is not measured.
+
+## 11. Open questions a reviewer should push on
 
 1. **Which wire constant is right?** §3 + `worker` (89/861) or `btc-pool-core` (218/100). This entry pins
    §3 because it is what lands on Bitcoin, but the contradiction should be resolved in-tree.
