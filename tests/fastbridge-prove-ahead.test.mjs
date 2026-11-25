@@ -13,6 +13,8 @@ import { makeReverseClient, makeReverseCounter } from '../dapp/fastbridge-revers
 import { SATS_ASSET } from '../dapp/fastbridge-pair.js';
 import { ASSET } from './lib/chain-sim.mjs';
 import { memStore } from './lib/fastbridge-world.mjs';
+import { makeFastBridgeEvm } from '../dapp/fastbridge-evm.js';
+import { secp, sha256 as dsha, keccak_256, hmac } from '../dapp/vendor/tacit-deps.min.js';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -197,6 +199,28 @@ test('the provider refuses a pool lock whose deadline is further out than it acc
   assert.equal(answers[0].ok, false);
   assert.match(answers[0].why, /further out than this side accepts/, 'refused for its deadline');
   assert.equal((await w.stores.rv.evmOffers.list()).length, 0, 'and not kept');
+});
+
+test('a lock read the moment it lands, while the nodes\' agreed head is a block behind, is found once the head has passed it (live 11-25: 20 minutes in "Locking")', async () => {
+  // the pool: the lock lands at block 101; the newest block is 101 at once, the nodes agree on 100 for a while
+  const LEAF = '0x' + 'de'.repeat(32), ROOT0 = '0x' + '01'.repeat(32), ROOT1 = '0x' + '02'.repeat(32);
+  let latest = 101, agreed = 100;
+  const countAt = (b) => (b >= 101 ? 393 : 392), rootAt = (b) => (b >= 101 ? ROOT1 : ROOT0);
+  const tagOf = (t) => (t === 'latest' ? latest : parseInt(t, 16));
+  const ux = {
+    rpc: async (m, p) => {
+      if (m === 'eth_getStorageAt' && p[1] === '0x54') return '0x' + countAt(tagOf(p[2])).toString(16);
+      if (m === 'eth_getStorageAt' && p[1] === '0x55') return rootAt(tagOf(p[2]));
+      throw new Error('not read here: ' + m);
+    },
+    stealthLockPosition: async ({ lockLeaf, opts }) => (String(lockLeaf) === LEAF && (opts?.toBlock ?? latest) >= 101 ? { lIndex: 392, lPath: [], lockSetRoot: rootAt(opts?.toBlock ?? latest) } : null),
+  };
+  const quorum = { head: async () => agreed, agree: async (m, p, norm) => norm(await ux.rpc(m, p)) };
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256: (k, m) => hmac(dsha, k, m), walletPriv: new Uint8Array(32).fill(7), seed: new Uint8Array(32).fill(9), asset: '0x' + 'f0'.repeat(32), poolAddress: '0x' + '00'.repeat(20), quorum });
+  assert.equal(await evm.lockPosition(LEAF), null, 'the agreed head has not reached the lock yet');
+  agreed = 101;                                                              // no other lock lands meanwhile: the newest count stays where it was
+  const pos = await evm.lockPosition(LEAF);
+  assert.ok(pos && pos.lIndex === 392, 'once the head has passed it the lock is found, though no other lock landed');
 });
 
 test('BTC for ETH: the provider builds and proves its lock from the offer the page names to /extend, and locks the moment the user\'s lock is confirmed', async () => {

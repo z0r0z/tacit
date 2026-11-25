@@ -72,22 +72,27 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   const cap = (map, max) => { while (map.size > max) map.delete(map.keys().next().value); };
   // A lock's place in the pool's lock set. With a quorum, the set is read at a block the nodes agree on, and the root it builds must be the lock root they agree
   // the pool holds there: a lock set one node made up (with a leaf in it that the pool does not have) is never the ground a claim is built on.
-  async function positionOf(key) {
-    if (!quorum) return ux.stealthLockPosition({ lockLeaf: key });
+  // `{ pos, count }`: the position, and the lock count at the block the set was read at (a miss is remembered under that count, so a lock that landed after
+  // that block is looked for again once the nodes' head has passed it: see lockPosition)
+  async function positionOf(key, latestCount) {
+    if (!quorum) return { pos: await ux.stealthLockPosition({ lockLeaf: key }), count: latestCount };
     const h = await quorum.head();
     const pos = await ux.stealthLockPosition({ lockLeaf: key, opts: { toBlock: h } });
-    if (!pos) return null;
+    if (!pos) return { pos: null, count: BigInt((await rpc('eth_getStorageAt', [poolAddress, LOCK_COUNT_SLOT, '0x' + h.toString(16)])) || '0x0') };
     const root = await quorum.agree('eth_getStorageAt', [poolAddress, LOCK_ROOT_SLOT, '0x' + h.toString(16)], wordOf);
     if (BigInt('0x' + (strip(root) || '0')) !== BigInt('0x' + (strip(pos.lockSetRoot) || '0'))) throw quorumError('the lock set read does not build the lock root the nodes agree on: read again');
-    return pos;
+    return { pos, count: null };
   }
+  // A miss is remembered under the lock count of the block the set was read at, never the newest block's: with a quorum, the set is read at the head the
+  // nodes agree on, which can be a block or two behind the newest, so a lock that landed in between is in the newest count and not in that set. Remembered
+  // under the newest count, it was never looked for again until another lock landed (a lock sent the moment its Bitcoin lock confirmed waited 20 minutes).
   async function lockPosition(leaf) {
     const key = lc(leaf), hit = positions.get(key);
     if (hit && Date.now() - hit.at < POSITION_TTL_MS) return hit.pos;
     const count = BigInt((await rpc('eth_getStorageAt', [poolAddress, LOCK_COUNT_SLOT, 'latest'])) || '0x0');
     if (!hit && misses.get(key) === count) return null;
-    const pos = await positionOf(key);
-    if (pos) { positions.set(key, { at: Date.now(), pos }); misses.delete(key); } else { positions.delete(key); misses.set(key, count); }
+    const { pos, count: seen } = await positionOf(key, count);
+    if (pos) { positions.set(key, { at: Date.now(), pos }); misses.delete(key); } else { positions.delete(key); misses.set(key, seen == null ? count : seen); }
     cap(positions, 1024); cap(misses, 1024);
     return pos;
   }
