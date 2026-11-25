@@ -279,28 +279,54 @@ $('cta-go').addEventListener('click', (e) => {
   setTimeout(() => $('addr').focus({ preventScroll: true }), reduced ? 0 : 450);
 });
 
-// ── contribute in this browser (beta): shown once the ceremony's window says the coordinator takes it
+// ── contribute in this browser: one big button; the run shows four plain steps
 let webRun = null;
 async function startWeb() {
   const handleRaw = $('addr').value.trim();
+  if (handleRaw && !isAddress(handleRaw) && !confirm('That does not look like a 0x address (0x and 40 letters or digits), so no TAC could be sent to it. Continue without one?')) { $('addr').focus(); return; }
   const handle = isAddress(handleRaw) ? handleRaw : '';
   const name = (cleanName($('name').value) || (handle ? '' : 'a browser')) || handle;
-  const web = await import('/praxis/web.js?cb=cba04121');
+  const web = await import('/praxis/web.js?cb=b4611fcf');
+  web.resetClock();
   const ac = new AbortController();
   webRun = ac;
-  $('web-go').disabled = true; $('web-prog').hidden = false; $('web-msg').textContent = 'Joining the queue…';
+  keep();
+  $('web-go').hidden = true; $('web-hint').hidden = true; $('web-prog').hidden = false; $('web-stop').hidden = false;
+  for (const id of ['addr', 'name']) $(id).disabled = true;
+  $('web-msg').textContent = 'Joining the line…';
+  const mark = (s) => {
+    const i = web.stepOf(s.phase);
+    document.querySelectorAll('#track li').forEach((li, k) => { li.classList.toggle('on', k === i); li.classList.toggle('past', k < i); });
+    $('web-msg').textContent = web.statusText(s);
+    $('web-fill').style.width = `${Math.round(100 * web.fraction(s))}%`;
+  };
+  // keep the screen on while it works (a laptop that sleeps stops the work); best effort
+  let lock = null;
+  const hold = async () => { try { lock = await navigator.wakeLock?.request('screen'); } catch { /* not available */ } };
+  const again = () => { if (webRun && document.visibilityState === 'visible') hold(); };
+  document.addEventListener('visibilitychange', again);
+  hold();
   const warn = (e) => { e.preventDefault(); e.returnValue = ''; };
   addEventListener('beforeunload', warn);
   try {
-    const r = await web.contributeHere({ name, handle, signal: ac.signal, onStatus: (s) => { $('web-msg').textContent = web.statusText(s); $('web-fill').style.width = `${Math.round(100 * web.fraction(s))}%`; } });
+    const r = await web.contributeHere({ name, handle, signal: ac.signal, onStatus: mark });
+    mark({ phase: 'done' });
     $('web-msg').textContent = 'Accepted. You are in the chain.';
     await refresh();
     celebrate(r);
   } catch (e) {
-    $('web-msg').textContent = ac.signal.aborted ? 'Stopped.' : `That did not finish: ${e.message || e}. Your place is released; you can start again, or use the command above.`;
+    const said = String(e.message || e);
+    $('web-msg').textContent = ac.signal.aborted ? 'Stopped. Nothing was lost; you can start again any time.'
+      : /already contributed|may not join/.test(said) ? `${said.charAt(0).toUpperCase()}${said.slice(1)}.`
+      : `Something interrupted it (${said}). Your place was released and nothing was lost. Tap the button to try again.`;
+    $('web-go').textContent = 'Try again'; $('web-go').hidden = false;
+    $('web-stop').hidden = true;
   } finally {
     removeEventListener('beforeunload', warn);
-    webRun = null; $('web-go').disabled = false; $('web-stop').hidden = false;
+    document.removeEventListener('visibilitychange', again);
+    try { await lock?.release(); } catch { /* already released */ }
+    webRun = null;
+    for (const id of ['addr', 'name']) $(id).disabled = false;
   }
 }
 $('web-go').addEventListener('click', startWeb);
@@ -313,7 +339,7 @@ async function drawQueue() {
     if (/^https?:\/\/[^\s"'<>]+$/.test(v.coordinator || '')) { coordinator = v.coordinator; drawCommand(); }
     $('queue').textContent = v.open === false ? 'Closed.' : waitText(v.queue);
     if (Number.isInteger(v.queue)) setNum($('n-queue'), v.queue);
-    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=cba04121'); $('web').hidden = !web.capable(); }
+    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=b4611fcf'); const can = web.capable(); $('web').hidden = !can; if (can && !webRun) $('cmd-alt').open = false; }
   } catch { $('queue').textContent = ''; }
 }
 

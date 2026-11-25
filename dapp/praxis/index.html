@@ -21,7 +21,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /praxis/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/praxis/app.js?cb=616d4298">
+<link rel="modulepreload" href="/praxis/app.js?cb=7ac04cb8">
 <link rel="modulepreload" href="/praxis/receipt.js?cb=57754a0f">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -82,13 +82,6 @@ code { font: inherit; }
 .brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
 
 /* the head */
-.web { margin-top: 18px; display: grid; gap: 8px; justify-items: start; }
-.web small { font-size: 12px; opacity: .75; max-width: 56ch; }
-.web em { font-style: normal; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; opacity: .7; margin-left: 6px; }
-.prog { display: grid; gap: 8px; width: min(520px, 100%); }
-.prog .bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, currentColor 14%, transparent); overflow: hidden; }
-.prog .bar i { display: block; height: 100%; width: 0; background: var(--orange); transition: width .4s; }
-.prog p { margin: 0; font-size: 13px; }
 .hero { padding: 30px 0 6px; }
 .hero h1 { font: 400 clamp(44px, 8vw, 84px)/.92 var(--serif); letter-spacing: -.03em; margin: 0; }
 .hero h1 em { font-style: italic; }
@@ -200,6 +193,28 @@ code { font: inherit; }
 .join { margin-top: 30px; padding: 24px; background: var(--card); border: 1px solid var(--hair); border-radius: 22px; }
 @media (max-width: 480px) { .join { padding: 18px 14px; } }
 .needs { margin: 0 0 18px; font-size: 13px; color: var(--mute); }
+.queue-line { margin: 0 0 16px; font-size: 13px; color: var(--mute); }
+.who { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); max-width: 760px; margin: 0 0 16px; }
+.who .field input { max-width: none; }
+.who .field label { margin-bottom: 6px; }
+/* the in-browser path: one big button, then four plain steps */
+.web { display: grid; gap: 10px; max-width: 560px; margin: 0 0 6px; }
+.web .go { margin-top: 0; min-height: 64px; font-size: 17px; border-radius: 18px; }
+.web .hint { margin: 0; font-size: 12.5px; color: var(--mute); }
+.run { display: grid; gap: 14px; }
+.track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; font-size: 12px; }
+.track li { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; color: var(--mute); }
+.track li i { font: 500 12px var(--mono); font-style: normal; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--hair-2); display: grid; place-items: center; }
+.track li.on { color: var(--ink); }
+.track li.on i { border-color: var(--orange); box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 25%, transparent); animation: pulse 1.6s ease-in-out infinite; }
+.track li.past i { border-color: var(--ok); color: var(--ok); }
+.run .bar { height: 8px; border-radius: 99px; background: var(--field); border: 1px solid var(--hair); overflow: hidden; }
+.run .bar i { display: block; height: 100%; width: 0; background: var(--orange); transition: width .5s; }
+.run p { margin: 0; font-size: 14px; }
+.run .btn { width: auto; margin: 0; min-height: 40px; justify-self: start; }
+details.alt-cmd { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--hair); }
+details.alt-cmd > summary { cursor: pointer; font-size: 13px; color: var(--mute); }
+details.alt-cmd[open] > summary { margin-bottom: 16px; }
 .queue { font-weight: 400; color: var(--ink); white-space: nowrap; }
 .steps { display: grid; gap: 18px; }
 .step { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 14px; align-items: start; }
@@ -619,9 +634,33 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
     <section class="join" id="join" aria-labelledby="h-join">
       <h2 id="h-join">Contribute</h2>
-      <p class="needs">16 GB of RAM · 2.2 GB of disk · 1 GB each way · about 20 minutes once it is your turn. <b id="queue" class="queue">…</b></p>
-      <div class="steps">
-        <div class="step"><span class="n">1</span><div class="field"><label for="plat">Your computer</label>
+      <p class="queue-line"><b id="queue" class="queue">…</b></p>
+      <div class="who">
+        <div class="field"><label for="addr">Your 0x address <span class="opt">to get your TAC</span></label>
+          <input id="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x…"></div>
+        <div class="field"><label for="name">Name <span class="opt">optional</span></label>
+          <input id="name" type="text" autocomplete="off" spellcheck="false" maxlength="64" placeholder="as it will appear on the wall"></div>
+      </div>
+      <div class="web" id="web" hidden>
+        <button class="btn big go" type="button" id="web-go">Contribute now</button>
+        <p class="hint" id="web-hint">Nothing to install. It takes your computer about half an hour to an hour, so leave this tab open.</p>
+        <div class="run" id="web-prog" hidden>
+          <ol class="track" id="track">
+            <li data-s="queue"><i>1</i>In line</li>
+            <li data-s="work"><i>2</i>Making it</li>
+            <li data-s="check"><i>3</i>Checking</li>
+            <li data-s="done"><i>4</i>Done</li>
+          </ol>
+          <div class="bar"><i id="web-fill"></i></div>
+          <p id="web-msg" role="status" aria-live="polite"></p>
+          <button class="btn ghost" type="button" id="web-stop">Cancel</button>
+        </div>
+      </div>
+      <details class="alt-cmd" id="cmd-alt" open>
+        <summary>Use a terminal instead</summary>
+        <p class="needs">16 GB of RAM · 2.2 GB of disk · 1 GB each way · about 20 minutes once it is your turn.</p>
+        <div class="steps">
+          <div class="step"><span class="n">1</span><div class="field"><label for="plat">Your computer</label>
           <select id="plat">
             <option value="darwin-arm64">macOS, Apple silicon</option>
             <option value="darwin-amd64">macOS, Intel</option>
@@ -629,26 +668,14 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
             <option value="linux-arm64">Linux, ARM</option>
             <option value="windows-amd64.exe">Windows</option>
           </select></div></div>
-        <div class="step"><span class="n">2</span><div class="field"><label for="addr">Your 0x address <span class="opt">for your TAC</span></label>
-          <input id="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x…">
-          <label for="name" class="l2">Name <span class="opt">optional</span></label>
-          <input id="name" type="text" autocomplete="off" spellcheck="false" maxlength="64" placeholder="as it will appear on the wall"></div></div>
-        <div class="step"><span class="n">3</span><div class="field">
+          <div class="step"><span class="n">2</span><div class="field">
           <button class="btn big" type="button" id="copy-run">Copy the command</button>
           <small>Paste it into a terminal and leave it running. It waits for your turn.</small>
           <div class="cmd"><pre id="cmd-run">curl -fLO https://github.com/src-company/tacit/releases/download/ceremony-v1.0.0/tacit-ceremony-darwin-arm64
 chmod +x tacit-ceremony-darwin-arm64
 ./tacit-ceremony-darwin-arm64 contribute --coordinator http://143.55.45.86:53874 --name '&lt;your name&gt;'</pre></div></div></div>
-      </div>
-      <div class="web" id="web" hidden>
-        <button class="btn big ghost" type="button" id="web-go">Contribute in this browser <em>beta</em></button>
-        <small>No download. Keep this tab open for about half an hour to an hour once it is your turn, depending on your computer. 1 GB each way.</small>
-        <div class="prog" id="web-prog" hidden>
-          <div class="bar"><i id="web-fill"></i></div>
-          <p id="web-msg" role="status" aria-live="polite"></p>
-          <button class="btn ghost" type="button" id="web-stop">Cancel</button>
         </div>
-      </div>
+      </details>
       <p class="alt">Run <a href="/prove/">tacit-prover</a> (v0.7.0 or later) with mining on, and it takes its turn by itself while idle, behind everyone in the queue.</p>
     </section>
 
@@ -745,6 +772,6 @@ shasum -a 256 phase2-*</pre></div>
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/praxis/app.js?cb=616d4298"></script>
+<script type="module" src="/praxis/app.js?cb=7ac04cb8"></script>
 </body>
 </html>

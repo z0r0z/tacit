@@ -83,13 +83,17 @@ try {
   await page.goto(`${BASE}/praxis/`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !document.querySelector('#web').hidden, null, { timeout: 20000 });
   ok(true, 'the page offers the in-browser path once the window says the coordinator takes it');
+  ok(!(await page.$eval('#cmd-alt', (d) => d.open)), 'with the browser path offered, the terminal command is folded away');
+  ok(await page.isVisible('#web-go') && /Contribute/.test(await page.innerText('#web-go')), 'one big button to contribute');
   await page.fill('#name', 'Browser Tester');
   await page.click('#web-go');
   if (process.env.PROGRESS) { const t0 = Date.now(); const iv = setInterval(async () => console.log(`  ${Math.round((Date.now() - t0) / 1000)} s: ${await page.innerText('#web-msg').catch(() => '')}`), 30000); page.once('close', () => clearInterval(iv)); b.once('disconnected', () => clearInterval(iv)); }
-  await page.waitForFunction(() => /Accepted|did not finish/.test(document.querySelector('#web-msg').textContent), null, { timeout: Number(process.env.RUN_MS || 240000) });
+  await page.waitForFunction(() => /Accepted|interrupted/.test(document.querySelector('#web-msg').textContent), null, { timeout: Number(process.env.RUN_MS || 240000) });
   const msg = await page.innerText('#web-msg');
   ok(/Accepted/.test(msg), `the contribution is accepted from the page (${msg.slice(0, 90)})`);
   ok(await page.$eval('#cele', (d) => d.open), 'the celebration opens');
+  ok((await page.$$('#track li.past')).length === 3 && (await page.$eval('#track li:last-child', (e) => e.classList.contains('on'))), 'the four steps end on Done, the first three behind');
+  if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/praxis-browser-done.png`, fullPage: false });
   ok(csp.length === 0 && errs.length === 0, `no CSP violations or page errors (${[...csp, ...errs].slice(0, 2).join(' | ')})`);
   const head = JSON.parse(await (await fetch(`http://127.0.0.1:${CP}/api/head`)).text()).index;
   ok(head === 18, `the head is phase2-${head}`);
