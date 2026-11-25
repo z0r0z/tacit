@@ -13,6 +13,8 @@ import { makePayout } from '/btc/payout.js?cb=c002bd08';
 
 const $ = (id) => document.getElementById(id);
 const MARKET_MS = 60000;
+// Tacit's own provider of the pair: its /info carries what its fees came to and where they go (fastbridge-lp README, "Upkeep")
+const HOUSE = 'https://tacit-fastbridge-pair-lp.onrender.com', FUND_MS = 300000;
 
 // ── what a link asks for ──
 function asked() {
@@ -46,6 +48,7 @@ function market() {
   if (!mkP || Date.now() - mkAt > MARKET_MS - 5000) {
     mkAt = Date.now();
     const p = readMarket().then((m) => { const x = { ...m, estimate: (d, a) => estimate(m, d, a) }; paintProviders(x); return x; });
+    fund();
     p.catch(() => { if (mkP === p) mkP = null; paintProviders(null); });
     mkP = p;
   }
@@ -93,6 +96,35 @@ function paintProviders(m) {
   const upB = tb && tb.now > 0n ? `${twoFigures(tb.now)} BTC` : null, upE = te && te.now > 0n ? `${twoFigures(te.now)} ETH` : null;
   if (upB || upE) bits.push(`up to ${[upB, upE].filter(Boolean).map(esc).join(' or ')} now`);
   live.innerHTML = bits.map((b) => `<span>${b}</span>`).join(' · ');
+}
+
+// ── the house provider's fees: back into its capacity up to its target, then to TAC buybacks (a line, a bar, the figures; nothing when it does not say) ──
+let fundAt = 0;
+function fund() {
+  if (Date.now() - fundAt < FUND_MS) return;
+  fundAt = Date.now();
+  fetch(`${HOUSE}/info`, { cache: 'no-cache', signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null)).then(paintFund, () => paintFund(null));
+}
+const eth2 = (v) => (BigInt(v) > 0n ? twoFigures(v) : '0');
+const tacTxt = (wei) => { const t = Number(BigInt(wei || 0) / 10n ** 14n) / 1e4; return t.toLocaleString('en-US', { maximumFractionDigits: t < 100 ? 2 : 0 }); };
+function paintFund(i) {
+  const el = $('pv-fund'), s = i && i.stats, t = i && i.target, b = (i && i.buyback) || {};
+  let ok = false;
+  try {
+    if (s && t && s.capacity) {
+      const goal = BigInt(t.eth) + BigInt(t.btcAsEth), have = BigInt(s.capacity.valueEth), re = BigInt(s.reinvestedEth || 0);
+      const pct = goal > 0n ? Math.min(100, Number((have * 1000n) / goal) / 10) : 0;
+      const since = new Date(Number(s.since) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const figs = [t.reached ? `<b class="num">${esc(eth2(have))}</b> ETH, at its target` : `<b class="num">${esc(eth2(have))}</b> of ${esc(eth2(goal))} ETH`, re > 0n ? `${esc(fmt(re))} ETH of fees reinvested since ${esc(since)}` : `fees counted since ${esc(since)}`];
+      if (b.startedAt || BigInt(b.routedEth || 0) > 0n) figs.push(`${esc(tacTxt(b.tacBought))} TAC bought`);
+      el.innerHTML = `<p>Tacit’s provider puts its fees, after network costs, back into its capacity until it holds ${esc(eth2(t.eth))} ETH and as much in BTC. Past that, they go to TAC buybacks.</p>`
+        + `<div class="bar" role="progressbar" aria-label="Capacity against that target" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}"><i></i></div>`
+        + `<p class="fig">${figs.map((f) => `<span>${f}</span>`).join(' · ')}</p>`;
+      el.querySelector('.bar i').style.width = `${pct}%`;
+      ok = true;
+    }
+  } catch { ok = false; }
+  el.hidden = !ok;
 }
 
 // ── the lane ──

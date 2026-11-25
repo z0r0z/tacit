@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://fast.tacit.finance https://tacit-fast-board.onrender.com https://api.tacit.finance https://tacit-btc-pool-mainnet.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud https://tacit-api.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://fast.tacit.finance https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://api.tacit.finance https://tacit-btc-pool-mainnet.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud https://tacit-api.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit btc</title>
 <meta name="description" content="Swap BTC and ETH with a provider. Private on the Ethereum side.">
@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=44fd981a">
+<link rel="modulepreload" href="/btc/app.js?cb=8e7b8dd5">
 <link rel="modulepreload" href="/swap/atomic.js?cb=41855aaf">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -270,6 +270,13 @@ html .lane #atomic .pt-say.err { color: var(--err); }
 .pv .d .nw { white-space: nowrap; }
 .pv .none { display: block; padding: 14px; color: var(--mute); font-size: 13px; }
 @media (max-width: 420px) { .pv li { grid-template-columns: 1fr; } }
+/* the house provider's fees: a line, a thin bar toward its target, a line of figures */
+#pv-fund { margin: 12px 2px 0; font-size: 12.5px; color: var(--mute); }
+#pv-fund p { margin: 0; }
+#pv-fund b { font-weight: 500; color: var(--ink); }
+#pv-fund .bar { height: 4px; margin: 8px 0 6px; background: var(--hair); border-radius: 2px; overflow: hidden; }
+#pv-fund .bar i { display: block; height: 100%; width: 0; background: var(--ink); border-radius: 2px; }
+#pv-fund .fig span { white-space: nowrap; }
 
 /* becoming one */
 #be .box { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
@@ -625,11 +632,13 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <h2 id="pv-h">Providers <small id="pv-at"></small></h2>
       <p id="cap" role="status">Reading the boards…</p>
       <ul class="pv" id="pv-list"></ul>
+      <div id="pv-fund" hidden></div>
     </section>
 
     <section class="sec" id="be" aria-labelledby="be-h">
       <h2 id="be-h">Become a provider</h2>
       <p>Anyone can provide. A provider is a small process with its own key: it quotes from the market price plus its fee, and each swap locks both sides, so it never holds anyone’s funds.</p>
+      <p>Tacit runs one provider itself and puts what it earns back into its capacity. More providers add room to each swap and keep the prices close: each sets its own terms, and pages ask those with the lowest fees first.</p>
       <div class="box">
         <div>
           <h3>What you need</h3>
@@ -704,6 +713,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/btc/app.js?cb=44fd981a"></script>
+<script type="module" src="/btc/app.js?cb=8e7b8dd5"></script>
 </body>
 </html>

@@ -223,10 +223,14 @@ const SHOT = async (page, name, full = true) => { if (process.env.SHOTS) await p
 // what the public nodes say of the Ethereum wallet (a test sets it): its balance, the gas price and the deposit's gas, a deposit's receipt
 const RPCV = { balance: 10n ** 18n, receipt: { status: '0x1' } };
 const hex = (v) => '0x' + BigInt(v).toString(16);
+// the house provider's /info, with what its upkeep adds (fastbridge-lp/lib/automation.mjs): null answers 404, as a provider without it does
+const HOUSE = 'https://tacit-fastbridge-pair-lp.onrender.com';
+let houseInfo = { v: 1, stats: { since: 1795608000, swaps: 4, reinvestedEth: '1234567', netEth: '1234567', capacity: { eth: '320000000', sats: '1500000', valueEth: '365000000' } }, target: { eth: '1000000000', btcAsEth: '1000000000', reached: false }, skewBps: 0, buyback: { on: false, startedAt: null, routedEth: '0', tacBought: '0', sends: 0 } };
 // the network: the board and the public nodes are answered here, everything else off the machine is refused
 async function wire(page, { ads, boardDelayMs = 0 }) {
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const req = route.request(), url = req.url();
+    if (url === `${HOUSE}/info`) return houseInfo ? route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(houseInfo) }) : route.fulfill({ status: 404, body: '{}' });
     if (url === `${BOARD}/ads`) { if (boardDelayMs) await sleep(boardDelayMs); return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ ads }) }).catch(() => {}); }
     if (req.method() === 'POST' && /publicnode|drpc|1rpc|tenderly|mevblocker|blastapi|buidlguidl|thirdweb|stakely|nodereal|flashbots|tacit-node-gw/.test(url)) {
       let body = {}; try { body = JSON.parse(req.postData() || '{}'); } catch { /* not JSON */ }
@@ -279,9 +283,15 @@ console.log('the page: the marks, the line, the lane');
   ok(/ETH → BTC 0\.01 to 30 ETH 2 ETH available now fee 0\.2% \+ 0\.0003 ETH \(3\.2% at the minimum\)/.test(row), 'the reverse terms, in ETH');
   ok(/up to 0\.3 BTC for ETH, and up to 2 ETH for BTC/.test(await text(page, '#cap')), `the totals (${await text(page, '#cap')})`);
 
+  await page.waitForFunction(() => !document.querySelector('#pv-fund').hidden, null, { timeout: 10000 });
+  const fundLine = await text(page, '#pv-fund');
+  ok(/back into its capacity until it holds 10 ETH and as much in BTC\. Past that, they go to TAC buybacks\./.test(fundLine) && /3\.6 of 20 ETH/.test(fundLine) && /0\.01234567 ETH of fees reinvested since Nov 2\d/.test(fundLine) && !/TAC bought/.test(fundLine), `the house provider's fees: the rule, capacity against its target, what was reinvested; no buyback figure before buybacks start (${fundLine})`);
+  const barW = await page.$eval('#pv-fund .bar i', (e) => e.getBoundingClientRect().width / e.parentElement.getBoundingClientRect().width);
+  ok(Math.abs(barW - 0.1825) < 0.01, `the bar is at 18% of the target (${barW.toFixed(3)})`);
+
   console.log('becoming a provider');
   const be = await text(page, '#be');
-  ok(/What you need/i.test(be) && /Your terms/i.test(be) && /openssl rand -hex 32/.test(be) && /fastbridge-lp-shield\.mjs <ETH> --eth --index 0 --send/.test(be) && /config\.btc-eth\.example\.json/.test(be) && /--dry-run/.test(be), 'what is needed, the terms and the exact commands');
+  ok(/What you need/i.test(be) && /Your terms/i.test(be) && /More providers add room to each swap/.test(be) && /openssl rand -hex 32/.test(be) && /fastbridge-lp-shield\.mjs <ETH> --eth --index 0 --send/.test(be) && /config\.btc-eth\.example\.json/.test(be) && /--dry-run/.test(be), 'what is needed, the terms and the exact commands');
   ok((await page.$$('#be .cmd button')).length >= 5 && (await page.getAttribute('#be a[href*="README.md"]', 'href')).includes('pair-mode'), 'each command has a copy button, and the guide is linked at its pair-mode section');
 
   console.log('an estimate before the wallet opens');
@@ -386,6 +396,23 @@ console.log('links');
   const two = await fresh({ path: '/btc/?from=ETH&to=BTC' });
   ok(/From.*Ethereum, private/.test(await text(two.page, '#a-pay')), 'the card\'s own words (?from=ETH&to=BTC) open it the same way');
   await two.page.close();
+}
+
+console.log('the house provider past its target, buying back; and one that does not say');
+{
+  houseInfo = { ...houseInfo, stats: { ...houseInfo.stats, capacity: { eth: '1100000000', sats: '40000000', valueEth: '2300000000' } }, target: { ...houseInfo.target, reached: true }, buyback: { on: true, startedAt: 1795608000, routedEth: '25000000', tacBought: '1234500000000000000000', sends: 1 } };
+  const { page } = await fresh();
+  await page.waitForFunction(() => /TAC bought/.test(document.querySelector('#pv-fund').textContent), null, { timeout: 10000 });
+  const f = await text(page, '#pv-fund');
+  ok(/23 ETH, at its target/.test(f) && /1,235 TAC bought/.test(f), `past the target: the capacity and the TAC bought (${f})`);
+  ok(Math.abs(await page.$eval('#pv-fund .bar i', (e) => e.getBoundingClientRect().width / e.parentElement.getBoundingClientRect().width) - 1) < 0.01, 'the bar is full');
+  await page.close();
+  houseInfo = null;
+  const quiet = await fresh();
+  await listed(quiet.page);
+  await sleep(1500);
+  ok(await quiet.page.isHidden('#pv-fund'), 'a provider whose /info says nothing of it: no line');
+  await quiet.page.close();
 }
 
 console.log('no provider online');
