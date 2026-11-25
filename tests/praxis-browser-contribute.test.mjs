@@ -6,6 +6,7 @@
 //   node tests/praxis-browser-contribute.test.mjs [workdir]     (PLAYWRIGHT=<path to playwright-core>; reuses the toy fixture in workdir)
 import { createRequire } from 'node:module';
 import http from 'node:http';
+import https from 'node:https';
 import { spawn as sp, execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, statSync, mkdirSync, rmSync, mkdtempSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
@@ -20,11 +21,18 @@ const sh = (cmd, args, opts) => execFileSync(cmd, args, { cwd: W, encoding: 'utf
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 
-sh('go', ['build', '-o', join(W, 'tacit-ceremony'), './cmd/tacit-ceremony'], { cwd: CER });
-sh('go', ['build', '-o', join(W, 'fixture'), './rehearsal/fixture'], { cwd: CER });
-if (!existsSync(join(W, 'fix'))) sh('./fixture', ['make', 'fix'], { env: { ...process.env, FIXTURE_PAD: '3000' } });
+// BASE_FILE=<a real head> and PREBUILT=1 (a tacit-ceremony binary already in the workdir) turn this into the full-size run
+let base = 'fix/phase2-17';
+if (process.env.BASE_FILE) base = resolve(process.env.BASE_FILE);
+else {
+  if (!process.env.PREBUILT) {
+    sh('go', ['build', '-o', join(W, 'tacit-ceremony'), './cmd/tacit-ceremony'], { cwd: CER });
+    sh('go', ['build', '-o', join(W, 'fixture'), './rehearsal/fixture'], { cwd: CER });
+  }
+  if (!existsSync(join(W, 'fix'))) sh('./fixture', ['make', 'fix'], { env: { ...process.env, FIXTURE_PAD: '3000' } });
+}
 rmSync(join(W, 'chain'), { recursive: true, force: true });
-sh('./tacit-ceremony', ['init', 'chain', 'fix/phase2-17', '17', 'browser test']);
+sh('./tacit-ceremony', ['init', 'chain', base, '17', 'browser test']);
 
 const CP = 18300, PP = 18302;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.wasm': 'application/wasm' };
@@ -41,20 +49,31 @@ const BASE = `http://127.0.0.1:${server.address().port}`;
 
 const coord = sp(join(W, 'tacit-ceremony'), ['serve', '--per-ip', '1', '--heartbeat', '20s', '--claim-window', '60s', '--client-ip-header', 'X-Tacit-Client-IP', '--trusted-proxies', '127.0.0.1/32', 'chain', `127.0.0.1:${CP}`], { cwd: W, stdio: 'ignore' });
 const proxy = sp('node', [join(CER, 'proxy/server.mjs')], { env: { ...process.env, COORDINATOR_URL: `http://127.0.0.1:${CP}`, PORT: String(PP), ALLOWED_ORIGINS: BASE, BROWSER_CONTRIBUTE: '1' }, stdio: 'ignore' });
-const stop = async () => { coord.kill(); proxy.kill(); server.close(); await b?.close(); };
+// TLS_FORWARD=1: the ceremony's address resolves to a local HTTPS forwarder (self-signed) so a large download streams for real
+let fwd = null;
+if (process.env.TLS_FORWARD) {
+  sh('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'k.pem', '-out', 'c.pem', '-days', '2', '-subj', '/CN=tacit-praxis-ceremony.onrender.com', '-addext', 'subjectAltName=DNS:tacit-praxis-ceremony.onrender.com']);
+  fwd = https.createServer({ key: readFileSync(join(W, 'k.pem')), cert: readFileSync(join(W, 'c.pem')) }, (req, res) => {
+    const up = http.request({ host: '127.0.0.1', port: PP, method: req.method, path: req.url, headers: { ...req.headers, 'true-client-ip': '203.0.113.50' } }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
+    up.on('error', () => res.destroy());
+    req.pipe(up);
+  }).listen(18443);
+}
+const stop = async () => { coord.kill(); proxy.kill(); server.close(); fwd?.close(); await b?.close(); };
 await new Promise((r) => setTimeout(r, 2000));
 
 let b;
 try {
-  b = await chromium.launch();
-  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } });
+  const args = [...(process.env.CHROME_ARGS ? process.env.CHROME_ARGS.split(' ') : []), ...(fwd ? ['--host-resolver-rules=MAP tacit-praxis-ceremony.onrender.com 127.0.0.1:18443'] : [])];
+  b = await chromium.launch(args.length ? { args } : undefined);
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 }, ignoreHTTPSErrors: !!fwd });
   const page = await ctx.newPage();
   const errs = [], csp = [];
   page.on('pageerror', (e) => errs.push(e.message));
   page.on('console', (m) => { const t = m.text(); if (/Content Security Policy|Refused to/i.test(t)) csp.push(t.slice(0, 200)); });
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)(?!tacit-praxis-ceremony\.onrender\.com)/, (route) => route.abort());
   // the ceremony's address is the local window
-  await page.route(/^https:\/\/tacit-praxis-ceremony\.onrender\.com\//, async (route) => {
+  if (!fwd) await page.route(/^https:\/\/tacit-praxis-ceremony\.onrender\.com\//, async (route) => {
     const u = new URL(route.request().url());
     try {
       const r = await route.fetch({ url: `http://127.0.0.1:${PP}${u.pathname}${u.search}`, headers: { ...route.request().headers(), 'true-client-ip': '203.0.113.50' } });
@@ -66,7 +85,8 @@ try {
   ok(true, 'the page offers the in-browser path once the window says the coordinator takes it');
   await page.fill('#name', 'Browser Tester');
   await page.click('#web-go');
-  await page.waitForFunction(() => /Accepted|did not finish/.test(document.querySelector('#web-msg').textContent), null, { timeout: 240000 });
+  if (process.env.PROGRESS) { const t0 = Date.now(); const iv = setInterval(async () => console.log(`  ${Math.round((Date.now() - t0) / 1000)} s: ${await page.innerText('#web-msg').catch(() => '')}`), 30000); page.once('close', () => clearInterval(iv)); b.once('disconnected', () => clearInterval(iv)); }
+  await page.waitForFunction(() => /Accepted|did not finish/.test(document.querySelector('#web-msg').textContent), null, { timeout: Number(process.env.RUN_MS || 240000) });
   const msg = await page.innerText('#web-msg');
   ok(/Accepted/.test(msg), `the contribution is accepted from the page (${msg.slice(0, 90)})`);
   ok(await page.$eval('#cele', (d) => d.open), 'the celebration opens');
