@@ -26,6 +26,20 @@ const uint = (name, v, { min = 0n, max = null } = {}) => {
   if (max != null && b > max) throw new Error(`${name} must be at most ${max} (got ${v})`);
   return b;
 };
+const positiveRate = (name, v) => {
+  const t = String(v).trim();
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(t)) throw new Error(`${name} must be a positive fee rate in sat/vB (got "${t.slice(0, 40)}")`);
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive fee rate in sat/vB (got "${t.slice(0, 40)}")`);
+  return n;
+};
+const positiveInt = (name, v, max = 20) => {
+  const t = String(v).trim();
+  if (!/^\d+$/.test(t)) throw new Error(`${name} must be a positive whole number (got "${t.slice(0, 40)}")`);
+  const n = Number(t);
+  if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new Error(`${name} must be 1 to ${max} (got "${t.slice(0, 40)}")`);
+  return n;
+};
 const SATS_CONFS = [['0', 1], ['1000000', 2], ['10000000', 3], ['100000000', 6]];
 
 // The config of a pair provider, checked and filled in: throws a plain sentence for a value that is not valid (the process does not start on a guess).
@@ -48,7 +62,9 @@ export function pairConfig(C) {
     if (!Number.isInteger(rfee) || rfee < 0 || rfee > 500) throw new Error(`reverse.feeBps must be 0 to 500 (got "${r.feeBps}")`);
     out.reverse = {
       ...r, minAmount: String(rmin), maxAmount: String(rmax), feeBps: rfee, flatFee: String(uint('reverse.flatFee (pool ETH units)', r.flatFee ?? '20000')),
-      maxSats: String(uint('reverse.maxSats', r.maxSats ?? '5000000', { min: MIN_SATS })), maxOpen: r.maxOpen ?? 2, lockFeeReserve: String(uint('reverse.lockFeeReserve (sats)', r.lockFeeReserve ?? '20000')),
+      maxSats: String(uint('reverse.maxSats', r.maxSats ?? '5000000', { min: MIN_SATS })),
+      maxOpen: positiveInt('reverse.maxOpen', r.maxOpen ?? 2), maxOpenPerKey: positiveInt('reverse.maxOpenPerKey', r.maxOpenPerKey ?? 1),
+      maxFeeRate: r.maxFeeRate == null ? null : positiveRate('reverse.maxFeeRate', r.maxFeeRate), lockFeeReserve: String(uint('reverse.lockFeeReserve (sats)', r.lockFeeReserve ?? '20000')),
     };
   }
   return out;
@@ -74,10 +90,12 @@ export const satsConfsFor = (list) => {
 export function pairReverseOptions(C, feed) {
   const r = C.reverse;
   if (!r || r.enabled !== true) return null;
+  const maxOpen = positiveInt('reverse.maxOpen', r.maxOpen ?? 2), maxOpenPerKey = positiveInt('reverse.maxOpenPerKey', r.maxOpenPerKey ?? 1);
+  const maxFeeRate = r.maxFeeRate == null ? null : positiveRate('reverse.maxFeeRate', r.maxFeeRate);
   return {
     quote: { btcAsset: SATS_ASSET, evmAsset: ETH_ASSET, minAmount: String(r.minAmount), maxAmount: String(r.maxAmount), feeBps: r.feeBps, flatFee: String(r.flatFee), validSecs: r.validSecs ?? 300, rate: () => feed.rate() },
-    csvBlocks: r.csvBlocks ?? 96, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, maxOpen: r.maxOpen, maxOpenPerKey: r.maxOpenPerKey ?? 1, maxLocked: BigInt(r.maxSats), minConfsFor: (v) => confsForSats(v), lockFeeReserve: String(r.lockFeeReserve),
-    alertSecs: C.alertSecs ?? 3600, refreshSecs: r.refreshSecs ?? 60, policy: { minClaimSecs: C.policy.minClaimSecs ?? 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600 },
+    csvBlocks: r.csvBlocks ?? 96, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, maxOpen, maxOpenPerKey, maxLocked: BigInt(r.maxSats), minConfsFor: (v) => confsForSats(v), lockFeeReserve: String(r.lockFeeReserve),
+    maxFeeRate, alertSecs: C.alertSecs ?? 3600, refreshSecs: r.refreshSecs ?? 60, policy: { minClaimSecs: C.policy.minClaimSecs ?? 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600 },
   };
 }
 

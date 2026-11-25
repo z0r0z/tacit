@@ -23,7 +23,16 @@
 //   swaps, quotes, offers, evmOffers   stores ({ get, put, list }, records with an `id`): swaps hold only this direction's records
 //   inventory        { notes() } -> the confirmed TAC notes at the dedicated address, [{ txid, vout, value, amount, blinding }]
 //   config           { quote: { btcAsset, evmAsset, minAmount, maxAmount, feeBps, flatFee, validSecs }, csvBlocks, evmWindowSecs, maxOpen, maxLocked,
-//                      minConfsFor(value), anyTac, alertSecs, refreshSecs, policy: { minClaimSecs, offerWaitSecs, maxEvmWindowSecs } }
+//                      minProceedsBps, maxFeeRate, minConfsFor(value), anyTac, alertSecs, refreshSecs, policy: { minClaimSecs, offerWaitSecs, maxEvmWindowSecs } }
+//
+// For a pair whose Bitcoin and pool asset ids are the same TAC asset, the provider's proceeds must pass this exact BigInt formula, both when priced and
+// when a quote is first started, using the then-current config.minProceedsBps (default 10000, integer from 10000 through 1000000):
+//
+//   evmAmount * 10000 >= btcValue * minProceedsBps
+//
+// The floor does not compare the different units of a sats/ETH pair. config.maxFeeRate is an optional sat/vB ceiling: a missing estimate or one over the
+// ceiling refuses new quotes and first starts, but never the ticks that finish existing swaps. Unreadable swap records and a failed tick likewise pause only
+// new sales; readable swaps keep ticking, a clean tick clears tick health, and inventory, record and tick alerts are throttled by alertSecs.
 
 import { makeBitcoinLocker } from './fastbridge-bl.js';
 import { pickNotes } from './fastbridge-client.js';
@@ -40,7 +49,7 @@ const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 const key = (n) => `${n.txid}:${n.vout}`;
 const reply = (body, status = 200) => ({ status, body });
 const no = (why, retry = false) => reply({ ok: false, retry, why });
-const MAX_INPUTS = 6, MAX_OFFER_BYTES = 12000, FAILURE_MEMORY_SECS = 10;
+const MAX_INPUTS = 6, MAX_OFFER_BYTES = 12000, FAILURE_MEMORY_SECS = 10, MAX_PROCEEDS_BPS = 1_000_000;
 
 export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmOffers, inventory, config, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   const q = config.quote, min = BigInt(q.minAmount), max = BigInt(q.maxAmount), validSecs = q.validSecs ?? 600;
@@ -48,13 +57,18 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
   const refreshSecs = config.refreshSecs ?? 60, alertSecs = config.alertSecs ?? 3600;
   const pol = config.policy || {};
   const lockerPub = bytesToHex(btc.wallet.pub);
+  const health = { tickOk: true, lastTick: 0, lastError: null, swapsReadable: true, unreadableSwaps: 0, inventoryOk: null, feeRateOk: null, feeRate: null };
+  const lastAlert = new Map();
+  const errorText = (e, n = 200) => String((e && e.message) || e).slice(0, n);
+  proceedsBps();
+  feeCeiling();
   // Plain sats instead of a Tacit note (btcAsset X.SATS_ASSET): the provider sells the sats at its dedicated address for pool ETH. Its inventory is that address's
   // coins (`inventory.notes()` lists them with `amount` = their value), a lock is built from coins picked then (dapp/fastbridge-bl.js buildSats), nothing is paid to
   // the user's key for a take (its fee comes out of the lock), and the price is the rate in `quote.rate` ({ num, den } pool units per satoshi, or a function that
   // gives it: dapp/fastbridge-rate.js). `lockFeeReserve` is what the coins must cover beyond the amount, for the lock's own fee.
-  const sats = X.isSats(q.btcAsset);
+  const sats = X.isSats(q.btcAsset), sameTac = !sats && strip(q.btcAsset) === strip(q.evmAsset);
   const lockFeeReserve = BigInt(config.lockFeeReserve ?? 20_000);
-  const takeSats = btc.feeRate && !sats ? async () => takeSatsAt(await btc.feeRate()) : async () => 0;
+  const takeSats = btc.feeRate && !sats ? async (rate) => takeSatsAt(rate == null ? await btc.feeRate() : rate) : async () => 0;
   const rateNow = () => {
     const r = typeof q.rate === 'function' ? q.rate() : q.rate;
     if (!r) throw Object.assign(new Error('the provider has no price for this pair right now'), { status: 503, retry: true });
@@ -74,6 +88,75 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
   let chain = Promise.resolve();
   const exclusive = (fn) => { const run = chain.then(fn, fn); chain = run.catch(() => {}); return run; };
 
+  function proceedsBps() {
+    const bps = config.minProceedsBps === undefined ? 10000 : config.minProceedsBps;
+    if (!Number.isInteger(bps) || bps < 10000 || bps > MAX_PROCEEDS_BPS) throw Object.assign(new Error(`config.minProceedsBps must be an integer from 10000 through ${MAX_PROCEEDS_BPS}`), { status: 503, retry: true });
+    return bps;
+  }
+  function proceedsProblem(evmAmount, btcValue) {
+    const bps = proceedsBps();
+    return sameTac && BigInt(evmAmount) * 10000n < BigInt(btcValue) * BigInt(bps) ? `the provider's proceeds are below its ${bps} bps minimum` : null;
+  }
+  function feeCeiling() {
+    const ceiling = config.maxFeeRate;
+    if (ceiling == null) return null;
+    if (typeof ceiling !== 'number' || !Number.isFinite(ceiling) || ceiling <= 0) throw Object.assign(new Error('config.maxFeeRate must be a positive finite sat/vB number'), { status: 503, retry: true });
+    return ceiling;
+  }
+  function alertThrottled(k, event) {
+    const t = now();
+    if (t - (lastAlert.get(k) ?? -Infinity) < alertSecs) return;
+    lastAlert.set(k, t);
+    try { alert(event); } catch (e) { log({ level: 'error', msg: 'a reverse alert could not be sent', error: errorText(e) }); }
+  }
+  function noteSwapProblems() {
+    let problems;
+    try { problems = (swaps.problems && swaps.problems()) || []; }
+    catch (e) { problems = [{ id: null, error: errorText(e, 160) }]; }
+    health.swapsReadable = problems.length === 0;
+    health.unreadableSwaps = problems.length;
+    for (const p of problems) alertThrottled('swap-record|' + (p.id || 'unknown'), { level: 'alert', msg: 'a reverse swap record cannot be read; new sales are paused', id: p.id || null, error: errorText(p.error || 'unreadable', 160) });
+    return problems;
+  }
+  function saleBlocker() {
+    const problems = noteSwapProblems();
+    if (!health.tickOk) return 'new reverse sales are paused because the last tick failed';
+    if (problems.length) return 'new reverse sales are paused because a swap record cannot be read';
+    return null;
+  }
+  async function listSwaps() {
+    const recs = await swaps.list();
+    noteSwapProblems();
+    return recs;
+  }
+  async function feeRateForNewSale() {
+    const ceiling = feeCeiling();
+    if (ceiling == null) { health.feeRateOk = null; health.feeRate = null; return null; }
+    let rate;
+    try {
+      if (!btc.feeRate) throw new Error('the Bitcoin fee estimator is unavailable');
+      rate = Number(await btc.feeRate(0, { allowStale: false }));
+      if (!Number.isFinite(rate) || rate <= 0) throw new Error('the Bitcoin fee estimator returned no usable rate');
+    } catch (e) {
+      health.feeRateOk = false; health.feeRate = null;
+      alertThrottled('fee-rate', { level: 'warn', msg: 'new reverse sales are paused because the Bitcoin fee rate cannot be read', error: errorText(e, 160) });
+      throw Object.assign(new Error('the provider cannot read the current Bitcoin fee rate'), { status: 503, retry: true });
+    }
+    health.feeRate = rate;
+    if (rate > ceiling) {
+      health.feeRateOk = false;
+      alertThrottled('fee-rate', { level: 'warn', msg: 'new reverse sales are paused by the Bitcoin fee ceiling', feeRate: rate, maxFeeRate: ceiling });
+      throw Object.assign(new Error(`the current Bitcoin fee rate ${rate} sat/vB is above the provider's ${ceiling} sat/vB ceiling`), { status: 503, retry: true });
+    }
+    health.feeRateOk = true;
+    return rate;
+  }
+  async function requireNewSales() {
+    const blocked = saleBlocker();
+    if (blocked) throw Object.assign(new Error(blocked), { status: 503, retry: true });
+    return feeRateForNewSale();
+  }
+
   // what a pool amount the user locks becomes: the Bitcoin note it gets is that less the provider's fee (a rate on the amount, and a flat part)
   function price(amount) {
     const a = BigInt(amount);
@@ -82,6 +165,8 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     let out = a - fee;
     if (sats && out > 0n) { const { num, den } = rateNow(); out = (out * den) / num; }   // the fee is in pool units; what is left buys sats at the rate
     if (a - fee <= 0n || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
+    const below = proceedsProblem(a, out);
+    if (below) throw Object.assign(new Error(below), { status: 503, retry: true });
     return { evmAmount: a, btcValue: out, fee };
   }
   // the most a user can send for a Bitcoin note of at most `btcMax`
@@ -101,8 +186,12 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     if (inv.p) return inv.p;
     if (now() - inv.failedAt < FAILURE_MEMORY_SECS) return Promise.reject(inv.failure);
     inv.p = (async () => {
-      try { inv.notes = (await inventory.notes()).map((n) => ({ ...n, amount: BigInt(n.amount) })); inv.at = now(); }
-      catch (e) { inv.failedAt = now(); inv.failure = e; throw e; }
+      try { inv.notes = (await inventory.notes()).map((n) => ({ ...n, amount: BigInt(n.amount) })); inv.at = now(); health.inventoryOk = true; }
+      catch (e) {
+        inv.failedAt = now(); inv.failure = e; health.inventoryOk = false;
+        alertThrottled('inventory', { level: 'warn', msg: 'the reverse inventory cannot be read; new sales depending on it are paused', error: errorText(e, 160) });
+        throw e;
+      }
       finally { inv.p = null; }
       return inv.notes;
     })();
@@ -112,7 +201,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
 
   // the notes not already in a swap (a note a swap spent is never lent again, whatever the cached list still says), and what the open swaps hold
   async function picture() {
-    const recs = await swaps.list(), spent = new Set(), feeCoins = new Set();
+    const recs = await listSwaps(), spent = new Set(), feeCoins = new Set();
     let open = 0, locked = 0n;
     for (const r of recs) {
       for (const i of r.noteInputs || []) spent.add(key(i));
@@ -122,7 +211,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     }
     const all = await readNotes();
     // (a coin a lock of sats was funded from is held by that swap until it ends, whatever the cached list says)
-    return { free: all.filter((n) => !spent.has(key(n)) && !(sats && feeCoins.has(key(n)))), all, open, locked, feeCoins };
+    return { free: all.filter((n) => !spent.has(key(n)) && !(sats && feeCoins.has(key(n)))), all, open, locked, feeCoins, recs };
   }
   // what the free coins can lock: the largest few together, less the lock's own fee
   const satsHeld = (free) => {
@@ -147,23 +236,34 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
 
   async function info() {
     const p = await picture().catch(() => null), a = await availableAmount();
+    if (config.maxFeeRate != null) await feeRateForNewSale().catch(() => {});
+    noteSwapProblems();
+    const blockers = [];
+    if (!health.tickOk) blockers.push('tick');
+    if (!health.swapsReadable) blockers.push('swap-records');
+    if (health.inventoryOk === false) blockers.push('inventory');
+    if (config.maxFeeRate != null && health.feeRateOk === false) blockers.push('fee-rate');
     return {
       v: 1, direction: 'out', lockerPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(min), maxAmount: String(max), available: a == null ? null : String(a),
       feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks ?? 96, evmWindowSecs: config.evmWindowSecs, minClaimSecs: pol.minClaimSecs ?? 3600,
-      maxOpen, open: p ? p.open : null, anyTac: config.anyTac !== false,
+      maxOpen, open: p ? p.open : null, anyTac: config.anyTac !== false, minProceedsBps: proceedsBps(), maxFeeRate: feeCeiling(),
+      health: { ok: blockers.length === 0, blockers, tickOk: health.tickOk, lastTick: health.lastTick, swapsReadable: health.swapsReadable, unreadableSwaps: health.unreadableSwaps, inventoryOk: health.inventoryOk, feeRateOk: health.feeRateOk, feeRate: health.feeRate },
     };
   }
 
   async function quote({ amount, claimPub }) {
     if (!/^[0-9a-f]{66}$/.test(String(claimPub))) throw Object.assign(new Error('claimPub must be a compressed Bitcoin key'), { status: 400 });
     try { secp.ProjectivePoint.fromHex(claimPub); } catch { throw Object.assign(new Error('claimPub is not a point on the curve'), { status: 400 }); }
+    const feeRate = await requireNewSales();
     const { evmAmount, btcValue } = price(amount);
-    const why = roomFor(await picture(), btcValue);
+    const p = await picture(), blocked = saleBlocker();
+    if (blocked) throw Object.assign(new Error(blocked), { status: 503, retry: true });
+    const why = roomFor(p, btcValue);
     if (why) throw Object.assign(new Error(why), { status: 503, retry: true });
     const rec = {
       id: randomHex(16), direction: 'out', btcAsset: q.btcAsset, btcValue: String(btcValue), evmAsset: q.evmAsset, evmAmount: String(evmAmount), claimPub: String(claimPub).toLowerCase(),
       lockerPub, lockerXonly: lockerPub.slice(2), csvBlocks: config.csvBlocks ?? 96, evmWindowSecs: config.evmWindowSecs, minConfs: config.minConfsFor ? config.minConfsFor(btcValue) : 1,
-      takeSats: await takeSats(), created: now(), validUntil: now() + validSecs,
+      takeSats: await takeSats(feeRate), created: now(), validUntil: now() + validSecs,
     };
     await quotes.put(rec);
     return rec;
@@ -177,11 +277,17 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
       if (!rec) return no('unknown quote');
       if (rec.swapId) return reply({ ok: true, swapId: rec.swapId });
       if (now() > rec.validUntil) return no('quote expired');
-      const p = await picture(), btcValue = BigInt(rec.btcValue), why = roomFor(p, btcValue);
+      let feeRate;
+      try { feeRate = await requireNewSales(); } catch (e) { if (e.status) return no(e.message, !!e.retry); throw e; }
+      const p = await picture(), btcValue = BigInt(rec.btcValue), blocked = saleBlocker();
+      if (blocked) return no(blocked, true);
+      const below = proceedsProblem(BigInt(rec.evmAmount), btcValue);
+      if (below) return no(below, true);
+      const why = roomFor(p, btcValue);
       if (why) return no(why, true);
       // one key asks for at most `maxOpenPerKey` locks at a time (the pair provider: 1): a start costs the user nothing, and each lock holds this side's coins for its timelock
       let mine = 0;
-      for (const r of await swaps.list()) if (!TERMINAL.has(r.phase) && strip(r.counterClaimPub || '') === strip(rec.claimPub)) mine++;
+      for (const r of p.recs) if (!TERMINAL.has(r.phase) && strip(r.counterClaimPub || '') === strip(rec.claimPub)) mine++;
       if (mine >= maxOpenPerKey) return no('this key already has a send under way with this provider: finish it first', true);
       // a lock of sats picks its own coins, from the address's, leaving alone those that open swaps hold; a lock of a note is built from the notes picked here
       const pick = sats ? null : pickNotes(p.free, btcValue);
@@ -191,9 +297,11 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
         swap = await bl.start({
           asset: hexToBytes(rec.btcAsset), amount: btcValue, notes: pick ? pick.notes : [], counterClaimPub: hexToBytes(rec.claimPub),
           evmAsset: rec.evmAsset, evmAmount: BigInt(rec.evmAmount), quoteId: rec.id, takeSats: Number(rec.takeSats ?? 0), avoid,
+          feeRate, maxFeeRate: feeCeiling(),
         });
       } catch (e) {
         const m = String((e && e.message) || e);
+        if (/^fastbridge: the fee.rate/.test(m)) return no(m, true);
         if (/not enough sats (to fund the commit|for the lock)/.test(m)) { alert({ level: 'warn', msg: 'the reverse side has too few sats at its address to lock', error: m.slice(0, 160) }); return no('the provider cannot pay the Bitcoin fee of the lock right now', true); }
         if (/already part of a swap/.test(m)) return no('that note is already in a swap', true);
         throw e;
@@ -254,33 +362,48 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     }
   }
 
-  async function start() { await swaps.list(); stale(); }
+  async function start() { await listSwaps(); stale(); }
 
-  const lastAlert = new Map();
+  function tickFailed(e) {
+    health.tickOk = false; health.lastError = errorText(e);
+    log({ level: 'error', msg: 'reverse tick failed; new sales are paused', error: health.lastError });
+    alertThrottled('tick', { level: 'alert', msg: 'a reverse tick failed; new sales are paused', error: health.lastError });
+  }
   async function tick() {
-    for (const rec of await swaps.list()) {
-      if (TERMINAL.has(rec.phase)) continue;
-      const before = rec.phase;
-      let next;
-      try { next = await bl.step(rec); } catch (e) { log({ level: 'error', msg: 'reverse swap step threw', id: rec.id, error: String((e && e.message) || e).slice(0, 200) }); continue; }
-      if (next.phase !== before) {
-        stale();
-        log({ level: 'info', msg: 'reverse swap', id: next.id, from: before, to: next.phase, why: next.why });
-        if (next.phase === 'refund-wait') alert({ level: 'warn', msg: 'a reverse swap is waiting out its timelock to take its Bitcoin note back', id: next.id, why: next.why || null });
+    let failure = null;
+    try {
+      for (const rec of await listSwaps()) {
+        if (TERMINAL.has(rec.phase)) continue;
+        const before = rec.phase;
+        let next;
+        try { next = await bl.step(rec); } catch (e) { failure ||= e; log({ level: 'error', msg: 'reverse swap step threw', id: rec.id, error: errorText(e) }); continue; }
+        if (!TERMINAL.has(before) && TERMINAL.has(next.phase) && next.terminalAt == null) {
+          next = { ...next, terminalAt: next.updated };
+          await swaps.put(next);
+        }
+        if (next.phase !== before) {
+          stale();
+          log({ level: 'info', msg: 'reverse swap', id: next.id, from: before, to: next.phase, why: next.why });
+          if (next.phase === 'refund-wait') alert({ level: 'warn', msg: 'a reverse swap is waiting out its timelock to take its Bitcoin note back', id: next.id, why: next.why || null });
+        }
+        if (next.lastError && next.lastError !== rec.lastError) log({ level: 'warn', msg: 'reverse swap step failed', id: next.id, phase: next.phase, error: next.lastError });
+        const every = alertSecs, k = next.id + '|' + next.phase, t = now();
+        // (the Ethereum nodes have not agreed on this swap for ten minutes: it waits and is read again; said every quarter hour while it lasts)
+        if (next.nodesSince != null && t - next.nodesSince >= 600 && t - (lastAlert.get(next.id + '|nodes') ?? -Infinity) >= 900) {
+          lastAlert.set(next.id + '|nodes', t);
+          alert({ level: 'alert', msg: 'the Ethereum nodes have not agreed on a reverse swap for a while: it waits and is read again', id: next.id, phase: next.phase, since: next.nodesSince, error: next.lastError || null });
+        }
+        if ((next.phase === 'claiming' || next.phase === 'claimed') && t - (next.updated || next.created) > every && t - (lastAlert.get(k) ?? -Infinity) >= every) {
+          lastAlert.set(k, t);
+          alert({ level: 'alert', msg: 'a reverse swap has waited long in ' + next.phase, id: next.id, error: next.lastError || null });
+        }
       }
-      if (next.lastError && next.lastError !== rec.lastError) log({ level: 'warn', msg: 'reverse swap step failed', id: next.id, phase: next.phase, error: next.lastError });
-      const every = alertSecs, k = next.id + '|' + next.phase, t = now();
-      // (the Ethereum nodes have not agreed on this swap for ten minutes: it waits and is read again; said every quarter hour while it lasts)
-      if (next.nodesSince != null && t - next.nodesSince >= 600 && t - (lastAlert.get(next.id + '|nodes') ?? -Infinity) >= 900) {
-        lastAlert.set(next.id + '|nodes', t);
-        alert({ level: 'alert', msg: 'the Ethereum nodes have not agreed on a reverse swap for a while: it waits and is read again', id: next.id, phase: next.phase, since: next.nodesSince, error: next.lastError || null });
-      }
-      if ((next.phase === 'claiming' || next.phase === 'claimed') && t - (next.updated || next.created) > every && t - (lastAlert.get(k) ?? -Infinity) >= every) {
-        lastAlert.set(k, t);
-        alert({ level: 'alert', msg: 'a reverse swap has waited long in ' + next.phase, id: next.id, error: next.lastError || null });
-      }
-    }
+      if (failure) tickFailed(failure);
+      else { health.tickOk = true; health.lastError = null; }
+    } catch (e) { tickFailed(e); }
+    health.lastTick = now();
+    return { ...health };
   }
 
-  return { handle, start, tick, bl, info, price, availableAmount };
+  return { handle, start, tick, bl, info, price, availableAmount, health };
 }

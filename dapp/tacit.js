@@ -3482,6 +3482,7 @@ async function _networkMinRate(net) {
   return v;
 }
 
+// requireSource is for automated sends that must refuse a fallback: it bypasses the cache and throws if every source fails.
 async function getFeeRate(tier = null, opts = {}) {
   const net = NET.name;
   const resolvedTier = tier && FEE_TIERS.includes(tier) ? tier : getFeeTierPref();
@@ -3490,7 +3491,7 @@ async function getFeeRate(tier = null, opts = {}) {
     ? opts.safetyMult
     : 1;
   const cacheKey = `${net}|${resolvedTier}`;
-  if (!fresh && _cachedRate.has(cacheKey) && Date.now() - (_cachedRateAt.get(cacheKey) || 0) < 60000) {
+  if (!fresh && !opts.requireSource && _cachedRate.has(cacheKey) && Date.now() - (_cachedRateAt.get(cacheKey) || 0) < 60000) {
     return safetyMult > 1
       ? Math.max(_netFloor.v, Math.round(_cachedRate.get(cacheKey) * safetyMult * 1000) / 1000)
       : _cachedRate.get(cacheKey);
@@ -3562,6 +3563,7 @@ async function getFeeRate(tier = null, opts = {}) {
     apiOk = true;
     sharedAbort.abort();
   } catch {
+    if (opts.requireSource) throw new Error('fee rate unavailable: every fee source failed');
     if (net === 'mainnet') {
       try { toast(`All fee APIs unreachable — using fallback rate ${base} sat/vB on mainnet`, ''); } catch {}
     }
@@ -24037,7 +24039,11 @@ async function tacPickCandidates(assetIdHex, sorted, amount) {
 // The reflection folds it for any asset, its notes go back to Ethereum by the bridge, and a note at a P2WPKH address (every output here) has no
 // Taproot key, so the fast lane can never spend it and its receiver holds it once Bitcoin confirms, as with TAC.
 async function buildAndBroadcastCXferMulti(args) { return _buildAndBroadcastCXferMulti(args); }
-async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = bppEnabled(), assetSigner = null }) {
+async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = bppEnabled(), assetSigner = null, feeRate: feeRateIn = null, maxFeeRate = null }) {
+  const suppliedFeeRate = feeRateIn == null ? null : Number(feeRateIn), feeCeiling = maxFeeRate == null ? null : Number(maxFeeRate);
+  if (suppliedFeeRate != null && (!Number.isFinite(suppliedFeeRate) || suppliedFeeRate <= 0)) throw new Error('feeRate must be a positive finite sat/vB number');
+  if (feeCeiling != null && (!Number.isFinite(feeCeiling) || feeCeiling <= 0)) throw new Error('maxFeeRate must be a positive finite sat/vB number');
+  if (suppliedFeeRate != null && feeCeiling != null && suppliedFeeRate > feeCeiling) throw new Error(`fee rate ${suppliedFeeRate} sat/vB exceeds the ${feeCeiling} sat/vB ceiling`);
   await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   if (!Array.isArray(recipients) || recipients.length === 0) {
@@ -24212,7 +24218,8 @@ async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos
   const p2trSpk = p2trScript(Q_xonly);
   const cb = controlBlock(TAP_NUMS, parity);
 
-  const feeRate = await getFeeRate();
+  const feeRate = suppliedFeeRate == null ? await getFeeRate() : suppliedFeeRate;
+  if (feeCeiling != null && feeRate > feeCeiling) throw new Error(`fee rate ${feeRate} sat/vB exceeds the ${feeCeiling} sat/vB ceiling`);
   const numAssetIn = pickedAssetUtxos.length;
   const revealVb = estCXferRevealVb({ m, numAssetIn, hasSatsChange: true }) + (boundTarget ? 8 : 0);
   const revealFee = feeFor(revealVb, feeRate);

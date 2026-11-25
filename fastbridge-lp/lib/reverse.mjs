@@ -28,24 +28,73 @@ export const reverseSeedOf = (key) => hmac(sha256, key, te.encode('tacit-fastbri
 
 const tacUnits = (t) => { const [whole, frac = ''] = String(t).split('.'); return BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8)); };
 const confsFor = (v) => (BigInt(v) >= 10_000n * 10n ** 8n ? 3 : BigInt(v) >= 1_000n * 10n ** 8n ? 2 : 1);
+const decimal = (name, v) => {
+  const t = String(v).trim();
+  if (!/^\d+(\.\d{1,8})?$/.test(t)) throw new Error(`${name} must be a positive decimal amount of TAC with at most 8 places (got "${t.slice(0, 40)}")`);
+  const units = tacUnits(t);
+  if (units <= 0n) throw new Error(`${name} must be greater than 0 TAC`);
+  return { text: t, units };
+};
+const positiveRate = (name, v) => {
+  const t = String(v).trim();
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(t)) throw new Error(`${name} must be a positive fee rate in sat/vB (got "${t.slice(0, 40)}")`);
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive fee rate in sat/vB (got "${t.slice(0, 40)}")`);
+  return n;
+};
+const positiveInt = (name, v, max) => {
+  const t = String(v).trim();
+  if (!/^\d+$/.test(t)) throw new Error(`${name} must be a positive whole number (got "${t.slice(0, 40)}")`);
+  const n = Number(t);
+  if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new Error(`${name} must be 1 to ${max} (got "${t.slice(0, 40)}")`);
+  return n;
+};
+
+// Rebalance is parsed even while reverse is off: a dry-run sidecar can check its configuration without starting either live service.
+export function rebalanceOptions(C) {
+  const configured = C.reverse && C.reverse.rebalance;
+  if (configured != null && (typeof configured !== 'object' || Array.isArray(configured))) throw new Error('reverse.rebalance must be an object');
+  const b = configured || {};
+  const dataDir = String(C.dataDir || 'fastbridge-lp/data').replace(/\/+$/, '');
+  const leases = b.leases == null ? `${dataDir}/reverse/rebalance-leases.json` : b.leases;
+  if (typeof leases !== 'string' || !leases.trim() || leases.includes('\0')) throw new Error('reverse.rebalance.leases must be a non-empty path');
+  const maxNote = decimal('reverse.rebalance.maxNoteTac', b.maxNoteTac ?? '250');
+  const maxDaily = decimal('reverse.rebalance.maxDailyTac', b.maxDailyTac ?? '1000');
+  const maxInventory = decimal('reverse.rebalance.maxInventoryTac', b.maxInventoryTac ?? '2000');
+  const maxStuck = b.maxStuckTac == null ? null : decimal('reverse.rebalance.maxStuckTac', b.maxStuckTac);
+  return {
+    enabled: b.enabled === true, leases: leases.trim(),
+    maxNote: maxNote.units, maxDaily: maxDaily.units, maxInventory: maxInventory.units, maxStuck: maxStuck?.units ?? null,
+    maxNoteTac: maxNote.text, maxDailyTac: maxDaily.text, maxInventoryTac: maxInventory.text, maxStuckTac: maxStuck?.text ?? null,
+    maxFeeRate: positiveRate('reverse.rebalance.maxFeeRate', b.maxFeeRate ?? 25),
+    minSourceConfs: positiveInt('reverse.rebalance.minSourceConfs', b.minSourceConfs ?? 1, 1000),
+    tickSecs: positiveInt('reverse.rebalance.tickSecs', b.tickSecs ?? 60, 3600),
+    stallSecs: positiveInt('reverse.rebalance.stallSecs', b.stallSecs ?? 900, 86400),
+  };
+}
 
 // null when the reverse side is off. The defaults are the cautious ones: two sends at once, and at most 2,000 TAC out at once whatever is funded.
 export function reverseOptions(C) {
   const r = C.reverse;
+  const rebalance = rebalanceOptions(C);
   if (!r || r.enabled !== true) return null;
-  const ceiling = r.maxTac == null ? 2000n * 10n ** 8n : tacUnits(r.maxTac);
+  if (rebalance.enabled && rebalance.maxStuck == null) throw new Error('reverse.rebalance.maxStuckTac is required for enabled live rebalance');
+  const ceiling = r.maxTac == null ? 2000n * 10n ** 8n : decimal('reverse.maxTac', r.maxTac).units;
+  const minProceedsText = String(r.minProceedsBps ?? 10000).trim();
+  const minProceedsBps = Number(minProceedsText);
+  if (!/^\d+$/.test(minProceedsText) || !Number.isSafeInteger(minProceedsBps) || minProceedsBps < 10000 || minProceedsBps > 1000000) throw new Error(`reverse.minProceedsBps must be a whole number from 10000 to 1000000 (got "${minProceedsText.slice(0, 40)}")`);
   return {
     quote: { btcAsset: C.btcAsset, evmAsset: C.evmAsset, minAmount: String(r.minAmount ?? '1000000000'), maxAmount: String(r.maxAmount ?? '100000000000'), feeBps: r.feeBps ?? 30, flatFee: String(r.flatFee ?? '10000000'), validSecs: r.validSecs ?? 600 },
-    csvBlocks: r.csvBlocks ?? 96, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, maxOpen: r.maxOpen ?? 2, maxLocked: ceiling, minConfsFor: confsFor,
-    anyTac: r.anyTac !== false, alertSecs: C.alertSecs ?? 3600, refreshSecs: r.refreshSecs ?? 60,
+    csvBlocks: r.csvBlocks ?? 96, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, maxOpen: positiveInt('reverse.maxOpen', r.maxOpen ?? 2, 20), maxLocked: ceiling, minConfsFor: confsFor,
+    anyTac: r.anyTac !== false, alertSecs: C.alertSecs ?? 3600, refreshSecs: r.refreshSecs ?? 60, minProceedsBps,
+    maxFeeRate: r.maxFeeRate == null ? null : positiveRate('reverse.maxFeeRate', r.maxFeeRate), rebalance,
     policy: { minClaimSecs: C.policy.minClaimSecs ?? 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600 },
   };
 }
 
-// The confirmed TAC notes at the reverse address, as the lock takes them: the ones at its own address (the wallet the module reads must be the reverse key's).
-// `tacit` is the namespace the daemon loads; its wallet is set to the reverse key by the caller.
-// A scan that fails is logged and thrown (the service then answers "not available", never an empty address that reads as no TAC).
-export function makeReverseInventory({ tacit, asset, log = () => {} }) {
+// Confirmed TAC notes at the reverse address, as the lock takes them. includeUnconfirmed is for the rebalancer's accounting only:
+// those notes carry confirmed=false and are never returned to the reverse service's sellable inventory by its default call.
+export function makeReverseInventory({ tacit, asset, log = () => {}, includeUnconfirmed = false }) {
   return {
     async notes() {
       let h;
@@ -53,8 +102,8 @@ export function makeReverseInventory({ tacit, asset, log = () => {} }) {
       catch (e) { log({ level: 'warn', msg: 'reverse: the notes at the reverse address could not be read', error: String((e && e.message) || e).slice(0, 200) }); throw e; }
       const e = h instanceof Map ? h.get(asset) : null;
       return ((e && e.utxos) || [])
-        .filter((x) => x.utxo && x.utxo.status && x.utxo.status.confirmed && !x.stealthTweakedSk)
-        .map((x) => ({ txid: x.utxo.txid, vout: x.utxo.vout, value: x.utxo.value, amount: BigInt(x.amount), blinding: BigInt(x.blinding) }));
+        .filter((x) => x.utxo && x.utxo.status && (includeUnconfirmed || x.utxo.status.confirmed === true) && !x.stealthTweakedSk)
+        .map((x) => ({ txid: x.utxo.txid, vout: x.utxo.vout, value: x.utxo.value, amount: BigInt(x.amount), blinding: BigInt(x.blinding), confirmed: x.utxo.status.confirmed === true }));
     },
   };
 }

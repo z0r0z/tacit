@@ -54,11 +54,20 @@ export function makeBitcoinLocker(ctx) {
     return run;
   };
 
+  async function feeRateForLock(supplied, maxFeeRate) {
+    if (supplied == null && maxFeeRate == null) return btc.feeRate();
+    const rate = Number(supplied == null ? await btc.feeRate() : supplied), ceiling = maxFeeRate == null ? null : Number(maxFeeRate);
+    if (!Number.isFinite(rate) || rate <= 0) throw new Error('fastbridge: the fee rate must be a positive finite sat/vB number');
+    if (ceiling != null && (!Number.isFinite(ceiling) || ceiling <= 0)) throw new Error('fastbridge: the fee-rate ceiling must be a positive finite sat/vB number');
+    if (ceiling != null && rate > ceiling) throw new Error(`fastbridge: the fee rate ${rate} sat/vB is above the ${ceiling} sat/vB ceiling`);
+    return rate;
+  }
+
   // Builds the lock and stores it; sends nothing. `notes` are the wallet's own notes to lock from, `counterClaimPub` the
   // 33-byte Bitcoin key the counterparty committed to before this call, `takeSats` the fee of its take, which the lock pays
   // to that key's address so a counterparty needs no coins of its own on Bitcoin.
-  async function build({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0, takeInLock = false, avoid = null, validUntil = null, csvBlocks: csvIn = null }) {
-    if (X.isSats(asset)) return buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId, avoid, validUntil, csvBlocks: csvIn });
+  async function build({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0, takeInLock = false, avoid = null, validUntil = null, csvBlocks: csvIn = null, feeRate = null, maxFeeRate = null }) {
+    if (X.isSats(asset)) return buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId, avoid, validUntil, csvBlocks: csvIn, feeRate, maxFeeRate });
     if (!notes.length) throw new Error('fastbridge: no note to lock');
     const swapId = X.swapIdOf(notes[0].txid, notes[0].vout), id = hx(swapId);
     const sec = X.deriveSwapSecrets({ seed, swapId });
@@ -70,7 +79,8 @@ export function makeBitcoinLocker(ctx) {
     const pay = takeSats > 0 ? { value: takeSats, script: takeInLock ? lock.spk : btc.prims.p2wpkhScript(counterClaimPub) } : null;
     // a coin the wallet knows to carry a note is never a fee coin, whatever sats it holds
     const coins = (await btc.satsUtxos()).filter((u) => !avoid || !avoid.has(`${u.txid}:${u.vout}`));
-    const pair = btc.tx.lockTransfer({ asset, notes, lock, lockAmount: amount, rLock: sec.rLock, hint, pay, satsUtxos: coins, feeRate: await btc.feeRate() });
+    const rate = await feeRateForLock(feeRate, maxFeeRate);
+    const pair = btc.tx.lockTransfer({ asset, notes, lock, lockAmount: amount, rLock: sec.rLock, hint, pay, satsUtxos: coins, feeRate: rate });
     const takeVout = takeSats > 0 && takeInLock ? pair.revealTx.outputs.findIndex((o, i) => i !== 0 && o.value === takeSats && hx(o.script) === hx(lock.spk)) : -1;
     if (takeSats > 0 && takeInLock && takeVout < 0) throw new Error('fastbridge: the take is not among the lock\'s outputs');
     const rec = {
@@ -78,7 +88,7 @@ export function makeBitcoinLocker(ctx) {
       asset: hx(asset), amount: String(amount), evmAsset: strip(evmAsset), evmAmount: String(evmAmount),
       counterClaimPub: hx(counterClaimPub), csvBlocks, takeSats, ...(takeVout >= 0 ? { takeInLock: true, takeVout, takeValue: takeSats } : {}),
       lock: { txid: pair.revealTxid, vout: 0, value: pair.revealTx.outputs[0].value, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex },
-      noteInputs: notes.map((n) => ({ txid: n.txid, vout: n.vout })),
+      noteInputs: notes.map((n) => ({ txid: n.txid, vout: n.vout, amount: String(n.amount) })),
       // the plain-sat coins that paid for the lock's commit: a bridge started right after this one (the parts of one split bridge) leaves them alone
       feeInputs: pair.commitTx.inputs.map((i) => ({ txid: i.txid, vout: i.vout })),
     };
@@ -87,17 +97,17 @@ export function makeBitcoinLocker(ctx) {
   // The same lock for plain sats (asset X.SATS_ASSET): the wallet's own coins, picked here, go into the lock output of one ordinary
   // transaction, and the first coin's outpoint is the swap id. No note, no commit, no coin kept for the fee of the counterparty's
   // take: a take or a refund pays its fee out of the lock output.
-  async function buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId = null, avoid = null, validUntil = null, csvBlocks: csvIn = null }) {
-    const feeRate = await btc.feeRate();
+  async function buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId = null, avoid = null, validUntil = null, csvBlocks: csvIn = null, feeRate = null, maxFeeRate = null }) {
+    const rate = await feeRateForLock(feeRate, maxFeeRate);
     const coins = (await btc.satsUtxos()).filter((u) => !avoid || !avoid.has(`${u.txid}:${u.vout}`));
-    const picked = btc.tx.pickSats({ amount, satsUtxos: coins, feeRate });
+    const picked = btc.tx.pickSats({ amount, satsUtxos: coins, feeRate: rate });
     const swapId = X.swapIdOf(picked[0].txid, picked[0].vout), id = hx(swapId);
     const sec = X.deriveSwapSecrets({ seed, swapId });
     const csvBlocks = csvIn ?? policy.csvBlocks;
     const lock = deriveLock({ prims: btc.prims, claimerPub: counterClaimPub, T: sec.T, lockerXonly: btc.wallet.xonly, csvBlocks });
     // (the hint carries no fixed marker: nothing in the transaction says it is a Tacit lock)
     const hint = X.lockHintScript({ seed, swapId, claimerPub: counterClaimPub, csvBlocks, value: amount, bare: true });
-    const pair = btc.tx.lockSats({ lock, amount, hint, coins: picked, feeRate });
+    const pair = btc.tx.lockSats({ lock, amount, hint, coins: picked, feeRate: rate });
     const rec = {
       v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId, validUntil,
       asset: hx(asset), amount: String(amount), evmAsset: strip(evmAsset), evmAmount: String(evmAmount),

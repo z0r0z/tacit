@@ -35,5 +35,22 @@
     "refundMarginSecs": 600,
     "maxOfferAgeSecs": 3600,
     "confs": [["0", 1], ["50000000000", 2], ["100000000000", 3]]
+  },
+  "reverse": {
+    "enabled": false,
+    "minProceedsBps": 10000,
+    "maxFeeRate": 25,
+    "rebalance": {
+      "enabled": false,
+      "leases": "fastbridge-lp/data/reverse/rebalance-leases.json",
+      "maxNoteTac": "250",
+      "maxDailyTac": "1000",
+      "maxInventoryTac": "2000",
+      "maxStuckTac": "2000",
+      "maxFeeRate": 25,
+      "minSourceConfs": 1,
+      "tickSecs": 60,
+      "stallSecs": 900
+    }
   }
 }

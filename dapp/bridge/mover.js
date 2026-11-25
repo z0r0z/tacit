@@ -10,9 +10,9 @@ import { parseUnits } from '/trade/util.js?cb=9c8b4133';
 import { forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { btcWay, btcSeen } from '/trade/btc-way.js?cb=b5f3a446';
+import { btcWay, btcSeen } from '/trade/btc-way.js?cb=2be41219';
 
-const TACIT_URL = '/tacit.js?cb=35e43051';
+const TACIT_URL = '/tacit.js?cb=7e59b2a0';
 const PLAN_KEY = 'tacit-lite-bridge-plan-v1', SELF_PROVE = 'tacit-lite-prove-self-v1:';
 const EVERY = 75e3;                                                                  // as often as the front page's pass
 const read = (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } };

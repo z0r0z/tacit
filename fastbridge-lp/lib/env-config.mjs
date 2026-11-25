@@ -17,10 +17,32 @@
 //   FB_LP_REVERSE_FEE_BPS, FB_LP_REVERSE_FLAT_FEE, FB_LP_REVERSE_MIN_AMOUNT, FB_LP_REVERSE_MAX_AMOUNT   its terms, as the forward ones (base units)
 //   FB_LP_REVERSE_MAX_OPEN   sends under way at once (1 to 20; 2 when unset)
 //   FB_LP_REVERSE_MAX_TAC    the most TAC out at once, whatever is funded (a decimal, up to 8 places; 2000 when unset)
+//   FB_LP_REVERSE_MIN_PROCEEDS_BPS   the least pool proceeds against the Bitcoin value, in basis points (a whole number from 10000 to 1000000)
+//   FB_LP_REVERSE_MAX_FEE_RATE       the most the reverse provider pays for Bitcoin fees, in sat/vB (a positive decimal)
+//   FB_LP_REBALANCE      on or off (off when unset): sell stuck Bitcoin TAC and return the proceeds to Ethereum inventory. Reverse must also be on for live use
+//   FB_LP_REBALANCE_LEASES   where its lease records are kept
+//   FB_LP_REBALANCE_MAX_NOTE_TAC, FB_LP_REBALANCE_MAX_DAILY_TAC, FB_LP_REBALANCE_MAX_INVENTORY_TAC, FB_LP_REBALANCE_MAX_STUCK_TAC   positive decimal TAC limits, up to 8 places
+//   FB_LP_REBALANCE_MAX_FEE_RATE   its Bitcoin fee ceiling in sat/vB (a positive decimal)
+//   FB_LP_REBALANCE_MIN_SOURCE_CONFS   confirmations required before source proceeds can be used (a positive whole number)
+//   FB_LP_REBALANCE_STALL_SECS   how long without progress before it alerts (1 to 86400 seconds)
 //   FB_LP_PAIR           btc-eth or off (off when unset): a provider of Bitcoin for ETH and ETH for Bitcoin (lib/pair.mjs), a process and a key of its own
 //   FB_LP_REVERSE_MAX_SATS   in that mode, the most sats out at once, whatever is funded (a whole number)
 
 const uint = (name, v) => { if (!/^\d{1,30}$/.test(v)) throw new Error(`${name} must be a whole number (got "${v}")`); return v; };
+const tacAmount = (name, v) => {
+  if (!/^\d+(\.\d{1,8})?$/.test(v) || !/[1-9]/.test(v)) throw new Error(`${name} must be a positive decimal amount of TAC with at most 8 places (got "${v.slice(0, 40)}")`);
+  return v;
+};
+const feeRate = (name, v) => {
+  const n = Number(v);
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(v) || !Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive fee rate in sat/vB (got "${v.slice(0, 40)}")`);
+  return n;
+};
+const whole = (name, v, min, max = Number.MAX_SAFE_INTEGER) => {
+  const n = Number(v);
+  if (!/^\d+$/.test(v) || !Number.isSafeInteger(n) || n < min || n > max) throw new Error(`${name} must be a whole number from ${min} to ${max} (got "${v.slice(0, 40)}")`);
+  return n;
+};
 
 export function applyEnv(C, env = process.env) {
   const out = { ...C, quote: { ...(C.quote || {}) } };
@@ -42,7 +64,7 @@ export function applyEnv(C, env = process.env) {
   }
   if (has('FB_LP_PAIR')) { const v = String(env.FB_LP_PAIR).trim().toLowerCase(); if (v !== 'btc-eth' && v !== 'off') throw new Error(`FB_LP_PAIR must be btc-eth or off (got "${env.FB_LP_PAIR}")`); if (v === 'btc-eth') out.pair = 'btc-eth'; else delete out.pair; }
   // the reverse side: off unless asked for, and every value that is set must be valid (the process does not start on a guess)
-  if (has('FB_LP_REVERSE') || ['FEE_BPS', 'FLAT_FEE', 'MIN_AMOUNT', 'MAX_AMOUNT', 'MAX_OPEN', 'MAX_TAC', 'MAX_SATS'].some((k) => has('FB_LP_REVERSE_' + k))) {
+  if (has('FB_LP_REVERSE') || ['FEE_BPS', 'FLAT_FEE', 'MIN_AMOUNT', 'MAX_AMOUNT', 'MAX_OPEN', 'MAX_TAC', 'MAX_SATS', 'MIN_PROCEEDS_BPS', 'MAX_FEE_RATE'].some((k) => has('FB_LP_REVERSE_' + k))) {
     const r = { ...(C.reverse || {}) };
     if (has('FB_LP_REVERSE')) { const v = String(env.FB_LP_REVERSE).trim().toLowerCase(); if (v !== 'on' && v !== 'off') throw new Error(`FB_LP_REVERSE must be on or off (got "${env.FB_LP_REVERSE}")`); r.enabled = v === 'on'; }
     if (has('FB_LP_REVERSE_FEE_BPS')) { const b = Number(env.FB_LP_REVERSE_FEE_BPS); if (!Number.isInteger(b) || b < 0 || b > 500) throw new Error(`FB_LP_REVERSE_FEE_BPS must be 0 to 500 (got "${env.FB_LP_REVERSE_FEE_BPS}")`); r.feeBps = b; }
@@ -52,6 +74,22 @@ export function applyEnv(C, env = process.env) {
     if (has('FB_LP_REVERSE_MAX_OPEN')) { const n = Number(env.FB_LP_REVERSE_MAX_OPEN); if (!Number.isInteger(n) || n < 1 || n > 20) throw new Error(`FB_LP_REVERSE_MAX_OPEN must be 1 to 20 (got "${env.FB_LP_REVERSE_MAX_OPEN}")`); r.maxOpen = n; }
     if (has('FB_LP_REVERSE_MAX_TAC')) { const t = String(env.FB_LP_REVERSE_MAX_TAC).trim(); if (!/^\d{1,12}(\.\d{1,8})?$/.test(t) || Number(t) <= 0) throw new Error(`FB_LP_REVERSE_MAX_TAC must be a positive amount of TAC (got "${t.slice(0, 20)}")`); r.maxTac = t; }
     if (has('FB_LP_REVERSE_MAX_SATS')) r.maxSats = uint('FB_LP_REVERSE_MAX_SATS', String(env.FB_LP_REVERSE_MAX_SATS).trim());
+    if (has('FB_LP_REVERSE_MIN_PROCEEDS_BPS')) r.minProceedsBps = whole('FB_LP_REVERSE_MIN_PROCEEDS_BPS', String(env.FB_LP_REVERSE_MIN_PROCEEDS_BPS).trim(), 10000, 1000000);
+    if (has('FB_LP_REVERSE_MAX_FEE_RATE')) r.maxFeeRate = feeRate('FB_LP_REVERSE_MAX_FEE_RATE', String(env.FB_LP_REVERSE_MAX_FEE_RATE).trim());
+    out.reverse = r;
+  }
+  if (has('FB_LP_REBALANCE') || ['LEASES', 'MAX_NOTE_TAC', 'MAX_DAILY_TAC', 'MAX_INVENTORY_TAC', 'MAX_STUCK_TAC', 'MAX_FEE_RATE', 'MIN_SOURCE_CONFS', 'STALL_SECS'].some((k) => has('FB_LP_REBALANCE_' + k))) {
+    const r = { ...(out.reverse || {}) }, b = { ...(r.rebalance || {}) };
+    if (has('FB_LP_REBALANCE')) { const v = String(env.FB_LP_REBALANCE).trim().toLowerCase(); if (v !== 'on' && v !== 'off') throw new Error(`FB_LP_REBALANCE must be on or off (got "${env.FB_LP_REBALANCE}")`); b.enabled = v === 'on'; }
+    if (has('FB_LP_REBALANCE_LEASES')) b.leases = String(env.FB_LP_REBALANCE_LEASES).trim();
+    for (const [suffix, key] of [['MAX_NOTE_TAC', 'maxNoteTac'], ['MAX_DAILY_TAC', 'maxDailyTac'], ['MAX_INVENTORY_TAC', 'maxInventoryTac'], ['MAX_STUCK_TAC', 'maxStuckTac']]) {
+      const name = 'FB_LP_REBALANCE_' + suffix;
+      if (has(name)) b[key] = tacAmount(name, String(env[name]).trim());
+    }
+    if (has('FB_LP_REBALANCE_MAX_FEE_RATE')) b.maxFeeRate = feeRate('FB_LP_REBALANCE_MAX_FEE_RATE', String(env.FB_LP_REBALANCE_MAX_FEE_RATE).trim());
+    if (has('FB_LP_REBALANCE_MIN_SOURCE_CONFS')) b.minSourceConfs = whole('FB_LP_REBALANCE_MIN_SOURCE_CONFS', String(env.FB_LP_REBALANCE_MIN_SOURCE_CONFS).trim(), 1, 1000);
+    if (has('FB_LP_REBALANCE_STALL_SECS')) b.stallSecs = whole('FB_LP_REBALANCE_STALL_SECS', String(env.FB_LP_REBALANCE_STALL_SECS).trim(), 1, 86400);
+    r.rebalance = b;
     out.reverse = r;
   }
   return out;
