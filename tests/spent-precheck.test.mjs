@@ -5,7 +5,7 @@
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { keccak256, concat, pad } from '../worker-relay/node_modules/viem/_esm/index.js';
-import { depositsOf, spentInputsOf, noteNullifier, depositIdOf, consumedInputs, consumedInput, consumedAck, unlandedDeposits, bridgeMintNullifier, farmReceiptNullifier, nullifiersOf, adaptorLockNullifier, lockNullifiersOf, LOCK_SPENT_SLOT } from '../worker-relay/src/lib/spent-precheck.js';
+import { depositsOf, spentInputsOf, noteNullifier, depositIdOf, consumedInputs, spentNullifiersOf, consumedInput, consumedAck, unlandedDeposits, bridgeMintNullifier, farmReceiptNullifier, nullifiersOf, adaptorLockNullifier, lockNullifiersOf, LOCK_SPENT_SLOT } from '../worker-relay/src/lib/spent-precheck.js';
 import { secp, sha256, keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 
@@ -182,6 +182,15 @@ ok('a spent lock is acked in words that say a claim that already went through di
   assert.deepEqual(consumedAck(lock, { own: '0xaa' }), { txHash: '0xaa' });
   assert.match(consumedAck(lock, { by: '0xbb', type: 'adaptorclaim' }).error, /^this swap lock was already spent in 0xbb; if that was this same claim, it went through$/);
   assert.match(consumedAck(lock, {}).error, /^this swap lock was already spent; if that was this same claim/);
+});
+
+ok('a spent note with a field longer than a word has no nullifier, and does not throw', () => {
+  const w = (n) => '0x' + String(n).repeat(64);
+  const good = { asset: w(1), cx: w(2), cy: w(3), owner: w(4), nk: w(5) };
+  const long = { ...good, nk: '0x' + 'ab'.repeat(38) };
+  assert.throws(() => noteNullifier(long), /exceeds padding size/);
+  assert.deepEqual(spentNullifiersOf({ inputs: [long] }), []);
+  assert.deepEqual(spentNullifiersOf({ inputs: [long, good] }), [noteNullifier(good)]);
 });
 
 console.log(`\n${pass} passed, 0 failed`);
