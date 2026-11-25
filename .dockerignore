@@ -5,6 +5,7 @@
 !worker-relay/package.json
 !worker-relay/package-lock.json
 !worker-relay/src
+!node-prober/src
 !worker/package.json
 !worker/package-lock.json
 !worker/src/btc-shielded-pool.js
