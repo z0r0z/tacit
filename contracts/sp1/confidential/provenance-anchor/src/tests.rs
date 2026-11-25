@@ -239,11 +239,11 @@ fn ledger_refuses_unfunded_and_never_partially_books() {
     assert_eq!(admit_exit(&mut l, &a), None, "nothing funded yet");
     assert_eq!((l.funded, l.exited), (0, 0), "a refused exit books nothing");
 
-    l.fund(70);
+    l.fund(&[0x01; 32], 70);
     assert_eq!(admit_exit(&mut l, &a), None, "70 does not cover 100");
     assert_eq!(l.exited, 0, "still nothing booked");
 
-    l.fund(30);
+    l.fund(&[0x02; 32], 30);
     assert_eq!(admit_exit(&mut l, &a), Some(()), "70 + 30 covers 100");
     assert_eq!((l.funded, l.exited, l.available()), (100, 100, 0));
 }
@@ -251,19 +251,37 @@ fn ledger_refuses_unfunded_and_never_partially_books() {
 #[test]
 fn ledger_cannot_be_drained_past_its_funding() {
     let mut l = BackingLedger::default();
-    l.fund(1000);
-    for _ in 0..10 {
-        assert_eq!(l.debit(100), Some(()));
+    l.fund(&[0x01; 32], 1000);
+    for i in 0..10u8 {
+        assert_eq!(l.debit(&[i; 32], 100), Some(()));
     }
     assert_eq!(l.available(), 0);
-    assert_eq!(l.debit(1), None, "an eleventh exit is refused, not clamped");
+    assert_eq!(l.debit(&[0xFF; 32], 1), None, "an eleventh exit is refused, not clamped");
     assert_eq!(l.exited, 1000, "the refused one debited nothing");
 }
 
 #[test]
+fn the_same_exit_cannot_back_two_debits() {
+    // Re-folding a block must not spend the backing twice. The counters alone cannot tell a re-fold from a
+    // second exit, so the outpoint set is what makes the transition idempotent.
+    let mut l = BackingLedger::default();
+    l.fund(&[0x01; 32], 1000);
+    let a = ExitAnchor { outpoint: [0x11; 32], commitment: [0x22; 32], asset: ASSET, value: 400 };
+    assert_eq!(admit_exit(&mut l, &a), Some(()));
+    assert_eq!(admit_exit(&mut l, &a), None, "the same exit twice is refused");
+    assert_eq!(l.exited, 400, "and debited nothing the second time");
+    assert_eq!(l.exited_at.len(), 1);
+
+    // A different exit at a different outpoint still books.
+    let b = ExitAnchor { outpoint: [0x33; 32], commitment: [0x44; 32], asset: ASSET, value: 400 };
+    assert_eq!(admit_exit(&mut l, &b), Some(()));
+    assert_eq!((l.funded, l.exited, l.available()), (1000, 800, 200));
+}
+
+#[test]
 fn ledger_fund_saturates_and_value_zero_is_never_an_anchor() {
-    let mut l = BackingLedger { funded: u128::MAX - 1, exited: 0 };
-    l.fund(10);
+    let mut l = BackingLedger { funded: u128::MAX - 1, exited: 0, shielded: BTreeSet::new(), exited_at: BTreeSet::new() };
+    l.fund(&[0x09; 32], 10);
     assert_eq!(l.funded, u128::MAX, "saturates rather than wrapping");
     let zero = ExitAnchor { outpoint: [3u8; 32], commitment: [4u8; 32], asset: ASSET, value: 0 };
     assert_eq!(admit_exit(&mut l, &zero), None, "a zero-value exit backs nothing");
@@ -278,13 +296,20 @@ fn credit_shield_requires_a_matching_boundary() {
     let blind = [0x11u8; 32];
     let mut l = BackingLedger::default();
 
-    assert_eq!(credit_shield(&mut l, &boundary, 0, &blind, &|_, _, _| true), None, "a shield that moved nothing");
-    assert_eq!(credit_shield(&mut l, &boundary, 500, &blind, &|_, _, _| false), None, "a boundary that does not open");
+    let carrier = [0x77u8; 32];
+    assert_eq!(credit_shield(&mut l, &carrier, &boundary, 0, &blind, &|_, _, _| true), None, "a shield that moved nothing");
+    assert_eq!(credit_shield(&mut l, &carrier, &boundary, 500, &blind, &|_, _, _| false), None, "a boundary that does not open");
     assert_eq!(l.funded, 0, "neither refusal funded anything");
 
     let ok = |b: &Boundary<'_>, v: u64, bl: &[u8; 32]| b.c_bjj == [0x03u8; 32] && v == 500 && bl == &blind;
-    assert_eq!(credit_shield(&mut l, &boundary, 500, &blind, &ok), Some(()));
+    assert_eq!(credit_shield(&mut l, &carrier, &boundary, 500, &blind, &ok), Some(()));
     assert_eq!(l.funded, 500);
+    assert_eq!(
+        credit_shield(&mut l, &carrier, &boundary, 500, &blind, &ok),
+        None,
+        "re-folding the same shield must not mint backing"
+    );
+    assert_eq!(l.funded, 500, "and credited nothing the second time");
 }
 
 #[test]
@@ -392,11 +417,12 @@ fn read_exit_authenticates_a_real_carrier_and_books_it() {
 
     let mut l = BackingLedger::default();
     assert_eq!(admit_exit(&mut l, &anchor), None, "reading is not backing: the ledger must hold the value");
-    l.fund(value - 1);
+    l.fund(&[0x05; 32], value - 1);
     assert_eq!(admit_exit(&mut l, &anchor), None, "one sat short is short");
-    l.fund(1);
+    l.fund(&[0x06; 32], 1);
     assert_eq!(admit_exit(&mut l, &anchor), Some(()));
     assert_eq!(l.available(), 0);
+    assert_eq!(admit_exit(&mut l, &anchor), None, "and re-reading it debits nothing further");
 }
 
 #[test]
@@ -467,6 +493,29 @@ fn read_exit_refuses_a_tampered_carrier() {
         read_exit(&w3, &ASSET, &yes_pool, &|_, v, _| v == value).is_none(),
         "the opening must match the commitment"
     );
+
+    // A proofless spend (proof_len = 0) covered by a carrier aggregate is a legal shape: the fold's pool seam
+    // is what decides whether the aggregate verified, so the parser must accept it rather than drop it.
+    let proofless = {
+        let mut b = vec![T_BTC_SPEND];
+        b.extend_from_slice(&ASSET);
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&[0u8; BIND_LEN]);
+        b.push(1);
+        b.extend_from_slice(&[0xB1u8; 32]);
+        b.push(0); // n_out
+        b.push(1); // has_exit
+        let boundary = boundary_bytes(&c_secp_of(value, &blind), &[0x66u8; 32]);
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&[0x12u8; 32]);
+        b.extend_from_slice(&boundary);
+        b.push(0); // has_want
+        b.extend_from_slice(&0u16.to_le_bytes()); // proof_len = 0
+        b
+    };
+    let body = parse_spend(&proofless).expect("a proofless spend is a legal shape");
+    assert_eq!(body.proof.len(), 0, "and carries no proof of its own");
+    assert!(body.exit.is_some(), "with its exit still readable");
 
     // A null is not an anchor.
     let mut w4 = f.w.clone();

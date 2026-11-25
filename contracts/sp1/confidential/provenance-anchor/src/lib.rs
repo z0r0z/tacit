@@ -66,6 +66,7 @@
 //! — and every part of it runs offline in `cargo test`.
 
 use cxfer_core::{commitment_hash_compressed, outpoint_key};
+use std::collections::BTreeSet;
 
 /// The depth cap one presented lineage may have, the same 256 the provenance blob is bounded by. Its own
 /// constant so the rule and the parser cannot drift apart silently.
@@ -109,10 +110,20 @@ pub type BoundaryCheck<'a> = &'a dyn Fn(&Boundary<'_>, u64, &[u8; 32]) -> bool;
 /// as the pool's own state is — a resumed cycle that reorders events gets a different pair and therefore a
 /// different digest, which is the behaviour the `priorDigest` chain already forces everywhere else. `u128`
 /// because one batch may legitimately sum more than 2^64 sats in witnesses.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BackingLedger {
     pub funded: u128,
     pub exited: u128,
+    /// Shield carrier txids already credited, and exit outpoints already debited.
+    ///
+    /// Needed because the counters alone cannot tell a **re-folded** event from a **second** one. A resumed
+    /// cycle that re-folds a block would credit the same shield twice (minting backing) or debit the same exit
+    /// twice (draining it) — the exact hole this design exists to close, reintroduced by the fix. Two sets
+    /// because a shield names its carrier's txid and an exit names its own outpoint; one namespace would let a
+    /// txid collide with an unrelated outpoint and silently suppress a real event. Unbounded like the spent
+    /// set and the burn set, which grow with history for the same reason, and committed the same way.
+    pub shielded: BTreeSet<[u8; 32]>,
+    pub exited_at: BTreeSet<[u8; 32]>,
 }
 
 impl BackingLedger {
@@ -122,16 +133,29 @@ impl BackingLedger {
     }
 
     /// Credit a verified shield: the pool now holds `value` more. [`credit_shield`] is the checked form.
-    pub fn fund(&mut self, value: u64) {
+    ///
+    /// Idempotent by `carrier` (the shield transaction's txid) for the same reason `debit` is: re-folding a
+    /// block must not mint backing. Returns `None` and credits nothing on a repeat.
+    pub fn fund(&mut self, carrier: &[u8; 32], value: u64) -> Option<()> {
+        if value == 0 || !self.shielded.insert(*carrier) {
+            return None;
+        }
         self.funded = self.funded.saturating_add(value as u128);
+        Some(())
     }
 
-    /// Debit a verified exit. Refuses rather than clamps: an uncovered exit is never partially booked, so a
-    /// prover cannot split one unbacked exit into two acceptable halves across cycles.
-    pub fn debit(&mut self, value: u64) -> Option<()> {
+    /// Debit a verified exit at `outpoint`. Refuses rather than clamps: an uncovered exit is never partially
+    /// booked, so a prover cannot split one unbacked exit into two acceptable halves across cycles.
+    ///
+    /// Idempotent by outpoint — a second call for the same exit returns `None` and books nothing, so
+    /// re-folding a block cannot spend the backing twice.
+    pub fn debit(&mut self, outpoint: &[u8; 32], value: u64) -> Option<()> {
         let v = value as u128;
         if value == 0 || v > self.available() {
             return None;
+        }
+        if !self.exited_at.insert(*outpoint) {
+            return None; // already admitted: one exit backs one anchor, once
         }
         self.exited += v;
         Some(())
@@ -145,6 +169,7 @@ impl BackingLedger {
 /// claimed total, so the ledger can never be funded by a figment.
 pub fn credit_shield(
     ledger: &mut BackingLedger,
+    carrier: &[u8; 32],
     boundary: &Boundary<'_>,
     shielded: u64,
     blinding: &[u8; 32],
@@ -153,8 +178,7 @@ pub fn credit_shield(
     if shielded == 0 || !boundary_ok(boundary, shielded, blinding) {
         return None;
     }
-    ledger.fund(shielded);
-    Some(())
+    ledger.fund(carrier, shielded)
 }
 
 // ───────────────────────────── wire parsing ─────────────────────────────
@@ -286,7 +310,11 @@ pub fn parse_spend(payload: &[u8]) -> Option<SpendBody<'_>> {
     let body = payload.get(..p)?;
 
     let proof_len = u16::from_le_bytes(take(2, &mut p)?.try_into().ok()?) as usize;
-    if proof_len == 0 || proof_len > PROOF_MAX {
+    // `proof_len = 0` is legal: a proofless spend covered later in the same carrier by one `T_BTC_AGG`
+    // (0x6E), whose single proof binds every covered spend's publics
+    // (`worker/src/btc-shielded-pool.js` aggregateFor). The fold's `pool_ok` seam is what decides whether
+    // that aggregate verified; refusing the shape here would silently drop every aggregated spend.
+    if proof_len > PROOF_MAX {
         return None;
     }
     let proof = take(proof_len, &mut p)?;
@@ -397,7 +425,7 @@ pub fn read_exit(
 /// One function, no knobs: a value the ledger does not hold is refused and nothing is booked, so the pool's own
 /// state is untouched and the note stays spendable on Bitcoin.
 pub fn admit_exit(ledger: &mut BackingLedger, anchor: &ExitAnchor) -> Option<()> {
-    ledger.debit(anchor.value)
+    ledger.debit(&anchor.outpoint, anchor.value)
 }
 
 // ───────────────────────────── long lineages ─────────────────────────────

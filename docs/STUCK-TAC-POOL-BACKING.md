@@ -3,7 +3,7 @@
 Status: design + tests. No deployed contract, verifying key or ELF changes. Entry for
 `docs/STUCK-TAC-BOUNTY.md` option D.
 
-- Code: `contracts/sp1/confidential/provenance-anchor/` (crate `provenance-anchor`, 17 offline tests)
+- Code: `contracts/sp1/confidential/provenance-anchor/` (crate `provenance-anchor`, 18 offline tests)
 - Read first: `docs/STUCK-TAC-BOUNTY.md` §1, `contracts/sp1/confidential/DESIGN-btc-shielded-pool.md` §3
 - Fold it changes: `contracts/sp1/confidential/cxfer-core/src/burn_deposit.rs`
   (`fold_burn_deposit`, the `ncx > 256` bound), `contracts/sp1/confidential/src/reflect.rs` step 4
@@ -38,12 +38,14 @@ the reflection can read. This design commits it, and nothing else.
 
 ## 2. The backing ledger
 
-Per asset, two monotone counters:
+Per asset, two monotone counters plus the two idempotence sets:
 
 ```rust
 pub struct BackingLedger {
-    pub funded: u128,   // Σ of every shield's custody increase
-    pub exited: u128,   // Σ of every admitted exit
+    pub funded: u128,                    // Σ of every shield's custody increase
+    pub exited: u128,                    // Σ of every admitted exit
+    pub shielded: BTreeSet<[u8; 32]>,    // shield carrier txids already credited
+    pub exited_at: BTreeSet<[u8; 32]>,   // exit outpoints already debited
 }
 
 impl BackingLedger {
@@ -51,17 +53,28 @@ impl BackingLedger {
 }
 ```
 
-Both only grow, in the order the reflection folds events, so the pair is order-dependent exactly as the
-pool's own state is — the `priorDigest` chain already forces that discipline on every other counter, and
-a resumed cycle that reorders events gets a different pair and therefore a different digest. `u128`
-because one batch may legitimately sum more than 2⁶⁴ sats of witnesses; the on-chain encoding is two
-`u64` fields and saturates rather than wrapping.
+Both counters only grow, in the order the reflection folds events, so the pair is order-dependent exactly
+as the pool's own state is — the `priorDigest` chain already forces that discipline on every other
+counter, and a resumed cycle that reorders events gets a different pair and therefore a different digest.
+`u128` because one batch may legitimately sum more than 2⁶⁴ sats of witnesses; the on-chain encoding is
+two `u64` fields and saturates rather than wrapping.
+
+The two sets are not optional bookkeeping. The counters alone cannot tell a **re-folded** event from a
+**second** event, so a resumed cycle that re-folds a block would credit the same shield twice (minting
+backing) or debit the same exit twice (draining it) — the exact hole this design exists to close,
+reintroduced by the fix. Both transitions are therefore keyed and idempotent: a repeat books nothing.
+
+They are two sets, not one, because a shield names its carrier's **txid** and an exit names its own
+**outpoint**. A single namespace would let a txid collide with an unrelated outpoint and silently suppress
+a real event — an early draft did exactly that and three tests caught it. Both grow with history for the
+same reason the spent set and the burn set do, and ride the batch digest the same way.
 
 ### 2.1 Value enters only through a proven shield
 
 ```rust
 pub fn credit_shield(
     ledger: &mut BackingLedger,
+    carrier: &[u8; 32],        // the shield transaction's txid
     boundary: &Boundary<'_>,
     shielded: u64,
     blinding: &[u8; 32],
@@ -83,13 +96,14 @@ nothing. This is the only place `funded` moves, so the ledger can never be funde
 
 ```rust
 pub fn admit_exit(ledger: &mut BackingLedger, anchor: &ExitAnchor) -> Option<()> {
-    ledger.debit(anchor.value)
+    ledger.debit(&anchor.outpoint, anchor.value)
 }
 ```
 
 `debit` refuses rather than clamps: `value == 0` is refused (a zero-value exit backs nothing and would
-let a prover pad the anchor set), and `value > available()` is refused with **nothing booked**, so one
-unbacked exit cannot be split into two acceptable halves across cycles.
+let a prover pad the anchor set), `value > available()` is refused with **nothing booked** so one
+unbacked exit cannot be split into two acceptable halves across cycles, and an outpoint already in
+`exited_at` is refused so one exit can never back two debits.
 
 That is the entire acceptance rule for pool exits. No discount, no haircut, no bps parameter, no
 "trusted relayer" knob. And refusing burns nothing: the note stays spendable on Bitcoin, the pool's own
@@ -171,8 +185,14 @@ boundary = C_secp(33) ‖ C_bjj(32) ‖ sigma(169) ‖ bpp(591)
 ```
 
 Rules enforced by `parse_spend`: `n_in ∈ [1, 2]`, `n_out ≤ 3`, `has_exit, has_want ∈ {0, 1}`,
-`n_out + has_exit ≥ 1`, `proof_len ∈ [1, 4096]`, no trailing bytes, no zero nullifier, no nullifier
-repeated inside one spend, and the declared `proof_len` must exactly consume the rest.
+`n_out + has_exit ≥ 1`, `proof_len ≤ 4096`, no trailing bytes, no zero nullifier, no nullifier repeated
+inside one spend, and the declared `proof_len` must exactly consume the rest.
+
+`proof_len = 0` is **legal and load-bearing**: a proofless spend, covered later in the same carrier by one
+`T_BTC_AGG` (`0x6E`) whose single proof binds every covered spend's publics
+(`worker/src/btc-shielded-pool.js` `aggregateFor`). A parser that insists on a non-empty proof silently
+drops every aggregated spend — an early draft of this crate did exactly that, and it is the reason
+`parse_spend` now accepts the shape and leaves the aggregate decision to the `pool_ok` seam.
 
 **Divergence worth reporting.** `btc-pool-core::BtcPoolSpendBody` does *not* match §3:
 
@@ -219,8 +239,11 @@ not free — it is either `C_0`, a cmint leaf, or an exit the ledger had to cove
 Three edits in `burn_deposit.rs`, none of them crypto:
 
 1. **Carry the ledger.** `fold_burn_deposit` already threads its spent set, pool set and burn set through
-   the cycle. Add `backing: BTreeMap<[u8; 32], BackingLedger>` and commit each entry's `(funded, exited)`
-   in `digest()` exactly as the other counters are.
+   the cycle. Add `backing: BTreeMap<[u8; 32], BackingLedger>` and commit each entry's
+   `(funded, exited, shielded, exited_at)` in `digest()` exactly as the other counters are. Committing the
+   two sets is what makes a re-fold detectable: if they were left out of the digest, a resumed cycle could
+   present a ledger whose counters already include an event whose set entry was dropped, and every
+   transition would re-book.
 2. **Fold pool envelopes.** For each `T_BTC_SHIELD`/`T_BTC_SPEND` the reflection already sees, call
    `credit_shield` or `read_exit` + `admit_exit`. The per-event crypto stays where it is: the pool proof,
    the boundary sigma, the range proofs are all still verified by the existing call sites; this adds the
@@ -241,6 +264,8 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 | --- | --- |
 | `ledger_refuses_unfunded_and_never_partially_books` | an uncovered exit books nothing, then books once covered |
 | `ledger_cannot_be_drained_past_its_funding` | the 11th exit is refused, not clamped |
+| `the_same_exit_cannot_back_two_debits` | re-folding the same exit books nothing the second time |
+| `credit_shield_requires_a_matching_boundary` (2nd half) | re-folding the same shield mints nothing |
 | `ledger_fund_saturates_and_value_zero_is_never_an_anchor` | `u128` saturation; a zero-value exit is not an anchor |
 | `credit_shield_requires_a_matching_boundary` | a shield that moved nothing, or whose boundary does not open, credits nothing |
 | `boundary_parse_rejects_every_wrong_length` | 824 and 826 bytes are refused |
@@ -258,7 +283,7 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 | `spend_parse_is_panic_free_on_a_hostile_corpus` | 4 000 pseudo-random payloads, runaway `n_in` |
 
 Run: `cd contracts/sp1/confidential/provenance-anchor && cargo +stable test --offline`
-Result: `test result: ok. 17 passed; 0 failed`.
+Result: `test result: ok. 18 passed; 0 failed`.
 
 ## 8. What this does not do
 
@@ -276,9 +301,10 @@ Result: `test result: ok. 17 passed; 0 failed`.
 
 1. **Which wire constant is right?** §3 + `worker` (89/861) or `btc-pool-core` (218/100). This entry pins
    §3 because it is what lands on Bitcoin, but the contradiction should be resolved in-tree.
-2. **Should an exit debit at admission or at spend?** This design debits at admission — value leaves the
-   pool when the exit is confirmed, and the transparent note is then an ordinary Tacit note with its own
-   history. Deferring the debit to the burn would let one exit back two anchors.
+2. **Debit at admission or at spend?** This design debits at admission — value leaves the pool when the
+   exit is confirmed, and the transparent note is then an ordinary Tacit note with its own history. Deferring
+   the debit to the burn would let one exit back two anchors. Whichever is chosen, the transition must stay
+   keyed on the outpoint (see §2): the counters cannot distinguish a re-fold on their own.
 3. **What happens to `funded` across a generational rebase?** The ledger must ride the same rebase anchor
    as the other counters (`generational_rebase_anchor`), or a successor generation starts funded by
    nothing.
