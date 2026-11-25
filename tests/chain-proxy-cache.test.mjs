@@ -14,7 +14,7 @@ globalThis.fetch = async (url) => {
 };
 const worker = await import('../worker/src/index.js');
 const env = { REGISTRY_KV: { get: async () => null, put: async () => {}, delete: async () => {} } };
-const call = (path) => worker.default.fetch(new Request('https://api.test/chain' + path + (path.includes('?') ? '&' : '?') + 'network=mainnet'), env, { waitUntil() {} });
+const call = (path, net = 'mainnet') => worker.default.fetch(new Request('https://api.test/chain' + path + (path.includes('?') ? '&' : '?') + 'network=' + net), env, { waitUntil() {} });
 const j = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'Content-Type': 'application/json' } });
 
 let pass = 0, fail = 0;
@@ -81,6 +81,20 @@ console.log('\nrate-limit signal survives the wrapper:');
   respond.set(/^\/fee-estimates$/, () => new Response('{"error":"slow down"}', { status: 429, headers: { 'Retry-After': '17' } }));
   const r = await call('/fee-estimates');
   ok('a 429 is passed through and not cached', r.status === 429);
+}
+
+console.log('\nwhen every explorer refuses, the last good answer is served:');
+{
+  const A = 'ab'.repeat(20);
+  let limited = false;
+  respond.set(new RegExp('^/address/' + A + '/utxo$'), () => (limited ? j({ error: 'slow down' }, 429) : j([{ txid: T1, vout: 0, value: 546 }])));
+  const fresh = await call('/address/' + A + '/utxo', 'signet');
+  limited = true;
+  const again = await call('/address/' + A + '/utxo', 'signet');
+  ok('a changeable read is not cached while the explorers answer', fresh.headers.get('X-Chain-Cache') === 'miss');
+  const ab = await again.clone().text(); ok('a refusal is answered with the last good body, marked stale', again.status === 200 && again.headers.get('X-Chain-Cache') === 'stale' && ab.includes(T1), again.status + ' ' + again.headers.get('X-Chain-Cache') + ' ' + ab.slice(0, 80));
+  const none = await call('/address/' + 'cd'.repeat(20) + '/utxo', 'signet');
+  ok('a path never read before still reports the refusal', none.status !== 200);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
