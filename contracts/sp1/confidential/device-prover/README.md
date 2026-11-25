@@ -158,6 +158,17 @@ The round constants (`src/rc.rs`) are the Horizen Labs set SP1 uses.
 
 All six crates keep their upstream licences (MIT OR Apache-2.0).
 
+## One contribution to the Tacit Praxis ceremony
+While mining is on and the ceremony is open, the prover takes one turn away from the proof pool: it finishes the pool job it has,
+leases no other, and runs the ceremony's tool (`tacit-ceremony contribute`, in the pool lane, which waits behind every person in the
+ceremony's queue) with the mining address as its handle, for the ceremony's points. It needs about 16 GB of memory and 3 GB of free
+disk, is skipped on battery, and stops (giving up its place) the moment a proof of the owner's own starts or waits; it is tried again
+later. Once a contribution is accepted it never runs again. The tool is fetched from the ceremony's release and checked against the
+SHA-256 pinned in `src/ceremony.rs`, which also pins the coordinator's key; only the coordinator's address is read at run time.
+
+    curl -s 127.0.0.1:47815/ceremony                                   # on/off, what it is doing, the receipt once accepted
+    curl -s -X POST 127.0.0.1:47815/ceremony -d '{"on":false}'          # off, kept across restarts (TACIT_CEREMONY=0: never)
+
 ## Lending idle time to the community help desk
 With the help desk switched on, an idle computer that is plugged in, with its owner away and no proof running or waiting, also
 answers the community help desk's questions (and code-check windows) with a small local model (llama.cpp's `llama-server` and a 2.7 GB
