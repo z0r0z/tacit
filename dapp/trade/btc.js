@@ -267,6 +267,17 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
   return {
     open, session, recovery, get isOpen() { return !!main; },
     openHere, refresh: refreshMe, fund, signIn: unlock,
+    // A Bitcoin wallet in this browser (the one the key was opened with, or one connected now) pays `sats` to the Tacit wallet's own address, in one prompt
+    // of its own: its coin choice is the wallet's, so a coin that carries an inscription or a rune is never spent by this page. -> { txid, wallet }
+    canSendIn: () => !!(session.key?.mode === 'btc' || session.btcSeen()),
+    async sendIn(sats) {
+      const addr = session.address, n = Number(sats);
+      if (!addr) throw new Error('Open your Tacit wallet first.');
+      if (!Number.isSafeInteger(n) || n <= DUST) throw new Error('There is nothing to send.');
+      const x = session.key?.mode === 'btc' && session.T?.extWallet?.state ? session.T.extWallet : await connectExt();
+      const txid = await x.sendSats(addr, n);
+      return { txid: String(txid || '').toLowerCase(), wallet: x.state?.provider === 'unisat' ? 'UniSat' : 'your Bitcoin wallet' };
+    },
     get me() { return meState; },
     lock() { session.lock(); meState = null; ctl?.refresh?.({ soft: true }); changed(); },
   };
