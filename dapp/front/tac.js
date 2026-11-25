@@ -850,6 +850,15 @@ function tpgPayLink(p) {
   chainWarm();
   requestAnimationFrame(() => { tcardFillLink(); tcoPaint(); window.scrollTo(0, 0); });
 }
+// /tac/#private?amt=100: the Stake tab with that amount in the field (a bad or empty amount opens the tab alone)
+function tpgStakeLink(amt) {
+  tpgTab('priv');
+  const a = /^\d{1,12}(\.\d{1,8})?$/.test(amt || '') && Number(amt) > 0 ? amt : '';
+  if (!a) return;
+  let n = 0;
+  const put = () => { const i = $('#tcd-amt'); if (i && ctx.TCARD.tab === 'shield') { if (!i.value) { i.value = a; tcardQuote(); } } else if (++n < 30) setTimeout(put, 100); };
+  requestAnimationFrame(put);
+}
 function tcardFillLink() {
   const l = ctx.TCARD.link, t = $('#tcd-to'), a = $('#tcd-amt');
   if (!l || ctx.TCARD.tab !== 'send') return;
@@ -2206,5 +2215,5 @@ $('#tac-notes')?.addEventListener('change', (e) => {
   tnPaint();
 });
 $('#tpg-notes')?.addEventListener('click', (e) => { if (e.target.closest?.('[data-tn-open]')) tacNotesOpen(); });
-return { tpgPayLink, tpgTab, tacPoolOpen, tacPool, tcardQuote, tacNotesOpen };
+return { tpgPayLink, tpgStakeLink, tpgTab, tacPoolOpen, tacPool, tcardQuote, tacNotesOpen };
 }
