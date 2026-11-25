@@ -69,7 +69,7 @@ console.log('the hero, what it rests on, and the page\'s links');
   const hero = await text(page, '.hero');
   ok(/Tacit Praxis ceremony/.test(await text(page, 'h1')) && /SP1 v6\.1\.0 verifier circuit/.test(hero) && /We are building Praxis on this key/.test(hero), 'the heading, the circuit it is for, and that Praxis is being built on the key');
   ok(!/has not been reviewed|Nothing rests|not built|in progress|may not|might not/i.test(hero), 'the head makes its case without disclaimers (the plain status is in the folded sections)');
-  ok(/any one of them deletes their randomness/.test(hero) && /Smart contracts on Bitcoin/.test(hero) && /without changing Bitcoin/.test(hero) && /covenants/.test(hero), 'the leader says what it makes possible, how, and why a contributor matters');
+  ok(/even one of them throws away their secret/.test(hero) && /Smart contracts on Bitcoin/.test(hero) && /without changing Bitcoin/.test(hero) && /covenants/.test(hero), 'the leader says what it makes possible, how, and why a contributor matters');
   await openAll(page);
   const rests = await text(page, '#honest');
   ok(/at least one Phase 2 contributor/.test(rests) && /first 54 contributors to the Perpetual Powers of Tau/.test(rests) && /derived correctly from Phase 1 and the circuit/.test(rests), 'the conditions the key rests on: a Phase 2 contributor, a Phase 1 contributor and a correct start');
