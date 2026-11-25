@@ -9,9 +9,10 @@ const TAC_ASSET = { id: TAC, title: 'TAC on Bitcoin', after: 'To sell TAC you ho
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Counted for TAC's own market only (a count with no one in it: what happened, not who), as the trade page counts what the sheet does: a lot checked, and a trade done.
 
-export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange = () => {}, wallet = () => null, asset = TAC_ASSET, purpose = 'trade on Bitcoin', prefer = '' } = {}) {
+export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange = () => {}, wallet = () => null, asset = TAC_ASSET, purpose = 'trade on Bitcoin', prefer = '', busy = null } = {}) {
   const AID = asset.id;
-  const session = makeBtcSession({ moved: (why) => { session.lock(); meState = null; ctl?.refresh?.({ soft: true }); notify(why); } });
+  // (`busy()`: the page is in the middle of something the key is needed for, which counts as use: the key is not locked for want of a click meanwhile)
+  const session = makeBtcSession({ busy, moved: (why) => { session.lock(); meState = null; ctl?.refresh?.({ soft: true }); notify(why); } });
   let main = null, host = null, ctl = null, meState = null, meTimer = 0, off = null;
   const changed = () => { try { onChange(); } catch { } };
   session.onChange(() => { if (!session.unlocked) meState = null; changed(); });
