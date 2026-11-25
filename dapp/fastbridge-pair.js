@@ -54,6 +54,8 @@ export const PAIR_POLICY = {
   maxAsk: 8, maxOtherAsk: 4, strikeSecs: 1800, maxStrikes: 3,
   // a Bitcoin fee above this share of the amount (in basis points) is said, and a start needs it accepted (q.feeAccepted)
   maxFeeShareBps: 200,
+  // a lock of the user's sats that a block goes by without is bumped from its change (fastbridge-bl.js bumpLock), by at most this share of the amount (0.5%)
+  lockBumpMaxBps: 50,
 };
 // The confirmations the user wants on a provider's lock of sats before it locks pool ETH against it: more for a larger amount
 export const confsForSats = (value) => { const v = BigInt(value); return v >= 100_000_000n ? 6 : v >= 10_000_000n ? 3 : v >= 1_000_000n ? 2 : 1; };
@@ -125,9 +127,25 @@ const checking = (dir, rec, providerName = null) => ({
   error: null, provider: providerName, backBy: null, checking: true,
 });
 
-export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000)) {
+// A Bitcoin block that is slow: said once the newest block is `SLOW_BLOCK_SECS` old (`tip`: { height, at } as the explorers give the newest block), with what it
+// means for the swap. Blocks come at random: about every ten minutes on average, and now and then an hour or more goes by without one; fees cannot hurry that.
+export const SLOW_BLOCK_SECS = 900;
+export function slowBlockLine(tip, nowSecs, safe) {
+  if (!tip || !(Number(tip.at) > 0) || nowSecs - Number(tip.at) < SLOW_BLOCK_SECS) return '';
+  return `No Bitcoin block for ${Math.floor((nowSecs - Number(tip.at)) / 60)} min. This happens: blocks come about every ten minutes on average, and now and then an hour goes by without one. ${safe}`;
+}
+const SAFE_FWD = 'Your swap is safe: if it does not go through, your BTC comes back to your address by itself.';
+const SAFE_REV = 'Your swap is safe: nothing of yours is locked until the provider’s lock is confirmed.';
+const SAFE_TAKE = 'The BTC is yours: the transaction only has to confirm, with hours to spare.';
+// The time a wait for Bitcoin confirmations has left: about ten minutes for each one still to come, from now, however long the last one took (a block does not
+// come sooner for being late), and then the steps after it
+const confsLeft = (need, confs) => Math.max(1, Number(need) - Math.max(0, Number(confs) || 0)) * 600;
+const join = (...xs) => xs.filter(Boolean).join(' ');
+
+export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000), tip = null) {
   if (rec.checking) return checking('b2e', rec, rec.providerName || null);
-  const [at, title, detail, eta] = FWD_SAYS[rec.phase] || [0, rec.phase, '', null];
+  const [at, title, detail0, eta] = FWD_SAYS[rec.phase] || [0, rec.phase, '', null];
+  const detail = rec.phase === 'broadcast' ? join(detail0, slowBlockLine(tip, now(), SAFE_FWD)) : detail0;
   const state = FWD_DONE.has(rec.phase) ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' ? 'stopped' : 'working';
   const lockAt = rec.lockAt || rec.confirmedAt || null;
   // a claim the relay could not prove (it proves a claim only with a private input) is sent again while there is time, and the page says so
@@ -149,15 +167,23 @@ const revLeft = (rec, eta, nowSecs) => {
   const after = REV_AFTER[rec.phase] ?? 0, own = eta - after, since = rec.phaseAt != null ? Math.max(0, nowSecs - Number(rec.phaseAt)) : 0;
   return after + Math.max(60, own - since);
 };
-export function describeRev(rec, now = () => Math.floor(Date.now() / 1000)) {
+const waitWords = (need) => (need > 1 ? `${need} Bitcoin confirmations` : 'one Bitcoin confirmation');
+export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip = null) {
   if (rec.checking) return checking('e2b', rec, rec.providerName || null);
-  const [at, title, detail, eta] = REV_SAYS[rec.phase] || [0, rec.phase, '', null];
+  let [at, title, detail, eta] = REV_SAYS[rec.phase] || [0, rec.phase, '', null];
+  // (waiting for the provider's lock to confirm: said as the asked swap says it, its confirmations so far, a slow block, and the ETH lock made ready meanwhile)
+  if (rec.phase === 'accepted' && rec.offer) {
+    const need = confsForSats(rec.offer.btc.value), confs = Number(rec.lockConfs) || 0;
+    title = 'The provider locked BTC for you';
+    detail = join(`Waiting for ${waitWords(need)}${confs > 0 ? ` (${confs} so far)` : ''}. A block comes about every ten minutes, some sooner, some later. Your ETH is locked after that${rec.pre ? ', and is made ready meanwhile so it goes in at once' : ''}.`, slowBlockLine(tip, now(), SAFE_REV));
+  } else if (rec.phase === 'taking') detail = join(detail, slowBlockLine(tip, now(), SAFE_TAKE));
   const state = rec.phase === 'done' ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' || rec.phase === 'lost' ? 'stopped' : 'working';
   // what reached the user's address: the lock less the fee of the take that spent it, when this page made the take
   const got = rec.take && rec.lockValue != null && rec.take.fee != null && !rec.takenBy && BigInt(rec.lockValue) > BigInt(rec.take.fee) ? BigInt(rec.lockValue) - BigInt(rec.take.fee) : null;
   return {
     id: rec.id, dir: 'e2b', state, title, detail: andNodes(rec.phase === 'aborted' ? withWhy(detail, rec.why) : detail, rec, now()),
-    pay: rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: rec.offer ? BigInt(rec.offer.btc.value) : 0n, got, steps: stepsOf('e2b', at, state), etaSecs: state === 'working' ? revLeft(rec, eta, now()) : 0, at: rec.created,
+    pay: rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: rec.offer ? BigInt(rec.offer.btc.value) : 0n, got, steps: stepsOf('e2b', at, state),
+    etaSecs: state !== 'working' ? 0 : rec.phase === 'accepted' && rec.offer ? confsLeft(confsForSats(rec.offer.btc.value), rec.lockConfs) + REV_AFTER.accepted : revLeft(rec, eta, now()), at: rec.created,
     // (once the provider has claimed, the ETH is not coming back: the BTC is taken instead, so no return time is given)
     refundAt: state === 'working' && rec.deadline && rec.phase !== 'taking' ? rec.deadline : null, lockTxid: rec.lockTxid || null, error: rec.lastError || null, provider: rec.providerName || null,
     // the page has to be back by the pool deadline: a claim by the provider then gives the BTC, which must be taken before the provider's own refund opens (at least
@@ -340,7 +366,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     if (!revClients.has(p.id)) {
       revClients.set(p.id, makeReverseClient({
         lp: makeReverseCounter(p.ref && p.ref.kind === 'recovered' ? noCall : reverseCall(p.ref)), btc, evm, seed, now, store: stores.swaps(p.id), quoteStore: stores.quotes(p.id),
-        pins: { btcAsset: SATS_ASSET, evmAsset: ETH }, confsOf: confsForSats,
+        pins: { btcAsset: SATS_ASSET, evmAsset: ETH }, confsOf: confsForSats, policy: { early: policy.early },
         // the two sides are different units: the price is judged against the market (below), so here only that the payout is something and the fee is not the amount
         valueCheck: () => ({ fee: 0n, highFee: false }),
         admit: (o) => lockInUse(p.id, o),
@@ -490,27 +516,38 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       // (the provider tells its lock once a block has it: until then the swap waits on that block, counted down from the ask, or from when the lock was seen.
       // A provider that gives its lock's txid has it shown, with the confirmations the explorers read: fastbridge-reverse-client.js watchLock)
       const need = confsForSats(q.btcValue ?? 0), confs = Number(q.lockConfs) || 0, seen = !q.gaveUp && !!q.lockTxid;
-      const waitFor = need > 1 ? `${need} Bitcoin confirmations` : 'one Bitcoin confirmation';
+      const waitFor = waitWords(need);
       out.push({
         id: q.swapId, dir: 'e2b', state: q.gaveUp ? 'stopped' : 'working', title: q.gaveUp ? 'Stopped' : seen ? 'The provider locked BTC for you' : 'The provider is locking BTC for you',
         detail: q.gaveUp ? `${String(q.gaveUp).replace(/\.$/, '')}. Nothing of yours was locked.`
-          : seen ? `Waiting for ${waitFor}${confs > 0 ? ` (${confs} so far)` : ''}. A block comes about every ten minutes, some sooner, some later. Your ETH is locked after that.`
+          : seen ? join(`Waiting for ${waitFor}${confs > 0 ? ` (${confs} so far)` : ''}. A block comes about every ten minutes, some sooner, some later. Your ETH is locked after that.`, slowBlockLine(tipSeen, now(), SAFE_REV))
             : `Its lock goes out first and waits for ${waitFor}, about ten minutes. Your ETH is locked only after that.`,
         pay: BigInt(q.evmAmount ?? 0), get: BigInt(q.btcValue ?? 0), steps: stepsOf('e2b', 0, q.gaveUp ? 'returned' : 'working'),
-        etaSecs: q.gaveUp ? 0 : revLeft({ phase: 'accepted', phaseAt: seen && q.lockSeenAt ? q.lockSeenAt : q.startedAt }, REV_SAYS.accepted[3] + (seen ? 0 : 60), now()),
+        etaSecs: q.gaveUp ? 0 : seen ? confsLeft(need, confs) + REV_AFTER.accepted : revLeft({ phase: 'accepted', phaseAt: q.startedAt }, REV_SAYS.accepted[3] + 60, now()),
         at: q.startedAt || 0, refundAt: null, lockTxid: seen ? strip(q.lockTxid) : null, error: null, provider: p.name,
       });
     }
     return out;
   }
   const revProviders = async () => (await stores.index.list()).filter((p) => p && typeof p.id === 'string' && p.ref);
+  // The newest Bitcoin block (its height and time), read at most every 30 s while a swap waits on Bitcoin: words only (a slow block is said), nothing is decided on it
+  let tipSeen = null, tipAt = -Infinity, tipRead = null;
+  async function readTip() {
+    if (now() - tipAt < 30 || !btc.tip || !btc.blockTime) return;
+    tipAt = now();
+    tipRead ||= (async () => { try { const h = await btc.tip(); tipSeen = { height: h, at: await btc.blockTime(h) }; } catch { /* read again in 30 s */ } })().finally(() => { tipRead = null; });
+    await tipRead;
+  }
+  const WAITS = new Set(['broadcast', 'accepted', 'taking']);
   async function view(step) {
     const out = [];
+    const waits = (await stores.fwd.list()).some((r) => WAITS.has(r.phase)) || (await Promise.all((await revProviders()).map(async (p) => [...(await stores.swaps(p.id).list().catch(() => [])), ...(await stores.quotes(p.id).list().catch(() => [])).filter((q) => q.swapId && !q.settled)]))).flat().some((r) => !r.phase || WAITS.has(r.phase));
+    if (waits) await readTip();
     for (const rec of await stores.fwd.list()) {
       let r = rec;
       if (step && !FWD_END.has(rec.phase)) { try { r = await blFor(rec.provider || null).step(rec); } catch { /* the next pass */ } }
       if (step && r.checking && !r.lastError) { r = { ...r, checking: false }; await stores.fwd.put(r); }
-      out.push(describeFwd(r, now));
+      out.push(describeFwd(r, now, tipSeen));
     }
     for (const p of await revProviders()) {
       // the reverse client words its swaps for TAC, so a pass is taken through it and the swaps are then described here from their own records
@@ -518,7 +555,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
         try { await revFor(p).pump(); } catch { /* a provider that cannot be reached: the next pass tries again */ }
         for (const r of await stores.swaps(p.id).list().catch(() => [])) if (r.checking && !r.lastError) await stores.swaps(p.id).put({ ...r, checking: false });
       }
-      try { out.push(...(await stores.swaps(p.id).list()).map((r) => describeRev({ ...r, providerName: p.name }, now))); } catch { /* a store that cannot be read shows nothing */ }
+      try { out.push(...(await stores.swaps(p.id).list()).map((r) => describeRev({ ...r, providerName: p.name }, now, tipSeen))); } catch { /* a store that cannot be read shows nothing */ }
       try { out.push(...(await asked(p))); } catch { /* none */ }
     }
     return out.sort(newest);

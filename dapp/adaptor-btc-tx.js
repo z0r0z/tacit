@@ -283,6 +283,23 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return sweepSats({ lockOut, lock, sequence: lock.csvBlocks, witnessSizes: [64, lock.leaf.length, lock.controlBlock.length], sign: refundSigner(dLocker, lock), feeRate, maxFee });
   }
 
+  // CHILD (pays for its parent): a coin this wallet holds in a transaction that waits, spent back to the wallet with `fee`, so that the two together pay a rate a
+  // block takes. A lock that missed a block is bumped this way from its change, and keeps its txid (a counterparty already holds it). The child signals
+  // replacement, so a bump that is still short is replaced by one that pays more.
+  const childShape = (coin, out) => ({ version: 2, locktime: 0, inputs: [{ txid: coin.txid, vout: coin.vout, sequence: SEQ, witness: [] }], outputs: [{ value: out, script: own }] });
+  function childVsize() {
+    const sized = childShape({ txid: '00'.repeat(32), vout: 0 }, DUST + 1);
+    sized.inputs[0].witness = [new Uint8Array(72), new Uint8Array(33)];
+    return vsizeOf(sized);
+  }
+  function childSats({ coin, fee }) {
+    const v = Number(coin.value), f = Math.ceil(Number(fee));
+    if (!Number.isSafeInteger(v) || !(f > 0) || v - f <= DUST) throw new Error('adaptor-btc-tx: the coin does not cover the fee of the child and leave more than dust');
+    const tx = childShape(coin, v - f);
+    tx.inputs[0].witness = prims.signP2wpkhInput(tx, 0, v);
+    return satsPair(tx, f);
+  }
+
   // Commit first, then the reveal, which retries while the commit propagates. `onStage` hears 'commit' then 'reveal'. A pair
   // with nothing to commit (a sats transaction) is the reveal alone.
   async function broadcastPair(pair, { onStage = null } = {}) {
@@ -295,7 +312,7 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return { commitTxid: pair.commitTxid, revealTxid: pair.revealTxid };
   }
 
-  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, withKeyPathSig, pickSats, lockSats, claimSats, refundSats, broadcastPair, vsizeOf };
+  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, withKeyPathSig, pickSats, lockSats, claimSats, refundSats, childSats, childVsize, broadcastPair, vsizeOf };
 }
 
 // A transaction as JSON a record can keep (bytes as hex), and back.

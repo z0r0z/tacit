@@ -721,7 +721,9 @@ test('the lane\'s words for an ETH-for-Bitcoin swap: the wait for the provider\'
   assert.match(seen.detail, /Waiting for one Bitcoin confirmation\. A block comes about every ten minutes/);
   assert.equal(seen.etaSecs, 1650, 'counted from when the lock was seen');
   w.clock.advance(3600);
-  assert.equal((await w.pair.records()).find((r) => r.id === id).etaSecs, 1050 + 60, 'a block that is late leaves a minute for it, never none');
+  const late = (await w.pair.records()).find((r) => r.id === id);
+  assert.equal(late.etaSecs, 1650, 'a block that is late is still about ten minutes away: the time left does not freeze at a minute, it stays honest');
+  assert.match(late.detail, /No Bitcoin block for \d+ min\. This happens.*Your swap is safe: nothing of yours is locked until the provider’s lock is confirmed\./, 'a slow block is said, and that the swap is safe');
   assert.equal(describeRev({ id, phase: 'taking', phaseAt: 0, offer: { evm: { amount: '1' }, btc: { value: '1' } } }, () => 120).title, 'Your BTC is on its way');
 });
 

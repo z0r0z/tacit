@@ -13,6 +13,22 @@ export function lockDeadline({ blockTime, windowSecs, roundSecs = 600 }) {
   return Math.ceil((blockTime + windowSecs) / roundSecs) * roundSecs;
 }
 
+// A lock built ahead (an offer taken while the Bitcoin lock waits for its block, `early`): its deadline is counted from when the offer was taken, not from the
+// block, so the lock can be built and proved during the wait. It is used only if, once the Bitcoin lock is confirmed and agreed, the same check a lock built then
+// passes holds for it (checkEvmDeadline: time to claim, and the claim slack before the Bitcoin refund can open), and it leaves the counterparty at least
+// `preMinLeftSecs` to claim and no more than `preMaxLeftSecs` (under the most a Bitcoin locker accepts, maxEvmWindowSecs: 6 h). Otherwise it is let go and the lock
+// is built as it always was, from the block. Returns the reasons it cannot be used (empty = use it).
+export const PRE_DEFAULTS = { preWindowExtraSecs: 1800, preMinLeftSecs: 7200, preMaxLeftSecs: 5.5 * 3600, preProveWaitSecs: 300 };
+export function preDeadline({ takenAt, policy }) {
+  return lockDeadline({ blockTime: takenAt, windowSecs: policy.preWindowSecs ?? (policy.evmWindowSecs + PRE_DEFAULTS.preWindowExtraSecs), roundSecs: policy.roundSecs });
+}
+export function checkPreDeadline({ deadline, nowSecs, btcRefundOpens, policy }) {
+  const minLeft = Math.max(policy.minClaimSecs ?? 1800, policy.preMinLeftSecs ?? PRE_DEFAULTS.preMinLeftSecs);
+  const bad = X.checkEvmDeadline({ deadline, nowSecs, btcRefundOpens, minClaimSecs: minLeft, claimSlackSecs: policy.claimSlackSecs });
+  if (deadline - nowSecs > (policy.preMaxLeftSecs ?? PRE_DEFAULTS.preMaxLeftSecs)) bad.push('the deadline built ahead is further out than a counterparty accepts');
+  return bad;
+}
+
 // A swap's record built again from its pool lock's memo (dapp/fastbridge-evm.js openLockMemo) and the key, for a key whose records are gone. It is at 'offered': the lock is
 // in the pool, so the next step reads what became of it (the claim gives t and the Bitcoin lock is taken; past the deadline the lock is refunded). Null when the memo
 // does not make the lock it was found on. `lockValue`: the Bitcoin lock output's sats as the chain shows them (a lock of sats holds the amount itself).
@@ -60,7 +76,7 @@ export function makeEthereumLocker(ctx) {
     const entered = patch.phase && patch.phase !== rec.phase ? { phaseAt: ctx.now() } : {};
     Object.assign(rec, patch, entered, { updated: ctx.now() });
     await store.put(rec);
-    if (patch.phase === 'aborted' && evm.release) evm.release({ rec });
+    if (patch.phase === 'aborted' && evm.release) { evm.release({ rec }); if (rec.pre && rec.pre.lockNote) evm.release({ rec: { lockNote: rec.pre.lockNote } }); }
     return rec;
   };
   const sidOf = (rec) => hexToBytes(rec.id);
@@ -73,15 +89,19 @@ export function makeEthereumLocker(ctx) {
     return run;
   };
 
-  function receive({ quoteId, offer }) {
+  // `early`: an offer whose Bitcoin lock is not confirmed yet (a lock of plain sats only), taken so the lock can be built and proved while the block is awaited.
+  // It is checked as any offer is, against the transaction as the explorers show it in their mempool; the record waits in 'accepted' for the confirmations as
+  // every record does, and nothing is locked before them.
+  function receive({ quoteId, offer, early = false }) {
     const id = strip((offer && offer.swapId) || '');
     if (!/^[0-9a-f]{72}$/.test(id)) return Promise.resolve({ ok: false, retry: false, why: 'malformed offer: the swap id' });
-    return serial(id, () => receiveOnce({ quoteId, offer, id }));
+    return serial(id, () => receiveOnce({ quoteId, offer, id, early: early === true && policy.early !== false }));
   }
 
-  async function receiveOnce({ quoteId, offer, id }) {
+  async function receiveOnce({ quoteId, offer, id, early = false }) {
     const known = await store.get(id);
-    if (known) return { ok: true, rec: known };
+    // (an early record that ran out its wait for the block before anything was built on it is no answer: the offer is judged again)
+    if (known && !(known.early && known.phase === 'aborted' && !known.lock && known.expired)) return { ok: true, rec: known };
     const reject = (why, retry = false) => ({ ok: false, retry, why });
     // `admit({ id, offer })`: a reason this side will not answer the offer, from what it keeps beyond this store (a Bitcoin lock that another swap of the
     // same key already answers), or null
@@ -91,7 +111,7 @@ export function makeEthereumLocker(ctx) {
     if (!quote) return reject('unknown quote');
     if (ctx.now() > quote.validUntil) return reject('quote expired');
     // a quote is the price of one swap: a second lock against it is not answered at that price
-    if ((await store.list()).some((r) => r.quoteId === quoteId)) return reject('this quote was used for another swap');
+    if ((await store.list()).some((r) => r.quoteId === quoteId && r.id !== id)) return reject('this quote was used for another swap');
     let value, amount;
     try { value = BigInt(offer.btc.value); amount = BigInt(offer.evm.amount); } catch { return reject('malformed offer'); }
     if (!/^[0-9a-f]{64}$/.test(String(offer.btc.txid)) || !Number.isInteger(offer.btc.vout) || offer.btc.vout < 0 || offer.btc.vout > 0xffff) return reject('malformed offer: the lock outpoint');
@@ -102,11 +122,12 @@ export function makeEthereumLocker(ctx) {
     const out = tx.vout[offer.btc.vout];
     if (!out || !Number.isInteger(out.value) || out.value < DUST_P2TR) return reject('the lock output carries no spendable amount');
     const st = await btc.status(offer.btc.txid);
-    if (!(st.confirmations > 0)) return reject('the lock has no confirmation yet', true);
     // plain sats (X.SATS_ASSET) have no note to resolve, screen or find consumed on Ethereum: the lock is judged by its script and its value,
     // and the swap is named by the first coin the lock spends. Which of the two it is is this side's own quote, not the offer's word
     // (an offer that names the other is refused below, as the Bitcoin side differing from the quote)
     const sats = X.isSats(quote.btcAsset);
+    // (a note's history is walked on confirmed transactions only, so an offer taken early is one of plain sats)
+    if (!(st.confirmations > 0) && !(early && sats)) return reject('the lock has no confirmation yet', true);
     // what is settled by the transaction and the block alone comes first: the walk of a note's history (resolveNote) is the longest read there is
     if (st.confirmations > 0 && ctx.now() - (await btc.blockTime(st.height)) > maxOfferAge) return reject('the offer arrived too late to be answered');
     // the fee of the take is paid to this address, or locked with the lock: a second output of the lock's own script (only this key with t opens it, and the
@@ -137,6 +158,7 @@ export function makeEthereumLocker(ctx) {
       v: 1, role: 'el', id, phase: 'accepted', created: ctx.now(), updated: ctx.now(), quoteId, offer,
       lockTxid: offer.btc.txid, lockVout: offer.btc.vout, lockValue: out.value, lockSpk: strip(out.scriptpubkey), csvBlocks: offer.btc.csvBlocks,
       ...(takeSats > 0 && !paidDirect ? { takeVout: lockedAt, takeValue: tx.vout[lockedAt].value } : {}),
+      ...(st.confirmations > 0 ? {} : { early: true }),
     };
     rec.checked = checkedTag(seed, rec);
     await store.put(rec);
@@ -180,6 +202,53 @@ export function makeEthereumLocker(ctx) {
   };
   const waiting = (rec) => rec.lookAt != null && ctx.now() < rec.lookAt;
 
+  // ── the lock built ahead, while the Bitcoin lock waits for its block (an early record) ──
+  // The note a lock built ahead held is given back when that lock is let go
+  async function dropPre(rec) {
+    if (!rec.pre) return;
+    if (evm.release && rec.pre.lockNote) evm.release({ rec: { lockNote: rec.pre.lockNote } });
+    await save(rec, { pre: null });
+  }
+  // The confirmations the lock has while it waits, kept for the page's words (nothing is decided on them)
+  async function watchTip(rec, st) {
+    if (Number(rec.lockConfs || 0) !== Number(st.confirmations || 0)) await save(rec, { lockConfs: st.confirmations });
+  }
+  // The lock this swap would make with deadline `deadline`, built (and its note held) but not sent: { lock: { lockLeaf, lockNu, op }, lockNote } or null while no
+  // note of the exact size is there
+  async function buildLock(rec, deadline, prefer = null) {
+    const { T, rEvmLock } = secretsOf(rec);
+    const refund = await evm.refundKey(rec.id);
+    const expected = '0x' + hx(X.adaptorLockLeaf({ asset: rec.offer.evm.asset, L: pedersenCommit(BigInt(rec.offer.evm.amount), rEvmLock), T, deadline, recipient: rec.offer.evm.recipient, locker: hx(refund.xonly) }));
+    const built = await evm.lockOp({ rec, rEvmLock, T, deadline, recipient: rec.offer.evm.recipient, refundXonly: refund.xonly, prefer });
+    if (!built) return null;
+    if (strip(built.lockLeaf) !== strip(expected)) throw new Error('the lock built is not the lock this swap names');
+    return { lock: { lockLeaf: expected, lockNu: evm.lockNullifier(expected), op: built.op }, lockNote: built.noteLeaf || null };
+  }
+  // One step of the lock built ahead: built with its deadline counted from when the offer was taken, then given to the relay to prove (prove only: nothing is
+  // sent, so nothing of this side's is locked before the Bitcoin lock is confirmed). A step that cannot build or prove it leaves the swap as it would be without
+  // it; the lock is then built and proved after the block, as always.
+  async function preStep(rec) {
+    if (!evm.lockOp || rec.preOff) return rec;
+    if (rec.preRetryAt && ctx.now() < rec.preRetryAt) return rec;
+    if (!rec.pre) {
+      const deadline = preDeadline({ takenAt: rec.created, policy });
+      // (a deadline that could not pass at the earliest the block can come is not built at all)
+      if (deadline - (await evm.now()) < Math.max(policy.minClaimSecs ?? 1800, policy.preMinLeftSecs ?? PRE_DEFAULTS.preMinLeftSecs)) return save(rec, { preOff: true, preWhy: 'too late to build ahead' });
+      let made = null;
+      try { made = await buildLock(rec, deadline); } catch (e) { return save(rec, { preOff: true, preWhy: String((e && e.message) || e).slice(0, 160) }); }
+      if (!made) return save(rec, { preRetryAt: ctx.now() + (policy.buildRetrySecs ?? 30) });
+      return save(rec, { pre: { deadline, ...made, at: ctx.now() }, preRetryAt: null });
+    }
+    if (!rec.pre.proveJob && !rec.pre.proveOff && evm.proveAhead) {
+      try {
+        const r = await evm.proveAhead('adaptorlock', rec.pre.lock.op);
+        if (r && r.jobId) return save(rec, { pre: { ...rec.pre, proveJob: r.jobId, proveAt: ctx.now() } });
+        return save(rec, { pre: { ...rec.pre, proveOff: 'the relay gave no job' } });
+      } catch (e) { return save(rec, { pre: { ...rec.pre, proveOff: String((e && e.message) || e).slice(0, 160) } }); }
+    }
+    return rec;
+  }
+
   async function advance(rec) {
     if (rec.lock && (rec.phase === 'locking' || rec.phase === 'locked') && (await evm.now()) > rec.deadline) {
       return save(rec, { phase: 'offered', noOffer: !rec.evmOffer });
@@ -190,8 +259,13 @@ export function makeEthereumLocker(ctx) {
         const st = await btc.status(rec.lockTxid);
         const need = policy.minConfsFor(BigInt(rec.offer.btc.value));
         if (st.confirmations < need) {
-          if (ctx.now() - rec.created > (policy.maxConfirmWaitSecs ?? 43200)) return save(rec, { phase: 'aborted', why: 'the lock did not reach its confirmations in time' });
-          if (st.confirmations >= 1 && evm.prepare && !rec.prepared) { await evm.prepare({ rec }); return save(rec, { prepared: true }); }
+          // (an early record waits `earlyConfirmWaitSecs` when the side sets it: a provider does not hold its payout for a lock that never confirms longer than it
+          // holds a reservation for one)
+          const waitMax = rec.early && policy.earlyConfirmWaitSecs != null ? policy.earlyConfirmWaitSecs : (policy.maxConfirmWaitSecs ?? 43200);
+          if (ctx.now() - rec.created > waitMax) { await dropPre(rec); return save(rec, { phase: 'aborted', why: 'the lock did not reach its confirmations in time', ...(rec.early ? { expired: true } : {}) }); }
+          await watchTip(rec, st);
+          if (st.confirmations >= 1 && evm.prepare && !rec.prepared && !rec.pre) { await evm.prepare({ rec }); return save(rec, { prepared: true }); }
+          if (rec.early) return preStep(rec);
           return rec;
         }
         if (await btc.outspend(rec.lockTxid, rec.lockVout)) return save(rec, { phase: 'aborted', why: 'the lock output was spent before it could be answered' });
@@ -207,7 +281,8 @@ export function makeEthereumLocker(ctx) {
           try { a = await btc.lockAgreed(rec.lockTxid, rec.lockVout); } catch (err) { if (rec.thinSince != null) await save(rec, { thinSince: null }); throw err; }   // (a contradiction starts the wait again)
           if (a.spent) return save(rec, { phase: 'aborted', why: 'the lock output was spent before it could be answered' });
           if (a.value !== rec.lockValue || (rec.lockSpk && strip(a.scriptpubkey) !== strip(rec.lockSpk))) return save(rec, { phase: 'aborted', why: 'the explorers do not show the lock this offer named' });
-          if (a.confirmations < need) return rec;
+          // (explorers that have not all seen the new block yet are a few seconds behind: asked again in `agreeLagSecs`, not after the whole wait)
+          if (a.confirmations < need) return save(rec, { agreeAt: ctx.now() - Math.max(0, (policy.agreeEverySecs ?? 45) - (policy.agreeLagSecs ?? 15)) });
           // ETH is locked only against a lock two explorers show alike: one that answers alone is waited on until a second does (or the swap's wait for
           // its confirmations runs out, before anything is locked), never taken on its word.
           if (a.thin) {
@@ -218,12 +293,23 @@ export function makeEthereumLocker(ctx) {
           height = a.height;
         }
         const consumed = X.isSats(rec.offer.btc.asset) ? null : await btc.crossLaneBlocked(await btc.fetchTx(rec.lockTxid));
-        if (consumed) return save(rec, { phase: 'aborted', why: 'a spent note is already consumed on Ethereum: ' + consumed });
-        const confirmedAt = await btc.blockTime(height + need - 1);
-        const deadline = lockDeadline({ blockTime: confirmedAt, windowSecs: policy.evmWindowSecs, roundSecs: policy.roundSecs });
+        if (consumed) { await dropPre(rec); return save(rec, { phase: 'aborted', why: 'a spent note is already consumed on Ethereum: ' + consumed }); }
         const nowSecs = await evm.now();
         const tip = await btc.tip();
         const opens = X.btcRefundOpensAt({ lockHeight: height, csvBlocks: rec.csvBlocks, tipHeight: tip, nowSecs });
+        // The lock built ahead goes in now, as it is, if its deadline passes the same checks a lock built now would (checkPreDeadline); else it is let go
+        // and the lock is built from the block below, as it always was.
+        if (rec.pre) {
+          const why = checkPreDeadline({ deadline: rec.pre.deadline, nowSecs, btcRefundOpens: opens, policy });
+          if (!why.length) {
+            const out = await save(rec, { phase: 'locking', deadline: rec.pre.deadline, lockHeight: height, lock: { ...rec.pre.lock, ...(rec.pre.proveJob ? { proveJob: rec.pre.proveJob, proveAt: rec.pre.proveAt } : {}) }, lockNote: rec.pre.lockNote || null, pre: null, preUsed: true });
+            return advance(out);                           // (sent in this same step: the block is in, and every second counts)
+          }
+          await dropPre(rec);
+          await save(rec, { preWhy: why.join('; ') });
+        }
+        const confirmedAt = await btc.blockTime(height + need - 1);
+        const deadline = lockDeadline({ blockTime: confirmedAt, windowSecs: policy.evmWindowSecs, roundSecs: policy.roundSecs });
         const bad = X.checkEvmDeadline({ deadline, nowSecs, btcRefundOpens: opens, minClaimSecs: policy.minClaimSecs, claimSlackSecs: policy.claimSlackSecs });
         if (bad.length) {
           // With time left to claim, the refund margin is the only thing that can be short, and it is short for the moment: it is measured from now and from the blocks the refund is
@@ -265,6 +351,20 @@ export function makeEthereumLocker(ctx) {
           if (!checked(rec)) return unchecked(rec);
           const nowSecs = await evm.now();
           if (rec.deadline - nowSecs < policy.minClaimSecs) return save(rec, { phase: 'offered', noOffer: true });
+          // A lock proved ahead is posted as it is (the relay only sends it). A proof still being made is waited for a few minutes, since it is nearer done than a
+          // new one; one that failed, or that the relay will not take as posted, is let go and the lock is sent to be proved as it always was.
+          if (rec.lock.proveJob && evm.provenStatus && evm.postProven) {
+            let st = null;
+            try { st = await evm.provenStatus(rec.lock.proveJob); } catch { st = null; }
+            if (st && st.status === 'proven' && st.publicValues && st.proof) {
+              try {
+                const posted = await evm.postProven('adaptorlock', st, rec.lock.op);
+                if (posted && posted.jobId) return save(rec, { lock: { ...rec.lock, jobId: posted.jobId, posted: true, proveJob: null } });
+              } catch (e) { await save(rec, { lock: { ...rec.lock, proveJob: null }, preWhy: 'the proof made ahead was not taken: ' + String((e && e.message) || e).slice(0, 160) }); }
+            } else if ((!st || st.status === 'pending' || st.status === 'proving' || st.status === 'claimed') && ctx.now() - (rec.lock.proveAt || 0) < (policy.preProveWaitSecs ?? PRE_DEFAULTS.preProveWaitSecs)) {
+              return rec;
+            } else await save(rec, { lock: { ...rec.lock, proveJob: null } });
+          }
           const { jobId } = await evm.submit('adaptorlock', rec.lock.op);
           return save(rec, { lock: { ...rec.lock, jobId } });
         }
@@ -308,11 +408,15 @@ export function makeEthereumLocker(ctx) {
           const sk = claimSecret({ dClaimer: btc.wallet.priv, t: BigInt(rec.t), lock });
           return btc.tx.claimSats({ lockOut: { txid: rec.lockTxid, vout: rec.lockVout, value: rec.lockValue }, lock, sk, feeRate, maxFee: Math.floor(rec.lockValue * (policy.takeMaxFeeShare ?? 0.5)) });
         };
-        const takeRecord = (pair, feeRate, bumps) => ({ txid: pair.revealTxid, commitTxid: null, commitHex: null, revealHex: pair.revealHex, at: ctx.now(), feeRate, fee: pair.revealFee, vsize: btc.tx.vsizeOf(pair.revealTx), bumps });
+        // (`tip`: the newest block when the take was sent, so a take that a block goes by without is replaced then, not only after takeBumpSecs)
+        const tipNow = async () => (btc.tip ? await Promise.resolve().then(() => btc.tip()).catch(() => null) : null);
+        const takeRecord = (pair, feeRate, bumps, tip = null) => ({ txid: pair.revealTxid, commitTxid: null, commitHex: null, revealHex: pair.revealHex, at: ctx.now(), feeRate, fee: pair.revealFee, vsize: btc.tx.vsizeOf(pair.revealTx), bumps, tip });
+        // (a take a block went by without is replaced only when the next block's rate has caught up with it: one that is still above it missed by chance)
+        const missedBlock = async (t) => t.tip != null && ctx.now() - t.at >= (policy.takeMissMinSecs ?? 120) && (await tipNow()) >= t.tip + (policy.takeMissBlocks ?? 1) && Math.ceil(await btc.feeRate()) >= Number(t.feeRate || 0);
         if (satsTake && !rec.take) {
           const feeRate = Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5));
           const pair = await buildSatsTake(feeRate);
-          await save(rec, { take: takeRecord(pair, feeRate, 0), takes: [pair.revealTxid] });
+          await save(rec, { take: takeRecord(pair, feeRate, 0, await tipNow()), takes: [pair.revealTxid] });
         }
         if (satsTake) {
           // the lock spent by a transaction that is none of ours, and confirmed: the user's refund won the race. Said as it is, not as a take that landed.
@@ -403,14 +507,14 @@ export function makeEthereumLocker(ctx) {
           throw e;
         }
         if (await confirmed()) return save(rec, { phase: 'done' });
-        if (satsTake && (rec.take.bumps || 0) < (policy.takeMaxBumps ?? 8) && ctx.now() - rec.take.at > (policy.takeBumpSecs ?? 1200)) {
+        if (satsTake && (rec.take.bumps || 0) < (policy.takeMaxBumps ?? 8) && (ctx.now() - rec.take.at > (policy.takeBumpSecs ?? 1200) || (await missedBlock(rec.take)))) {
           // A replacement must pay at least a relay increment (1 sat/vB of its size) more than the take it replaces, and the wallet's fee has a floor, so
           // a higher rate alone can leave the fee where it was: the rate is also raised until the fee is higher. The market may have moved since too.
           const prev = rec.take.feeRate, vsize = rec.take.vsize || 100;
           const feeRate = Math.max(Math.ceil(prev * 1.5), prev + 2, Math.ceil(await btc.feeRate()), Math.ceil((rec.take.fee + vsize + 1) / vsize));
           const pair = await buildSatsTake(feeRate);
           if (pair.revealFee > rec.take.fee) {
-            await save(rec, { take: takeRecord(pair, feeRate, (rec.take.bumps || 0) + 1), takes: [...(rec.takes || []), pair.revealTxid] });
+            await save(rec, { take: takeRecord(pair, feeRate, (rec.take.bumps || 0) + 1, await tipNow()), takes: [...(rec.takes || []), pair.revealTxid] });
             await btc.broadcast(rec.take, null);
           } else await save(rec, { take: { ...rec.take, bumps: policy.takeMaxBumps ?? 8 } });     // the cap holds the fee where it was: a replacement would pay no more
         }

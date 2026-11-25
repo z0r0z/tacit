@@ -225,8 +225,23 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
       inLockSet: true, nowSecs: await evm.now(), minClaimSecs: pol.minClaimSecs ?? 3600,
     });
     if (!v.ok) return no('offer: ' + v.reasons.join('; '));
+    // (a deadline counted from the ask, as a lock built ahead has, is taken on the same terms as one counted from the block: time to claim, and not further out
+    // than this side accepts; the machine checks both again before it claims)
+    if (Number(offer.deadline) - (await evm.now()) > (pol.maxEvmWindowSecs ?? 6 * 3600)) return no('offer: the deadline is further out than this side accepts');
     await evmOffers.put({ id, offer });
     return reply({ ok: true });
+  }
+
+  // The lock offer as soon as the lock is sent (a lock of plain sats only): the same terms the offer carries once the lock is confirmed, so the user can build and
+  // prove its pool lock while the block is awaited. The user checks it against the transaction itself, and locks nothing before the lock has its confirmations.
+  async function earlyOffer(id) {
+    const s = await swaps.get(id);
+    if (!s || !X.isSats(s.asset) || !['broadcast', 'offered'].includes(s.phase) || !s.lock || !/^[0-9a-f]{64}$/.test(String(s.lock.txid || ''))) return reply({ error: 'no offer yet' }, 404);
+    const sec = X.deriveSwapSecrets({ seed, swapId: hexToBytes(id) }), recipient = await evm.recipient(id);
+    return reply(X.makeBtcLockOffer({
+      swapId: hexToBytes(id), asset: s.asset, value: BigInt(s.amount), rLock: null, txid: s.lock.txid, vout: s.lock.vout, csvBlocks: s.csvBlocks, lockerXonly: btc.wallet.xonly, T: sec.T,
+      claimerPub: s.counterClaimPub, evm: { asset: s.evmAsset, amount: BigInt(s.evmAmount), recipient: bytesToHex(recipient.xonly), rOut: sec.rOut },
+    }));
   }
 
   async function handle({ method, path, body }) {
@@ -240,11 +255,12 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
         if (!body || !isId(body.quoteId)) return reply({ error: 'quoteId is required' }, 400);
         return await startSwap({ quoteId: body.quoteId });
       }
-      const m = /^\/reverse\/swap\/([0-9a-f]{72})(\/offer|\/evm-offer)?$/.exec(path);
+      const m = /^\/reverse\/swap\/([0-9a-f]{72})(\/offer|\/evm-offer|\/early-offer)?$/.exec(path);
       if (m && isSwapId(m[1])) {
         // (the lock's txid once it is sent: the user's page shows the lock and its confirmation while it waits for the offer, which comes after the block)
         if (method === 'GET' && !m[2]) { const s = await swaps.get(m[1]); return s ? reply({ phase: s.phase, why: s.why || null, lockTxid: s.phase !== 'built' && s.lock && /^[0-9a-f]{64}$/.test(String(s.lock.txid || '')) ? s.lock.txid : null }) : reply({ error: 'unknown swap' }, 404); }
         if (method === 'GET' && m[2] === '/offer') { const o = await offers.get(m[1]); return o ? reply(o.offer) : reply({ error: 'no offer yet' }, 404); }
+        if (method === 'GET' && m[2] === '/early-offer') return await earlyOffer(m[1]);
         if (method === 'POST' && m[2] === '/evm-offer') return await keepEvmOffer(m[1], body);
       }
       return reply({ error: 'not found' }, 404);

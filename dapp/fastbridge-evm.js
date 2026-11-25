@@ -409,6 +409,8 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const s = st && st.status;
     if (s === 'settled' || (own.get(id) && own.get(id).done)) return 'settled';
     if (s === 'failed' || s === 'unknown') return (await claimLanded(again)) ? 'settled' : 'failed';
+    // (a proof this side posted waits for the relay to send it for a few minutes before it is sent from this side's own account)
+    if (posted.has(id) && clock() - posted.get(id) < Math.max(openGraceMs, 5 * 60 * 1000)) return 'pending';
     if (!selfSettle) return 'pending';
     if (s === 'open' && st.publicValues && st.proof) return sendOwn(id, () => st);
     if (again && again.bundle && (own.has(id) || (await relayHeld()))) return sendOwn(id, () => ux.relay.prove(specOf(again.type, again.bundle)));
@@ -542,8 +544,43 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const op = rec.lock && rec.lock.op && (rec.lock.op.op || rec.lock.op);
     if (op && op.nCx) reserved.add(lc(pool.leaf(assetId, op.nCx, op.nCy, op.locker)));
     if (rec.lockNote) reserved.add(lc(rec.lockNote));
+    if (rec.pre && rec.pre.lockNote) reserved.add(lc(rec.pre.lockNote));
   };
   const release = ({ rec }) => { if (rec && rec.lockNote) reserved.delete(lc(rec.lockNote)); };
+  // ── a lock proved ahead and sent later (dapp/fastbridge-el.js preStep) ──
+  // The relay proves it and sends nothing (mode 'prove'); once the Bitcoin lock is confirmed the proof is posted (mode 'preproven': the relay only sends it), or,
+  // with an account of this side's own, sent from that account. A relay that will not take a posted proof of this kind throws, and the lock is then sent to be
+  // proved as it always was.
+  const posted = new Map();
+  async function proveAhead(type, bundle) {
+    // (`ahead`: the relay makes a proof asked for ahead only on its prover board, so one that is then never sent costs it no credit; with the board down it
+    // refuses, and the lock is proved after the block as before)
+    // A key that seals what it sends (only Tacit's prover opens it), or proves on its own machine, is not asked to: a proof asked of the relay goes unsealed
+    if ((ux.relay.sealing && ux.relay.sealing()) || (ux.relay.ownProving && ux.relay.ownProving())) throw new Error('this key seals or proves its own: proved after the block');
+    const r = await ux.relay.submitOp({ ...specOf(type, bundle), mode: 'prove', ahead: true });
+    if (!r || !r.jobId) throw new Error('the relay did not take the proof');
+    return { jobId: r.jobId };
+  }
+  async function provenStatus(jobId) {
+    const st = await ux.relay.status(jobId);
+    return st ? { status: st.status, publicValues: st.publicValues || null, proof: st.proof || null, memos: Array.isArray(st.memos) ? st.memos : null } : null;
+  }
+  async function postProven(type, st, bundle) {
+    // the memos the lock was built with (its sealed lock memo): a proof whose memos are other ones is not sent
+    const memos = (bundle && bundle.lockMemos) || st.memos || [];
+    if (st.memos && (st.memos.length !== memos.length || st.memos.some((m, i) => String(m).toLowerCase() !== String(memos[i]).toLowerCase()))) throw new Error('the proof carries other memos');
+    if (ownAccount && selfSettle && (await ownEthOk())) {
+      const id = `own-${type}-${clock().toString(36)}-${++ownSeq}`;
+      await selfSettle({ jobId: id, publicValues: st.publicValues, proof: st.proof, memos });
+      own.set(id, { seen: clock(), retryAt: 0, fails: 0, proof: null, sending: null, done: true });
+      return { jobId: id };
+    }
+    if (typeof ux.relay.postProof !== 'function') throw new Error('this relay takes no posted proofs');
+    const r = await ux.relay.postProof({ type, publicValues: st.publicValues, proof: st.proof, memos });
+    if (!r || !r.jobId) throw new Error(String((r && (r.error || r.why)) || 'the relay did not take the posted proof'));
+    posted.set(r.jobId, clock());
+    return { jobId: r.jobId };
+  }
   const lockOp = ({ rec, rEvmLock, T, deadline, recipient, refundXonly, prefer = null }) => serial(async () => {
     const amount = BigInt(rec.offer.evm.amount);
     const held = await heldNotes();
@@ -606,7 +643,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     try { return BigInt(await ux.rpc('eth_getBalance', [ownAccount.address, 'latest'])); } catch { return null; }
   }
 
-  return { now, lockNullifier, lockPosition, findClaim, spentAgreed, lockAbsent, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, covers, heldFree, cutReserve, recipient, claimOp, ownEth };
+  return { now, lockNullifier, lockPosition, findClaim, spentAgreed, lockAbsent, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, covers, heldFree, cutReserve, recipient, claimOp, ownEth, proveAhead, provenStatus, postProven };
 }
 
 // ── reads that two nodes or more must agree on ──

@@ -18,6 +18,7 @@
 //   store the swaps (el records, by swap id); quoteStore the quotes the user was given (by quote id): kept apart, since both are listed
 
 import { makeEthereumLocker } from './fastbridge-el.js';
+import { SATS_ASSET } from './adaptor-xswap.js';
 import { bytesToHex } from './vendor/tacit-deps.min.js';
 
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
@@ -59,6 +60,12 @@ export function makeReverseCounter(call) {
       const r = await call('GET', `/reverse/swap/${swapId}/offer`);
       if (r.status === 404) return null;
       if (r.status !== 200 || !r.body) throw fail(r, 'the provider\'s lock offer could not be read');
+      return r.body;
+    },
+    // the lock offer as soon as the lock is sent (a provider that does not give it early answers 404, and the offer is read once the lock is confirmed)
+    async getEarlyOffer(swapId) {
+      const r = await call('GET', `/reverse/swap/${swapId}/early-offer`);
+      if (r.status !== 200 || !r.body || typeof r.body !== 'object') return null;
       return r.body;
     },
     async postEvmOffer(swapId, evmOffer) { return answered(await call('POST', `/reverse/swap/${swapId}/evm-offer`, { evmOffer }), 'the pool offer was not answered'); },
@@ -137,7 +144,8 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
   const el = makeEthereumLocker({
     seed, now, store, quotes, btc, evm, admit, requireChecked: true,
     counter: { publishEvmOffer: async (id, offer) => { const r = await lp.postEvmOffer(id, offer); if (r && r.ok === false) throw new Error(`the provider did not take the pool offer: ${r.why}`); } },
-    policy: { minCsv: policy.minCsv, minConfsFor: confsOf, evmWindowSecs: policy.evmWindowSecs, roundSecs: policy.roundSecs, minClaimSecs: policy.minClaimSecs, claimSlackSecs: policy.claimSlackSecs, refundMarginSecs: policy.refundMarginSecs, maxOfferAgeSecs: policy.maxOfferAgeSecs, minAmount: 1n, maxAmount: 10n ** 18n, maxLockFailures: policy.maxLockFailures },
+    policy: { minCsv: policy.minCsv, minConfsFor: confsOf, evmWindowSecs: policy.evmWindowSecs, roundSecs: policy.roundSecs, minClaimSecs: policy.minClaimSecs, claimSlackSecs: policy.claimSlackSecs, refundMarginSecs: policy.refundMarginSecs, maxOfferAgeSecs: policy.maxOfferAgeSecs, minAmount: 1n, maxAmount: 10n ** 18n, maxLockFailures: policy.maxLockFailures,
+      early: policy.early, preWindowSecs: policy.preWindowSecs, preMinLeftSecs: policy.preMinLeftSecs, preMaxLeftSecs: policy.preMaxLeftSecs, preProveWaitSecs: policy.preProveWaitSecs },
   });
 
   // The provider's quote for sending `amount` of the user's private TAC, checked before the user sees it: for this key and these assets, the amounts, the
@@ -199,6 +207,22 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
     await quoteStore.put({ ...rec, ...patch });
   }
 
+  // The provider's lock offer while its lock waits for the block (a lock of plain sats, from a provider that gives it early): taken as an early offer, checked
+  // against the transaction as the explorers' mempool shows it, so the pool lock is built and proved during the wait (fastbridge-el.js preStep). Nothing is locked
+  // before the confirmations. An early offer that is not taken changes nothing: the offer is read once the lock is confirmed, as it always was.
+  async function takeEarly(rec) {
+    if (policy.early === false || !lp.getEarlyOffer || rec.earlyOff || !pins.btcAsset || strip(rec.btcAsset || '') !== strip(pins.btcAsset) || strip(pins.btcAsset) !== SATS_ASSET) return false;
+    if (rec.earlyAt && now() - rec.earlyAt < (policy.earlyEverySecs ?? 15)) return false;
+    await quoteStore.put({ ...rec, earlyAt: now() });
+    let offer = null;
+    try { offer = await lp.getEarlyOffer(rec.swapId); } catch { return false; }
+    if (!offer || !offer.btc || strip(offer.btc.lockerXonly || '') !== strip(rec.lockerXonly) || strip(offer.swapId || '') !== strip(rec.swapId)) return false;
+    const got = await el.receive({ quoteId: rec.id, offer, early: true });
+    if (got.ok) { await quoteStore.put({ ...rec, earlyAt: now(), settled: true }); return true; }
+    if (!got.retry) await quoteStore.put({ ...rec, earlyAt: now(), earlyOff: String(got.why || 'not taken').slice(0, 160) });
+    return false;
+  }
+
   // One pass: a swap the provider has locked for is handed its lock offer once the provider has one; every swap is stepped.
   async function pump() {
     for (const rec of await quoteStore.list()) {
@@ -209,6 +233,7 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
       if (!offer) {
         // no lock offer after all this time: nothing was locked by the user, so there is nothing to take back
         if (now() - rec.startedAt > policy.offerWaitSecs) { await quoteStore.put({ ...rec, settled: true, gaveUp: 'the provider never locked' }); continue; }
+        if (await takeEarly(rec)) continue;
         await watchLock(rec);
         continue;
       }

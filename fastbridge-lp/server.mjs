@@ -91,9 +91,14 @@ if (!agreeNodes.length) agreeNodes.push(...(Array.isArray(C.agreeRpcs) && C.agre
 if (agreeNodes.length < 2) { console.error('agreeRpcs (FB_LP_AGREE_RPCS) must name two Ethereum nodes or more'); process.exit(1); }
 if (traceNodes.length < 2) log({ level: 'warn', msg: 'traceRpcs names one node: a claim read from a trace is taken only once two nodes trace it alike' });
 const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs }, selfSettle, ownAccount: { address: acct.address }, selfRetryMs: 60000, log, trace: makeTxTracer({ nodes: traceNodes, pool: C.poolAddress }), quorum: makeNodeQuorum({ nodes: agreeNodes }), onUnread: (o) => alert(o) });
+// What the provider's Bitcoin transactions pay. A pair provider's are each on a swap's clock (its lock a user waits on, its take, its refund), so they go out for
+// the next block (`btcFeeTarget`, the explorers' estimate for that many blocks: '1') and never under `btcMinFeeRate` sat/vB (2), as the page's locks do
+// (dapp/fast/pair-wire.js); the fee comes out of the provider's spread, and a lock that still misses a block is bumped from its change (fastbridge-bl.js
+// bumpLock). The TAC provider keeps its three-block estimate unless its config says otherwise: its quotes ask the user for the fee of its take.
+const btcFees = { feeTarget: String(C.btcFeeTarget ?? (PAIR ? '1' : '3')), minFeeRate: Number(C.btcMinFeeRate ?? (PAIR ? 2 : 1)) };
 const btc = makeNodeBtcChain({
   bases: C.btcBases, tacit, prims, builder, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]),
-  poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log,
+  poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log, ...btcFees,
 });
 
 // the price: read now and again every `rate.everySecs`; with none the provider quotes nothing and says so (a provider never prices from a feed it cannot read)
@@ -223,7 +228,7 @@ else if (ropts) {
   if (rprims.wallet.address() === btc.address) { console.error('the reverse address must not be the provider\'s own address'); process.exit(1); }
   const rbtc = makeNodeBtcChain({
     bases: C.btcBases, tacit, prims: rprims, builder: makeAdaptorBtcTx({ prims: rprims, kit: tacitKit(tacit) }), pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]),
-    poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log,
+    poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log, ...btcFees,
   });
   // the notes are read by the module's own scan of the wallet it holds: that is the reverse key's here, and nothing else of this process reads it
   // (a pair provider sells plain coins, which it lists from the address itself)

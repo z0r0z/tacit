@@ -71,6 +71,7 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 |---|---|
 | `network`, `poolAddress`, `btcAsset`, `evmAsset` | the chain, the pool, and the asset on each side (the same 32-byte id for TAC) |
 | `btcBases` | esplora bases, asked in order for reads; a broadcast goes to every one |
+| `btcFeeTarget`, `btcMinFeeRate` | the explorers' estimate the provider's Bitcoin transactions pay (a block target, `'1'` for a pair provider, `'3'` otherwise) and the least sat/vB they pay (2 for a pair provider, else 1). A pair provider's lock that a block goes by without is bumped from its change, child pays for parent, up to 1% of the amount |
 | `csvBlocks` | the Bitcoin refund timelock the user's lock must carry (at least `policy.minCsv`) |
 | `reserve.reserveSecs`, `reserve.extendSecs`, `reserve.maxUnbackedShare` | how long a reservation holds the payout while the user builds and sends its lock (5 min), for how long once the lock is on the network (2 h), and the share of the pool balance that reservations with no transaction behind them may hold together (half; one alone may hold more) |
 | `reserve.perClient`, `reserve.perBoard` | how many reservations with no lock named yet one client address holds at once (2), and the requests that come through a board together (4, as they name no address). A new one past that lets go of that client's oldest, so a user asking again is always answered; 0 for no limit |

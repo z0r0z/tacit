@@ -132,6 +132,7 @@ function recordingBuilder(builder) {
     ...builder,
     lockTransfer: wrap(builder.lockTransfer), claimTransfer: wrap(builder.claimTransfer), refundTransfer: wrap(builder.refundTransfer),
     lockSats: wrap(builder.lockSats), claimSats: wrap(builder.claimSats), refundSats: wrap(builder.refundSats),
+    ...(builder.childSats ? { childSats: wrap(builder.childSats) } : {}),
   };
 }
 

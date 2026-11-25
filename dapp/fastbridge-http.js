@@ -33,7 +33,7 @@ export function makeCounter(call) {
     // what a request that can be answered no says: { ok, retry?, why? }; one that cannot be answered is thrown
     async sendOffer({ quoteId, offer }) { return answered(await call('POST', '/offer', { quoteId, offer }), 'the offer was not answered'); },
     async reserve({ quoteId }) { return answered(await call('POST', '/reserve', { quoteId }), 'the reservation was not answered'); },
-    async extend({ quoteId, txid, lock = null }) { return answered(await call('POST', '/extend', { quoteId, txid, ...(lock ? { lock } : {}) }), 'the reservation was not extended'); },
+    async extend({ quoteId, txid, lock = null, offer = null }) { return answered(await call('POST', '/extend', { quoteId, txid, ...(lock ? { lock } : {}), ...(offer ? { offer } : {}) }), 'the reservation was not extended'); },
     async getEvmOffer(swapIdHex) {
       const r = await call('GET', `/swap/${swapIdHex}/offer`);
       if (r.status === 404) return null;

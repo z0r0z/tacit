@@ -160,7 +160,8 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       return q;
     },
   };
-  const el = makeEthereumLocker({ seed, now, store: swaps, quotes, btc, evm, counter, policy: config.policy });
+  // (an early record waits for its confirmations no longer than an extended reservation holds the payout)
+  const el = makeEthereumLocker({ seed, now, store: swaps, quotes, btc, evm, counter, policy: { earlyConfirmWaitSecs: hold.extendSecs, ...config.policy } });
   const health = { ok: true, lastTick: 0, lastError: null };
   const reported = new Set(), lastAlert = new Map(), unreadSince = new Map();
 
@@ -390,7 +391,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const reply = (body, status = 200) => ({ status, body });
   const no = (why, retry = false) => reply({ ok: false, retry, why });
 
-  async function judgeOffer(body, q, sid) {
+  async function judgeOffer(body, q, sid, early = false) {
     let held = false;
     try {
       if (q && !(await swaps.get(sid))) {
@@ -400,7 +401,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           try { await exclusive(async () => { await capacity(BigInt(q.evmAmount)); pending.set(sid, { amount: BigInt(q.evmAmount), until: now() + hold.reserveSecs }); held = true; }); } catch (e) { if (e.status) return { ok: false, retry: !!e.retry, why: e.message }; throw e; }
         }
       }
-      const r = await el.receive({ quoteId: body.quoteId, offer: body.offer });
+      const r = await el.receive({ quoteId: body.quoteId, offer: body.offer, early });
       const res = q ? reservations.get(q.id) : null;
       if (r.ok && res && res.swapId === sid && reservations.delete(q.id)) await keep(q.id);
       if (r.ok) stale();
@@ -410,6 +411,17 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       log({ level: 'error', msg: 'an offer could not be checked', id: sid, error: msg });
       return { ok: false, retry: true, why: `the lock could not be checked now: ${msg}` };
     } finally { if (held) pending.delete(sid); }
+  }
+
+  // A lock of plain sats named to /extend with its whole offer (the one the user sends once the lock is confirmed): taken as an early offer, checked against the
+  // transaction as the explorers' mempool shows it, so this side's pool lock is built and proved while the block is awaited (fastbridge-el.js preStep). Nothing is
+  // locked before the confirmations, and the record waits no longer for them than a reservation is held (earlyConfirmWaitSecs). Not awaited: the extension's
+  // answer does not wait on it, and an offer that is not taken here is judged as always when it is sent.
+  function takeEarly(body, q) {
+    const offer = body && body.offer, sid = String((offer && offer.swapId) || '').toLowerCase().replace(/^0x/, '');
+    if (!sats || config.early === false || !offer || typeof offer !== 'object' || !/^[0-9a-f]{72}$/.test(sid) || !q || JSON.stringify(offer).length > 12000) return;
+    if (!offer.btc || String(offer.btc.txid || '').toLowerCase() !== String(body.txid)) return;
+    judgeOffer({ quoteId: body.quoteId, offer }, q, sid, true).then((r) => { if (r && r.ok) log({ level: 'info', msg: 'early offer taken: the pool lock is built while the lock is confirmed', id: sid.slice(0, 80) }); }, () => {});
   }
 
   // a whole number of base units, written plainly: a decimal string with no leading zeros, or a safe integer
@@ -519,6 +531,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           r.txid = body.txid; r.until = Math.max(r.until, now() + hold.extendSecs);
           // when the lock was first seen: a late offer for it is weighed by this (quotes.get)
           await keep(body.quoteId, { seenTxid: body.txid, seenAt: now() });
+          takeEarly(body, q);
           return reply({ ok: true, until: r.until });
         });
       }

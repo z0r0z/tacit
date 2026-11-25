@@ -112,13 +112,40 @@ export function makeBitcoinLocker(ctx) {
       v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId, validUntil,
       asset: hx(asset), amount: String(amount), evmAsset: strip(evmAsset), evmAmount: String(evmAmount),
       counterClaimPub: hx(counterClaimPub), csvBlocks, takeSats: 0,
-      lock: { txid: pair.revealTxid, vout: 0, value: pair.revealTx.outputs[0].value, commitTxid: null, commitHex: null, revealHex: pair.revealHex },
+      lock: { txid: pair.revealTxid, vout: 0, value: pair.revealTx.outputs[0].value, commitTxid: null, commitHex: null, revealHex: pair.revealHex, ...lockFeeOf(pair) },
       noteInputs: [],
       // the coins that funded the lock: a swap started before it confirms must not pick them again
       feeInputs: picked.map((c) => ({ txid: c.txid, vout: c.vout })),
     };
     return { rec, pair };
   }
+  // What a lock of sats paid and where its change went: what a bump from that change (bumpLock) needs
+  function lockFeeOf(pair) {
+    if (!btc.tx.vsizeOf) return {};
+    const own = hx(btc.prims.p2wpkhScript(btc.wallet.pub)), change = pair.revealTx.outputs.findIndex((o, i) => i > 0 && hx(o.script) === own);
+    return { fee: pair.revealFee, vsize: btc.tx.vsizeOf(pair.revealTx), ...(change > 0 ? { change: { vout: change, value: pair.revealTx.outputs[change].value } } : {}) };
+  }
+  // A lock of sats that a block went by without is bumped (child pays for parent) from its change: a child whose fee lifts the two to the rate the explorers give
+  // for the next block, never more than `lockBumpMaxBps` of the amount between all its bumps (1%), asked again after each block that still goes by without it, up
+  // to `lockMaxBumps` times. The lock keeps its txid, which the counterparty holds. A bump that cannot be made changes nothing: the lock waits as it would have.
+  async function bumpLock(rec) {
+    if (!X.isSats(rec.asset) || policy.lockBump === false || !btc.tx.childSats || !rec.lock.change || rec.lock.fee == null || !rec.lock.vsize || !btc.tip) return;
+    const tip = await btc.tip();
+    if (rec.bumpTip == null) { await save(rec, { bumpTip: tip }); return; }
+    if (tip < rec.bumpTip + (policy.lockBumpBlocks ?? 1)) return;
+    const last = rec.cpfp || null;
+    if ((last ? last.bumps : 0) >= (policy.lockMaxBumps ?? 4)) return;
+    const rate = Math.ceil(await btc.feeRate(0)), childVb = btc.tx.childVsize ? btc.tx.childVsize() : 110;
+    const cap = Math.min(Math.floor((Number(rec.amount) * (policy.lockBumpMaxBps ?? 100)) / 10000), rec.lock.change.value - 547);
+    let fee = rate * (rec.lock.vsize + childVb) - rec.lock.fee;
+    if (last) fee = Math.max(fee, last.fee + childVb + 1);                 // (a replacement pays more than the child it replaces, by the relay's increment)
+    fee = Math.min(fee, cap);
+    if (!(fee > (last ? last.fee : 0)) || fee <= 0) { await save(rec, { bumpTip: tip }); return; }
+    const pair = btc.tx.childSats({ coin: { txid: rec.lock.txid, vout: rec.lock.change.vout, value: rec.lock.change.value }, fee });
+    await save(rec, { bumpTip: tip, cpfp: { txid: pair.revealTxid, revealHex: pair.revealHex, commitHex: null, commitTxid: null, fee, rate, at: ctx.now(), bumps: (last ? last.bumps : 0) + 1 } });
+    await btc.broadcast(rec.cpfp, null);
+  }
+
   async function start(args) {
     if (X.isSats(args.asset)) {
       const { rec } = await buildSats(args);
@@ -229,19 +256,26 @@ export function makeBitcoinLocker(ctx) {
           if (rec.validUntil && ctx.now() > Number(rec.validUntil) + 600) return save(rec, { phase: 'aborted', why: 'the lock was not sent before the quote ran out' });
           await btc.broadcast(rec.lock, null);
         }
-        return save(rec, { phase: 'broadcast', broadcastAt: ctx.now() });
+        return save(rec, { phase: 'broadcast', broadcastAt: ctx.now(), bumpTip: btc.tip ? await Promise.resolve().then(() => btc.tip()).catch(() => null) : null });
       }
       case 'broadcast': {
         // the provider is asked to hold the payout through the confirmation; a provider that does not answer this is not waited on
         if (!rec.extended && counter.extend && rec.quoteId) {
           try {
-            // (with the lock's terms, so the provider can see the transaction pays this lock and no other output)
-            const r = await counter.extend({ quoteId: rec.quoteId, txid: rec.lock.txid, lock: { T: hx(secrets(rec).T.toRawBytes(true)), lockerXonly: hx(btc.wallet.xonly) } });
+            // (with the lock's terms, so the provider can see the transaction pays this lock and no other output; a lock of plain sats also carries its whole offer,
+            // the one sent once the lock is confirmed, so a provider can build and prove its pool lock while the block is awaited: it locks nothing before the
+            // confirmations, and a provider that does not build ahead reads only the terms)
+            const s0 = secrets(rec);
+            const early = X.isSats(rec.asset) && policy.early !== false ? X.makeBtcLockOffer({
+              swapId: hexToBytes(rec.id), asset: rec.asset, value: BigInt(rec.amount), rLock: null, txid: rec.lock.txid, vout: rec.lock.vout, csvBlocks: rec.csvBlocks, lockerXonly: btc.wallet.xonly, T: s0.T,
+              claimerPub: rec.counterClaimPub, evm: { asset: rec.evmAsset, amount: BigInt(rec.evmAmount), recipient: hx((await evm.recipient(rec.id)).xonly), rOut: s0.rOut },
+            }) : null;
+            const r = await counter.extend({ quoteId: rec.quoteId, txid: rec.lock.txid, lock: { T: hx(s0.T.toRawBytes(true)), lockerXonly: hx(btc.wallet.xonly) }, ...(early ? { offer: early } : {}) });
             if (!(r && r.ok === false && r.retry)) await save(rec, { extended: !(r && r.ok === false), extendWhy: r && r.ok === false ? String(r.why || '') : null });
           } catch { /* asked again on the next step */ }
         }
         const st = await btc.status(rec.lock.txid);
-        if (!st.confirmations) return rec;
+        if (!st.confirmations) { try { await bumpLock(rec); } catch (e) { await save(rec, { bumpWhy: String((e && e.message) || e).slice(0, 160) }); } return rec; }
         // confirmedAt is when this side saw it (the offer's wait counts from it); lockAt is the block's time, which the timelock counts from
         if (!rec.confirmedAt) await save(rec, { confirmedAt: ctx.now(), lockHeight: st.height, lockAt: btc.blockTime ? await btc.blockTime(st.height).catch(() => null) : null });
         const sec = secrets(rec), recipient = await evm.recipient(rec.id);
