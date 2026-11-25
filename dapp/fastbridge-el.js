@@ -116,9 +116,11 @@ export function makeEthereumLocker(ctx) {
     const lockedAt = tx.vout.findIndex((o, i) => i !== offer.btc.vout && strip(o.scriptpubkey) === lockSpk && o.value >= takeSats);
     if (takeSats > 0 && !paidDirect && lockedAt < 0) return reject('the lock does not pay the fee of the take');
     const note = sats ? null : await btc.resolveNote(offer.btc.txid, offer.btc.vout);
+    // `policy.screen(notes, { quote })`: the notes the lock spends, and the quote it was locked against. A screen that prices the TAC the
+    // regular bridge cannot carry home reads the class of these notes and refuses a lock its quote did not pay for (dapp/fast/stuck.js).
     if (policy.screen && !sats) {
       let s;
-      try { s = await policy.screen(tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout }))); } catch { return reject('the history of the notes could not be read just now', true); }
+      try { s = await policy.screen(tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout })), { quote }); } catch { return reject('the history of the notes could not be read just now', true); }
       if (s) return reject(s.why, s.retry === true);
     }
     const chain = {

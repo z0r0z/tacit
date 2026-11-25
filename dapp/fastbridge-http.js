@@ -25,8 +25,10 @@ export function makeCounter(call) {
       if (r.status !== 200 || !r.body) throw fail(r, 'the liquidity provider did not give its terms');
       return r.body;
     },
-    async quote(amount) {
-      const r = await call('POST', '/quote', { amount: String(amount) });
+    // `klass` (dapp/fast/stuck.js) is left out of the request when it is not named, so a provider that does not know the word is asked as it
+    // always was, byte for byte
+    async quote(amount, klass = null) {
+      const r = await call('POST', '/quote', klass ? { amount: String(amount), class: klass } : { amount: String(amount) });
       if (r.status !== 200 || !r.body) throw fail(r, 'no quote');
       return r.body;
     },

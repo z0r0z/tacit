@@ -6,6 +6,7 @@ const FEE_WARM_MS = 30000;
 import { makeEthereumLocker } from './fastbridge-el.js';
 import { isSats } from './adaptor-xswap.js';
 import { deriveLock } from './adaptor-btc-lock.js';
+import { makeStuck, isClass, CLASSES, quotedClass } from './fast/stuck.js';
 import { secp, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 
 const randomHex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -13,6 +14,10 @@ const randomHex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) 
 export function makeQuoter({ store, now, params }) {
   const p = params;
   const min = BigInt(p.minAmount), max = BigInt(p.maxAmount), flat = BigInt(p.flatFee ?? 0), bps = BigInt(p.feeBps ?? 0);
+  // The price of TAC the regular bridge cannot carry home (dapp/fast/stuck.js), from this provider's own config: null is the provider it was,
+  // one price for any TAC it takes. With a schedule every quote names the class it was priced for, and a class the provider does not take is
+  // refused here rather than after a Bitcoin lock has been built.
+  const stuck = makeStuck({ quote: p, stuck: p.stuck ?? null });
   // `rate` is { num, den } (what the provider's side pays for one unit of what it takes), or a function that gives that now (dapp/fastbridge-rate.js feed.rate):
   // a price that moves with the market. A function that has none (its sources are down or disagree) means no quote, and the page is told to ask again.
   const rateNow = () => {
@@ -21,22 +26,30 @@ export function makeQuoter({ store, now, params }) {
     return { num: BigInt(r?.num ?? 1), den: BigInt(r?.den ?? 1) };
   };
 
-  function price(amount) {
+  // `klass` is the class of TAC the lock will spend (dapp/fast/stuck.js): clean, long or poolExit. A provider with a schedule prices the class
+  // it is asked for, and refuses one it does not take; one without a schedule prices as it always did, whatever was asked of it, and its quote
+  // names no class because it was not priced for one.
+  function price(amount, klass = 'clean') {
     const a = BigInt(amount);
+    klass = klass ?? 'clean';                       // a caller that names none asks for the clean price, which is the price it was
+    if (!isClass(klass)) throw Object.assign(new Error(`no such class of TAC: ${klass}`), { status: 400 });
     if (a < min || a > max) throw Object.assign(new Error(`the amount must be between ${min} and ${max}`), { status: 400 });
     const { num, den } = rateNow();
-    const fee = (a * bps) / 10000n + flat;
+    if (stuck && !stuck.takes(klass)) throw Object.assign(new Error(`this provider does not take ${stuck.words(klass)}`), { status: 400 });
+    const fee = stuck ? stuck.feeFor(a, klass) : (a * bps) / 10000n + flat;
     const out = ((a - fee) * num) / den;
     if (a <= fee || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
     return { btcValue: a, evmAmount: out, fee };
   }
 
-  async function quote(amount) {
-    const { btcValue, evmAmount } = price(amount);
+  async function quote(amount, klass = 'clean') {
+    const { btcValue, evmAmount } = price(amount, klass);
     const q = {
       id: randomHex(16), btcAsset: p.btcAsset, btcValue: String(btcValue), evmAsset: p.evmAsset, evmAmount: String(evmAmount),
       claimPub: p.claimPub, csvBlocks: p.csvBlocks, evmWindowSecs: p.evmWindowSecs, minConfs: p.minConfsFor(btcValue),
       takeSats: p.takeSats ? await p.takeSats() : 0, created: now(), validUntil: now() + (p.validSecs ?? 600),
+      // the class this quote is for, so the locker can hold a lock to it: a quote with none is the clean price, which is the price it was
+      ...(stuck ? { class: klass } : {}),
     };
     // a provider that takes the fee of its take from a second output of the lock's own script says so; a page that does not know the word locks as it always did
     if (p.takeInLock === true && q.takeSats > 0) q.takeInLock = true;
@@ -52,7 +65,8 @@ export function makeQuoter({ store, now, params }) {
     return lo;
   }
   const get = async (id) => (/^[0-9a-f]{32}$/.test(String(id)) ? store.get(id) : null);
-  return { price, quote, get, maxAmountFor };
+  // `stuck` is null for a provider with no schedule; `terms` and `takes` say what a page may ask of it (`/info`), and price a class it takes
+  return { price, quote, get, maxAmountFor, stuck, terms: () => (stuck ? stuck.terms() : null), takes: (klass) => (stuck ? stuck.takes(klass) : true) };
 }
 
 const TERMINAL = new Set(['done', 'refunded', 'rejected', 'aborted', 'lost']);
@@ -83,7 +97,8 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   // only while the price today pays no more than `lateMoveBps` over the quote's. A fixed price (the TAC provider's) keeps its grace as it was.
   const priced = typeof config.quote?.rate === 'function';
   const lateSecs = Number(config.quote?.lateSecs ?? 21600), lateMoveBps = BigInt(config.quote?.lateMoveBps ?? 100);
-  const marketHolds = (q) => BigInt(q.evmAmount) * 10000n <= quoter.price(q.btcValue).evmAmount * (10000n + lateMoveBps);
+  // a quote priced by class is judged against the class it was priced for, not against the clean price
+  const marketHolds = (q) => BigInt(q.evmAmount) * 10000n <= quoter.price(q.btcValue, quotedClass(q)).evmAmount * (10000n + lateMoveBps);
   async function seenInTime(q, offer) {
     const txid = offer && offer.btc && String(offer.btc.txid || '').toLowerCase(), by = q.validUntil + graceSecs;
     if (!txid) return false;
@@ -354,12 +369,16 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (method === 'GET' && path === '/health') return reply({ ok: health.ok, lastTick: health.lastTick, error: health.lastError }, health.ok ? 200 : 503);
       if (method === 'GET' && path === '/info') {
         const q = config.quote, a = await availableAmount();
-        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false });
+        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false && quoter.takes('poolExit'), ...(quoter.terms() ? { stuck: quoter.terms() } : {}) });
       }
       if (method === 'POST' && path === '/quote') {
         if (!body || !amountOk(body.amount)) return reply({ error: 'amount must be a whole number' }, 400);
+        // the class of TAC the lock will spend (dapp/fast/stuck.js); a request that names none is the clean class, which is what every page
+        // that predates this asks for, and what a provider without a schedule prices whatever it is told
+        const klass = body.class ?? 'clean';
+        if (!isClass(klass)) return reply({ error: `class must be one of ${CLASSES.join(', ')}` }, 400);
         if (quotesHeld !== null && quotesHeld >= maxQuotes) return reply({ error: 'the provider holds too many open quotes just now: ask again shortly' }, 503);
-        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount).evmAmount); const made = await quoter.quote(body.amount); if (quotesHeld !== null) quotesHeld++; return made; }));
+        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount, klass).evmAmount); const made = await quoter.quote(body.amount, klass); if (quotesHeld !== null) quotesHeld++; return made; }));
       }
       if (method === 'POST' && path === '/reserve') {
         if (!body || !isId(body.quoteId)) return reply({ error: 'quoteId is required' }, 400);

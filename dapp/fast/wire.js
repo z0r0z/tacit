@@ -28,6 +28,7 @@ import { p2trAddress } from '/crossout-notes.js?cb=63153972';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=4a1bb265';
 import { splitAmount, assignNotes } from '/fast/sweep.js?cb=713466b3';
+import { classesOf, makeStuck, stuckScreen } from './stuck.js';
 export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=4a1bb265';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
@@ -94,16 +95,11 @@ export async function followed(tiers, pick, vet) {
 
 // A provider that does not take TAC the bridge's proof cannot follow (a pool or farm trade, an exit from the shielded pool, TAC that came over
 // from Ethereum) refuses a lock that spends such a note, as the bridge's own check does; one that takes any says so in its terms.
-// `vet(notes)` is as for `followed`; the screen is the provider machine's `policy.screen`: { why, retry } to refuse a lock, null to go on.
-export function lineageScreen(vet) {
-  return async (inputs) => {
-    const verdicts = await vet(inputs);
-    const at = (n) => verdicts.get(noteId(n));
-    if (inputs.some((n) => at(n)?.state === 'unprovable')) return { why: 'a note this lock spends has a history the bridge\'s proof does not follow, which this provider does not take' };
-    if (inputs.some((n) => !at(n) || at(n).state === 'unread')) return { why: 'the history of a note could not be read just now', retry: true };
-    return null;
-  };
-}
+// `vet(notes)` is as for `followed`; the screen is the provider machine's `policy.screen`: { why, retry } to refuse a lock, null to go on. It is
+// given the quote the lock was made against (`policy.screen(notes, { quote })`). With a schedule for stuck TAC (`stuck`, dapp/fast/stuck.js)
+// the screen prices as well as screens: it names the class of the notes the lock spends (clean, long, poolExit) and holds the lock to the class
+// its quote was priced for, so nothing is taken below the floor the provider read in its own config.
+export const lineageScreen = (vet, { stuck = null } = {}) => stuckScreen(vet, { stuck });
 
 // The counter of a provider from the reference kept with its swaps: one that serves HTTP, or one reached through a board.
 export function counterFor(ref, { fetchImpl = (...a) => fetch(...a), call = {} } = {}) {
@@ -172,6 +168,17 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
   const market = makeFastBridgeMarket({ btc, evm, store, seed, pins: asset, counterFor: counterOf, ...(now ? { now } : {}) });
   const notes = () => withKey((t) => notesOf(t, asset.btcAsset));
   const balance = async () => (await notes()).reduce((s, n) => s + n.amount, 0n);
+  // The class of TAC a lock for `units` would spend (dapp/fast/stuck.js): clean, long or poolExit. It is read before the quotes, so a provider
+  // that prices stuck TAC quotes the price of what is really locked and not the clean price. A history that cannot be read is called clean here:
+  // `followed` below stops the lock on it rather than guess (code 'lineage_unread'), so nothing is locked at a price that was not read.
+  const classOfSet = async (ns) => {
+    if (!vet || !ns.length) return 'clean';
+    try { const { klass, known } = classesOf(await vet(ns), ns); return known ? klass : 'clean'; } catch { return 'clean'; }
+  };
+  const classFor = async (units, ref = null) => {
+    const client = market.clientFor(ref), picked = client.pickNotes(await client.freeNotes(await notes()), units);
+    return picked && picked.notes ? classOfSet(picked.notes) : 'clean';
+  };
   const fastFirst = async (all, quotes) => untrackedFirst(all, await withKey((t) => t.bridgeUx().noteTracking(all)).catch(() => null),
     (rest) => quotes.length > 0 && quotes.every(({ provider, quote }) => market.clientFor(provider.ref).pickNotes(rest, quote.btcValue)));
   // The steps of a key's bridges are taken by one page at a time (the front page and /fast/ share the swaps kept in this browser): the others
@@ -241,7 +248,7 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
       }
       if (!chosen) return { ok: false, why: 'notes', parts: plans[0].legs.length, notes: free.length, held: free.reduce((s, n) => s + BigInt(n.amount), 0n) };
       const legs = await Promise.all(chosen.plan.legs.map(async (l, i) => {
-        const r = await market.quoteAll([l.provider], l.amount);
+        const r = await market.quoteAll([l.provider], l.amount, { klass: await classOfSet(chosen.funded[i].notes) });
         return { provider: l.provider, amount: l.amount, notes: chosen.funded[i].notes, quote: r.quotes[0] ? r.quotes[0].quote : null, error: r.failed[0] ? r.failed[0].error : null };
       }));
       const bad = legs.filter((l) => !l.quote);
@@ -263,7 +270,7 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
   const startSweep = async (offer) => market.sweep({ legs: offer.legs.map(({ provider, quote, notes: legNotes }) => ({ provider, quote, notes: legNotes })), notes: await notes() });
   return {
     address: prims.wallet.address(), notes, balance, market,
-    quoteAll: (providers, units, o) => market.quoteAll(providers, units, o),
+    quoteAll: async (providers, units, o = {}) => market.quoteAll(providers, units, { ...o, klass: o.klass ?? (await classFor(units, providers[0] && providers[0].ref)) }),
     sweepOffer, startSweep,
     // what the lock would cost on Bitcoin for a quote and whether the address can pay it (nothing is stored or sent)
     cost: async ({ quote, provider, only, onProgress }) => {
@@ -535,15 +542,22 @@ export async function openProvider({ T, withKey, ux, priv, pubHex, boards = [], 
   async function inventory() {
     return { pool: await evm.available(), address: btc.address, claimPub };
   }
-  const screen = lineageScreen(vet);
-  const configOf = (s) => ({
-    claimPub, csvBlocks: 144, alertSecs: 3600, anyTac: s.anyTac !== false,
-    quote: { btcAsset: asset.btcAsset, evmAsset: asset.evmAsset, minAmount: s.minAmount, maxAmount: s.maxAmount, feeBps: s.feeBps, flatFee: s.flatFee, validSecs: 600 },
-    policy: {
-      minCsv: 72, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, roundSecs: 600, refundMarginSecs: 600, maxOfferAgeSecs: 3600,
-      minAmount: s.minAmount, maxAmount: s.maxAmount, minConfsFor: confs, ...(s.anyTac === false ? { screen } : {}),
-    },
-  });
+  // A provider at a page prices and screens as it did, unless a setting carries a schedule for stuck TAC (`s.stuck`, dapp/fast/stuck.js): then
+  // the screen is the pricing one, which names the class of the notes a lock spends and holds a lock to the class its quote was priced for.
+  const configOf = (s) => {
+    const quote = { btcAsset: asset.btcAsset, evmAsset: asset.evmAsset, minAmount: s.minAmount, maxAmount: s.maxAmount, feeBps: s.feeBps, flatFee: s.flatFee, validSecs: 600, ...(s.stuck ? { stuck: s.stuck } : {}) };
+    const stuck = s.stuck ? makeStuck({ quote, stuck: s.stuck }) : null;
+    return {
+      // `anyTac` is what a page reads to decide whether to send it a note the proof does not follow: a provider that prices stuck TAC and does
+      // not take a pool exit must not say it takes any, or a bridger locks it one and is refused after the lock's fees are spent
+      claimPub, csvBlocks: 144, alertSecs: 3600, anyTac: s.anyTac !== false && (!stuck || stuck.takes('poolExit')),
+      quote,
+      policy: {
+        minCsv: 72, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, roundSecs: 600, refundMarginSecs: 600, maxOfferAgeSecs: 3600,
+        minAmount: s.minAmount, maxAmount: s.maxAmount, minConfsFor: confs, ...(stuck || s.anyTac === false ? { screen: lineageScreen(vet, { stuck }) } : {}),
+      },
+    };
+  };
   // Starts the swaps that are open on their way (the takes and the refunds are not to be left), and, when `accept` is set, answers
   // requests and posts the ad on every board. Settings: { feeBps, flatFee, minAmount, maxAmount } in base units, and `anyTac` (taken unless false: see `screen`).
   async function start({ settings = {}, accept = true } = {}) {

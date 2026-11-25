@@ -24,6 +24,9 @@ const test = (name, fn) => tests.push([name, fn]);
 const TAC = 10n ** 8n;
 const key = (n) => new Uint8Array(32).fill(n);
 const openWallet = (priv) => { T.wallet.priv = priv; T.wallet.pub = secp.getPublicKey(priv, true); };
+// the quotes are asked for the class of the notes a lock would spend (dapp/fast/stuck.js), so a test that quotes fakes that read: every
+// note here is traced short, which is the clean class
+const tracedShort = async (ns) => new Map(ns.map((n) => [`${n.txid}:${n.vout}`, { state: 'traced', hops: 2 }]));
 const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 const utxo = (n, confirmed = true, value = 546) => ({ txid: String(n).repeat(64), vout: 0, value, status: { confirmed } });
 const holdings = (entries) => new Map(entries);
@@ -55,7 +58,7 @@ test('openFast: the address, the notes and the balance of the key, and the quote
     [claimA]: { quote: async () => quote(claimA, 990) }, [claimB]: { quote: async () => quote(claimB, 997) },
     [claimC]: { quote: async () => { throw new Error('down'); } },
   };
-  const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor: (ref) => counters[ref.claimPub] });
+  const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', vet: tracedShort, counterFor: (ref) => counters[ref.claimPub] });
   assert.equal(s.address, T.wallet.address());
   assert.equal(await s.balance(), 5700n);
   assert.deepEqual((await s.notes()).map((n) => n.amount), [5000n, 700n]);
@@ -370,7 +373,7 @@ test('a provider and a user, each from its own key, find and reach each other th
     assert.equal(ad.anyTac, true, 'the provider says in its signed ad that it takes TAC whatever its history'); assert.equal(found[0].terms.anyTac, true, 'and the user\'s side reads it');
     openWallet(uPriv);
     T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 500n * TAC, blinding: 7n }] }]]));
-    const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv: uPriv, pubHex: uPub, hrp: 'tb', fetchImpl, call: { pollMs: 5 } });
+    const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv: uPriv, pubHex: uPub, hrp: 'tb', vet: tracedShort, fetchImpl, call: { pollMs: 5 } });
     const r = await s.quoteAll(found, 100n * TAC);
     assert.deepEqual(r.failed, []);
     assert.deepEqual([r.quotes[0].quote.btcValue, r.quotes[0].quote.evmAmount, r.quotes[0].quote.fee], [100n * TAC, 9_870_000_000n, 130_000_000n]);
@@ -405,7 +408,7 @@ test('a provider away from its page takes on nothing new: no ad is posted and a 
     const found = await discoverProviders({ providers: [], boards: ['https://board.example'], fetchImpl });
     openWallet(uPriv);
     T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 500n * TAC, blinding: 7n }] }]]));
-    const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv: uPriv, pubHex: uPub, hrp: 'tb', fetchImpl, call: { pollMs: 5 } });
+    const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv: uPriv, pubHex: uPub, hrp: 'tb', vet: tracedShort, fetchImpl, call: { pollMs: 5 } });
     here = false;
     const away = await s.quoteAll(found, 100n * TAC);
     assert.equal(away.quotes.length, 0);
@@ -625,7 +628,7 @@ function splitSession(heldTac, { down = new Set() } = {}) {
   const counters = { [claim.a]: { quote: quoteOf('a', 100) }, [claim.b]: { quote: quoteOf('b', 200) }, [claim.c]: { quote: quoteOf('c', 400) } };
   const terms = (cap, bps, any = true) => ({ feeBps: bps, flatFee: 0n, minAmount: 10n * TAC, maxAmount: 1000n * TAC, available: BigInt(cap) * TAC, anyTac: any });
   const providers = [{ id: claim.a, name: 'A', ref: { kind: 'http', claimPub: claim.a }, terms: terms(500, 100) }, { id: claim.b, name: 'B', ref: { kind: 'http', claimPub: claim.b }, terms: terms(400, 200) }, { id: claim.c, name: 'C', ref: { kind: 'http', claimPub: claim.c }, terms: terms(300, 400) }];
-  const open = () => openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor: (ref) => (ref ? counters[ref.claimPub] : {}) });
+  const open = () => openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', vet: tracedShort, counterFor: (ref) => (ref ? counters[ref.claimPub] : {}) });
   return { open, providers, asked, claim };
 }
 

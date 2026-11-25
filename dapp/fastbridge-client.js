@@ -60,8 +60,10 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return t;
   }
 
-  async function quote(amount) {
-    const q = await counter.quote(amount);
+  // `klass` names the class of TAC the lock will spend (dapp/fast/stuck.js), so a provider that prices stuck TAC quotes the price of what is
+  // being spent and not the clean price; a provider that does not know the word prices as it always did, and an old caller asks as it did.
+  async function quote(amount, klass = null) {
+    const q = await counter.quote(amount, klass);
     if (!q || typeof q.id !== 'string' || q.id.length > 128 || !isHex(q.claimPub, 66) || !isHex(q.btcAsset, 64) || !isHex(q.evmAsset, 64)) throw new Error('the provider\'s quote is not readable');
     for (const k of ['claimPub', 'btcAsset', 'evmAsset']) if (pinned(k) && pinned(k) !== strip(q[k])) throw new Error(`the provider's ${k === 'claimPub' ? 'key' : 'asset'} is not the one this page expects`);
     const btcValue = big(q.btcValue, 'amount'), evmAmount = big(q.evmAmount, 'payout');
@@ -218,13 +220,17 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   // Each quote is also checked against the provider's own terms (`aboveTerms`: it keeps more than its ad says) and against the most the holder said
   // it will pay (`maxFeeBps`, a kept want's price: `aboveWant`). Quotes are ranked by what they cost the holder: one with a take above fair or a fee
   // above its word comes after every one without, then the most paid out first.
-  async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS, maxFeeBps = null } = {}) {
+  // `klass` is the class of TAC the lock will spend. A quote that names another class is not a quote for this lock and is refused; one that names
+  // none is the clean price, which is what a provider that does not price stuck TAC gives (and takes any TAC as it always did). An ad has one fee,
+  // so a quote priced by class is not held to it: the class is what it was priced for.
+  async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS, maxFeeBps = null, klass = null } = {}) {
     const got = await Promise.all(providers.map(async (provider) => {
       try {
-        const q = await withTimeout(clientFor(provider.ref).quote(amount), timeoutMs);
+        const q = await withTimeout(clientFor(provider.ref).quote(amount, klass), timeoutMs);
+        if (klass && q.class && q.class !== klass) throw new Error(`the quote is priced for ${q.class} TAC, not for the ${klass} TAC this lock would spend`);
         let aboveTerms = false;
         // (for one asset on both sides the fee is what is not paid out; a provider that lists no terms is judged as before)
-        try { aboveTerms = !!provider.terms && q.btcAsset === q.evmAsset && q.fee > feeOf(provider.terms, q.btcValue); } catch { }
+        try { aboveTerms = !q.class && !!provider.terms && q.btcAsset === q.evmAsset && q.fee > feeOf(provider.terms, q.btcValue); } catch { }
         const aboveWant = Number.isInteger(maxFeeBps) && maxFeeBps >= 0 && q.fee * 10000n > q.btcValue * BigInt(maxFeeBps);
         return { provider, quote: { ...q, aboveTerms, aboveWant } };
       } catch (error) { return { provider, error }; }
