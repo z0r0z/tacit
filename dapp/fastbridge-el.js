@@ -195,13 +195,13 @@ export function makeEthereumLocker(ctx) {
     if (r.t) return save(rec, { phase: 'taking', t: r.t, unread: null, lookAt: null });
     // (a lock is refunded only by its locker: a record found again from the key, which kept no refund of its own, was refunded by this key)
     if (r.refunded) return save(rec, { phase: rec.refund || rec.recovered ? 'refunded' : 'done', why: 'the lock was spent by a refund' });
-    // A claim read so far without t is read again (each look reads more of the window's traces), less often each time, for as long as the Bitcoin lock can still be
+    // A claim read so far without t is read again (each look reads more of the window's traces), less often each time but at least every two minutes (the BTC waits on it), for as long as the Bitcoin lock can still be
     // taken: only once its refund is a few blocks away is the swap given up.
     const height = rec.lockHeight ?? ((await btc.status(rec.lockTxid).catch(() => null)) || {}).height;
     const left = height == null ? null : height + rec.csvBlocks - 1 - (await btc.tip());
     if (left == null || left > (policy.unreadGiveUpBlocks ?? 6)) {
       const n = (rec.unread || 0) + 1;
-      return save(rec, { unread: n, lookAt: ctx.now() + Math.min(policy.unreadMaxWaitSecs ?? 900, 30 * 2 ** Math.min(n - 1, 10)), why: 'the lock was spent: its claim is read again for t' });
+      return save(rec, { unread: n, lookAt: ctx.now() + Math.min(policy.unreadMaxWaitSecs ?? 120, 30 * 2 ** Math.min(n - 1, 10)), why: 'the lock was spent: its claim is read again for t' });
     }
     return save(rec, { phase: 'lost', why: 'the lock was claimed with a kernel that does not reveal t' });
   };
@@ -593,6 +593,17 @@ export function makeEthereumLocker(ctx) {
     return rec;
   }
 
+  // A swap that has not moved for longer than it should is looked at afresh: every wait this machine keeps (a read put off, a build put off, the explorers'
+  // agreement asked at most every so often) is let go and the swap is stepped now. Nothing that decides anything is skipped: the step makes every check it
+  // always makes, only sooner.
+  function poke(rec) {
+    return serial(rec.id, async () => {
+      const cur = (await store.get(rec.id)) || rec;
+      if (['done', 'refunded', 'aborted', 'lost'].includes(cur.phase)) return cur;
+      return save(cur, { lookAt: null, agreeAt: null, buildRetryAt: null, preRetryAt: null, pokedAt: ctx.now() });
+    }).then((r) => step(r));
+  }
+
   const KEEPS_ERROR = new Set(['aborted', 'rejected', 'lost']);
   // `nodesSince`: since when the swap waits on Ethereum nodes that do not agree (or too few answer); the page and the provider say so once it is long
   function step(rec) {
@@ -606,5 +617,5 @@ export function makeEthereumLocker(ctx) {
     });
   }
 
-  return { receive, step };
+  return { receive, step, poke };
 }
