@@ -87,6 +87,21 @@ test('ETH for Bitcoin, all the way: the provider locks sats first, the user lock
   assert.equal((await w.pair.balances()).eth, 0n, 'the ETH left the private balance');
 });
 
+test('the reverse pair fee ceiling gives a retryable refusal above it and quotes at it without a swap', async () => {
+  const w = pairWorld({ revConfig: { maxFeeRate: 2.5 } });
+  await w.ready();
+  w.uEvm.fund(UNITS, 'inv0');
+  const body = { amount: String(UNITS), claimPub: bytesToHex(w.uW.wallet.pub) };
+  const refused = await w.rev.handle({ method: 'POST', path: '/reverse/quote', body });
+  assert.equal(refused.status, 503, 'the sim quotes 3 sat/vB against a 2.5 ceiling');
+  assert.equal(refused.body.retry, true); assert.match(refused.body.error, /above.*2\.5 sat\/vB ceiling/);
+  assert.deepEqual(await w.stores.rv.swaps.list(), [], 'a refused quote made no swap');
+  w.rBtc.feeRate = async () => 2.5;
+  const q = await w.pair.quote({ dir: 'e2b', amount: UNITS });
+  assert.equal(q.blocked, null); assert.equal(q.get, 100_539n, 'a rate at the ceiling leaves pair pricing unchanged');
+  assert.deepEqual(await w.stores.rv.swaps.list(), [], 'quoting at the ceiling still starts no swap');
+});
+
 test('a provider that quotes far under the market is blocked, and pressing start sends nothing', async () => {
   const w = pairWorld({ providerMarket: 33, clientMarket: 35.6 });   // the provider reads ETH at 33 per BTC while the page reads 35.6: 7.3% under
   await w.ready();

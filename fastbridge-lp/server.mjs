@@ -7,6 +7,9 @@
 //   FB_LP_CONFIG=<path>       the config file (README.md). Default ./fastbridge-lp/config.json
 //   FB_LP_ALERT_WEBHOOK=<url> optional: alerts are POSTed there as JSON as well as logged
 //   PORT, FB_LP_DATA_DIR, FB_LP_NAME, FB_LP_BOARDS, FB_LP_MIN_AMOUNT, FB_LP_MAX_AMOUNT, FB_LP_FEE_BPS, FB_LP_FLAT_FEE   optional: set over the config (lib/env-config.mjs)
+//   FB_LP_REVERSE, FB_LP_REVERSE_MIN_PROCEEDS_BPS, FB_LP_REVERSE_MAX_FEE_RATE   optional reverse switches and safety limits (lib/env-config.mjs)
+//   FB_LP_REBALANCE, FB_LP_REBALANCE_LEASES, FB_LP_REBALANCE_MAX_NOTE_TAC, FB_LP_REBALANCE_MAX_DAILY_TAC, FB_LP_REBALANCE_MAX_INVENTORY_TAC,
+//   FB_LP_REBALANCE_MAX_STUCK_TAC, FB_LP_REBALANCE_MAX_FEE_RATE, FB_LP_REBALANCE_MIN_SOURCE_CONFS, FB_LP_REBALANCE_STALL_SECS   optional rebalance settings; live use also needs reverse on
 //   node fastbridge-lp/server.mjs [--dry-run]     (Node 22; run from the repository root)
 //
 // --dry-run answers /info and /quote and checks offers against the chain, but sends nothing and advances no swap.
@@ -110,7 +113,15 @@ const config = {
     minConfsFor: (v) => confs.reduce((n, [from, c]) => (BigInt(v) >= from ? c : n), confs[0][1]),
   },
 };
+const { reverseOptions } = await import('./lib/reverse.mjs');
+const ropts = PAIR ? pairLib.pairReverseOptions(C, rateFeed) : reverseOptions(C);
 const data = resolve(C.dataDir || 'fastbridge-lp/data');
+if (C.reverse?.enabled === true && C.reverse.rebalance?.enabled === true && !DRY && !PAIR) {
+  const { makeRebalanceIntakeGate, rebalanceStatusFreshSecs } = await import('./lib/rebalance-gate.mjs');
+  const statusFile = resolve(data, 'rebalance/status.json'), freshSecs = rebalanceStatusFreshSecs(ropts.rebalance.tickSecs);
+  config.intakeGate = makeRebalanceIntakeGate({ statusFile, freshSecs, expectedMaxStuckBaseUnits: ropts.rebalance.maxStuck });
+  log({ level: 'info', msg: 'forward intake gate is on: new quotes need fresh reverse rebalance status', statusFile, freshSecs, maxStuckTac: ropts.rebalance.maxStuckTac });
+}
 const alert = makeAlert({ log, webhook: process.env.FB_LP_ALERT_WEBHOOK || null, name: C.name || undefined });
 // a pair provider with no price quotes nothing: said, and again each alertSecs while it stays so, and once when the price is back
 if (PAIR) {
@@ -191,8 +202,6 @@ if (C.refill !== false && !DRY) {
 // of its own, derived from this key: nothing else of this process, or of anyone who lists from the main address, shares its notes or its coins. The pool side
 // is this provider's own, so what users send for it lands where the forward side lends from.
 let handle = service.handle;
-const { reverseOptions } = await import('./lib/reverse.mjs');
-const ropts = PAIR ? pairLib.pairReverseOptions(C, rateFeed) : reverseOptions(C);
 if (ropts && DRY) log({ level: 'info', msg: 'dry run: the reverse side is not started' });
 else if (ropts) {
   const { reverseKeyOf, reverseSeedOf, makeReverseInventory, routed } = await import('./lib/reverse.mjs');
@@ -212,10 +221,29 @@ else if (ropts) {
     swaps: makeFileStore(resolve(data, 'reverse/swaps')), quotes: makeFileStore(resolve(data, 'reverse/quotes')), offers: makeFileStore(resolve(data, 'reverse/offers')), evmOffers: makeFileStore(resolve(data, 'reverse/evm-offers')),
   });
   await reverse.start();
-  let rbusy = false;
-  setInterval(async () => { if (rbusy) return; rbusy = true; try { await reverse.tick(); } catch (e) { log({ level: 'error', msg: 'reverse tick failed', error: String((e && e.message) || e).slice(0, 200) }); } finally { rbusy = false; } }, (C.tickSecs ?? 15) * 1000);
+  let rbusy = false, rtickFailed = false, rtickAlertAt = -Infinity;
+  setInterval(async () => {
+    if (rbusy) return;
+    rbusy = true;
+    try {
+      const summary = await reverse.tick();
+      if (summary.tickOk !== true) {
+        const error = new Error(summary.lastError || 'reverse tick failed without a reason');
+        error.reverseAlerted = true;
+        throw error;
+      }
+      if (rtickFailed) alert({ level: 'info', msg: 'reverse tick recovered' });
+      rtickFailed = false;
+    } catch (e) {
+      const now = Math.floor(Date.now() / 1000), failure = { level: 'alert', msg: 'reverse tick failed', error: String((e && e.message) || e).slice(0, 200) };
+      if (e?.reverseAlerted) rtickAlertAt = now;
+      if (!e?.reverseAlerted && (!rtickFailed || now - rtickAlertAt >= (C.alertSecs ?? 3600))) { alert(failure); rtickAlertAt = now; }
+      else log({ ...failure, level: 'error' });
+      rtickFailed = true;
+    } finally { rbusy = false; }
+  }, (C.tickSecs ?? 15) * 1000);
   handle = routed(service.handle, reverse.handle);
-  log({ level: 'info', msg: 'the reverse side is on: the TAC and the sats at this Bitcoin address are what it sells and what it pays fees from', reverseAddress: rbtc.address, maxOpen: ropts.maxOpen, maxTac: String(ropts.maxLocked), csvBlocks: ropts.csvBlocks, feeBps: ropts.quote.feeBps });
+  log({ level: 'info', msg: 'the reverse side is on: the TAC and the sats at this Bitcoin address are what it sells and what it pays fees from', reverseAddress: rbtc.address, maxOpen: ropts.maxOpen, maxTac: String(ropts.maxLocked), csvBlocks: ropts.csvBlocks, feeBps: ropts.quote.feeBps, minProceedsBps: ropts.minProceedsBps });
 }
 const server = makeHttpServer({ handle, origins: C.origins || [], trustProxy: !!C.trustProxy, clientIp: C.clientIp || null });
 server.listen(C.port ?? 8787, () => log({ level: 'info', msg: 'listening', port: C.port ?? 8787 }));

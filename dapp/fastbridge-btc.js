@@ -104,7 +104,8 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   }
   // The median of what the explorers estimate. An estimate moves slowly and every quote asks for one, so the last answer is kept
   // for feeFreshMs and callers at the same moment share one read. A shared address can be rate limited by every explorer for
-  // hours: an answer up to feeStaleMs old then stands in, and without one the error names what each explorer said.
+  // hours: an answer up to feeStaleMs old then stands in, and without one the error names what each explorer said. A caller that
+  // must judge only a current answer calls feeRate(0, { allowStale: false }); the default caching and stale fallback are unchanged.
   // An estimate above the ceiling (sat/vB) is a mistake or a lie; no fee market has been near it.
   const FEE_RATE_CEILING = 5000, FEE_RATE_SPREAD = 8;
   let fee = null, feeRead = null, feeLost = null;
@@ -130,14 +131,14 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     if (seen.length === 1) return Math.max(1, minFeeRate, Math.ceil(Math.min(seen[0], soloFeeCeiling)));
     return Math.max(1, minFeeRate, Math.ceil(seen.length % 2 ? seen[(seen.length - 1) / 2] : (seen[seen.length / 2 - 1] + seen[seen.length / 2]) / 2));
   }
-  async function feeRate(maxAgeMs = feeFreshMs) {          // a caller that wants it newer than a quote needs it (the LP's tick) says so
+  async function feeRate(maxAgeMs = feeFreshMs, { allowStale = true } = {}) {          // a caller that wants it newer than a quote needs it (the LP's tick) says so
     const t = nowMs();
     if (fee && t - fee.at < maxAgeMs) return fee.v;
     try {
       if (feeLost && t - feeLost.at < feeRetryMs) throw feeLost.error;          // a read that just failed is not repeated for every caller
       feeRead ||= readFee().then((v) => { fee = { v, at: nowMs() }; feeLost = null; return v; }, (e) => { feeLost = { at: nowMs(), error: e }; throw e; }).finally(() => { feeRead = null; });
       return await feeRead;
-    } catch (e) { if (fee && t - fee.at < feeStaleMs) return fee.v; throw e; }
+    } catch (e) { if (allowStale && fee && t - fee.at < feeStaleMs) return fee.v; throw e; }
   }
   // the address's transactions, newest first, a page at a time (esplora gives the unconfirmed ones and 25 confirmed, then 25 after the last seen)
   async function history(addr = address, pages = 4) {

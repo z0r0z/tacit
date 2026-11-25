@@ -42,9 +42,11 @@ export async function exposeOutpoints({ getJson, address, notes, coin }) {
     const out = tx && tx.vout && tx.vout[o.vout];
     if (!out) throw new Error(`${kind} ${o.txid.slice(0, 12)}…:${o.vout} is not an output of that transaction`);
     if (out.scriptpubkey_address !== address) throw new Error(`${kind} ${o.txid.slice(0, 12)}…:${o.vout} is not at the main address`);
+    if (!Number.isInteger(out.value) || out.value < 0) throw new Error(`${kind} ${o.txid.slice(0, 12)}…:${o.vout} has an invalid output value`);
     const spent = await getJson(`/tx/${o.txid}/outspend/${o.vout}`);
     if (!spent || spent.spent !== false) throw new Error(`${kind} ${o.txid.slice(0, 12)}…:${o.vout} is ${spent && spent.spent ? 'already spent' : 'not known to be unspent'}`);
-    if (!tx.status || !tx.status.confirmed) throw new Error(`${kind} ${o.txid.slice(0, 12)}…:${o.vout} has not confirmed yet`);
+    if (!tx.status || tx.status.confirmed !== true) throw new Error(`${kind} ${o.txid.slice(0, 12)}…:${o.vout} has not confirmed yet`);
+    if (!Number.isInteger(tx.status.block_height) || tx.status.block_height < 0) throw new Error(`${kind} ${o.txid.slice(0, 12)}…:${o.vout} has no valid confirmation height`);
     return { txid: o.txid, vout: o.vout, value: out.value, status: { confirmed: true, block_height: tx.status.block_height, block_hash: tx.status.block_hash, block_time: tx.status.block_time } };
   };
   if (!notes.length) throw new Error('name at least one TAC note with --note');
@@ -95,7 +97,10 @@ export async function executeFund({ tacit, plan, token, ownPubHex, expectPubHex 
   if (token !== fundToken(plan)) throw new Error('the confirm token is not the one for this plan: run it without --send and use the token it prints');
   if (ownPubHex !== expectPubHex) throw new Error('the open wallet is not the provider key: nothing was sent');
   const recipients = [plan.mode === 'plain' ? { pubHex: plan.destination, amount: BigInt(plan.amount) } : { stealthAddress: plan.destination, amount: BigInt(plan.amount) }];
-  const r = await tacit.buildAndBroadcastCXferMulti({ assetIdHex: TAC, recipients, forceUtxos: [plan.entry] });
+  const r = await tacit.buildAndBroadcastCXferMulti({
+    assetIdHex: TAC, recipients, forceUtxos: [plan.entry],
+    ...(plan.feeRate != null ? { feeRate: plan.feeRate } : {}), ...(plan.maxFeeRate != null ? { maxFeeRate: plan.maxFeeRate } : {}),
+  });
   return r.revealTxid || r.txid || null;
 }
 

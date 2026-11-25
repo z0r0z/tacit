@@ -62,6 +62,56 @@ test('the reverse side: off unless asked for, each knob in its own field, a conf
   const before = JSON.stringify(BASE); applyEnv(BASE, { FB_LP_REVERSE: 'on' }); assert.equal(JSON.stringify(BASE), before, 'the config handed in is not changed');
 });
 
+test('reverse proceeds and fee limits override exactly, do not switch reverse on, and reject invalid values', () => {
+  const c = applyEnv(BASE, { FB_LP_REVERSE_MIN_PROCEEDS_BPS: ' 10500 ', FB_LP_REVERSE_MAX_FEE_RATE: '2.5' });
+  assert.deepEqual(c.reverse, { minProceedsBps: 10500, maxFeeRate: 2.5 });
+  assert.equal(c.reverse.enabled, undefined, 'a limit is not the enable switch');
+  assert.equal(applyEnv(BASE, { FB_LP_REVERSE_MAX_FEE_RATE: '.5' }).reverse.maxFeeRate, 0.5);
+  const configured = { ...BASE, reverse: { enabled: false, feeBps: 40, rebalance: { enabled: true, maxDailyTac: '25' } } };
+  assert.deepEqual(applyEnv(configured, { FB_LP_REVERSE_MIN_PROCEEDS_BPS: '', FB_LP_REVERSE_MAX_FEE_RATE: ' ' }), configured, 'blank limits leave the whole nested config unchanged');
+  for (const [env, name] of [
+    [{ FB_LP_REVERSE_MIN_PROCEEDS_BPS: '9999' }, 'MIN_PROCEEDS_BPS'], [{ FB_LP_REVERSE_MIN_PROCEEDS_BPS: '1000001' }, 'MIN_PROCEEDS_BPS'],
+    [{ FB_LP_REVERSE_MIN_PROCEEDS_BPS: '10000.5' }, 'MIN_PROCEEDS_BPS'], [{ FB_LP_REVERSE_MIN_PROCEEDS_BPS: '1e4' }, 'MIN_PROCEEDS_BPS'],
+    [{ FB_LP_REVERSE_MAX_FEE_RATE: '0' }, 'REVERSE_MAX_FEE_RATE'], [{ FB_LP_REVERSE_MAX_FEE_RATE: '-1' }, 'REVERSE_MAX_FEE_RATE'],
+    [{ FB_LP_REVERSE_MAX_FEE_RATE: '1e2' }, 'REVERSE_MAX_FEE_RATE'], [{ FB_LP_REVERSE_MAX_FEE_RATE: 'Infinity' }, 'REVERSE_MAX_FEE_RATE'],
+    [{ FB_LP_REVERSE_MAX_FEE_RATE: 'fast' }, 'REVERSE_MAX_FEE_RATE'],
+  ]) assert.throws(() => applyEnv(BASE, env), (e) => e.message.includes(name), JSON.stringify(env));
+});
+
+test('rebalance environment settings parse exactly and neither switch enables the other side', () => {
+  const env = {
+    FB_LP_REBALANCE: ' ON ', FB_LP_REBALANCE_LEASES: ' /var/lib/lp/rebalance-leases.json ',
+    FB_LP_REBALANCE_MAX_NOTE_TAC: '0.00000001', FB_LP_REBALANCE_MAX_DAILY_TAC: '1500.12345678', FB_LP_REBALANCE_MAX_INVENTORY_TAC: '2000', FB_LP_REBALANCE_MAX_STUCK_TAC: '2500.00000001',
+    FB_LP_REBALANCE_MAX_FEE_RATE: '3.25', FB_LP_REBALANCE_MIN_SOURCE_CONFS: '6', FB_LP_REBALANCE_STALL_SECS: '45',
+  };
+  const c = applyEnv(BASE, env);
+  assert.deepEqual(c.reverse, { rebalance: {
+    enabled: true, leases: '/var/lib/lp/rebalance-leases.json', maxNoteTac: '0.00000001', maxDailyTac: '1500.12345678', maxInventoryTac: '2000', maxStuckTac: '2500.00000001',
+    maxFeeRate: 3.25, minSourceConfs: 6, stallSecs: 45,
+  } });
+  assert.equal(c.reverse.enabled, undefined, 'rebalance on does not switch reverse on');
+  assert.deepEqual(c.quote, BASE.quote, 'the forward terms are untouched');
+  const both = { ...BASE, reverse: { enabled: true, feeBps: 35, rebalance: { enabled: true, maxDailyTac: '75', tickSecs: 30 } } };
+  assert.deepEqual(applyEnv(both, { FB_LP_REVERSE: 'off' }).reverse, { enabled: false, feeBps: 35, rebalance: { enabled: true, maxDailyTac: '75', tickSecs: 30 } }, 'reverse off leaves rebalance available for a dry-run sidecar');
+  assert.deepEqual(applyEnv(both, { FB_LP_REBALANCE: 'off' }).reverse, { enabled: true, feeBps: 35, rebalance: { enabled: false, maxDailyTac: '75', tickSecs: 30 } }, 'rebalance off does not switch reverse off');
+  assert.deepEqual(applyEnv(both, { FB_LP_REBALANCE_MAX_NOTE_TAC: '12.5' }).reverse.rebalance, { enabled: true, maxNoteTac: '12.5', maxDailyTac: '75', tickSecs: 30 }, 'one override keeps the other nested settings');
+  assert.deepEqual(applyEnv(both, {}), both, 'unset leaves configured values alone');
+  assert.deepEqual(applyEnv(both, { FB_LP_REBALANCE_LEASES: '  ' }), both, 'a blank path is unset, not a new path');
+});
+
+test('every invalid rebalance environment value fails startup and names its variable', () => {
+  const bad = [
+    ['FB_LP_REBALANCE', 'yes'], ['FB_LP_REBALANCE', '1'],
+    ['FB_LP_REBALANCE_MAX_FEE_RATE', '0'], ['FB_LP_REBALANCE_MAX_FEE_RATE', '-2'], ['FB_LP_REBALANCE_MAX_FEE_RATE', '1e2'], ['FB_LP_REBALANCE_MAX_FEE_RATE', 'NaN'],
+    ['FB_LP_REBALANCE_MIN_SOURCE_CONFS', '0'], ['FB_LP_REBALANCE_MIN_SOURCE_CONFS', '-1'], ['FB_LP_REBALANCE_MIN_SOURCE_CONFS', '1.5'], ['FB_LP_REBALANCE_MIN_SOURCE_CONFS', '1001'],
+    ['FB_LP_REBALANCE_STALL_SECS', '0'], ['FB_LP_REBALANCE_STALL_SECS', '-1'], ['FB_LP_REBALANCE_STALL_SECS', '2.5'], ['FB_LP_REBALANCE_STALL_SECS', '86401'],
+  ];
+  for (const key of ['FB_LP_REBALANCE_MAX_NOTE_TAC', 'FB_LP_REBALANCE_MAX_DAILY_TAC', 'FB_LP_REBALANCE_MAX_INVENTORY_TAC', 'FB_LP_REBALANCE_MAX_STUCK_TAC']) {
+    for (const value of ['0', '0.00000000', '-1', '1.123456789', '1.', '.5', '1e2', 'lots']) bad.push([key, value]);
+  }
+  for (const [key, value] of bad) assert.throws(() => applyEnv(BASE, { [key]: value }), (e) => e.message.includes(key), `${key}=${value}`);
+});
+
 let passed = 0;
 for (const [name, fn] of tests) { try { fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; } }
 console.log(`\n${passed}/${tests.length} provider env checks passed`);

@@ -55,6 +55,19 @@ test('what it exposes: the named outputs as the explorer shows them, only if the
   assert.match(await refused({}, { notes: [{ txid: COIN.txid, vout: 3 }] }), /(is 3546 sats: a TAC note is note-sized|also named as a note)/, 'a coin cannot be a note');
 });
 
+test('the second explorer read requires literal confirmation, integer values and an integer confirmation height', async () => {
+  const malformed = async (change, expected) => {
+    const bad = tx([[546, HOUSE]]); change(bad);
+    const w = explorer({ [N1.txid]: bad, [COIN.txid]: tx([[1, 'x'], [1, 'x'], [1, 'x'], [3546, HOUSE]]) });
+    await assert.rejects(() => exposeOutpoints({ getJson: w.getJson, address: HOUSE, notes: [N1], coin: COIN }), expected);
+  };
+  await malformed((t) => { t.vout[0].value = '546'; }, /invalid output value/);
+  await malformed((t) => { t.vout[0].value = -1; }, /invalid output value/);
+  await malformed((t) => { t.status.confirmed = 1; }, /has not confirmed yet/);
+  await malformed((t) => { t.status.block_height = '900000'; }, /no valid confirmation height/);
+  await malformed((t) => { delete t.status.block_height; }, /no valid confirmation height/);
+});
+
 test('the coin that pays the fee must be a leftover one: not a swap\'s 2,046, not the maker\'s 48k or 1.2M', async () => {
   for (const [value, ok] of [[2046, false], [COIN_MIN - 1, false], [COIN_MIN, true], [3546, true], [COIN_MAX, true], [COIN_MAX + 1, false], [48438, false], [1213436, false], [546, false]]) {
     const w = explorer({ [N1.txid]: tx([[546, HOUSE]]), [COIN.txid]: tx([[1, 'x'], [1, 'x'], [1, 'x'], [value, HOUSE]]) });
@@ -146,6 +159,21 @@ test('sending: only with the token, only from the provider key; silent is a send
   ({ t, plan } = await mk('plain', '02' + 'cd'.repeat(32)));
   assert.equal((await run(t, plan, { token: fundToken(plan) })).ok, 'ee'.repeat(32));
   assert.deepEqual(t.calls.built[0].recipients, [{ pubHex: '02' + 'cd'.repeat(32), amount: 3n * ONE }]);
+});
+
+test('executeFund forwards an exact accepted rate and ceiling, while legacy plans add no fee arguments', async () => {
+  const ex = await exposedOf([N1]);
+  const boundedWallet = walletFake([entry(N1, 10)]);
+  const bounded = await planFund({ tacit: boundedWallet, amount: 3n * ONE, exposed: ex, destination: '02' + 'cd'.repeat(32), mode: 'plain', houseAddress: HOUSE });
+  bounded.feeRate = 3.25; bounded.maxFeeRate = 4;
+  await executeFund({ tacit: boundedWallet, plan: bounded, token: fundToken(bounded), ownPubHex: '0201', expectPubHex: '0201' });
+  assert.equal(boundedWallet.calls.built[0].feeRate, 3.25);
+  assert.equal(boundedWallet.calls.built[0].maxFeeRate, 4);
+  const legacyWallet = walletFake([entry(N1, 10)]);
+  const legacy = await planFund({ tacit: legacyWallet, amount: 3n * ONE, exposed: ex, destination: '02' + 'cd'.repeat(32), mode: 'plain', houseAddress: HOUSE });
+  await executeFund({ tacit: legacyWallet, plan: legacy, token: fundToken(legacy), ownPubHex: '0201', expectPubHex: '0201' });
+  assert.equal('feeRate' in legacyWallet.calls.built[0], false);
+  assert.equal('maxFeeRate' in legacyWallet.calls.built[0], false);
 });
 
 test('the source: nothing is sent before --send, the destination is never taken from the command line, silent is the default, and the key is not kept in the environment', () => {

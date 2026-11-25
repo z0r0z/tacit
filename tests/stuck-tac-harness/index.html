@@ -1,0 +1,902 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'none'; object-src 'none'; form-action 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self'; base-uri 'none'">
+  <title>Stuck TAC recovery ledger · Offline simulation</title>
+  <style>
+    @font-face {
+      font-family: "IBM Plex Mono Local";
+      src: url("/fonts/ibm-plex-mono-400-latin.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Instrument Serif Local";
+      src: url("/fonts/instrument-serif-400-latin.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+    }
+    :root {
+      --ink: #0e100e;
+      --panel: #161915;
+      --panel-raised: #1c1f1a;
+      --line: #34382f;
+      --line-soft: #262a23;
+      --paper: #ece7da;
+      --muted: #aaa99d;
+      --faint: #7e8277;
+      --amber: #e6ad45;
+      --amber-ink: #171108;
+      --oxide: #b45b3d;
+      --sage: #a8bb8f;
+      --danger: #e08064;
+      --mono: "IBM Plex Mono Local", "Courier New", monospace;
+      --serif: "Instrument Serif Local", Georgia, serif;
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--ink); scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--ink);
+      color: var(--paper);
+      font-family: var(--mono);
+      font-size: 14px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0 auto 0 17px;
+      width: 1px;
+      background: var(--line-soft);
+      pointer-events: none;
+      z-index: 2;
+    }
+    ::selection { background: var(--amber); color: var(--amber-ink); }
+    button, input, select { font: inherit; }
+    button, select { cursor: pointer; }
+    button { color: inherit; }
+    a { color: inherit; }
+    [hidden] { display: none !important; }
+    :focus-visible {
+      outline: 2px solid var(--amber);
+      outline-offset: 4px;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .skip-link {
+      position: fixed;
+      left: 32px;
+      top: 12px;
+      z-index: 20;
+      padding: 10px 14px;
+      background: var(--amber);
+      color: var(--amber-ink);
+      transform: translateY(-180%);
+      text-decoration: none;
+    }
+    .skip-link:focus { transform: translateY(0); }
+    .page-shell {
+      width: min(1560px, 100%);
+      margin: 0 auto;
+      padding: 0 44px 0 46px;
+    }
+    .masthead { padding: 24px 0 40px; border-bottom: 1px solid var(--line); }
+    .utility-bar {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      min-height: 32px;
+      font-size: 10px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      letter-spacing: .2em;
+    }
+    .brand-mark {
+      width: 13px;
+      height: 13px;
+      border: 1px solid var(--paper);
+      position: relative;
+    }
+    .brand-mark::after {
+      content: "";
+      position: absolute;
+      width: 5px;
+      height: 5px;
+      right: -3px;
+      bottom: -3px;
+      background: var(--oxide);
+    }
+    .utility-path { color: var(--faint); }
+    .offline-label {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--amber);
+      letter-spacing: .08em;
+      white-space: nowrap;
+    }
+    .offline-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--amber);
+      box-shadow: 0 0 0 3px #3a2d16;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(270px, .55fr);
+      gap: 64px;
+      align-items: end;
+      margin-top: 54px;
+    }
+    .eyebrow, .section-index {
+      margin: 0 0 16px;
+      color: var(--oxide);
+      font-size: 10px;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      max-width: 850px;
+      font-family: var(--serif);
+      font-size: clamp(58px, 7.1vw, 104px);
+      font-weight: 400;
+      line-height: .88;
+      letter-spacing: -.035em;
+    }
+    h1 span { color: var(--amber); }
+    .hero-copy {
+      max-width: 660px;
+      margin: 28px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.75;
+    }
+    .boundary-card {
+      position: relative;
+      padding: 20px 0 4px 22px;
+      border-top: 3px solid var(--oxide);
+      border-left: 1px solid var(--line);
+    }
+    .boundary-card::before {
+      content: "B";
+      position: absolute;
+      right: 0;
+      top: -29px;
+      color: var(--oxide);
+      font-family: var(--serif);
+      font-size: 52px;
+      line-height: 1;
+    }
+    .boundary-card h2 {
+      margin: 0 0 13px;
+      font-size: 11px;
+      font-weight: 400;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .boundary-card p { margin: 0 0 16px; color: var(--muted); font-size: 11px; }
+    .route-line {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      font-size: 9px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .route-line span:last-child { text-align: right; color: var(--sage); }
+    .route-arrow { color: var(--amber); }
+    .workspace {
+      display: grid;
+      grid-template-columns: 326px minmax(0, 1fr);
+      gap: 42px;
+      padding: 42px 0 52px;
+      align-items: start;
+    }
+    .control-form {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-top: 3px solid var(--amber);
+      background: var(--panel);
+    }
+    .control-form h2, .observation h2 {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 400;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .control-form .section-index { margin-bottom: 8px; }
+    .field-label {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .select-wrap { position: relative; margin-top: 20px; }
+    .select-wrap::after {
+      content: "+";
+      position: absolute;
+      right: 13px;
+      bottom: 12px;
+      color: var(--amber);
+      pointer-events: none;
+    }
+    select, .text-input {
+      width: 100%;
+      min-height: 43px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: var(--ink);
+      color: var(--paper);
+      transition: border-color 150ms ease, background-color 150ms ease;
+    }
+    select {
+      appearance: none;
+      padding: 10px 36px 10px 12px;
+      font-size: 11px;
+    }
+    select:hover, .text-input:hover { border-color: var(--faint); }
+    select:focus, .text-input:focus { border-color: var(--amber); }
+    .text-input {
+      padding: 10px 11px;
+      font-size: 12px;
+      cursor: text;
+    }
+    .text-input[aria-invalid="true"] { border-color: var(--danger); }
+    .scenario-brief {
+      min-height: 116px;
+      margin: 12px 0 22px;
+      padding: 14px 13px;
+      border-left: 2px solid var(--oxide);
+      background: var(--panel-raised);
+    }
+    .scenario-code { color: var(--oxide); font-size: 9px; letter-spacing: .12em; }
+    .scenario-brief p { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.65; }
+    .parameter-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 15px 12px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+    }
+    .parameter { min-width: 0; }
+    .parameter .field-label { min-height: 31px; margin-bottom: 5px; line-height: 1.45; }
+    .field-note { display: block; margin-top: 5px; color: var(--faint); font-size: 8px; line-height: 1.5; }
+    .model-note {
+      margin: 18px 0 0;
+      padding-top: 15px;
+      border-top: 1px solid var(--line-soft);
+      color: var(--faint);
+      font-size: 9px;
+      line-height: 1.65;
+    }
+    .form-error { margin: 14px 0 0; color: var(--danger); font-size: 10px; }
+    .button-stack { display: grid; gap: 9px; margin-top: 22px; }
+    .button {
+      min-height: 44px;
+      padding: 11px 14px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: transparent;
+      font-size: 10px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease, transform 150ms ease;
+    }
+    .button:hover { border-color: var(--paper); }
+    .button:active { transform: translateY(1px); }
+    .button-primary { background: var(--amber); border-color: var(--amber); color: var(--amber-ink); }
+    .button-primary:hover { background: var(--paper); border-color: var(--paper); }
+    .button-secondary { background: var(--panel-raised); }
+    .button-reset { min-height: 36px; border-color: transparent; color: var(--muted); }
+    .button-reset:hover { color: var(--paper); border-color: var(--line); }
+    .observation {
+      margin-top: 24px;
+      padding: 4px 4px 0 18px;
+      border-left: 1px solid var(--oxide);
+    }
+    .observation .section-index { margin-bottom: 8px; }
+    .observation-number {
+      display: block;
+      margin: 13px 0 7px;
+      font-family: var(--serif);
+      font-size: 44px;
+      line-height: 1;
+      color: var(--paper);
+    }
+    .observation p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.7; }
+    .observation strong { color: var(--amber); font-weight: 400; }
+    .results { min-width: 0; }
+    .result-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    .result-heading .section-index { margin-bottom: 7px; }
+    .result-heading h2 {
+      margin: 0;
+      font-family: var(--serif);
+      font-size: 38px;
+      font-weight: 400;
+      line-height: 1.05;
+    }
+    .run-context { margin: 8px 0 0; color: var(--faint); font-size: 9px; letter-spacing: .05em; text-transform: uppercase; }
+    .status-chip {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 9px;
+      border: 1px solid var(--line);
+      color: var(--amber);
+      font-size: 9px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .status-chip::before { content: ""; width: 5px; height: 5px; background: currentColor; }
+    .status-chip.good { color: var(--sage); }
+    .status-chip.bad { color: var(--danger); }
+    .stale-notice {
+      margin: -4px 0 16px;
+      padding: 9px 12px;
+      border-left: 2px solid var(--amber);
+      background: #252115;
+      color: var(--amber);
+      font-size: 9px;
+    }
+    .summary-board {
+      position: relative;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: 8px 8px 0 #20231d;
+      animation: board-in 300ms cubic-bezier(.2, .7, .2, 1) both;
+    }
+    .summary-board::after {
+      content: "";
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      right: 9px;
+      top: 9px;
+      border-top: 1px solid var(--oxide);
+      border-right: 1px solid var(--oxide);
+    }
+    .balance-comparison {
+      display: grid;
+      grid-template-columns: minmax(190px, .72fr) minmax(0, 1.35fr);
+    }
+    .balance { padding: 28px 28px 26px; }
+    .balance-baseline { border-right: 1px solid var(--line); }
+    .balance-label {
+      display: block;
+      margin-bottom: 20px;
+      color: var(--muted);
+      font-size: 9px;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    .balance-value {
+      display: block;
+      font-size: clamp(23px, 2.3vw, 36px);
+      line-height: 1.1;
+      letter-spacing: -.055em;
+      white-space: nowrap;
+    }
+    .balance-rebalanced .balance-value { color: var(--amber); font-size: clamp(30px, 3.25vw, 50px); }
+    .balance-unit { margin-left: 7px; color: var(--muted); font-size: 10px; letter-spacing: .08em; }
+    .balance-note { display: block; margin-top: 13px; color: var(--faint); font-size: 9px; }
+    .recovery-tape {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 24px;
+      align-items: center;
+      padding: 14px 28px;
+      border-top: 1px solid var(--line);
+      background: var(--panel-raised);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+    }
+    .recovery-tape strong { color: var(--sage); font-size: 13px; font-weight: 400; }
+    .recovery-tape span { color: var(--muted); }
+    .recovery-tape b { color: var(--paper); font-weight: 400; }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 19px;
+    }
+    .metric {
+      min-width: 0;
+      min-height: 139px;
+      padding: 16px;
+      border-top: 2px solid var(--line);
+      background: var(--panel);
+      animation: row-in 260ms ease both;
+    }
+    .metric:nth-child(2) { animation-delay: 35ms; }
+    .metric:nth-child(3) { animation-delay: 70ms; }
+    .metric:nth-child(4) { animation-delay: 105ms; }
+    .metric:nth-child(5) { animation-delay: 140ms; }
+    .metric:nth-child(6) { animation-delay: 175ms; }
+    .metric.amber { border-color: var(--amber); }
+    .metric.oxide { border-color: var(--oxide); }
+    .metric-label { display: block; min-height: 32px; color: var(--muted); font-size: 9px; line-height: 1.5; text-transform: uppercase; letter-spacing: .06em; }
+    .metric-value { display: block; margin-top: 11px; font-size: clamp(16px, 1.45vw, 22px); line-height: 1.2; letter-spacing: -.045em; overflow-wrap: anywhere; }
+    .metric-value small { color: var(--faint); font-size: 8px; letter-spacing: .04em; }
+    .metric-note { display: block; margin-top: 9px; color: var(--faint); font-size: 8px; line-height: 1.5; }
+    .clock-register {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      background: var(--panel-raised);
+    }
+    .clock-register > div { min-width: 0; padding: 12px; border-right: 1px solid var(--line); }
+    .clock-register > div:last-child { border-right: 0; }
+    .clock-label { display: block; min-height: 27px; color: var(--faint); font-size: 8px; line-height: 1.45; text-transform: uppercase; letter-spacing: .05em; }
+    .clock-value { display: block; margin-top: 7px; color: var(--paper); font-size: 10px; overflow-wrap: anywhere; }
+    .good-text { color: var(--sage); }
+    .bad-text { color: var(--danger); }
+    .exclusion-register {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      margin-top: 10px;
+      background: var(--line);
+      border: 1px solid var(--line);
+    }
+    .exclusion-register > div { padding: 11px 12px; background: var(--ink); }
+    .exclusion-register span, .exclusion-register strong { display: block; font-size: 8px; line-height: 1.55; }
+    .exclusion-register span { color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+    .exclusion-register strong { margin-top: 5px; color: var(--amber); font-weight: 400; }
+    .ledger-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.18fr) minmax(340px, .82fr);
+      gap: 14px;
+      margin-top: 32px;
+    }
+    .ledger-panel { min-width: 0; border: 1px solid var(--line); background: var(--panel); }
+    .ledger-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 12px;
+      min-height: 69px;
+      padding: 15px 17px;
+      border-bottom: 1px solid var(--line);
+    }
+    .ledger-header .section-index { margin-bottom: 5px; }
+    .ledger-header h3 { margin: 0; font-size: 11px; font-weight: 400; letter-spacing: .07em; text-transform: uppercase; }
+    .ledger-count { color: var(--faint); font-size: 9px; white-space: nowrap; }
+    .table-scroll { max-height: 494px; overflow: auto; scrollbar-color: var(--line) var(--panel); }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 10px 12px;
+      background: var(--panel-raised);
+      color: var(--faint);
+      font-size: 8px;
+      font-weight: 400;
+      letter-spacing: .1em;
+      text-align: left;
+      text-transform: uppercase;
+    }
+    td { padding: 12px; border-top: 1px solid var(--line-soft); vertical-align: top; }
+    tbody tr:first-child td { border-top: 0; }
+    .ledger-row { animation: row-in 180ms ease both; animation-delay: calc(var(--order, 0) * 16ms); }
+    .event-ref { width: 66px; color: var(--faint); font-size: 8px; white-space: nowrap; }
+    .event-title { display: block; color: var(--paper); font-size: 10px; line-height: 1.45; }
+    .event-detail { display: block; margin-top: 5px; color: var(--muted); font-size: 8px; line-height: 1.65; overflow-wrap: anywhere; }
+    .event-amount { width: 104px; font-size: 9px; text-align: right; white-space: nowrap; }
+    .event-amount.positive { color: var(--sage); }
+    .event-amount.negative { color: var(--muted); }
+    .event-row.warn .event-title { color: var(--amber); }
+    .event-row.bad .event-title { color: var(--danger); }
+    .assertion-name { min-width: 165px; font-size: 9px; line-height: 1.55; }
+    .assertion-value { width: 104px; color: var(--muted); font-size: 8px; line-height: 1.55; overflow-wrap: anywhere; }
+    .assertion-value.actual { color: var(--paper); }
+    .assertion-state {
+      display: inline-block;
+      margin-bottom: 6px;
+      color: var(--sage);
+      font-size: 8px;
+      letter-spacing: .1em;
+    }
+    .assertion-state.fail { color: var(--danger); }
+    .assertion-row.fail { background: #291b16; }
+    .run-all-board { margin: 0 0 22px; border: 1px solid var(--line); background: var(--panel); }
+    .run-all-board .table-scroll { max-height: 330px; }
+    .run-all-table { min-width: 780px; }
+    .run-all-table td { font-size: 9px; }
+    .scenario-jump {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--paper);
+      font-size: 9px;
+      text-align: left;
+    }
+    .scenario-jump:hover { color: var(--amber); }
+    .scenario-jump.active { color: var(--amber); }
+    .table-pass { color: var(--sage); }
+    .table-fail { color: var(--danger); }
+    .method-note {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 28px;
+      margin-top: 26px;
+      padding: 18px 0 0;
+      border-top: 1px solid var(--line);
+      color: var(--faint);
+      font-size: 9px;
+      line-height: 1.7;
+    }
+    .method-note p { margin: 0; }
+    .method-note .wide { grid-column: 1 / -1; }
+    .method-note strong { color: var(--muted); font-weight: 400; }
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 20px 0 26px;
+      border-top: 1px solid var(--line);
+      color: var(--faint);
+      font-size: 8px;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    @keyframes board-in {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes row-in {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @media (max-width: 1260px) {
+      .workspace { grid-template-columns: 300px minmax(0, 1fr); gap: 28px; }
+      .ledger-grid { grid-template-columns: 1fr; }
+      .table-scroll { max-height: 430px; }
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .clock-register { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .clock-register > div:nth-child(3) { border-right: 0; }
+      .clock-register > div:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
+      .metric { min-height: 124px; }
+    }
+    @media (max-width: 940px) {
+      .page-shell { padding: 0 30px 0 32px; }
+      .hero { grid-template-columns: 1fr; gap: 34px; }
+      .boundary-card { max-width: 560px; }
+      .workspace { grid-template-columns: 1fr; }
+      .control-column { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(230px, .6fr); gap: 24px; }
+      .observation { margin-top: 0; align-self: start; }
+      .parameter-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .button-stack { grid-template-columns: 1fr 1fr auto; }
+      .button-reset { min-width: 80px; }
+      .scenario-brief { min-height: 82px; }
+    }
+    @media (max-width: 680px) {
+      body::before { left: 8px; }
+      .page-shell { padding: 0 18px 0 20px; }
+      .masthead { padding-top: 17px; }
+      .utility-bar { flex-wrap: wrap; gap: 13px; }
+      .utility-path { display: none; }
+      .offline-label { font-size: 8px; }
+      .hero { margin-top: 40px; }
+      h1 { font-size: clamp(52px, 16vw, 76px); }
+      .hero-copy { font-size: 11px; }
+      .workspace { padding-top: 30px; gap: 30px; }
+      .control-column { display: block; }
+      .observation { margin-top: 25px; }
+      .parameter-grid { grid-template-columns: 1fr 1fr; }
+      .button-stack { grid-template-columns: 1fr 1fr; }
+      .button-reset { grid-column: 1 / -1; }
+      .result-heading h2 { font-size: 32px; }
+      .result-heading { display: block; }
+      .status-chip { margin-top: 14px; }
+      .balance-comparison { grid-template-columns: 1fr; }
+      .balance { padding: 23px 20px; }
+      .balance-baseline { border-right: 0; border-bottom: 1px solid var(--line); }
+      .balance-label { margin-bottom: 13px; }
+      .balance-value, .balance-rebalanced .balance-value { font-size: clamp(26px, 8vw, 38px); }
+      .recovery-tape { grid-template-columns: 1fr auto; gap: 10px; padding: 14px 20px; }
+      .recovery-tape span:last-child { grid-column: 1 / -1; }
+      .metric-grid { gap: 8px; }
+      .clock-register { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .clock-register > div { border-bottom: 1px solid var(--line); }
+      .clock-register > div:nth-child(odd) { border-right: 1px solid var(--line); }
+      .clock-register > div:nth-child(even) { border-right: 0; }
+      .clock-register > div:nth-last-child(-n+2) { border-bottom: 0; }
+      .exclusion-register { grid-template-columns: 1fr; }
+      .metric { padding: 13px; }
+      .metric-value { font-size: 17px; }
+      .ledger-grid { margin-top: 25px; }
+      .ledger-header { padding: 14px; }
+      th, td { padding: 10px; }
+      .event-ref { width: 48px; }
+      .event-amount { width: 82px; font-size: 8px; }
+      .event-detail { font-size: 8px; }
+      .assertion-name { min-width: 140px; }
+      .method-note { grid-template-columns: 1fr; gap: 13px; }
+      .footer { display: block; }
+      .footer span { display: block; margin-top: 7px; }
+    }
+    @media (max-width: 390px) {
+      .brand { font-size: 11px; }
+      .offline-label { margin-left: 0; }
+      .metric-grid { grid-template-columns: 1fr; }
+      .metric { min-height: 112px; }
+      .metric-label { min-height: 0; }
+      .parameter-grid { grid-template-columns: 1fr; }
+      .parameter .field-label { min-height: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#review">Skip to the review console</a>
+  <div class="page-shell">
+    <header class="masthead">
+      <div class="utility-bar">
+        <span class="brand"><span class="brand-mark" aria-hidden="true"></span>TACIT</span>
+        <span class="utility-path">Provider operations / Track B / Local fixture</span>
+        <span class="offline-label"><span class="offline-dot" aria-hidden="true"></span>Offline simulation · no keys · no spends</span>
+      </div>
+      <div class="hero">
+        <div>
+          <p class="eyebrow">Reverse fast bridge / deterministic rebalance review</p>
+          <h1>Stuck TAC<br><span>recovery ledger.</span></h1>
+          <p class="hero-copy">Review N forward bridges with exact A/y accounting, ordinary clean returns, funding-cap consumption and sale-aware exposure. Balances are gross private Ethereum TAC, not quotable capacity.</p>
+        </div>
+        <aside class="boundary-card" aria-labelledby="boundary-title">
+          <h2 id="boundary-title">Simulation boundary</h2>
+          <p>No wallet module, chain connection or persistent storage is loaded. A run produces a deterministic fixture, not a quote or an instruction to spend.</p>
+          <div class="route-line" aria-label="Stuck Bitcoin TAC to private Ethereum TAC">
+            <span>Stuck BTC TAC</span><span class="route-arrow" aria-hidden="true">→</span><span>Private ETH TAC</span>
+          </div>
+        </aside>
+      </div>
+    </header>
+
+    <main class="workspace" id="review">
+      <div class="control-column">
+        <form class="control-form" id="controls" novalidate>
+          <p class="section-index">01 / Controls</p>
+          <h2>Recovery parameters</h2>
+          <div class="select-wrap">
+            <label class="field-label" for="scenario">Scenario selection</label>
+            <select id="scenario" name="scenario"></select>
+          </div>
+          <div class="scenario-brief" aria-live="polite">
+            <span class="scenario-code" id="scenario-code"></span>
+            <p id="scenario-description"></p>
+          </div>
+          <div class="parameter-grid">
+            <div class="parameter">
+              <label class="field-label" for="bridge-count">Bridge count N</label>
+              <input class="text-input" id="bridge-count" name="bridgeCount" type="text" inputmode="numeric" autocomplete="off" value="12" required aria-describedby="bridge-count-note">
+              <span class="field-note" id="bridge-count-note">1 to 100 bridges · deterministic repeats</span>
+            </div>
+            <div class="parameter">
+              <label class="field-label" for="starting-inventory">Starting gross private · TAC</label>
+              <input class="text-input" id="starting-inventory" name="startingInventory" type="text" inputmode="decimal" autocomplete="off" value="12000" required aria-describedby="starting-inventory-note">
+              <span class="field-note" id="starting-inventory-note">10,000 to 100,000</span>
+            </div>
+            <div class="parameter">
+              <label class="field-label" for="recovery-floor">Minimum proceeds E/B · %</label>
+              <input class="text-input" id="recovery-floor" name="recoveryFloor" type="text" inputmode="decimal" autocomplete="off" value="100" required aria-describedby="recovery-floor-note">
+              <span class="field-note" id="recovery-floor-note">100.00 to 110.00 · guard only</span>
+            </div>
+            <div class="parameter">
+              <label class="field-label" for="daily-cap">Daily funding cap · TAC</label>
+              <input class="text-input" id="daily-cap" name="dailyCap" type="text" inputmode="decimal" autocomplete="off" value="600" required aria-describedby="daily-cap-note">
+              <span class="field-note" id="daily-cap-note">100 to 10,000 · no partial notes</span>
+            </div>
+            <div class="parameter">
+              <label class="field-label" for="stuck-ceiling">Measured stuck ceiling · TAC</label>
+              <input class="text-input" id="stuck-ceiling" name="stuckCeiling" type="text" inputmode="decimal" autocomplete="off" value="2500" required aria-describedby="stuck-ceiling-note">
+              <span class="field-note" id="stuck-ceiling-note">Eligible main + reverse exposure · unread excluded</span>
+            </div>
+            <div class="parameter">
+              <label class="field-label" for="stall-interval">Stall interval · seconds</label>
+              <input class="text-input" id="stall-interval" name="stallSecs" type="text" inputmode="numeric" autocomplete="off" value="180" required aria-describedby="stall-interval-note">
+              <span class="field-note" id="stall-interval-note">60 to 3,600 · completed sales reset</span>
+            </div>
+          </div>
+          <p class="model-note">Default terms are floor(amount × 30 / 10000) + 0.10 TAC. The solver returns the greatest exact E on the production fee plateau. After proceeds admission, funding selection charges daily cap before buyer demand. New measured exposure receives a full stall interval; funding and refunds never count as completed sales.</p>
+          <p class="form-error" id="form-error" role="alert" hidden></p>
+          <div class="button-stack">
+            <button class="button button-primary" id="run-scenario" type="submit">Run scenario</button>
+            <button class="button button-secondary" id="run-all" type="button">Run all</button>
+            <button class="button button-reset" id="reset" type="button">Reset</button>
+          </div>
+          <p class="sr-only" id="live-status" aria-live="polite"></p>
+        </form>
+
+        <aside class="observation" aria-labelledby="observation-title">
+          <p class="section-index">Field note / 22.11.2026</p>
+          <h2 id="observation-title">A count, not a forecast</h2>
+          <span class="observation-number">230 / 4,546</span>
+          <p>Unspent TAC notes observed over the history limit. Pool exits were not counted. <strong>This observation never sets scenario frequency, bridge mix or expected recovery.</strong></p>
+        </aside>
+      </div>
+
+      <section class="results" aria-labelledby="result-title">
+        <div class="result-heading">
+          <div>
+            <p class="section-index">02 / Simulated position</p>
+            <h2 id="result-title">Normal recovery</h2>
+            <p class="run-context" id="run-context"></p>
+          </div>
+          <span class="status-chip" id="result-status">Recovered</span>
+        </div>
+        <p class="stale-notice" id="stale-notice" hidden>Parameters changed. The ledger still shows its previous inputs. Run the scenario to refresh it.</p>
+
+        <section class="run-all-board" id="run-all-board" aria-labelledby="run-all-title" hidden>
+          <div class="ledger-header">
+            <div><p class="section-index">Batch register</p><h3 id="run-all-title">All scenarios · current inputs</h3></div>
+            <span class="ledger-count" id="run-all-count"></span>
+          </div>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="All scenario results">
+            <table class="run-all-table">
+              <thead><tr><th>Scenario</th><th>Reverse E</th><th>Residual main</th><th>Unsold reverse</th><th>Active sale</th><th>Checks</th></tr></thead>
+              <tbody id="run-all-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="summary-board" aria-label="Baseline and rebalanced position">
+          <div class="balance-comparison">
+            <div class="balance balance-baseline">
+              <span class="balance-label">Baseline gross private Ethereum TAC</span>
+              <span class="balance-value"><span id="baseline-gross"></span><span class="balance-unit">TAC</span></span>
+              <span class="balance-note">Starting inventory less forward y, plus clean A returned over the ordinary bridge.</span>
+            </div>
+            <div class="balance balance-rebalanced">
+              <span class="balance-label">Rebalanced gross private Ethereum TAC</span>
+              <span class="balance-value"><span id="rebalanced-gross"></span><span class="balance-unit">TAC</span></span>
+              <span class="balance-note" id="rebalanced-note"></span>
+            </div>
+          </div>
+          <div class="recovery-tape">
+            <strong id="reverse-proceeds"></strong>
+            <span>Exact reverse E / <b id="sold-stuck"></b> sold whole-note</span>
+            <span><b id="settled-count"></b> completed whole-note sales</span>
+          </div>
+        </section>
+
+        <div class="metric-grid" aria-label="Fee, return and exposure details">
+          <article class="metric">
+            <span class="metric-label">Forward fees · A−y</span>
+            <span class="metric-value"><span id="forward-fees"></span> <small>TAC</small></span>
+            <span class="metric-note" id="forward-fees-note"></span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Reverse premium retained · E−B</span>
+            <span class="metric-value"><span id="reverse-premium"></span> <small>TAC</small></span>
+            <span class="metric-note" id="premium-note"></span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Clean returned to Ethereum · A</span>
+            <span class="metric-value"><span id="clean-returned"></span> <small>TAC</small></span>
+            <span class="metric-note">Ordinary bridge return by the reporting horizon. No TAC return fee; native sats costs excluded.</span>
+          </article>
+          <article class="metric oxide">
+            <span class="metric-label">Residual main Bitcoin TAC · B</span>
+            <span class="metric-value"><span id="residual-main"></span> <small>TAC</small></span>
+            <span class="metric-note" id="residual-main-note"></span>
+          </article>
+          <article class="metric oxide">
+            <span class="metric-label">Unsold reverse stock · B</span>
+            <span class="metric-value"><span id="unsold-reverse"></span> <small>TAC</small></span>
+            <span class="metric-note" id="unsold-reverse-note"></span>
+          </article>
+          <article class="metric amber">
+            <span class="metric-label">Active sale in-flight · B</span>
+            <span class="metric-value"><span id="active-sale"></span> <small>TAC</small></span>
+            <span class="metric-note">Existing swaps continue after the forward intake gate opens. Only completion credits E.</span>
+          </article>
+        </div>
+
+        <div class="clock-register" aria-label="Sale-aware recovery clock">
+          <div><span class="clock-label">Measured stuck</span><span class="clock-value" id="measured-stuck"></span></div>
+          <div><span class="clock-label">Watch since</span><span class="clock-value" id="watch-since"></span></div>
+          <div><span class="clock-label">Last completed sale</span><span class="clock-value" id="last-sale"></span></div>
+          <div><span class="clock-label">Last refund</span><span class="clock-value" id="last-refund"></span></div>
+          <div><span class="clock-label">Elapsed / stallSecs</span><span class="clock-value" id="stall-elapsed"></span></div>
+          <div><span class="clock-label">Forward intake gate</span><span class="clock-value" id="gate-state"></span></div>
+        </div>
+
+        <div class="exclusion-register" aria-label="Excluded production costs and capacity">
+          <div><span>Pool note-cut fees + reserves</span><strong>Excluded · not zero</strong></div>
+          <div><span>Actual quotable capacity</span><strong>Not calculated</strong></div>
+          <div><span>Native Bitcoin sats costs</span><strong>Excluded · not zero</strong></div>
+        </div>
+
+        <div class="ledger-grid">
+          <section class="ledger-panel" aria-labelledby="events-title">
+            <div class="ledger-header">
+              <div><p class="section-index">03 / Event log</p><h3 id="events-title">Operations ledger</h3></div>
+              <span class="ledger-count" id="event-count"></span>
+            </div>
+            <div class="table-scroll" tabindex="0" role="region" aria-label="Scenario event log">
+              <table>
+                <thead><tr><th>Ref</th><th>Entry</th><th style="text-align:right">Value / chain</th></tr></thead>
+                <tbody id="events-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="ledger-panel" aria-labelledby="assertions-title">
+            <div class="ledger-header">
+              <div><p class="section-index">04 / Safety checks</p><h3 id="assertions-title">Named assertions</h3></div>
+              <span class="ledger-count" id="assertion-count"></span>
+            </div>
+            <div class="table-scroll" tabindex="0" role="region" aria-label="Named assertion results">
+              <table>
+                <thead><tr><th>Assertion</th><th>Expected</th><th>Actual</th></tr></thead>
+                <tbody id="assertions-body"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div class="method-note">
+          <p><strong>Gross accounting.</strong> y = A − floor(A × 30 / 10000) − 0.10 TAC. Baseline gross = starting gross − Σy + Σclean A. Rebalanced gross = baseline gross + ΣE for completed sales only. Neither is quotable capacity.</p>
+          <p><strong>Exposure accounting.</strong> B = E − floor(E × 30 / 10000) − 0.10 TAC, using the greatest exact E on the fee plateau. Funding selection charges daily cap before sale. Eligible main, reverse stock, pending sales and refunds count; unread residual risk does not.</p>
+          <p class="wide"><strong>Stylised fixture, not production state-machine evidence.</strong> The production reverse service may combine notes and return change, while this economics fixture uses whole-note sales. Lease admission, maxNote, maxInventory, maxOpen, maxLocked and exact pool note-cut costs are outside this model. Native sats costs and actual quotable capacity are excluded, never zeroed. Buyer demand is never guaranteed.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Track B / reverse fast bridge / local interactive test UI</span>
+      <span>Memory only · no remote resources · no production modules</span>
+    </footer>
+  </div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

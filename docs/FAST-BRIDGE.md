@@ -245,6 +245,10 @@ needed. The wait is paid once, when the TAC is made ready, not when it moves.
 | `dapp/fast/route.js` | the front page's way in: whether a provider takes a note's size, the quote, the lock's cost, the bridge, and the words |
 | `dapp/fast/` | the bridge page at `/fast/`: the wiring to a Tacit key and tacit.js (`wire.js`), the page's logic for bridging (`ui.js`) and for providing (`provide.js`), the providers and boards it knows (`lp.json`) |
 | `fastbridge-lp/` | the LP as a process: the HTTP API, the Ethereum locker over a durable store, the explorer adapter (see its README) |
+| `fastbridge-lp/rebalance.mjs` | the standalone, opt-in reverse-rebalance sidecar; the server does not start it |
+| `fastbridge-lp/lib/reverse-rebalance.mjs` | exact outpoint leases, whole-note funding, live fee caps, strict primary journals and sale-aware exposure from ordered reverse inventory and swap records, including unconfirmed change |
+| `fastbridge-lp/lib/rebalance-gate.mjs` | fail-closed forward intake from fresh, live, identity-checked and ceiling-matched sidecar status, without gating existing swaps |
+| `tests/stuck-tac-harness/` | the local reverse-rebalance review UI and its deterministic economics model; no production modules or chain access |
 
 Each machine takes its chain access as arguments (`ctx`, documented in its header), keeps one JSON record per swap,
 and advances with `step(record)`.
@@ -286,7 +290,20 @@ node tests/adaptor-xswap.test.mjs          # offers, checks, windows, secrets
 node tests/adaptor-btc-lock.test.mjs       # the Bitcoin lock under the real note validator
 node tests/adaptor-btc-tx.test.mjs         # the transaction builder: funding, fees, signatures
 node tests/fastbridge-sim.test.mjs         # both machines against a simulated Bitcoin and pool: restarts, timeouts, refusals
-node tests/fastbridge-lp.test.mjs          # the LP process: API on a socket, quotes, store, explorer adapter, a swap through all of it
+node tests/fastbridge-lp.test.mjs          # the LP process, API, quotes, store, explorer adapter and swaps
+node tests/fastbridge-reverse.test.mjs     # reverse end to end over the real state machines and simulated chains
+node tests/fastbridge-reverse-service.test.mjs   # reverse provider/client checks over those machines
+node tests/fastbridge-lp-reverse.test.mjs        # reverse wiring, options, inventory and routing checks
+node tests/fastbridge-lp-reverse-fund.test.mjs   # restricted funder planning and builder fee arguments
+node tests/fastbridge-lp-reverse-rebalance.test.mjs   # sidecar, strict journals, sales, unknown exposure and production funder functions
+node tests/fastbridge-lp-rebalance-gate.test.mjs      # forward intake gate checks
+node tests/tacit-rebalance-fee.test.mjs               # live-source fee reads and real builder ceiling preflight
+node tests/fastbridge-reverse-fee-adapter.test.mjs    # production adapter freshness with a mock esplora
+node tests/fastbridge-lp-pair.test.mjs                # pair options, including the reverse fee ceiling
+node tests/stuck-tac-scenarios.test.mjs               # deterministic economics suites
+node tests/stuck-tac-production-parity.test.mjs       # production quoter, greatest-E plateau and full reverse B/E parity
+node tests/stuck-tac-page.test.mjs                    # real browser UI, keyboard access and responsive layouts
+node tests/fastbridge-lp-env.test.mjs                  # environment override and validation checks
 node tests/fastbridge-client.test.mjs      # the page's client against the LP service: quotes, a swap, a swap carried on, the refund, recovery from the key
 node tests/fastbridge-board.test.mjs       # the board and the mailbox: ads, sealed requests and answers, a whole swap over a board
 node tests/fastbridge-ui.test.mjs          # the page's bridging logic on a DOM
@@ -298,6 +315,10 @@ PLAYWRIGHT=<path> node tests/fastbridge-page.mjs   # the page in a browser, unde
 FORK=<rpc> EXEC=<exec-stdin> node tests/fastbridge-fork.mjs   # the Ethereum side on a mainnet fork of the live pool
 HARNESS=contracts/sp1/confidential/harnesses/target/release node tests/fast-lane-e2e.test.mjs   # the real settle guest
 ```
+
+For the local reverse-rebalance review UI, run `npm run serve` and open `http://127.0.0.1:8787/stuck-tac-review/`. If that port is occupied, set `PORT` to a free port and use it in the URL, for example `PORT=8788 npm run serve` and `http://127.0.0.1:8788/stuck-tac-review/`. The UI is a deterministic economics simulation with no keys, persistent storage, chain connections or production modules. It excludes lease admission and revocation, `maxNoteTac`, `maxInventoryTac`, `maxOpen`, `maxLocked`, pool exact-note cut costs, reservations and native sats. Whole-note sales are fixture assumptions. `B-06` is a time-driven, sale-aware simulation, not evidence for a production three-poll mechanism. The UI is not a funded wallet test, a live quote or evidence of buyer demand, and it does not start the sidecar.
+
+`node tests/stuck-tac-page.test.mjs` starts a separate loopback server on an ephemeral port, without `npm run serve` or `PORT`. `PLAYWRIGHT` overrides the module passed to `require` (default `playwright-core`). `CHROME` and then `CHROME_PATH` select the first existing browser executable; otherwise existing macOS Chrome or Chromium is used before Playwright's default. The test covers the UI, keyboard access, validation and responsive layouts, with no remote requests or page errors.
 
 `HARNESS` is a directory holding `exec-adaptor{lock,claim,refund}` built from `contracts/sp1/confidential/harnesses`
 with `cargo build --release --bin exec-adaptorlock --bin exec-adaptorclaim --bin exec-adaptorrefund`. They embed the
@@ -329,6 +350,22 @@ The provider process can run the reverse service (`FB_LP_REVERSE=on`, off by def
 derives a Bitcoin address of its own from the provider's key, reads the confirmed TAC at that address, bounds the sends at once and the TAC out at once,
 answers `/reverse/...` next to the forward routes, and, started with a throwaway key and nothing funded, answers `/reverse/info` (`available: 0`) from that
 address, a different one from its main address. It has not been run against a funded address, a real swap, or the real settle guest.
+
+The standalone reverse rebalancer (`fastbridge-lp/rebalance.mjs`) is built and offline tested, not live validated. With reverse and rebalance both enabled, it moves only exact leased whole notes with `long` lineage or `unprovable` lineage `through: "shielded"` to the derived reverse wallet. The existing reverse service offers notes through the direct reverse atomic market, not the literal sats order book, and may combine notes and return change. Whole-note sales are only an economics-fixture assumption. Lease authority and confirmation heights are checked again before execution. Funding fees require a live estimate, and the exact accepted rate plus ceiling reaches the real builder, which refuses an invalid or above-cap rate before broadcast. Reverse start passes that accepted `feeRate` and `maxFeeRate` into `bl.start` once, with no second estimate. Malformed reverse terms and unreachable proceeds floors fail closed.
+
+The sidecar uses primary-only strict storage for funding and reverse-journal reads and never backup-restores their states. The reverse service retains ordinary backup reads, but problems close new sales. Orphan backups and unreadable sidecar journals fail closed. Every pre-existing `rebalance.pid` requires verified manual removal; there is no stale reclaim. Inventory is read before the reverse journal, so a later sale remains represented. An ambiguous broadcast blocks all new funding.
+
+Completed funding is not recovery: status allocates unsold inventory, unresolved funding and active-sale exposure without double counting, uses completed sale timestamps for the recovery clock, and gives new exposure a full stall interval. Partial-sale residuals and unconfirmed change remain in exposure; `unconfirmedReverseStockBaseUnits` reports the unconfirmed subset, and `includeUnconfirmed` is accounting-only, never sellable inventory. Reverse swap records provide early-sale destination evidence and persist input amounts on new records. Refund reuse follows the later active, done or refunded lifecycle rather than counting the old refund again.
+
+Historical unlinked inputs without learnable amounts set `exposureUnknown` and `unknownExposure`, refuse admission with `reverse_exposure_unknown`, and force `intakeAllowed: false` and `newFundingAllowed: false` with `reverse_input_amount_unknown`. Existing reverse swaps can still finish. Known residuals appear as `unlinked:` pending items and unknown inputs as `unknown:` items. An operator must supply the verified base-unit amount on the correct primary-journal input and verify the repaired status; zero change must never be assumed.
+
+`measurementScope` remains `eligible_leased_main_candidates_plus_reverse_stock_and_pending`, with `pending` including active-sale exposure. Unread lineage remains residual risk outside eligible measured stock. Contradictory `done` evidence becomes a manual halt, while transient monitor reads remain `done` for retry.
+
+The forward gate validates status identity, live flags, amount text against base-unit duplicates and the configured ceiling. Capped reverse quotes require fresh estimates with no stale fallback, including pair mode, whose `maxFeeRate` reaches the reverse service. Reverse tick health summaries drive daemon failure and recovery handling. Configuration and shutdown are in `fastbridge-lp/README.md`; the accounting and risks are in `docs/STUCK-TAC-REVERSE-REBALANCE.md`.
+
+The submission's N table reports gross private Ethereum TAC, not quotable capacity. Production chooses the greatest exact `E` on each fee plateau, following `maxInFor`. The `B = 100` plateau has only `E = 100.40120361`, so its figures are unchanged; `B = 996.9` has exact proceeds at `999.99999999` and `1000`, with production choosing `1000`. Native sats costs, pool exact-note cut fees and reserve requirements are excluded, so actual quotable capacity is lower. Reverse `E-B` is gross spread rather than net profit.
+
+No funded mainnet or signet TAC reverse sale, live explorer/wallet CLI test of the sidecar or real reorganisation test has been performed. Buyer demand is unproven, and a buyer receives the same history the ordinary bridge cannot carry. The local review UI listed under "Tests" simulates economics only; it does not validate this path against a wallet or chain.
 
 A provider that runs it says so in its ad (a `reverse` member with that direction's terms, signed with the rest, read from `/reverse/info`), and the /fast/ page
 (`fast/reverse.js`, wired by `openReverse` in `fast/wire.js`) shows a "Send TAC to Bitcoin" panel only when a listed provider's ad has one: it quotes the cheapest

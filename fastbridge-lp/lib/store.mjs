@@ -48,6 +48,49 @@ export function makeFileStore(dir) {
   };
 }
 
+// State machines whose newest primary is the only safe truth. Backups are still written for manual recovery, but are never
+// restored automatically: a selected backup beside a torn or missing broadcasting primary is a problem, not a selected plan.
+export function makeStrictFileStore(dir) {
+  mkdirSync(dir, { recursive: true });
+  const broken = new Map();
+  const path = (id) => {
+    if (!/^[A-Za-z0-9_-]{1,160}$/.test(String(id))) throw new Error('store: bad record id');
+    return join(dir, id + '.json');
+  };
+  const problem = (id, error) => broken.set(id, String(error).slice(0, 160));
+  return {
+    strict: true,
+    async get(id) {
+      const f = path(id);
+      try { const rec = read(f); broken.delete(id); return rec; }
+      catch (e) {
+        if (e.code !== 'ENOENT' && !(e instanceof SyntaxError)) throw e;
+        if (existsSync(f + '.bak')) problem(id, e.code === 'ENOENT' ? 'primary missing; backup requires manual recovery' : 'primary unreadable; backup requires manual recovery');
+        else if (e.code !== 'ENOENT') problem(id, 'primary unreadable');
+        return null;
+      }
+    },
+    async put(rec) { writeAtomic(path(rec.id), JSON.stringify(rec)); broken.delete(rec.id); },
+    async del(id) { const f = path(id); for (const g of [f, f + '.bak']) { try { unlinkSync(g); } catch { /* already gone */ } } broken.delete(id); },
+    async list() {
+      const out = [], files = readdirSync(dir), primaries = new Set(files.filter((x) => x.endsWith('.json')).map((x) => x.slice(0, -5)));
+      for (const n of files.filter((x) => x.endsWith('.json.bak'))) {
+        const id = n.slice(0, -9);
+        if (!primaries.has(id)) problem(id, 'orphaned backup without a primary');
+      }
+      for (const id of primaries) {
+        try {
+          const rec = await this.get(id);
+          if (rec) out.push(rec);
+          else if (!broken.has(id)) problem(id, 'primary unreadable');
+        } catch (e) { problem(id, String((e && e.message) || e)); }
+      }
+      return out;
+    },
+    problems() { return [...broken].map(([id, error]) => ({ id, error })); },
+  };
+}
+
 // The same interface in memory, for a dry run: nothing is kept past the process.
 export function makeMemoryStore() {
   const m = new Map();

@@ -166,8 +166,18 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     for (const r of reservations.values()) if ((!r.txid || (sats && !lockTimes.has(r.txid))) && r.until > now()) unbacked += r.amount;
     return unbacked === 0n || unbacked + payout <= (i.held * BigInt(Math.round(hold.maxUnbackedShare * 100))) / 100n;
   }
+  const intakeError = (reason) => Object.assign(new Error(`new forward quotes are paused: ${reason}`), { status: 503, forwardIntake: true });
+  async function requireIntake() {
+    if (!config.intakeGate) return;
+    let verdict;
+    try { verdict = await config.intakeGate(); }
+    catch { throw intakeError('reverse rebalance status could not be read'); }
+    if (!verdict || typeof verdict.allowed !== 'boolean') throw intakeError('reverse rebalance status returned an invalid verdict');
+    if (!verdict.allowed) throw intakeError(String(verdict.reason || 'reverse rebalancer does not allow intake').slice(0, 240));
+  }
   async function availableAmount() {
     try {
+      try { await requireIntake(); } catch (e) { if (e.forwardIntake) return 0n; throw e; }
       if (evm.ready && !(await evm.ready()).ok) return 0n;
       const i = await readInventory(), p = await promised();
       if (i.held == null) return null;
@@ -352,6 +362,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       }
       if (method === 'POST' && path === '/quote') {
         if (!body || !amountOk(body.amount)) return reply({ error: 'amount must be a whole number' }, 400);
+        await requireIntake();
         if (quotesHeld !== null && quotesHeld >= maxQuotes) return reply({ error: 'the provider holds too many open quotes just now: ask again shortly' }, 503);
         return reply(await exclusive(async () => { await capacity(quoter.price(body.amount).evmAmount); const made = await quoter.quote(body.amount); if (quotesHeld !== null) quotesHeld++; return made; }));
       }
@@ -453,7 +464,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       return reply({ error: 'not found' }, 404);
     } catch (e) {
       if (!e.status) log({ level: 'error', msg: 'a request failed', path, error: String((e && e.message) || e).slice(0, 160) });
-      return reply({ error: e.status ? String(e.message) : 'the service could not answer' }, e.status || 500);
+      return reply({ error: e.status ? String(e.message) : 'the service could not answer', ...(e.forwardIntake ? { retry: true } : {}) }, e.status || 500);
     }
   }
 

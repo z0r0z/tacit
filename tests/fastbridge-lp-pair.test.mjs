@@ -63,9 +63,32 @@ test('defaults fill what is left out, and a value that is not valid stops the pr
 test('the reverse side is checked when it is on and left alone when it is not', () => {
   assert.equal(pairConfig({ pair: PAIR, reverse: { enabled: false } }).reverse.enabled, false);
   const C = pairConfig({ pair: PAIR, reverse: { enabled: true } });
-  assert.deepEqual([C.reverse.minAmount, C.reverse.maxAmount, C.reverse.feeBps, C.reverse.flatFee, C.reverse.maxSats, C.reverse.maxOpen, C.reverse.lockFeeReserve], ['1000000', '100000000', 30, '20000', '5000000', 2, '20000']);
+  assert.deepEqual([C.reverse.minAmount, C.reverse.maxAmount, C.reverse.feeBps, C.reverse.flatFee, C.reverse.maxSats, C.reverse.maxOpen, C.reverse.maxOpenPerKey, C.reverse.maxFeeRate, C.reverse.lockFeeReserve], ['1000000', '100000000', 30, '20000', '5000000', 2, 1, null, '20000']);
   assert.throws(() => pairConfig({ pair: PAIR, reverse: { enabled: true, maxSats: '100' } }), /reverse\.maxSats must be at least 20000/);
   assert.throws(() => pairConfig({ pair: PAIR, reverse: { enabled: true, feeBps: 900 } }), /reverse\.feeBps must be 0 to 500/);
+});
+
+test('direct pair JSON validates reverse concurrency and fee-rate limits at config parse', () => {
+  const direct = (over = {}) => pairReverseOptions({ policy: {}, reverse: {
+    enabled: true, minAmount: '1000000', maxAmount: '100000000', feeBps: 30, flatFee: '20000', maxSats: '5000000', lockFeeReserve: '20000', ...over,
+  } }, { rate: () => null });
+  const configured = pairConfig({ pair: PAIR, reverse: { enabled: true, maxOpen: '3', maxOpenPerKey: '4', maxFeeRate: ' 2.5 ' } }).reverse;
+  assert.deepEqual([configured.maxOpen, configured.maxOpenPerKey, configured.maxFeeRate], [3, 4, 2.5]);
+  const defaults = direct({ minProceedsBps: 11000 });
+  assert.deepEqual([defaults.maxOpen, defaults.maxOpenPerKey, defaults.maxFeeRate], [2, 1, null]);
+  assert.equal(defaults.minProceedsBps, undefined, 'sats/ETH never receives the same-asset TAC proceeds floor');
+  const upper = direct({ maxOpen: 20, maxOpenPerKey: 20, maxFeeRate: '.5' });
+  assert.deepEqual([upper.maxOpen, upper.maxOpenPerKey, upper.maxFeeRate], [20, 20, 0.5]);
+  const invalid = [
+    ['maxFeeRate', [0, -1, '', '0', '1e2', 'fast', Infinity, NaN, true]],
+    ['maxOpen', [0, 21, -1, 1.5, '2.0', '1e2', 'fast', Infinity, NaN, true]],
+    ['maxOpenPerKey', [0, 21, -1, 1.5, '2.0', '1e2', 'fast', Infinity, NaN, true]],
+  ];
+  for (const [key, values] of invalid) for (const value of values) {
+    const over = { [key]: value };
+    assert.throws(() => pairConfig({ pair: PAIR, reverse: { enabled: true, ...over } }), (e) => e.message.includes(`reverse.${key}`), `pairConfig ${key}=${String(value)}`);
+    assert.throws(() => direct(over), (e) => e.message.includes(`reverse.${key}`), `pairReverseOptions ${key}=${String(value)}`);
+  }
 });
 
 const REAL_ROUND = '0x000000000000000000000000000000000000000000000002000000000000637e00000000000000000000000000000000000000000000000000000000002ad77e000000000000000000000000000000000000000000000000000000006b042d18000000000000000000000000000000000000000000000000000000006b042d2f000000000000000000000000000000000000000000000002000000000000637e';
@@ -99,12 +122,14 @@ test('the confirmations schedule is in sats: one under 0.01 BTC, two, three and 
 test('the reverse options carry the price as a function of the feed, the sats ceiling, and the confirmations the user wants on the provider\'s lock', () => {
   assert.equal(pairReverseOptions(pairConfig({ pair: PAIR }), { rate: () => null }), null);
   let live = { num: 3_560_000_000n, den: 100_000_000n };
-  const o = pairReverseOptions(pairConfig({ ...example, reverse: { ...example.reverse, enabled: true } }), { rate: () => live });
+  const o = pairReverseOptions(pairConfig({ ...example, reverse: { ...example.reverse, enabled: true, maxFeeRate: 2.5, minProceedsBps: 11000 } }), { rate: () => live });
   assert.deepEqual([o.quote.btcAsset, o.quote.evmAsset, o.quote.minAmount, o.quote.maxAmount, o.quote.feeBps, o.quote.flatFee], [SATS_ASSET, ETH_ASSET, '1000000', '100000000', 30, '20000']);
   assert.equal(o.quote.rate().num, 3_560_000_000n);
   live = null;
   assert.equal(o.quote.rate(), null, 'the price follows the feed, and is none when the feed has none');
   assert.deepEqual([o.maxLocked, o.maxOpen, o.csvBlocks, o.lockFeeReserve], [5_000_000n, 2, 96, '20000']);
+  assert.equal(o.maxFeeRate, 2.5, 'the generic new-sale fee ceiling reaches the reverse service');
+  assert.equal(o.minProceedsBps, undefined, 'a same-asset TAC proceeds floor is not mapped onto sats/ETH units');
   assert.deepEqual([999_999n, 1_000_000n, 10_000_000n, 100_000_000n].map((v) => o.minConfsFor(v)), [1, 2, 3, 6]);
 });
 
