@@ -13793,6 +13793,31 @@ function _chainCacheTtlMs(path, body) {
   }
   return 0;
 }
+// GET /chain/tac/notes?address=<bc1…> → { height, notes: [{ txid, vout, value, h }] }: the outputs paying this address that Tacit's own archive holds and the reflected live set still
+// lists as unspent. It is what a wallet falls back on when no public explorer will give it its unspent outputs (they rate-limit this host and its readers): the transactions come
+// from /chain/tac/ancestry, so the wallet reads and checks every note exactly as it does with an explorer's list. Only outputs that carry a Tacit note appear; ordinary coins do not.
+const _liveKeysCache = new Map(); // network -> { raw, keys: Set, height }
+async function handleTacNotes(req, env, url, network, cors) {
+  const addr = decodeBitcoinAddress(String(url.searchParams.get('address') || ''));
+  const hrp = network === 'mainnet' ? 'bc' : 'tb';
+  if (!addr || addr.hrp !== hrp) return jsonResponse({ error: 'not a ' + hrp + ' segwit address' }, 400, cors);
+  const spk = addr.version === 0
+    ? '00' + addr.program.length.toString(16).padStart(2, '0') + bytesToHex(addr.program)
+    : '5120' + bytesToHex(addr.program);
+  const raw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
+  if (!raw) return jsonResponse({ error: 'no live set yet' }, 503, { ...cors, 'Cache-Control': 'no-store' });
+  let hit = _liveKeysCache.get(network);
+  if (!hit || hit.raw !== raw) {
+    const snap = JSON.parse(raw).snapshot || {};
+    hit = { raw, keys: new Set((snap.liveTriples || []).map((t) => String(t[0]).toLowerCase())), height: snap.height };
+    _liveKeysCache.set(network, hit);
+  }
+  const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+  const found = await tacArchive(env, network).notesAt(spk);
+  const notes = found.filter((n) => hit.keys.has(String(pool.outpointKey('0x' + n.txid, n.vout)).toLowerCase()));
+  return jsonResponse({ height: hit.height, notes }, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
+}
+
 async function handleChainProxy(req, env, network, cors) {
   const u = new URL(req.url);
   const key = `${network}:${u.pathname}${u.search}`;
@@ -24913,6 +24938,7 @@ export async function tacArchiveCatchUp(env, network, { budget, keys, deadlineMs
       return { bytes: hexToBytes(hex), h: j.status.block_height, b: j.status.block_hash };
     };
     const res = await archive.catchUp({ ids, readTx, budget: reads, shouldStop: () => Date.now() - t0 > deadlineMs });
+    try { await archive.indexPage({ limit: 150 }); } catch { /* the address index fills a page a tick; a failed page is tried again */ }
     if (!res.stopped) { if (list.list_complete || !list.cursor) await kv.delete(cursorKey); else await kv.put(cursorKey, list.cursor); }
     if (res.kept || res.funding) console.log(`[tac-archive] catch-up ${network}: kept ${res.kept} transfers and ${res.funding} funding transactions (${res.failed} reads failed${res.stopped ? ', stopped for its budget' : ''})`);
     return res;
@@ -29801,6 +29827,7 @@ async function _routeFetch(req, env, ctx) {
     // all colos hit the cache.
     //
     // Whitelisted prefixes only — this is NOT a generic open proxy.
+    if (url.pathname === '/chain/tac/notes' && req.method === 'GET') return handleTacNotes(req, env, url, network, cors);
     if (url.pathname.startsWith('/chain/') && req.method === 'GET') {
       return handleChainProxy(req, env, network, cors);
     }

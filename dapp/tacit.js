@@ -2797,6 +2797,17 @@ async function _ownLocksReadyForSpend(a = null) {
 }
 // split: { free, held } instead of the free coins alone; held are the coins spoken for, each with `hold`: 'bridge' (a bridge in progress will spend it) or 'lock' (collateral).
 // A coin this page has just spent is in neither.
+// The unspent outputs of `address` that Tacit's own archive and live set hold (worker GET /chain/tac/notes), shaped as an explorer's utxo list; null when that cannot be read.
+async function _tacIndexUtxos(address) {
+  if (!WORKER_BASE || !NET?.name) return null;
+  const r = await fetch(`${WORKER_BASE}/chain/tac/notes?network=${encodeURIComponent(NET.name)}&address=${encodeURIComponent(address)}`, { signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined });
+  if (!r.ok) return null;
+  const j = await r.json();
+  if (!j || !Array.isArray(j.notes)) return null;
+  return j.notes
+    .filter((x) => /^[0-9a-f]{64}$/i.test(String(x.txid)) && Number.isInteger(x.vout) && Number.isFinite(x.value) && Number.isInteger(x.h))
+    .map((x) => ({ txid: String(x.txid).toLowerCase(), vout: x.vout, value: x.value, status: { confirmed: true, block_height: x.h } }));
+}
 async function getUtxos(a, onProgress, { forSpend = false, split = false } = {}) {
   if (forSpend) await _ownLocksReadyForSpend(a);
   else await _ownLocksReserved(a)?.catch(() => {});
@@ -2851,6 +2862,12 @@ async function getUtxos(a, onProgress, { forSpend = false, split = false } = {})
       const ageSec = Math.max(0, Math.floor((Date.now() - lightCached.fetchedAt) / 1000));
       try { toast(`Chain indexers throttled — using cached UTXOs (${ageSec}s old).`, ''); } catch {}
       return _filterRecent(lightCached.utxos);
+    }
+    // No explorer would answer and nothing is cached: Tacit's own index lists the address's Tacit notes (not its ordinary coins), enough to read the holdings.
+    // Never for a spend (the list is not every coin) and never for the split read a balance is drawn from (a short list would show a smaller balance).
+    if (!forSpend && !split && (isRateLimited || /unreachable|network|timeout|fetch|API 5\d\d/i.test(msg))) {
+      const notes = await _tacIndexUtxos(a).catch(() => null);
+      if (notes) return _filterRecent(notes);
     }
     throw e;
   }

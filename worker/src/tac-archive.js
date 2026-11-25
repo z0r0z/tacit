@@ -50,7 +50,12 @@ export function parseTx(d, dsha256 = null) {
       const l = vi(); p += l + 4;
     }
     const nOut = vi();
-    for (let i = 0; i < nOut; i++) { p += 8; const l = vi(); p += l; }
+    const outs = [];
+    for (let i = 0; i < nOut; i++) {
+      let v = 0; for (let k = 0; k < 8; k++) v += d[p + k] * 2 ** (8 * k);
+      p += 8; const l = vi();
+      outs.push({ v, s: toHex(d.subarray(p, p + l)) }); p += l;
+    }
     const outEnd = p;
     let witness0 = null;
     const needs = [];
@@ -69,7 +74,7 @@ export function parseTx(d, dsha256 = null) {
       const body = segwit ? concat(d.subarray(0, 4), d.subarray(6, outEnd), d.subarray(p - 4, p)) : d;
       txid = toHex(Uint8Array.from(dsha256(body)).reverse());
     }
-    return { txid, vins, witness0, needs };
+    return { txid, vins, witness0, needs, outs };
   } catch { return null; }
 }
 function concat(...parts) {
@@ -86,6 +91,57 @@ export function makeTacArchive({ kv, network, dsha256, isTacit }) {
 
   // Keeps one confirmed transaction at `height`; returns its txid, or null for bytes that are not a whole transaction carrying a
   // Tacit envelope (the archive holds only those).
+  // The outputs of the archived transactions by the script they pay: scripthex -> ["txid:vout", ...]. A wallet that cannot reach a public explorer asks which of
+  // its own addresses' outputs Tacit has seen (notesAt), instead of a rate-limited index for the address's unspent outputs.
+  const addrKey = (spk) => `tacaddr:${network}:${spk}`;
+  const idxCursorKey = `tacaddr:cursor:${network}`;
+  const INDEX_MAX_PER_SCRIPT = 2000;
+  async function indexTx(txid, d) {
+    const t = parseTx(d);
+    if (!t) return 0;
+    let n = 0;
+    for (let i = 0; i < t.outs.length; i++) {
+      const s = t.outs[i].s;
+      if (!s || s.length > 80 || s.startsWith('6a')) continue;   // an OP_RETURN, or a script no address stands for
+      const list = (await kv.get(addrKey(s), 'json').catch(() => null)) || [];
+      const id = `${txid}:${i}`;
+      if (list.includes(id) || list.length >= INDEX_MAX_PER_SCRIPT) continue;
+      list.push(id);
+      await kv.put(addrKey(s), JSON.stringify(list));
+      n++;
+    }
+    return n;
+  }
+  // Indexes a page of what the archive already holds, from where the last page stopped; { indexed, done } (done: the whole archive has been indexed).
+  async function indexPage({ limit = 100 } = {}) {
+    const prefix = `tacarch:${network}:`;
+    const cur = await kv.get(idxCursorKey, 'json').catch(() => null);
+    if (cur && cur.done) return { indexed: 0, done: true };
+    const page = await kv.list({ prefix, cursor: cur && cur.cursor || undefined, limit });
+    let indexed = 0;
+    for (const k of page.keys || []) {
+      const rec = await kv.get(k.name, 'json').catch(() => null);
+      if (rec && typeof rec.hex === 'string') indexed += await indexTx(k.name.slice(prefix.length), fromHex(rec.hex)).catch(() => 0);
+    }
+    const done = !!page.list_complete;
+    await kv.put(idxCursorKey, JSON.stringify(done ? { done: true } : { cursor: page.cursor }));
+    return { indexed, done };
+  }
+  // The archived outputs paying `spk` (hex): [{ txid, vout, value, h }], each read back from the transaction's own bytes.
+  async function notesAt(spk) {
+    const ids = (await kv.get(addrKey(String(spk).toLowerCase()), 'json').catch(() => null)) || [];
+    const out = [], recs = new Map();
+    for (const id of ids) {
+      const [txid, vs] = id.split(':'), vout = Number(vs);
+      if (!recs.has(txid)) recs.set(txid, await kv.get(key(txid), 'json').catch(() => null));
+      const rec = recs.get(txid);
+      const t = rec && parseTx(fromHex(rec.hex));
+      const o = t && t.outs[vout];
+      if (o && o.s === String(spk).toLowerCase()) out.push({ txid, vout, value: o.v, h: rec.h });
+    }
+    return out;
+  }
+
   async function keep(bytes, height, blockHash = null) {
     const d = typeof bytes === 'string' ? fromHex(bytes) : bytes;
     if (!d || !Number.isInteger(height) || height <= 0) return null;
@@ -94,6 +150,7 @@ export function makeTacArchive({ kv, network, dsha256, isTacit }) {
     const rec = { hex: toHex(d), h: height };
     if (typeof blockHash === 'string' && /^[0-9a-f]{64}$/i.test(blockHash)) rec.b = blockHash.toLowerCase();
     await kv.put(key(t.txid), JSON.stringify(rec));
+    try { await indexTx(t.txid, d); } catch { /* the index is rebuilt from the archive by indexPage */ }
     return t.txid;
   }
 
@@ -196,5 +253,5 @@ export function makeTacArchive({ kv, network, dsha256, isTacit }) {
     return r;
   }
 
-  return { key, fundKey, keep, keepFunding, ancestry, fundingOf, catchUp };
+  return { key, fundKey, keep, keepFunding, ancestry, fundingOf, catchUp, indexPage, notesAt };
 }
