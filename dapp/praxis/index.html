@@ -21,10 +21,11 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /praxis/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/praxis/app.js?cb=0a12cccc">
-<link rel="modulepreload" href="/praxis/receipt.js?cb=73d664fd">
+<link rel="modulepreload" href="/praxis/app.js?cb=1c1b2954">
+<link rel="modulepreload" href="/praxis/receipt.js?cb=99cd235c">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
+<link rel="modulepreload" href="/reward-pop.js?cb=88973dac">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -85,7 +86,10 @@ code { font: inherit; }
 .hero h1 { font: 400 clamp(44px, 8vw, 84px)/.92 var(--serif); letter-spacing: -.03em; margin: 0; }
 .hero h1 em { font-style: italic; }
 .lede { margin: 16px 0 0; font-size: clamp(17px, 2.4vw, 21px); line-height: 1.35; max-width: 34em; }
-.fine { margin: 10px 0 0; color: var(--mute); font-size: 12.5px; max-width: 64ch; }
+.fine { margin: 14px 0 0; color: var(--mute); font-size: 12.5px; max-width: 70ch; }
+.why { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 10px; max-width: 72ch; }
+.why li { font-size: 13px; line-height: 1.55; padding-left: 14px; border-left: 2px solid var(--orange); }
+.why b { font-weight: 500; }
 .cta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 22px 0 0; }
 .cta .btn { width: auto; min-width: 230px; margin: 0; padding-inline: 32px; }
 .reward-chip { display: inline-flex; align-items: center; gap: 9px; padding: 7px 16px 7px 7px; border: 1px solid var(--hair-2); border-radius: 99px; font-size: 13px; background: var(--card); }
@@ -104,6 +108,23 @@ code { font: inherit; }
 .note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
 .note a { color: var(--ink); }
 .plain { font-size: 13px; margin: 12px 0 0; }
+
+/* the whole chain: a mask for every contribution, in order */
+#chainview { margin-top: 26px; }
+.chain { display: flex; align-items: center; overflow-x: auto; padding: 10px 2px 16px; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
+.lk { position: relative; flex: none; display: flex; align-items: center; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.lk:not(:last-child)::after { content: ''; width: 14px; height: 2px; background: var(--hair-2); }
+.lk .inv { display: block; border-radius: 10px; image-rendering: pixelated; }
+.lk.sg .inv { width: 34px; height: 34px; filter: grayscale(.85); opacity: .72; }
+.lk.ours .inv { width: 46px; height: 46px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--orange) 70%, transparent); }
+.lk.mine .inv { box-shadow: 0 0 0 3px var(--orange), 0 0 18px color-mix(in srgb, var(--orange) 60%, transparent); }
+.lk:focus-visible .inv { outline: 2px solid var(--ink); outline-offset: 2px; }
+@media (hover: hover) { .lk:hover .inv { transform: translateY(-3px); } .lk .inv { transition: transform .15s; } }
+.chain-key { display: flex; flex-wrap: wrap; gap: 16px; margin: 4px 0 0; font-size: 11.5px; color: var(--mute); }
+.chain-key span { display: inline-flex; align-items: center; gap: 6px; }
+.chain-key .k { width: 12px; height: 12px; border-radius: 4px; border: 2px solid var(--mute); display: inline-block; }
+.chain-key .k.ours { border-color: var(--orange); }
+.chain-key .k.me { border-color: var(--orange); background: var(--orange); }
 
 /* paid in TAC */
 .rewards { margin-top: 26px; padding: 20px 22px; background: var(--card); border: 1px solid var(--hair); border-radius: 20px; }
@@ -188,6 +209,19 @@ code { font: inherit; }
 .acc p.note { font-size: 12.5px; }
 @media (max-width: 480px) { .acc > summary { padding: 16px 14px; } .acc > div { padding: 0 14px 18px; } }
 
+/* the moment a contribution has landed */
+.cele { border: 1px solid var(--hair-2); border-radius: 24px; background: var(--card); color: var(--ink); padding: 30px 26px 26px; width: min(92vw, 440px); text-align: center; overflow: visible; }
+.cele::backdrop { background: rgba(0, 0, 0, .62); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.cele .x { position: absolute; top: 10px; right: 12px; width: 36px; height: 36px; border: 0; background: transparent; color: var(--mute); font-size: 24px; cursor: pointer; border-radius: 50%; }
+.cele-coin { position: relative; width: 84px; height: 84px; margin: 0 auto 12px; }
+.cele-coin .tk { width: 84px; height: 84px; box-shadow: 0 0 0 6px color-mix(in srgb, var(--orange) 22%, transparent), 0 10px 30px color-mix(in srgb, var(--orange) 35%, transparent); }
+.cele-coin .fly { position: absolute; left: 30px; top: 30px; width: 24px; height: 24px; pointer-events: none; will-change: transform, opacity; }
+.cele h2 { font: 400 clamp(34px, 8vw, 46px)/1 var(--serif); letter-spacing: -.02em; margin: 6px 0 8px; }
+.cele p { margin: 0 auto; font-size: 13px; color: var(--mute); max-width: 32ch; }
+.cele-amt { margin: 16px 0 4px; font: 400 clamp(36px, 9vw, 52px)/1 var(--serif); }
+.cele-amt b { font-weight: 400; color: var(--orange); }
+.cele-amt small { display: block; margin-top: 6px; font: 400 12px var(--mono); color: var(--mute); }
+.cele .btn { max-width: none; }
 .cp { min-height: 28px; padding: 0 8px; margin-left: 8px; font: 500 11px var(--mono); color: var(--mute); background: var(--card); border: 1px solid var(--hair); border-radius: 8px; cursor: pointer; vertical-align: 1px; }
 @media (hover: hover) { .cp:hover { color: var(--ink); border-color: var(--hair-2); } }
 
@@ -517,8 +551,13 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <main>
     <section class="hero" aria-labelledby="h">
       <h1 id="h">Tacit <em>Praxis</em> ceremony</h1>
-      <p class="lede">Add your randomness to a shared key. If one contributor throws theirs away, the key cannot be forged.</p>
-      <p class="fine">A Groth16 setup for the SP1 v6.1.0 verifier circuit, extending Succinct's. It is the setup for future Tacit Praxis work, which is in progress and has not been reviewed. Nothing rests on this key yet.</p>
+      <p class="lede">The cryptography for smart contracts on Bitcoin. Help build the key it runs on.</p>
+      <ul class="why">
+        <li><b>The idea.</b> Praxis locks a secret, like the key to a Bitcoin wallet, so it opens for whoever proves a condition that any program can check. Bitcoin does not change. There is no committee, no key-holder, no trusted party.</li>
+        <li><b>Why it is new.</b> The first witness encryption that works for any condition, with a security proof and practical costs (ePrint 2026/2971). From the paper: Bitcoin covenants, bridges without a custodian, time-locks that open when a chain reaches a given length.</li>
+        <li><b>Why you.</b> Every lock rests on one setup key, and your randomness is what makes it unforgeable. If one contributor throws theirs away, the key cannot be forged. Be that one.</li>
+      </ul>
+      <p class="fine">A Groth16 setup for the SP1 v6.1.0 verifier circuit, which checks a proof of any program, extending Succinct's 18 contributions. We are building Praxis on this key.</p>
       <noscript><p class="note">The wall of contributors needs JavaScript; the commands below work without it.</p></noscript>
       <div class="cta">
         <a class="btn big" href="#join" id="cta-go">Contribute</a>
@@ -531,6 +570,12 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <li><b id="n-prover" class="num">…</b><span>by provers</span></li>
         <li><b id="n-queue" class="num">…</b><span>waiting</span></li>
       </ul>
+    </section>
+
+    <section class="sec" id="chainview" aria-labelledby="h-chain">
+      <h2 id="h-chain">The whole chain</h2>
+      <div class="chain" id="chain" role="list" aria-label="Every contribution in order, Succinct's first"></div>
+      <p class="chain-key"><span><i class="k sg"></i>Succinct's 18</span><span><i class="k ours"></i>this ceremony</span><span><i class="k me"></i>you</span></p>
     </section>
 
     <section class="rewards" id="rewards" aria-labelledby="h-rewards" hidden>
@@ -579,6 +624,26 @@ chmod +x tacit-ceremony-darwin-arm64
       <p class="alt">Run <a href="/prove/">tacit-prover</a> (v0.7.0 or later) with mining on, and it takes its turn by itself while idle, behind everyone in the queue.</p>
     </section>
 
+    <dialog class="cele" id="cele" aria-labelledby="cele-h">
+      <button class="x" type="button" data-close aria-label="Close">×</button>
+      <div class="cele-coin" id="cele-coin"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></div>
+      <h2 id="cele-h">You are #…</h2>
+      <p>Your randomness is in the chain. If one contributor throws theirs away, the key cannot be forged. You may be that one.</p>
+      <div class="cele-amt" id="cele-amt" hidden>+<b id="cele-n">5</b> TAC<small>paid once the day is over</small></div>
+      <a class="btn big" id="cele-share" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg>Share on X</a>
+      <button class="btn ghost" type="button" data-close>Close</button>
+    </dialog>
+
+    <details class="acc" id="use">
+      <summary>How it works, in short</summary>
+      <div>
+        <p><b>The primitive.</b> Witness encryption encrypts a message to a statement instead of a key. Anyone holding a witness of the statement can decrypt; if the statement is false the message stays hidden. The statement can be that a program accepts some input, and any accepted input is a witness. A ciphertext carries its own release condition: no key to distribute, no party trusted to release it.</p>
+        <p><b>On Bitcoin.</b> Lock coins to a key, then witness-encrypt that key to a condition, for example "a proof that this program accepted these inputs". Whoever produces the proof decrypts the key and spends with an ordinary signature, so Bitcoin sees nothing unusual: programmable conditions with no change to Bitcoin. The paper lists covenants, proof verification and bridges without a custodian among the uses on Bitcoin, and time-lock encryption that opens when a blockchain reaches a given length. The mechanism is not specific to Bitcoin: on Ethereum or any chain it releases a key, an escrow or a sealed reveal on a proven condition, with no committee.</p>
+        <p><b>What this ceremony is.</b> Praxis encrypts to the verifier of a Groth16 proof (BN254). We use the verifier for SP1 v6.1.0's wrapper circuit, which accepts a proof of the run of any program, so one fixed key covers every condition a program can check. Groth16 needs a setup, and whoever kept its secret could forge a proof of a false statement and open every ciphertext made for that key. The ceremony adds many people's randomness to Succinct's 18, so that secret exists only if every one of them kept theirs.</p>
+        <p><b>Limits.</b> A ciphertext is about 7.9 GiB at 100-bit security, so ciphertexts live off-chain and only a key's release touches a chain. A lock works once, because the decryptor learns the key. The cryptography is elliptic-curve (BN254), which a large quantum computer would break.</p>
+      </div>
+    </details>
+
     <details class="acc" id="verify">
       <summary>Verify it yourself</summary>
       <div>
@@ -608,7 +673,7 @@ shasum -a 256 phase2-*</pre></div>
       <summary>What it rests on</summary>
       <div>
         <p>The key it makes is sound if at least one Phase 2 contributor (in Succinct's 18 or here) was honest, at least one of the first 54 contributors to the Perpetual Powers of Tau (Phase 1) was honest, and the starting files were derived correctly from Phase 1 and the circuit.</p>
-        <p class="plain">What it protects today: nothing yet. No value will rest on this key until the SP1 v6 recursion and wrap circuits have been reviewed.</p>
+        <p class="plain">Where it stands: the ceremony is open, and Praxis is being built on this key. The paper and the SP1 v6 circuits are new work and still under review by the field.</p>
         <p class="note">The ceremony makes a new key (a new delta) for the circuit. It does not change Succinct's deployed SP1 verifier, which keeps its own key. Names and handles are self-declared: each is as its contributor typed it, and the coordinator does not check them. A contributor's own attestation is what ties a contribution to them.</p>
       </div>
     </details>
@@ -652,6 +717,6 @@ shasum -a 256 phase2-*</pre></div>
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/praxis/app.js?cb=0a12cccc"></script>
+<script type="module" src="/praxis/app.js?cb=1c1b2954"></script>
 </body>
 </html>

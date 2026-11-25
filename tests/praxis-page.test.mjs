@@ -67,12 +67,15 @@ console.log('the hero, what it rests on, and the page\'s links');
   const { ctx, page, errs, csp } = await fresh({ coordinator: { open: true, coordinator: 'http://198.51.100.7:9999', queue: 3, index: 20 } });
   ok((await page.title()) === 'tacit praxis', `the title is "tacit praxis" (${await page.title()})`);
   const hero = await text(page, '.hero');
-  ok(/Tacit Praxis ceremony/.test(await text(page, 'h1')) && /SP1 v6\.1\.0 verifier circuit/.test(hero) && /in progress and has not been reviewed/.test(hero) && /Nothing rests on this key yet/.test(hero), 'the heading, what the setup is for, Praxis in progress and unreviewed, and that nothing rests on the key');
-  ok(/one contributor throws theirs away, the key cannot be forged/.test(hero), 'one plain line on why it works');
+  ok(/Tacit Praxis ceremony/.test(await text(page, 'h1')) && /SP1 v6\.1\.0 verifier circuit/.test(hero) && /We are building Praxis on this key/.test(hero), 'the heading, the circuit it is for, and that Praxis is being built on the key');
+  ok(!/has not been reviewed|Nothing rests|not built|in progress|may not|might not/i.test(hero), 'the head makes its case without disclaimers (the plain status is in the folded sections)');
+  ok(/one contributor throws theirs away, the key cannot be forged/.test(hero) && /smart contracts on Bitcoin/.test(hero) && /Bitcoin does not change/.test(hero) && /covenants/.test(hero), 'the leader says what it makes possible, how, and why a contributor matters');
   await openAll(page);
   const rests = await text(page, '#honest');
   ok(/at least one Phase 2 contributor/.test(rests) && /first 54 contributors to the Perpetual Powers of Tau/.test(rests) && /derived correctly from Phase 1 and the circuit/.test(rests), 'the conditions the key rests on: a Phase 2 contributor, a Phase 1 contributor and a correct start');
-  ok(/nothing yet/i.test(rests) && /recursion and wrap circuits/.test(rests) && /new key/.test(rests) && /does not change Succinct's deployed SP1 verifier/.test(rests), 'what it protects today: nothing yet; a new key, not a change to Succinct\'s deployed verifier');
+  ok(/Where it stands/.test(rests) && /being built on this key/.test(rests) && /new key/.test(rests) && /does not change Succinct's deployed SP1 verifier/.test(rests), 'where it stands, plainly: a new key, Praxis being built on it, Succinct\'s deployed verifier unchanged');
+  const how = await text(page, '#use');
+  ok(/programmable conditions/.test(how) && /ordinary signature/.test(how) && /Ethereum/.test(how) && /Limits/.test(how) && /quantum/.test(how) && /7\.9 GiB/.test(how), 'the short technical summary: the primitive, Bitcoin, Ethereum, the setup, and the limits as facts');
   ok(/Names and handles are self-declared/.test(rests), 'names and handles are said to be self-declared');
   const all = await text(page, 'main');
   const meta = [await page.getAttribute('meta[name=description]', 'content'), await page.getAttribute('meta[property="og:description"]', 'content')].join(' ');
@@ -119,6 +122,36 @@ console.log('the wall: a face and a checked signature for each contribution');
   ok(/signed by the coordinator/.test(await page.getAttribute(`.tile[data-index="18"] .tick`, 'title')), 'the tick says what it checked');
   await SHOT(page, 'desktop-light');
   await ctx.close();
+}
+
+console.log('the whole chain, as masks');
+{
+  const { ctx, page } = await fresh();
+  const n = T.receipts.length;
+  ok((await page.$$('#chain .lk')).length === 18 + n && (await page.$$('#chain .lk.sg')).length === 18 && (await page.$$('#chain .lk.ours')).length === n, `a mask for every link: Succinct's 18 and the ${n} here`);
+  const srcs = await page.$$eval('#chain .lk img.inv', (i) => i.map((x) => x.src));
+  ok(srcs.length === 18 + n && new Set(srcs).size === srcs.length && srcs.every((x) => x.startsWith('data:image/svg+xml;base64')), 'each is a different zOrgz invader');
+  const same = await page.$eval('#chain .lk.ours[data-index="19"] img', (i) => i.src);
+  ok(same === (await page.$eval('.tile[data-index="19"] img.inv', (i) => i.src)), 'a contributor has the same face in the chain and on the wall');
+  ok((await page.$eval('#chain .lk.ours img', (i) => i.getBoundingClientRect().width)) > (await page.$eval('#chain .lk.sg img', (i) => i.getBoundingClientRect().width)), 'Succinct\'s masks are smaller than ours');
+  await page.fill('#find', '#19');
+  ok((await page.$('#chain .lk.mine[data-index="19"]')) !== null, 'finding yours lights your mask in the chain');
+  await page.click('#chain .lk.ours[data-index="18"]');
+  ok((await page.evaluate(() => navigator.clipboard.readText())) === R18.contribution_hash, 'a mask copies its contribution hash');
+  const log = readFileSync(join(DAPP, '../ceremony-phase2/genesis/sg11-genesis.log'), 'utf8');
+  const links = [...log.matchAll(/^ok \d+ sha256 ([0-9a-f]{64})/gm)].map((m) => m[1]);
+  const mod = await import(new URL('../dapp/praxis/receipt.js', import.meta.url));
+  ok(links.length === 18 && JSON.stringify(mod.SUCCINCT_LINKS) === JSON.stringify(links), 'Succinct\'s 18 hashes on the page are the ones in the genesis record');
+  await ctx.close();
+}
+
+console.log('the banner on the landing page');
+{
+  const land = readFileSync(join(DAPP, 'index.html'), 'utf8');
+  const m = land.match(/<a class="pxb" href="([^"]+)"[^>]*>(.*?)<\/a>/s);
+  const txt = m ? m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '';
+  ok(m && m[1] === '/praxis/' && /smart contracts on Bitcoin/.test(txt) && /up to 5 TAC/.test(txt) && !/not reviewed|not built/i.test(txt), `the landing page has a quiet line to the ceremony that says what it is (${txt.slice(0, 90)})`);
+  ok(/class="pxb"/.test(readFileSync(join(DAPP, 'tac/index.html'), 'utf8')) && /class="pxb"/.test(readFileSync(join(DAPP, 'spx/index.html'), 'utf8')), 'and the pages built from it carry it too');
 }
 
 console.log('a receipt that was changed, and a chain that does not link');
@@ -180,13 +213,48 @@ console.log('sharing the ceremony, and a contributor who comes back');
   const tweet = u.searchParams.get('text');
   ok(u.origin === 'https://twitter.com' && u.pathname === '/intent/tweet' && u.searchParams.get('url') === 'https://tacit.finance/praxis/' && /Tacit Praxis ceremony is open/.test(tweet) && /earn TAC/.test(tweet) && /#TAC #Praxis/.test(tweet) && tweet.length + 24 <= 280, `the Share button next to Contribute posts the ceremony, with the tags (${tweet.length} characters)`);
   ok((await page.getAttribute('#share-page', 'target')) === '_blank' && /noopener/.test(await page.getAttribute('#share-page', 'rel')), 'it opens in a new tab');
-  await page.fill('#addr', R19.handle);
   await page.fill('#name', 'Nobody');
+  await page.fill('#addr', R19.handle);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => document.querySelector('.tile.mine'), null, { timeout: 15000 });
   ok((await page.inputValue('#addr')) === R19.handle && (await page.inputValue('#name')) === 'Nobody', 'what was typed is still there on the next visit');
   ok(/You are #19/.test(await text(page, '#you')) && (await page.$eval('#you a.btn', (a) => /#19 in the chain/.test(new URL(a.href).searchParams.get('text')))), 'and a returning contributor is found on the wall, with a post ready to share');
   await ctx.close();
+}
+
+console.log('the moment a contribution lands');
+{
+  const A = '0x' + 'be'.repeat(20);
+  const last = T.receipts[T.receipts.length - 1];
+  const mk = (i, handle, ageMs) => ({ index: i, name: 'Eve', handle, contribution_hash: String(i).repeat(32).slice(0, 64).replace(/./g, 'a'), file_sha256: 'e'.repeat(64), prev_file_sha256: last.file_sha256, at: new Date(Date.now() - ageMs).toISOString(), signature: '00'.repeat(64) });
+  const fresh1 = mk(last.index + 1, A, 90e3);
+  const live = { ...T, head_index: fresh1.index, head_sha256: fresh1.file_sha256, receipts: [...T.receipts, fresh1] };
+  const { ctx, page, errs, csp } = await fresh({ live });
+  ok(!(await page.$eval('#cele', (d) => d.open)), 'the page does not celebrate before anyone says who they are');
+  await page.fill('#find', '#' + fresh1.index);
+  ok(!(await page.$eval('#cele', (d) => d.open)), 'and a search for someone else\'s contribution does not either');
+  await page.fill('#find', '');
+  await page.fill('#addr', A);
+  await page.waitForFunction(() => document.querySelector('#cele').open, null, { timeout: 4000 });
+  ok(new RegExp(`You are #${fresh1.index}`).test(await text(page, '#cele-h')), 'typing the address of a contribution just made opens the celebration, with its number');
+  ok(/TAC/.test(await text(page, '#cele-amt')) && /up to 5|\b5\b/.test(await text(page, '#cele-amt')) && !(await page.$eval('#cele-amt', (e) => e.hidden)), 'it says what the contribution pays, in TAC');
+  const cu = new URL(await page.getAttribute('#cele-share', 'href'));
+  ok(cu.hostname === 'twitter.com' && cu.searchParams.get('text').includes(fresh1.contribution_hash) && new RegExp(`#${fresh1.index} in the chain`).test(cu.searchParams.get('text')) && /#TAC #Praxis/.test(cu.searchParams.get('text')), 'its Share on X button carries the number, the hash and the tags');
+  ok((await page.$$eval('#cele-coin .fly', (c) => c.length)) > 0 || (await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)), 'TAC coins burst from the coin');
+  await page.click('#cele button[data-close].btn');
+  ok(!(await page.$eval('#cele', (d) => d.open)), 'it closes');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.querySelector('.tile.mine'), null, { timeout: 15000 });
+  ok(!(await page.$eval('#cele', (d) => d.open)) && /You are #/.test(await text(page, '#you')), 'on the next visit it is not shown again, and the wall still finds the contributor');
+  ok(!errs.length && !csp.length, `no page or CSP errors (${[...errs, ...csp].join(' | ')})`);
+  await ctx.close();
+  // an old contribution (typed in by someone else, or long ago) is not celebrated
+  const old = { ...T, receipts: T.receipts.map((r) => (r.index === 19 ? { ...r, at: new Date(Date.now() - 5 * 86400e3).toISOString() } : r)) };
+  const o = await fresh({ live: old });
+  await o.page.fill('#addr', R19.handle);
+  await o.page.waitForTimeout(600);
+  ok(!(await o.page.$eval('#cele', (d) => d.open)), 'a contribution days old is found but not celebrated');
+  await o.ctx.close();
 }
 
 console.log('the rewards, in TAC');

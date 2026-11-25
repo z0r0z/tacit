@@ -1,7 +1,8 @@
 // The Tacit Praxis ceremony page: the wall of contributors (each receipt's signature checked in the browser against the coordinator's key,
 // each face the zOrgz invader its address picks, as on the prover pool page), the stats, the rewards, and the command to take part.
-import { COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl } from '/praxis/receipt.js?cb=73d664fd';
+import { COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl, SUCCINCT_LINKS } from '/praxis/receipt.js?cb=99cd235c';
 import { invaderSvg } from '/prove/invader.js?cb=e8a5ec59';
+import { chime } from '/reward-pop.js?cb=88973dac';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -113,6 +114,26 @@ function drawWall(first) {
   if (!strip.childElementCount) for (let i = 0; i < SUCCINCT_CONTRIBUTORS; i++) strip.append(el('i', 'dot'));
 }
 
+// the whole chain as masks: Succinct's 18 first (small, greyed), then every contribution here; a click copies the file's hash
+function drawStrip() {
+  const strip = $('chain');
+  const link = (key, cls, title, hash, index) => {
+    const b = el('button', `lk ${cls}`);
+    b.type = 'button';
+    b.setAttribute('role', 'listitem');
+    b.title = title;
+    if (index) b.dataset.index = String(index);
+    b.append(face(key, cls === 'sg' ? 34 : 46));
+    b.addEventListener('click', async () => { try { await navigator.clipboard.writeText(hash); b.title = `${title}: hash copied`; } catch { /* not copied */ } });
+    return b;
+  };
+  strip.replaceChildren(
+    ...SUCCINCT_LINKS.map((h, i) => link(`0x${h}`, 'sg', `Succinct's contribution ${i + 1} of ${SUCCINCT_CONTRIBUTORS} (phase2-${i})`, h)),
+    ...receipts.map((r) => link(faceKey(r), `ours${mine && mine.index === r.index ? ' mine' : ''}`, `#${r.index}, ${nameOf(r)}, ${ago(r.at)}`, r.contribution_hash, r.index)),
+  );
+  strip.scrollLeft = strip.scrollWidth;      // the newest end
+}
+
 function drawChain(t) {
   const ours = t.receipts.length;
   setNum($('n-total'), SUCCINCT_CONTRIBUTORS + ours);
@@ -128,17 +149,58 @@ function drawChain(t) {
   link.textContent = bad < 0 ? '' : `Receipt ${bad + 1} does not continue the file before it: do not trust this list.`;
 }
 
+// ── the moment a contribution has landed: once for each contribution this browser has seen land, with the TAC coins, the chime and the post to share
+const CELE = 'tacit-praxis-celebrated-v1';
+let celebrated = new Set();
+try { celebrated = new Set(JSON.parse(localStorage.getItem(CELE) || '[]')); } catch { /* nothing kept */ }
+let eachWei = null;                    // what a contribution pays, once the points service has been read
+function coins() {
+  const box = $('cele-coin');
+  for (let i = 0; i < 9; i++) {
+    const c = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    c.setAttribute('class', 'tk fly');
+    c.innerHTML = '<use href="#tk-tac"/>';
+    box.append(c);
+    const dx = (Math.random() - 0.5) * 260, dy = -(90 + Math.random() * 90);
+    const run = c.animate([
+      { transform: 'translate(0,0) scale(.5)', opacity: 0 },
+      { transform: `translate(${dx * 0.7}px,${dy}px) scale(1.1)`, opacity: 1, offset: 0.45, easing: 'cubic-bezier(.2,.8,.2,1)' },
+      { transform: `translate(${dx}px,${dy + 70}px) scale(.8)`, opacity: 0 },
+    ], { duration: 1200 + i * 70, delay: i * 40, easing: 'cubic-bezier(.2,.8,.2,1)' });
+    run.onfinish = () => c.remove();
+  }
+}
+function celebrate(r) {
+  const dlg = $('cele');
+  if (celebrated.has(r.index) || dlg.open || typeof dlg.showModal !== 'function') return;
+  celebrated.add(r.index);
+  try { localStorage.setItem(CELE, JSON.stringify([...celebrated])); } catch { /* private window: it can show again */ }
+  $('cele-h').textContent = `You are #${r.index}`;
+  $('cele-share').href = shareUrl(r.contribution_hash, r.index);
+  $('cele-amt').hidden = eachWei === null;
+  if (eachWei !== null) $('cele-n').textContent = tac(eachWei);
+  dlg.showModal();
+  chime();
+  if (!reduced) coins();
+}
+for (const b of document.querySelectorAll('#cele [data-close]')) b.addEventListener('click', () => $('cele').close());
+$('cele').addEventListener('click', (e) => { if (e.target === $('cele')) $('cele').close(); });   // a click on the dimmed page behind it
+
 // ── find yours
 function drawYou() {
   const box = $('you');
   const q = $('find').value;
   mine = findReceipt(receipts, q) || (isAddress($('addr').value.trim()) ? findReceipt(receipts, $('addr').value) : null);
-  for (const b of document.querySelectorAll('.tile.mine')) b.classList.remove('mine');
+  for (const b of document.querySelectorAll('.tile.mine, .lk.mine')) b.classList.remove('mine');
   box.replaceChildren();
   if (!q.trim() && !mine) { box.hidden = true; return; }
   box.hidden = false;
   if (!mine) { box.append(el('span', null, 'Not on the wall yet. A contribution shows up here once it has been accepted.')); return; }
   document.querySelector(`.tile[data-index="${mine.index}"]`)?.classList.add('mine');
+  document.querySelector(`.lk[data-index="${mine.index}"]`)?.classList.add('mine');
+  // the address typed in the form (not a search of someone else's) marks a contribution as the visitor's own: once, if it is recent
+  const own = isAddress($('addr').value.trim()) ? findReceipt(receipts, $('addr').value) : null;
+  if (own && own.index === mine.index && Date.now() - new Date(own.at).getTime() < 48 * 3600e3) celebrate(own);
   box.append(el('span', null, `You are #${mine.index}${mine.name && !isAddress(mine.name) ? `, ${mine.name}` : ''}. Thank you.`));
   const a = el('a', 'btn');
   a.textContent = 'Share on X';
@@ -170,7 +232,7 @@ async function refresh() {
     const changed = t.receipts.length !== receipts.length || t.receipts.some((r, i) => receipts[i]?.contribution_hash !== r.contribution_hash);
     receipts = t.receipts;
     drawChain(t);
-    if (changed || first) { drawWall(first); drawYou(); }
+    if (changed || first) { drawWall(first); drawStrip(); drawYou(); }
     first = false;
   } catch {
     if (first) $('tiles').replaceChildren(el('li', 'empty err', 'The chain could not be read here.'));
@@ -220,6 +282,7 @@ async function drawRewards() {
     const r = await fetch(POINTS_VIEW, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
     const v = rewardView(await r.json());
     if (!v) { box.hidden = true; $('cta-reward').hidden = true; return; }
+    eachWei = v.each;
     $('rw-each').textContent = `up to ${tac(v.each)}`;
     $('cta-each').textContent = `up to ${tac(v.each)}`;
     $('rw-left').textContent = `${tac(v.left)} TAC left · about ${v.count.toLocaleString('en-US')} more contribution${v.count === 1n ? '' : 's'}`;
