@@ -166,6 +166,17 @@ console.log('earned, not yet paid');
   ok(mod.addressOf({ name: 'x', handle: ' 0xAbCdEf0123456789abcdef0123456789ABCDEF01 ' }) === '0xabcdef0123456789abcdef0123456789abcdef01' && mod.addressOf({ name: 'Tacit', handle: '@tacitfinance' }) === null, 'the address a contribution is credited to is its handle, else its name');
 }
 
+console.log('what a shared link looks like');
+{
+  const og = (p) => page0.getAttribute(`meta[property="${p}"]`, 'content');
+  const page0 = (await fresh({ wait: false })).page;
+  ok(await og('og:image') === 'https://tacit.finance/praxis/og.png' && await page0.getAttribute('meta[name="twitter:image"]', 'content') === 'https://tacit.finance/praxis/og.png' && await page0.getAttribute('meta[name="twitter:card"]', 'content') === 'summary_large_image', 'the card that X and link previews show is this page\'s own');
+  const png = readFileSync(join(DAPP, 'praxis/og.png'));
+  ok(png.readUInt32BE(16) === 1200 && png.readUInt32BE(20) === 630 && png.length < 400000, 'the card file is 1200 x 630 and small');
+  const d = await page0.getAttribute('meta[name="twitter:description"]', 'content');
+  ok(/Smart contracts on Bitcoin/.test(d) && /5 TAC/.test(d) && !/trustless|audited|secure|locks keys/i.test(d), 'its text says what it is and what it pays, in plain words');
+}
+
 console.log('the banner on the landing page');
 {
   const land = readFileSync(join(DAPP, 'index.html'), 'utf8');
