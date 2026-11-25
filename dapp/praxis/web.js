@@ -1,6 +1,6 @@
 // The "contribute in this browser" path: the work is done by ceremony-phase2/browser (copied to ./browser/), here are only its
 // entry point and the wasm/worker plumbing the page needs.
-import { runContribution } from '/praxis/browser/flow.js?cb=1707ad2a';
+import { runContribution } from '/praxis/browser/flow.js?cb=e2b0197f';
 
 export const WINDOW = 'https://tacit-praxis-ceremony.onrender.com/api/c';
 

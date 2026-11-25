@@ -286,7 +286,7 @@ async function startWeb() {
   if (handleRaw && !isAddress(handleRaw) && !confirm('That does not look like a 0x address (0x and 40 letters or digits), so no TAC could be sent to it. Continue without one?')) { $('addr').focus(); return; }
   const handle = isAddress(handleRaw) ? handleRaw : '';
   const name = (cleanName($('name').value) || (handle ? '' : 'a browser')) || handle;
-  const web = await import('/praxis/web.js?cb=4cf9b484');
+  const web = await import('/praxis/web.js?cb=7f2a329d');
   web.resetClock();
   const ac = new AbortController();
   webRun = ac;
@@ -339,10 +339,10 @@ async function drawQueue() {
   try {
     const r = await fetch('https://tacit-praxis-ceremony.onrender.com/api/coordinator', { cache: 'no-store', signal: AbortSignal.timeout(6000) });
     const v = await r.json();
-    if (/^https?:\/\/[^\s"'<>]+$/.test(v.coordinator || '')) { coordinator = v.coordinator; drawCommand(); }
+    if (/^https?:\/\/[A-Za-z0-9.\-]+(:\d{1,5})?$/.test(v.coordinator || '') || /^https?:\/\/\[[0-9A-Fa-f:]+\](:\d{1,5})?$/.test(v.coordinator || '')) { coordinator = v.coordinator; drawCommand(); }
     $('queue').textContent = v.open === false ? 'Closed.' : waitText(v.queue);
     if (Number.isInteger(v.queue)) setNum($('n-queue'), v.queue);
-    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=4cf9b484'); const can = web.capable(); $('web').hidden = !can; if (can && !webRun) $('cmd-alt').open = false; }
+    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=7f2a329d'); const can = web.capable(); $('web').hidden = !can; if (can && !webRun) $('cmd-alt').open = false; }
   } catch { $('queue').textContent = ''; }
 }
 

@@ -104,6 +104,7 @@ export async function runContribution(opts) {
     // upload in parts as the file is made
     let buf = new Uint8Array(partSize), fill = 0, sent = 0;
     const put = async (bytes) => {
+      let busy = 0;                                    // the coordinator takes one part at a time: a retry that lands while the last attempt is still being read waits for it
       for (let i = 0; ; i++) {
         try {
           const r = await F(`${api}/upload-part?offset=${sent}`, { method: 'PUT', signal, headers: { 'X-Ceremony-Token': token }, body: bytes });
@@ -113,6 +114,7 @@ export async function runContribution(opts) {
           sent = j.have; report({ sent });
           return;
         } catch (e) {
+          if (!signal?.aborted && e instanceof Refused && e.code === 409 && /still arriving/.test(e.message) && busy++ < 150) { await sleep(5000, signal); i--; continue; }
           if (signal?.aborted || (e instanceof Refused && e.code !== 502 && e.code !== 503) || i >= 5) throw e;
           await sleep(1500 * (i + 1), signal);
         }
