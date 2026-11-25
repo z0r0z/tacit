@@ -87,9 +87,8 @@ code { font: inherit; }
 .hero h1 em { font-style: italic; }
 .lede { margin: 16px 0 0; font-size: clamp(17px, 2.4vw, 21px); line-height: 1.35; max-width: 34em; }
 .fine { margin: 14px 0 0; color: var(--mute); font-size: 12.5px; max-width: 70ch; }
-.why { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 10px; max-width: 72ch; }
-.why li { font-size: 13px; line-height: 1.55; padding-left: 14px; border-left: 2px solid var(--orange); }
-.why b { font-weight: 500; }
+.why { margin: 18px 0 0; display: grid; gap: 10px; max-width: 64ch; padding-left: 14px; border-left: 2px solid var(--orange); }
+.why p { font-size: 14px; line-height: 1.6; margin: 0; }
 .cta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 22px 0 0; }
 .cta .btn { width: auto; min-width: 230px; margin: 0; padding-inline: 32px; }
 .reward-chip { display: inline-flex; align-items: center; gap: 9px; padding: 7px 16px 7px 7px; border: 1px solid var(--hair-2); border-radius: 99px; font-size: 13px; background: var(--card); }
@@ -551,13 +550,12 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <main>
     <section class="hero" aria-labelledby="h">
       <h1 id="h">Tacit <em>Praxis</em> ceremony</h1>
-      <p class="lede">The cryptography for smart contracts on Bitcoin. Help build the key it runs on.</p>
-      <ul class="why">
-        <li><b>The idea.</b> Praxis locks a secret, like the key to a Bitcoin wallet, so it opens for whoever proves a condition that any program can check. Bitcoin does not change. There is no committee, no key-holder, no trusted party.</li>
-        <li><b>Why it is new.</b> The first witness encryption that works for any condition, with a security proof and practical costs (ePrint 2026/2971). From the paper: Bitcoin covenants, bridges without a custodian, time-locks that open when a chain reaches a given length.</li>
-        <li><b>Why you.</b> Every lock rests on one setup key, and your randomness is what makes it unforgeable. If one contributor throws theirs away, the key cannot be forged. Be that one.</li>
-      </ul>
-      <p class="fine">A Groth16 setup for the SP1 v6.1.0 verifier circuit, which checks a proof of any program, extending Succinct's 18 contributions. We are building Praxis on this key.</p>
+      <p class="lede">Smart contracts on Bitcoin, without changing Bitcoin. Help make the key they run on.</p>
+      <div class="why">
+        <p>Praxis locks a secret, say the key to a Bitcoin wallet, so that it opens for whoever can prove a condition. The condition can be any program. Nobody holds the key and nobody has to be trusted. It comes from a new paper (ePrint 2026/2971), and it is what makes things like Bitcoin covenants and bridges with no custodian possible.</p>
+        <p>All of it rests on one setup key, built by a chain of contributors. It stays unforgeable as long as any one of them deletes their randomness. Add yours and you may be that one.</p>
+      </div>
+      <p class="fine">A Groth16 setup for the SP1 v6.1.0 verifier circuit, continuing Succinct's 18 contributions. We are building Praxis on this key.</p>
       <noscript><p class="note">The wall of contributors needs JavaScript; the commands below work without it.</p></noscript>
       <div class="cta">
         <a class="btn big" href="#join" id="cta-go">Contribute</a>
