@@ -1,6 +1,6 @@
 // The Tacit Praxis ceremony page: the chain read from this site's copy of the coordinator's transcript (the coordinator speaks plain HTTP,
 // which an HTTPS page cannot fetch), each receipt's signature checked against the coordinator's key, the copy buttons and the share link.
-import { COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, short, when, normalHash, shareUrl } from '/praxis/receipt.js?cb=53d90e6b';
+import { COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, short, when, normalHash, shareUrl, runCommand, waitText, platformGuess } from '/praxis/receipt.js?cb=ea54ef83';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -49,7 +49,17 @@ async function drawReceipts(t) {
     const li = el('li', 'rc');
     const top = el('div', 'rc-top');
     const who = el('span', 'who');
-    who.append(el('b', null, r.name), r.handle ? el('span', 'mute', ` ${r.handle}`) : '');
+    // an address as a name (the tool's handle for the points) is shown once and shortened, whole on hover
+    const isAddr = (s) => /^0x[0-9a-fA-F]{40}$/.test(String(s || ''));
+    const label = (s) => (isAddr(s) ? `${s.slice(0, 6)}…${s.slice(-4)}` : s);
+    const nameEl = el('b', null, label(r.name));
+    if (isAddr(r.name)) nameEl.title = r.name;
+    who.append(nameEl);
+    if (r.handle && r.handle.toLowerCase() !== String(r.name).toLowerCase()) {
+      const h = el('span', 'mute', ` ${label(r.handle)}`);
+      if (isAddr(r.handle)) h.title = r.handle;
+      who.append(h);
+    }
     top.append(el('span', 'idx num', `#${r.index}`), who, el('time', 'mute', when(r.at)));
     top.lastChild.dateTime = r.at;
     const hash = el('div', 'rc-hash');
@@ -81,6 +91,28 @@ function drawShare() {
 }
 
 const repaint = drawShare();
+
+// Take part: the command for this computer, with the address and name typed; the queue and the coordinator's address from the window
+let coordinator = COORDINATOR;
+function drawCommand() {
+  const pre = $('cmd-run');
+  if (!pre) return;
+  pre.textContent = runCommand({ plat: $('plat').value, addr: $('addr').value, name: $('name').value, coordinator });
+}
+if ($('plat')) {
+  $('plat').value = platformGuess(navigator.userAgent, navigator.platform || '');
+  for (const id of ['plat', 'addr', 'name']) $(id).addEventListener('input', drawCommand);
+  drawCommand();
+}
+async function drawQueue() {
+  try {
+    const r = await fetch('https://tacit-praxis-ceremony.onrender.com/api/coordinator', { cache: 'no-store', signal: AbortSignal.timeout(6000) });
+    const v = await r.json();
+    if (/^https?:\/\/[^\s"'<>]+$/.test(v.coordinator || '')) { coordinator = v.coordinator; drawCommand(); }
+    $('queue').textContent = v.open === false ? 'Closed' : waitText(v.queue);
+  } catch { $('queue').textContent = 'Not read just now'; }
+}
+if ($('queue')) { drawQueue(); setInterval(drawQueue, 30_000); }
 // the live transcript through the ceremony's HTTPS window (each receipt's signature is still checked below against the
 // coordinator key); this site's copy if the window does not answer
 const LIVE = 'https://tacit-praxis-ceremony.onrender.com/api/transcript';

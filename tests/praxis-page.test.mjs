@@ -83,12 +83,10 @@ console.log('the page, the chain and the receipts');
   await page.click('#receipts li.rc:last-child .cp');
   ok((await page.evaluate(() => navigator.clipboard.readText())) === R18.contribution_hash && /Copied/.test(await text(page, '#receipts li.rc:last-child .cp')), 'a receipt\'s copy button copies its whole contribution hash');
   const cmds = await page.$$('.cmd');
-  ok(cmds.length >= 5 && (await page.$$('.cmd .cp')).length === cmds.length, `every command has a copy button (${cmds.length})`);
-  await page.locator('#join .cmd').nth(1).locator('.cp').click();
-  const contrib = await page.evaluate(() => navigator.clipboard.readText());
-  ok(contrib === './tacit-ceremony contribute \\\n  --coordinator http://143.55.45.86:53874 \\\n  --name "<your name>" --handle @you', `the contribute command copies as typed (${JSON.stringify(contrib)})`);
+  ok(cmds.length >= 4 && (await page.$$('.cmd .cp')).length === cmds.length, `every command has a copy button (${cmds.length})`);
   await page.locator('#join .cmd').nth(0).locator('.cp').click();
-  ok((await page.evaluate(() => navigator.clipboard.readText())) === 'git clone https://github.com/z0r0z/tacit\ncd tacit/ceremony-phase2\ngo build -o tacit-ceremony ./cmd/tacit-ceremony', 'the build commands copy as typed');
+  const contrib = await page.evaluate(() => navigator.clipboard.readText());
+  ok(contrib === (await page.innerText('#cmd-run')).trim() && /contribute --coordinator http:\/\/143\.55\.45\.86:53874 --name '<your name>'$/.test(contrib), `the contribute command copies as shown (${JSON.stringify(contrib)})`);
   await page.locator('#verify .cmd').nth(0).locator('.cp').click();
   ok((await page.evaluate(() => navigator.clipboard.readText())) === `for n in $(seq 17 ${T.head_index}); do\n  curl -fO http://143.55.45.86:53874/f/phase2-$n\ndone\nshasum -a 256 phase2-*`, 'the download copies with the head');
   await page.locator('#verify .cmd').nth(2).locator('.cp').click();
@@ -96,7 +94,9 @@ console.log('the page, the chain and the receipts');
   await page.locator('#head .cp').click();
   ok((await page.evaluate(() => navigator.clipboard.readText())) === T.head_sha256, 'the head copies whole');
   const fixed = await text(page, '.fixed');
-  ok(fixed.includes('d6a66be2702206e2b1a20bebf7096142864feac9e399a309e5e6e00353264cbc') && fixed.includes('bf6f7799c77a90009ae356fd0d3a69a91cf153825e6762ce344fe804cf5db2df') && fixed.includes(KEY) && /drand round 1000/.test(fixed) && /drand round and a Bitcoin block/.test(fixed), 'the fixed values: circuit, starting file, coordinator key, both seals');
+  ok(fixed.includes('d6a66be2702206e2b1a20bebf7096142864feac9e399a309e5e6e00353264cbc') && fixed.includes('bf6f7799c77a90009ae356fd0d3a69a91cf153825e6762ce344fe804cf5db2df') && fixed.includes(KEY) && /drand round 1000/.test(fixed) && /first Bitcoin block mined after the close is announced/.test(fixed) && !/announced before the close/.test(fixed), 'the fixed values: circuit, starting file, coordinator key, both seals (the Phase 2 seal follows the close)');
+  const rows19 = await text(page, '#receipts');
+  ok(!/0x[0-9a-f]{40}.*0x[0-9a-f]{40}/i.test(rows19) && !/tacit-prover/.test(await text(page, '#join')), 'an address used as a name is not listed twice, and the page does not promise a prover release that is not out');
   ok(/Nothing yet/.test(await text(page, '#honest')) && /recursion and wrap circuits/.test(await text(page, '#honest')), 'the note on what it protects today');
   ok(/new key/.test(await text(page, '#honest')) && /does not change Succinct's deployed SP1 verifier/.test(await text(page, '#honest')), 'a new key, not a change to Succinct\'s deployed verifier');
   const vt = await text(page, '#verify');
@@ -139,7 +139,7 @@ console.log('a transcript that cannot be read');
 {
   const { ctx, page, errs } = await fresh({ transcript: 404 });
   ok(/could not be read/.test(await text(page, '#receipts')), 'the list says so');
-  ok(/Share/.test(await text(page, '#join')) && (await page.$$('.cmd .cp')).length >= 5, 'the commands and the share field still work');
+  ok(/Share/.test(await text(page, '#join')) && (await page.$$('.cmd .cp')).length >= 4, 'the commands and the share field still work');
   ok(!errs.length, 'no page errors');
   await ctx.close();
 }
@@ -172,6 +172,32 @@ for (const scheme of ['light', 'dark']) {
   ok(/Read live from the coordinator/.test(await page.textContent('#src')), 'the page says it read the transcript live');
   ok(/signed by the coordinator/.test(await page.textContent('#receipts')), 'and still checks each receipt against the coordinator key');
   ok(!errs.length && !csp.length, `the live read raises no page or CSP errors (${[...errs, ...csp].join(' | ')})`);
+  await ctx.close();
+}
+
+console.log('take part: the command for this computer, the queue and the coordinator from the window');
+{
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  const errs = [];
+  page.on('pageerror', (e) => errs.push(e.message));
+  await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, (route) => route.abort());
+  await page.route('https://tacit-praxis-ceremony.onrender.com/api/coordinator', (route) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ open: true, coordinator: 'http://198.51.100.7:9999', queue: 3, index: 18 }) }));
+  await page.goto(`${BASE}/praxis/`, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => /queue/.test(document.querySelector('#queue').textContent), null, { timeout: 10000 });
+  ok(/3 in the queue · about 60 min/.test(await text(page, '#queue')), `the queue and the wait (${await text(page, '#queue')})`);
+  await page.selectOption('#plat', 'linux-amd64');
+  await page.fill('#addr', '0x' + 'ab'.repeat(20));
+  await page.fill('#name', "Ada O'Neil");
+  const cmd = await page.innerText('#cmd-run');
+  ok(cmd.includes('releases/download/ceremony-v1.0.0/tacit-ceremony-linux-amd64') && cmd.includes('chmod +x tacit-ceremony-linux-amd64'), 'the download for the computer picked');
+  ok(cmd.includes('--coordinator http://198.51.100.7:9999'), 'the coordinator address comes from the window');
+  ok(cmd.includes(`--name 'Ada O'\\''Neil'`) && cmd.includes('--handle 0x' + 'ab'.repeat(20)), `the name quoted for the shell and the address as the handle (${cmd.split('\n').pop()})`);
+  await page.fill('#addr', '0x123');
+  ok(!(await page.innerText('#cmd-run')).includes('--handle'), 'a malformed address is left out');
+  await page.selectOption('#plat', 'windows-amd64.exe');
+  ok(/Invoke-WebRequest .*tacit-ceremony-windows-amd64\.exe/.test(await page.innerText('#cmd-run')), 'Windows gets PowerShell lines');
+  ok(!errs.length, `no script errors (${errs.join('; ')})`);
   await ctx.close();
 }
 

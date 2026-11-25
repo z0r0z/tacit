@@ -66,3 +66,47 @@ export function shareUrl(hash) {
   const text = `I contributed to the Tacit Praxis ceremony.\n\nMy contribution hash:\n${hash}\n\nCheck it, or add yours:`;
   return `https://twitter.com/intent/tweet?${new URLSearchParams({ text, url: PAGE_URL })}`;
 }
+
+export const RELEASE = 'https://github.com/z0r0z/tacit/releases/download/ceremony-v1.0.0';
+export const MINUTES_PER_SLOT = 20;
+const ADDR40 = /^0x[0-9a-fA-F]{40}$/;
+export const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
+// a name as the coordinator takes it: printable ASCII, 1 to 64 characters (anything else is dropped)
+export const cleanName = (s) => String(s ?? '').replace(/[^\x20-\x7e]/g, '').trim().slice(0, 64);
+
+// The lines a contributor pastes: download the release binary for their computer and run it; the handle is their 0x address when
+// they give a valid one (the ceremony's points go to it).
+export function runCommand({ plat = 'darwin-arm64', addr = '', name = '', coordinator = COORDINATOR } = {}) {
+  const file = `tacit-ceremony-${plat}`;
+  const nm = cleanName(name) || '<your name>';
+  const handle = ADDR40.test(String(addr).trim()) ? String(addr).trim() : '';
+  if (plat.startsWith('windows')) {
+    return [
+      `Invoke-WebRequest -Uri ${RELEASE}/${file} -OutFile ${file}`,
+      `.\\${file} contribute --coordinator ${coordinator} --name ${psQuote(nm)}${handle ? ` --handle ${handle}` : ''}`,
+    ].join('\n');
+  }
+  return [
+    `curl -fLO ${RELEASE}/${file}`,
+    `chmod +x ${file}`,
+    `./${file} contribute --coordinator ${coordinator} --name ${shQuote(nm)}${handle ? ` --handle ${handle}` : ''}`,
+  ].join('\n');
+}
+
+export function waitText(queue) {
+  const q = Number(queue);
+  if (!Number.isFinite(q) || q < 0) return '';
+  if (q === 0) return 'Nobody waiting: your turn comes at once';
+  const mins = q * MINUTES_PER_SLOT;
+  return `${q} in the queue · about ${mins < 90 ? `${mins} min` : `${Math.round(mins / 60)} h`} to your turn`;
+}
+
+export function platformGuess(ua = '', platform = '') {
+  const s = `${ua} ${platform}`.toLowerCase();
+  if (s.includes('win')) return 'windows-amd64.exe';
+  if (s.includes('mac')) return 'darwin-arm64';
+  if (s.includes('linux') && (s.includes('aarch64') || s.includes('arm'))) return 'linux-arm64';
+  if (s.includes('linux')) return 'linux-amd64';
+  return 'darwin-arm64';
+}
