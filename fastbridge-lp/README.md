@@ -7,6 +7,49 @@ and takes the Bitcoin once the user's claim shows it the secret. The protocol is
 The process runs the Ethereum-locker machine (`dapp/fastbridge-el.js`) over a durable store. Everything it decides it
 reads from the chains; the HTTP API only carries the user's offer in and the pool lock's offer out.
 
+## Quick start: a Bitcoin-for-ETH provider
+
+Node 22 and a machine that stays on. From a checkout of this repository, with the packages installed (`(cd worker-relay && npm ci --omit=dev --ignore-scripts) && (cd worker && npm ci --omit=dev --ignore-scripts)`):
+
+```
+node fastbridge-lp/setup.mjs
+```
+
+1. **Set up.** It asks for a name and your fee (each has a default; `--name`, `--fee-bps`, `--flat-fee`, `--size`, `--yes` skip the questions). It makes your key
+   in `fastbridge-lp/data-btc-eth/provider.key` (mode 600) and prints it once: **copy it somewhere offline**, the funds are only as safe as it (`setup show-key` prints it again on request).
+   Then it prints the provider's two public addresses, an Ethereum pool account and a Bitcoin address, and how much to send for a small, medium or large start.
+2. **Send the funds.** ETH to the pool account (Ethereum mainnet). It sees it, shields it into private notes of the key, and sets the swap limits from what arrived. Bitcoin
+   to the Bitcoin address is optional and turns on ETH to BTC; one confirmation counts, and running setup again after sending it switches the direction on.
+3. **It checks and goes live.** It tries the Ethereum nodes, the Bitcoin explorers, the price, the board, a dry run of the quote path and the CORS answer for tacit.finance, then starts the
+   daemon, which posts its signed ad. It shows under "Providers online" at https://tacit.finance/btc/ within a few minutes (the first read of the pool takes about two).
+
+Stop it with Ctrl-C at any point and run the same command again: the key is made once, a deposit is written down before it is sent, and a run first finds out what the last one finished. A
+deposit whose settle reverted (the relay busy, or its settle racing ours) is settled again, from this account when the relay is not sending, and counted done as soon as the notes are in the pool: it is never deposited twice.
+`node fastbridge-lp/setup.mjs run` starts the daemon later (a restart), `status` reads its health and its ad and says what they mean.
+
+**Starter sizes** (the most one swap takes; the least is 50,000 sats; ETH is for two swaps at the most at once, at today's price, plus 0.01 ETH that stays for gas):
+
+| size | most per swap | send ETH | send BTC (optional) |
+|---|---|---|---|
+| small | 100,000 sats (0.001 BTC) | about 0.07 ETH (at 31 ETH per BTC) | the swap's most plus 40,000 sats |
+| medium | 500,000 sats (0.005 BTC) | about 0.32 ETH | same |
+| large | 2,500,000 sats (0.025 BTC) | about 1.56 ETH | same |
+
+Setup prints the exact figures for the day's price. Start small: the limits come from what is funded, and a later run after a top-up raises them.
+
+**What you earn, what you risk.** You earn the fee on every swap: a share of the amount (30 means 0.30%) plus a flat number of sats that covers the Bitcoin network fees. Pages ask the providers with the lowest fees first. You risk:
+capacity tied up while a swap is open (up to about 16 hours if a user disappears, after which it comes back to you), network fees on both chains, and the price moving in that time. All of it is bounded by your maximum per swap. Tacit never
+holds your funds: the key is yours, and each swap locks both sides. Nothing here is a promise of income.
+
+**Watching it.** `curl localhost:8788/health` is liveness; `/info` shows what it quotes (`minAmount`, `maxAmount`, `feeBps`, `flatFee`), `available` (the most it can lend now; 0 or under the minimum shows as "full right now"; add ETH) and,
+once a swap has ended, `stats` (swaps, fees earned, capacity held). Alerts go to the log and to `FB_LP_ALERT_WEBHOOK` (see "Watching it" below).
+
+**Docker.** `docker build -f worker-relay/Dockerfile.fastbridge-lp -t tacit-lp .`, then `docker run -it -v tacit-lp:/var/lib/tacit-fastbridge-lp tacit-lp setup` (once; it stops when the checks pass), then
+`docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp tacit-lp run`. Without `-it` it takes `FB_LP_NAME`, `FB_LP_FEE_BPS`, `FB_LP_FLAT_FEE`, `FB_LP_SIZE` and `FB_LP_KEY` from the environment.
+`docker-compose.example.yml` is the same with a volume; `render.example.yaml` is a Render service (a template, not deployed) with the disk and variables. One instance per key.
+
+The sections below are the full reference.
+
 ## Run one that stays on
 
 Anyone can provide: from the bridge page (`/fast/`, "Provide liquidity", while the page is open), or with this process, which stays on by itself and

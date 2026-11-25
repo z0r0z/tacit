@@ -307,6 +307,10 @@ html .lane #atomic .pt-say.err { color: var(--err); }
 #be li { margin: 3px 0; }
 #be li::marker { color: var(--mute); }
 .cmd { position: relative; margin: 6px 0 0; }
+details.by { border: 1px solid var(--hair); border-radius: 10px; padding: 0 12px; }
+details.by > summary { cursor: pointer; padding: 10px 0; font-size: 13px; color: var(--mute); }
+details.by[open] > summary { color: var(--ink); }
+details.by .box { padding: 4px 0 12px; background: none; border: 0; }
 /* a command wraps rather than runs off the edge: each line of it hangs, so a wrapped line reads as the same command; the copy button sits clear of the first */
 .cmd pre { margin: 0; padding: 9px 12px; font: 12px/1.6 var(--mono); background: var(--field); border: 1px solid var(--hair); border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .cmd pre .ln { display: block; padding-left: 2ch; text-indent: -2ch; }
@@ -661,11 +665,30 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <div id="pv-fund" hidden></div>
     </div></details>
 
-    <details class="sec dd" id="be" data-dd><summary><h2 id="be-h">Become a provider</h2><span class="sum" id="be-sum">a small process with its own key</span><i class="chev" aria-hidden="true"></i></summary><div class="dd-b">
+    <details class="sec dd" id="be" data-dd><summary><h2 id="be-h">Become a provider</h2><span class="sum" id="be-sum">one command, a small process with its own key</span><i class="chev" aria-hidden="true"></i></summary><div class="dd-b">
       <p>Anyone can provide. A provider is a small process with its own key: it quotes from the market price plus its fee, and each swap locks both sides, so it never holds anyone’s funds.</p>
       <p>Tacit runs one provider itself and puts what it earns back into its capacity. More providers add room to each swap and keep the prices close: each sets its own terms, and pages ask those with the lowest fees first.</p>
       <p style="font-size:12.5px;color:var(--mute)">Running a node also helps: Ethereum and Bitcoin nodes are listed at <a href="/nodes/">/nodes/</a> and ranked by uptime and accuracy.</p>
       <div class="box">
+        <div>
+          <h3>Three steps</h3>
+          <ol>
+            <li>Run one command in a checkout of the repository. It makes your key and shows it once (copy it somewhere offline), asks a name and your fee, and prints the provider’s two addresses and what to send.
+              <div class="cmd"><pre>node fastbridge-lp/setup.mjs</pre></div>
+              <p style="margin:8px 0 0;font-size:12.5px;color:var(--mute)">No checkout yet? First:</p>
+              <div class="cmd"><pre>git clone https://github.com/src-company/tacit &amp;&amp; cd tacit
+(cd worker-relay &amp;&amp; npm ci --omit=dev --ignore-scripts) &amp;&amp; (cd worker &amp;&amp; npm ci --omit=dev --ignore-scripts)</pre></div></li>
+            <li>Send ETH to the pool account it prints. It sees it, shields it as the key’s private notes and sets your limits from what arrived. Start small: about 0.07 ETH covers swaps up to 0.001 BTC. Bitcoin sent to the other address is optional and adds ETH → BTC.</li>
+            <li>It checks the nodes, the explorers, the price and a test quote, then starts and posts its ad. It shows in the list above within a few minutes. Stop it any time and run the command again: it picks up where it was.</li>
+          </ol>
+        </div>
+        <div>
+          <h3>What you earn, what you risk</h3>
+          <p style="margin:0;font-size:13px;color:var(--mute)">You earn the fee on each swap: a share of the amount plus a flat number of sats for the Bitcoin network fee, set by you. Pages ask the lowest fees first. You risk capacity tied up while a swap is open (up to about 16 hours if a user disappears, then it comes back), network fees on both chains, and the price moving in that time. All of it is bounded by the most you allow per swap. Tacit never holds your funds: the key is yours. Nothing here is a promise of income.</p>
+        </div>
+        <details class="by">
+          <summary>The details, and doing it by hand</summary>
+          <div class="box">
         <div>
           <h3>What you need</h3>
           <ul>
@@ -678,18 +701,16 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <div>
           <h3>Your terms</h3>
           <ul>
-            <li>A fee: a share in basis points plus a flat part, each way.</li>
-            <li>A minimum and a maximum per swap, each way.</li>
+            <li>A fee: a share in basis points plus a flat part, each way (setup’s default is 0.30% and 1,000 sats).</li>
+            <li>A minimum and a maximum per swap, each way (the least is 50,000 sats). Starter maximums: 0.001, 0.005 or 0.025 BTC.</li>
             <li>The price follows the market (Chainlink and exchanges). Pages block a quote more than 3% under it.</li>
           </ul>
         </div>
         <div>
-          <h3>Steps</h3>
+          <h3>By hand</h3>
           <ol>
             <li>Get the code and a key.
-              <div class="cmd"><pre>git clone https://github.com/src-company/tacit &amp;&amp; cd tacit
-(cd worker-relay &amp;&amp; npm ci --omit=dev --ignore-scripts) &amp;&amp; (cd worker &amp;&amp; npm ci --omit=dev --ignore-scripts)
-cp fastbridge-lp/config.btc-eth.example.json fastbridge-lp/config.json
+              <div class="cmd"><pre>cp fastbridge-lp/config.btc-eth.example.json fastbridge-lp/config.json
 export FB_LP_KEY=$(openssl rand -hex 32)</pre></div></li>
             <li>Try it. It prints its pool account and Bitcoin address, and takes nothing.
               <div class="cmd"><pre>node fastbridge-lp/server.mjs --dry-run</pre></div></li>
@@ -700,14 +721,19 @@ export FB_LP_KEY=$(openssl rand -hex 32)</pre></div></li>
           </ol>
         </div>
         <div>
-          <h3>On Render or Docker</h3>
+          <h3>On Docker or Render</h3>
           <div class="cmd"><pre>docker build -f worker-relay/Dockerfile.fastbridge-lp -t tacit-lp .
-docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp \
-  -e FB_LP_KEY=&lt;key&gt; -e FB_LP_NAME=&lt;name&gt; \
-  -e FB_LP_CONFIG=/app/fastbridge-lp/config.btc-eth.render.json tacit-lp</pre></div>
-          <p class="row" style="margin:10px 0 0;font-size:12.5px;color:var(--mute)">On Render, the same image with the same three variables and a disk at /var/lib/tacit-fastbridge-lp. FB_LP_REVERSE=on and a funded reverse address add ETH → BTC.</p>
+docker run -it -v tacit-lp:/var/lib/tacit-fastbridge-lp tacit-lp setup
+docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp tacit-lp run</pre></div>
+          <p class="row" style="margin:10px 0 0;font-size:12.5px;color:var(--mute)">The first command sets up and stops, the second runs it. fastbridge-lp has a docker-compose example and a Render template with the disk and variables (FB_LP_NAME, FB_LP_FEE_BPS, FB_LP_FLAT_FEE, FB_LP_SIZE, FB_LP_KEY). One instance per key.</p>
         </div>
-        <p style="margin:0;font-size:12.5px"><a href="https://github.com/src-company/tacit/blob/main/fastbridge-lp/README.md#a-provider-of-bitcoin-for-eth-pair-mode" target="_blank" rel="noopener noreferrer">The provider’s guide, pair mode ↗</a></p>
+        <div>
+          <h3>Is it healthy</h3>
+          <p style="margin:0;font-size:12.5px;color:var(--mute)"><code>node fastbridge-lp/setup.mjs status</code> reads <code>/health</code> and <code>/info</code> and the board’s ad. <code>available</code> is the most it can lend now; under the minimum it shows as full right now, and more ETH fixes that. <code>stats</code> appears after its first swap ends.</p>
+        </div>
+          </div>
+        </details>
+        <p style="margin:0;font-size:12.5px"><a href="https://github.com/src-company/tacit/blob/main/fastbridge-lp/README.md#a-provider-of-bitcoin-for-eth-pair-mode" target="_blank" rel="noopener noreferrer">The provider’s guide, pair mode ↗</a> · <a href="https://github.com/src-company/tacit/blob/main/fastbridge-lp/README.md#quick-start-a-bitcoin-for-eth-provider" target="_blank" rel="noopener noreferrer">Quick start ↗</a></p>
       </div>
     </div></details>
   </main>

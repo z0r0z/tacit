@@ -333,9 +333,14 @@ console.log('the page: the marks, the line, the lane');
   ok(Math.abs(barW - 0.1825) < 0.01, `the bar is at 18% of the target (${barW.toFixed(3)})`);
 
   console.log('becoming a provider');
+  const be0 = await text(page, '#be');
+  ok(/Three steps/i.test(be0) && be0.indexOf('node fastbridge-lp/setup.mjs') > 0 && be0.indexOf('node fastbridge-lp/setup.mjs') < be0.indexOf('git clone') && /Send ETH to the pool account it prints/.test(be0) && /It checks the nodes, the explorers, the price and a test quote/.test(be0), 'three steps, the one command first');
+  ok(/What you earn, what you risk/i.test(be0) && /up to about 16 hours/.test(be0) && /bounded by the most you allow per swap/.test(be0) && /Tacit never holds your funds/.test(be0) && /Nothing here is a promise of income/.test(be0) && !/guarantee|passive income|APY/i.test(be0), 'what you earn and what you risk, plainly, with no promise');
+  ok(await page.$eval('#be details.by', (d) => !d.open), 'the details start folded under the steps');
+  await page.evaluate(() => { document.querySelector('#be details.by').open = true; }); await sleep(400);
   const be = await text(page, '#be');
-  ok(/What you need/i.test(be) && /Your terms/i.test(be) && /More providers add room to each swap/.test(be) && /openssl rand -hex 32/.test(be) && /fastbridge-lp-shield\.mjs <ETH> --eth --index 0 --send/.test(be) && /config\.btc-eth\.example\.json/.test(be) && /--dry-run/.test(be), 'what is needed, the terms and the exact commands');
-  ok((await page.$$('#be .cmd button')).length >= 5 && (await page.getAttribute('#be a[href*="README.md"]', 'href')).includes('pair-mode'), 'each command has a copy button, and the guide is linked at its pair-mode section');
+  ok(/What you need/i.test(be) && /Your terms/i.test(be) && /More providers add room to each swap/.test(be) && /openssl rand -hex 32/.test(be) && /fastbridge-lp-shield\.mjs <ETH> --eth --index 0 --send/.test(be) && /config\.btc-eth\.example\.json/.test(be) && /--dry-run/.test(be) && /tacit-lp setup/.test(be) && /tacit-lp run/.test(be) && /setup\.mjs status/.test(be), 'what is needed, the terms, the Docker pair, the health check and the exact commands by hand');
+  ok((await page.$$('#be .cmd button')).length >= 7 && (await page.getAttribute('#be a[href*="README.md#a-provider"]', 'href')).includes('pair-mode') && (await page.getAttribute('#be a[href*="quick-start"]', 'href')).includes('quick-start-a-bitcoin-for-eth-provider'), 'each command has a copy button, and the guide is linked at its pair-mode and quick-start sections');
 
   console.log('an estimate before the wallet opens');
   await page.fill('#a-amt', '0.01');
