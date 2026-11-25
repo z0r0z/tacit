@@ -28,6 +28,7 @@ import { p2trAddress } from '/crossout-notes.js?cb=63153972';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=ba6128db';
 import { splitAmount, assignNotes } from '/fast/sweep.js?cb=713466b3';
+import { stuckScreen, advertisedStuckFees } from '/fastbridge-stuck.js';
 export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=ba6128db';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
@@ -538,14 +539,15 @@ export async function openProvider({ T, withKey, ux, priv, pubHex, boards = [], 
   const screen = lineageScreen(vet);
   const configOf = (s) => ({
     claimPub, csvBlocks: 144, alertSecs: 3600, anyTac: s.anyTac !== false,
-    quote: { btcAsset: asset.btcAsset, evmAsset: asset.evmAsset, minAmount: s.minAmount, maxAmount: s.maxAmount, feeBps: s.feeBps, flatFee: s.flatFee, validSecs: 600 },
+    quote: { btcAsset: asset.btcAsset, evmAsset: asset.evmAsset, minAmount: s.minAmount, maxAmount: s.maxAmount, feeBps: s.feeBps, flatFee: s.flatFee, validSecs: 600, ...(s.stuckPolicy ? { stuckFees: advertisedStuckFees(s.stuckPolicy) } : {}) },
     policy: {
       minCsv: 72, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, roundSecs: 600, refundMarginSecs: 600, maxOfferAgeSecs: 3600,
-      minAmount: s.minAmount, maxAmount: s.maxAmount, minConfsFor: confs, ...(s.anyTac === false ? { screen } : {}),
+      minAmount: s.minAmount, maxAmount: s.maxAmount, minConfsFor: confs, ...(s.stuckPolicy ? { screen: stuckScreen(vet, { policy: s.stuckPolicy }) } : s.anyTac === false ? { screen } : {}),
     },
   });
   // Starts the swaps that are open on their way (the takes and the refunds are not to be left), and, when `accept` is set, answers
-  // requests and posts the ad on every board. Settings: { feeBps, flatFee, minAmount, maxAmount } in base units, and `anyTac` (taken unless false: see `screen`).
+  // requests and posts the ad on every board. Settings: { feeBps, flatFee, minAmount, maxAmount } in base units, and `anyTac` (taken unless false: see `screen`),
+  // and `stuckPolicy`: a pricing rule for TAC that cannot go home (fastbridge-stuck.js), which replaces the screen — stuck classes are priced, not refused.
   async function start({ settings = {}, accept = true } = {}) {
     // a start is not running until it has read the holds it keeps and the Bitcoin lock of each; a second start in that time would step the
     // same swaps twice, so there is one at a time
