@@ -2,6 +2,7 @@ import { makeBtcSession, short } from '/trade/btc-session.js?cb=2909ef76';
 import { overlay, esc } from '/trade/sheet.js?cb=d857446c';
 import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=62608560';
 import { count } from '/metrics.js?cb=48a20c0d';
+import { notesAt } from '/trade/ext-notes.js?cb=00000000';
 
 const MARKET_URL = '/btc-market.js', CSS_URL = '/trade/btc-market.css?cb=ac513811';
 const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
@@ -54,6 +55,16 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
     });
   }
   const fund = (opts) => { fundDialog(opts).catch(() => {}); };
+  // Before a Bitcoin wallet outside Tacit is asked to send: its address is read for coins that may carry a Tacit note (trade/ext-notes.js). The wallet
+  // picks its own coins and does not know Tacit, so with such a coin there it is not asked at all, and a read that cannot be made in full asks nothing either.
+  async function noteSafe(x) {
+    const from = x?.state?.address;
+    let r;
+    try { r = await notesAt(from); } catch (e) {
+      throw Object.assign(new Error('The coins of your Bitcoin wallet could not be checked for TAC just now, so nothing was sent. Try again in a moment.'), { scanFailed: true, cause: e });
+    }
+    if (r.carriers.length) throw Object.assign(new Error('Your Bitcoin wallet holds TAC on some of its coins. Sending from it now could spend them as plain sats and lose the TAC, so nothing was sent.'), { carriers: r.carriers.length, from });
+  }
   async function connectExt() {
     await session.load();
     return session.turn(async () => {
@@ -87,11 +98,12 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
       b.disabled = true; say('Confirm it in your wallet…');
       try {
         const x = connected ? session.T.extWallet : await connectExt();
+        await noteSafe(x);
         await x.sendSats(addr, send);
         say('Sent. Waiting for Bitcoin to show it…');
       } catch (e) {
         const m = e?.message || String(e);
-        say(/reject|cancel|denied|declin/i.test(m) ? 'Nothing was sent.' : `Could not send: ${m}`);
+        say(e?.carriers || e?.scanFailed ? m : /reject|cancel|denied|declin/i.test(m) ? 'Nothing was sent.' : `Could not send: ${m}`);
         b.disabled = false;
       }
     };
@@ -275,6 +287,7 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
       if (!addr) throw new Error('Open your Tacit wallet first.');
       if (!Number.isSafeInteger(n) || n <= DUST) throw new Error('There is nothing to send.');
       const x = session.key?.mode === 'btc' && session.T?.extWallet?.state ? session.T.extWallet : await connectExt();
+      await noteSafe(x);
       const txid = await x.sendSats(addr, n);
       return { txid: String(txid || '').toLowerCase(), wallet: x.state?.provider === 'unisat' ? 'UniSat' : 'your Bitcoin wallet' };
     },

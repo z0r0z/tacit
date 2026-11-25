@@ -177,6 +177,9 @@ html .lane #atomic .q button.link, #mine .snt button.link.cx { padding: 0 2px; f
 #mine .snt.atm .stp.s5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 @media (max-width: 640px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 420px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* a Bitcoin wallet that holds TAC is not sent from: the safe ways, each on a line of its own */
+html .lane #atomic .q .safe { display: block; margin-top: 6px; color: var(--ink); }
+html .lane #atomic .q code { overflow-wrap: anywhere; font: 12px var(--mono); }
 /* a swap of BTC: where its ETH goes (kept private, or sent on to an Ethereum address), and what became of it on the swap's card */
 html .lane #atomic .payto { margin: 12px 0 0; }
 html .lane #atomic .pt { display: grid; gap: 7px; min-width: 0; margin: 0; padding: 10px 12px 12px; background: var(--field); border: 1px solid var(--hair); border-radius: 12px; }

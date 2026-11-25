@@ -562,6 +562,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     paintPayTo();
     // (nothing of a press under way changes under it: the amount and the way round wait for it)
     $('a-amt').disabled = !!L.chain;
+    // sats sent the safe way have arrived and are confirmed: the swap the visitor pressed goes on (a renewed quote that gives less still asks first)
+    if (L.awaitIn && (L.dir !== 'b2e' || amountBase() !== L.awaitIn.amount)) L.awaitIn = null;
+    else if (L.awaitIn && gt.act === 'swap' && !L.busy) { L.awaitIn = null; L.sticky = false; setTimeout(() => swap(), 0); }
     if (L.chain) { /* a press under way says its own steps */ }
     else if (L.qErr && !L.busy) say(esc(L.qErr), 'err');
     else if (L.q?.blocked && !L.busy) say(esc(L.q.blocked.charAt(0).toUpperCase() + L.q.blocked.slice(1) + (/[.!?]$/.test(L.q.blocked) ? '' : '.')), 'err');
@@ -875,6 +878,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     let sent;
     try { sent = await D.sendIn(sats); } catch (e) {
       if (g !== gen || L.chain !== C) return;
+      // the wallet holds coins that may carry TAC (or they could not be checked): it was not asked. The safe ways on are said instead.
+      if (e?.carriers) { endPress(C, '', 'warn'); offerSafeIn(C); return; }
+      if (e?.scanFailed) { endPress(C, String(e.message || 'The coins of your Bitcoin wallet could not be checked just now, so nothing was sent. Try again in a moment.'), 'err'); return; }
       const m = String(e?.message || e || '');
       endPress(C, /reject|cancel|denied|declin|user/i.test(m) ? 'Nothing was sent.' : `${plainError(e)} Nothing was sent.`, /reject|cancel|denied|declin|user/i.test(m) ? '' : 'err');
       return;
@@ -894,6 +900,19 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (!C.coins) { endPress(C, `The payment${link ? '' : ''} is not showing on Bitcoin yet. Nothing was swapped: once it arrives, its sats are at your Tacit wallet’s Bitcoin address, and the swap can be pressed again.`); return; }
     C.mined = true;
     await startPress(C);
+  }
+
+  // A Bitcoin wallet whose coins may carry TAC is not asked to send (trade/btc.js noteSafe). The two safe ways: the exact sats sent to the Tacit wallet's
+  // address from a wallet that holds no TAC (copied from here; the swap then goes on by itself once the payment is confirmed, on the quote shown if it is
+  // no worse), or the TAC moved to the Tacit wallet first.
+  function offerSafeIn(C) {
+    const addr = opened?.bitcoin?.address || (pair?.address ? pair.address().btc : null);
+    L.awaitIn = addr ? { amount: C.amount, at: Date.now() } : null;
+    L.sticky = true;
+    say(`<b>Your Bitcoin wallet holds TAC on some of its coins.</b> Sending from it now could spend them as plain sats and lose the TAC, so it was not asked.`
+      + (addr ? `<span class="safe">Send exactly <b class="num">${esc(C.sats.toLocaleString('en-US'))} sats</b> (${esc(btcOf(C.sats))}) to your Tacit wallet’s Bitcoin address from a wallet or account that holds no TAC: <code class="num">${esc(addr)}</code> <button class="link" type="button" data-copy="${esc(addr)}">Copy address</button> <button class="link" type="button" data-copy="${esc(btcOf(C.sats).replace(' BTC', ''))}">Copy amount</button>. This page swaps it once Bitcoin confirms the payment, about ten minutes.</span>` : '')
+      + `<span class="safe">Or move the TAC to your Tacit wallet first, in the <a href="/classic.html">classic app</a> under Holdings, then press again.</span>`, 'warn');
+    paint();
   }
 
   // ── where the ETH of a swap of BTC goes (btc/payout.js): the private balance, or an Ethereum address once it has arrived ──
@@ -1001,6 +1020,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const t = e.target;
     if (t.closest('[data-press-cancel]')) { cancelPress(); return; }
     if (t.closest('[data-pay-retry]')) { payRetry(t.closest('[data-pay-retry]').dataset.payRetry); return; }
+    const cp = t.closest('[data-copy]');
+    if (cp) { navigator.clipboard?.writeText(cp.dataset.copy).then(() => { cp.textContent = 'Copied'; setTimeout(() => { cp.textContent = /^bc1|^[13]/.test(cp.dataset.copy) ? 'Copy address' : 'Copy amount'; }, 1500); }, () => {}); return; }
     if (t.closest('#a-flip')) { if (L.busy || L.chain) return; L.dir = L.dir === 'b2e' ? 'e2b' : 'b2e'; L.amt = ''; $('a-amt').value = ''; L.q = null; L.qErr = ''; seq++; L.sticky = false; say(''); onState(); paint(); return; }
     const dm = t.closest('[data-dismiss]');
     if (dm) { dismiss(dm.dataset.dismiss); return; }

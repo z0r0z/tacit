@@ -26,6 +26,7 @@ import { signAd } from '../dapp/fastbridge-board.js';
 import { G } from '../dapp/bulletproofs.js';
 import { bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import * as SEND from '../dapp/btc/send.js';
+import * as XN from '../dapp/trade/ext-notes.js';
 import { makeBtcWallet } from '../dapp/bitcoin-taproot-wallet.js';
 import { makePairClient } from '../dapp/fastbridge-pair.js';
 
@@ -70,7 +71,11 @@ const T = { wallet: { priv: new Uint8Array(32).fill(7), address: () => 'bc1qtest
 const session = { get unlocked() { return W.unlocked; }, get key() { return W.unlocked ? { pubHex: '02' + 'ab'.repeat(32), mode: W.mode, address: W.mode === 'eth' ? '0x' + '12'.repeat(20) : undefined } : null; }, get T() { return T; }, load: async () => T, turn: async (fn) => fn() };
 // (a Bitcoin wallet in the browser when W.canSend: its payment to the key's address is recorded, or declined with W.declineSend)
 export function makeBitcoin({ onChange }) { W.change = onChange; return { session, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: (o) => { W.funds++; W.fundAsk = o || null; },
-  canSendIn: () => !!W.canSend, sendIn: async (sats) => { (W.sent ||= []).push(sats); if (W.declineSend) throw new Error('User rejected the request.'); return { txid: 'f0'.repeat(32), wallet: 'UniSat' }; } }; }`;
+  // (as trade/btc.js sendIn: a wallet whose coins may carry TAC, or that could not be checked, is never asked; W.asked counts the wallet's prompts)
+  canSendIn: () => !!W.canSend, sendIn: async (sats) => {
+    if (W.carriers) throw Object.assign(new Error('Your Bitcoin wallet holds TAC on some of its coins.'), { carriers: 1 });
+    if (W.scanFail) throw Object.assign(new Error('The coins of your Bitcoin wallet could not be checked for TAC just now, so nothing was sent. Try again in a moment.'), { scanFailed: true });
+    (W.sent ||= []).push(sats); if (W.declineSend) throw new Error('User rejected the request.'); return { txid: 'f0'.repeat(32), wallet: 'UniSat' }; } }; }`;
 // the pool module (trade/poolux.js): what the page asks of it, the relay's fee of a withdrawal and the withdrawal itself
 const UX_STUB = `
 const U = window.__ux = { unwraps: [], notes: [], fee: 30000n, fail: false };
@@ -171,6 +176,37 @@ console.log('btc/send.js: addresses (BIP 173 and 350 vectors, base58check), main
   ok(/test-network/.test(why('tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx')) && /test-network/.test(why('mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn')) && /test-network/.test(why('2MzQwSSnBHWHqSAqtTVQ6v47XtaisrJa1Vc')), 'testnet addresses are refused: bech32, P2PKH and P2SH');
   ok(/does not send to that kind/.test(why('bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7kt5nd6y')) && /does not send to that kind/.test(why('BC1SW50QGDZ25J')), 'a later segwit version (or a v1 program not of 32 bytes) is not sent to');
   ok(/Ethereum/.test(why('0x' + 'ab'.repeat(20))) && /Lightning/.test(why('lnbc1500n1p')) && /Enter a Bitcoin address/.test(why('  ')), 'an Ethereum address, an invoice, nothing: each said');
+}
+
+console.log('trade/ext-notes.js: a Bitcoin wallet outside Tacit is read for coins that may carry a note before it is asked to send');
+{
+  const hx = (s) => Buffer.from(s).toString('hex');
+  const env = '20' + 'aa'.repeat(32) + 'ac' + '00' + '63' + '05' + hx('TACIT') + '01' + '01' + '03' + 'b1b2b3' + '68';
+  const inscription = '20' + 'aa'.repeat(32) + 'ac' + '00' + '63' + '03' + hx('ord') + '01' + '01' + '68';
+  ok(XN.isEnvelopeScript(Buffer.from(env, 'hex')) && !XN.isEnvelopeScript(Buffer.from(inscription, 'hex')), 'a Tacit envelope is told from another script (an inscription)');
+  const txs = { ['a1'.repeat(32)]: { vin: [{ witness: ['11'.repeat(64), env, 'c0' + 'bb'.repeat(32)] }] }, ['b2'.repeat(32)]: { vin: [{ witness: ['11'.repeat(71), '02' + 'cc'.repeat(32)] }] }, ['c3'.repeat(32)]: { vin: [{ witness: ['11'.repeat(71), '02' + 'cc'.repeat(32)] }, { witness: ['11'.repeat(64), env, 'c0' + 'dd'.repeat(32)] }] } };
+  const res = (b) => ({ ok: true, json: async () => b });
+  const fake = (utxos, { failTx = null, failAll = false } = {}) => async (url) => {
+    if (failAll) throw new Error('offline');
+    const m = /\/address\/[^/]+\/utxo$/.test(url) ? 'utxo' : (/\/tx\/([0-9a-f]{64})$/.exec(url) || [])[1];
+    if (m === 'utxo') return res(utxos);
+    if (m === failTx) return { ok: false, status: 503, json: async () => null };
+    return res(txs[m]);
+  };
+  const addr = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+  const withNote = await XN.notesAt(addr, { fetchImpl: fake([{ txid: 'a1'.repeat(32), vout: 0, value: 546 }, { txid: 'b2'.repeat(32), vout: 1, value: 90000 }, { txid: 'c3'.repeat(32), vout: 2, value: 1000 }]), bases: ['https://x'] });
+  ok(JSON.stringify(withNote.carriers.map((c) => c.txid.slice(0, 2))) === '["a1","c3"]' && withNote.coins === 3, `coins of transactions that carry a Tacit envelope (in any input) are named; a plain payment's are not (${JSON.stringify(withNote.carriers)})`);
+  const clean = await XN.notesAt(addr, { fetchImpl: fake([{ txid: 'b2'.repeat(32), vout: 1, value: 90000 }]), bases: ['https://x'] });
+  ok(clean.carriers.length === 0, 'an address of plain coins only: nothing in the way');
+  let thrown = null;
+  try { await XN.notesAt(addr, { fetchImpl: fake([{ txid: 'a1'.repeat(32), vout: 0, value: 546 }, { txid: 'b2'.repeat(32), vout: 1, value: 90000 }], { failTx: 'b2'.repeat(32) }), bases: ['https://x'] }); } catch (e) { thrown = e; }
+  ok(thrown && thrown.scanFailed, 'one coin that cannot be read fails the whole check: nothing is sent');
+  thrown = null;
+  try { await XN.notesAt(addr, { fetchImpl: fake([], { failAll: true }), bases: ['https://x', 'https://y'] }); } catch (e) { thrown = e; }
+  ok(thrown && thrown.scanFailed, 'no explorer answers: the check fails, closed');
+  thrown = null;
+  try { await XN.notesAt('tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx', { fetchImpl: fake([]) }); } catch (e) { thrown = e; }
+  ok(thrown && thrown.scanFailed, 'a test-network address is not read as one to send from');
 }
 
 console.log('btc/send.js: the coins a send may take, the fee and Max, in integer sats');
@@ -640,6 +676,41 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
   await page.click('#a-go');
   await page.waitForFunction(() => /^Nothing was sent\.$/.test(document.querySelector('#a-q').textContent), null, { timeout: 15000 });
   ok((await atom(page, 'A.calls.start.length')) === 0 && (await page.evaluate(() => window.__btc.sent.length)) === 1 && !(await page.$('#mine-list [data-rec="press"]')) && /^Swap 0\.002 BTC → ETH$/.test(await text(page, '#a-go')), 'declined: nothing was sent, no swap was started, and the button offers it again');
+  await page.close();
+}
+{
+  // a Bitcoin wallet whose coins may carry TAC: never asked to send; the safe ways are said, and sats sent the safe way go on into the swap by themselves
+  const { page, errs } = await fresh({ init: 'window.__atom.bal.sats = 0n;' });
+  await page.evaluate(() => { window.__btc.canSend = true; window.__btc.carriers = true; });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /Balance 0 BTC/.test(document.querySelector('#a-bal').textContent), null, { timeout: 15000 });
+  await page.fill('#a-amt', '0.002');
+  await page.waitForFunction(() => /^Swap 0\.002 BTC → ETH$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /holds TAC on some of its coins/.test(document.querySelector('#a-q').textContent), null, { timeout: 15000 });
+  const said = await text(page, '#a-q');
+  ok(!(await page.evaluate(() => window.__btc.sent)) && (await atom(page, 'A.calls.start.length')) === 0, 'the wallet was never asked to send, and nothing started');
+  ok(/Sending from it now could spend them as plain sats and lose the TAC/.test(said) && /Send exactly 201,800 sats \(0\.002018 BTC\) to your Tacit wallet’s Bitcoin address from a wallet or account that holds no TAC: bc1q/.test(said) && /once Bitcoin confirms the payment/.test(said) && /move the TAC to your Tacit wallet first, in the classic app/.test(said), `the safe ways: the exact sats from a wallet with no TAC (address and amount to copy), or the TAC moved first (${said})`);
+  ok((await page.$$('#a-q [data-copy]')).length === 2 && (await page.$$('#a-q a[href="/classic.html"]')).length === 1, 'with the address and the amount to copy, and the classic app linked');
+  await SHOT(page, 'btc-press-tac-held', false);
+  // the sats arrive at the Tacit address the safe way and are confirmed: the swap goes on by itself
+  await page.evaluate(() => { window.__atom.bal.sats = 201800n; });
+  await page.waitForFunction(() => window.__atom.calls.start.length === 1, null, { timeout: 30000 });
+  ok(true, 'once the sats sent the safe way are confirmed at the address, the swap pressed goes on by itself');
+  ok(errs.length === 0, `no page errors (${errs.join(' | ')})`);
+  await page.close();
+}
+{
+  // the wallet's coins could not be checked: nothing is asked of it either
+  const { page } = await fresh({ init: 'window.__atom.bal.sats = 0n;' });
+  await page.evaluate(() => { window.__btc.canSend = true; window.__btc.scanFail = true; });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /Balance 0 BTC/.test(document.querySelector('#a-bal').textContent), null, { timeout: 15000 });
+  await page.fill('#a-amt', '0.002');
+  await page.waitForFunction(() => /^Swap 0\.002 BTC → ETH$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /could not be checked for TAC just now, so nothing was sent/.test(document.querySelector('#a-q').textContent), null, { timeout: 15000 });
+  ok(!(await page.evaluate(() => window.__btc.sent)) && (await atom(page, 'A.calls.start.length')) === 0 && /^Swap 0\.002 BTC → ETH$/.test(await text(page, '#a-go')), 'a check that cannot be made sends nothing, and the button offers it again');
   await page.close();
 }
 {
