@@ -115,10 +115,14 @@ function drawWall(first) {
 }
 
 // the whole chain as masks: Succinct's 18 first (small, greyed), then every contribution here; a click copies the file's hash
+let chainDrawn = false;
 function drawStrip() {
   const strip = $('chain');
+  let n = 0;
   const link = (key, cls, title, hash, index) => {
     const b = el('button', `lk ${cls}`);
+    b.style.setProperty('--i', String(Math.min(n, 90)));         // the cascade on the first draw
+    b.style.setProperty('--w', String(n++ % 45));                // the light along the connectors
     b.type = 'button';
     b.setAttribute('role', 'listitem');
     b.title = title;
@@ -131,6 +135,9 @@ function drawStrip() {
     ...SUCCINCT_LINKS.map((h, i) => link(`0x${h}`, 'sg', `Succinct's contribution ${i + 1} of ${SUCCINCT_CONTRIBUTORS} (phase2-${i})`, h)),
     ...receipts.map((r) => link(faceKey(r), `ours${mine && mine.index === r.index ? ' mine' : ''}`, `#${r.index}, ${nameOf(r)}, ${ago(r.at)}`, r.contribution_hash, r.index)),
   );
+  strip.lastElementChild?.classList.add('last');
+  if (!chainDrawn && !reduced) { strip.classList.add('first'); setTimeout(() => strip.classList.remove('first'), 3500); }
+  chainDrawn = true;
   strip.scrollLeft = strip.scrollWidth;      // the newest end
 }
 
@@ -271,7 +278,7 @@ async function startWeb() {
   const handleRaw = $('addr').value.trim();
   const handle = isAddress(handleRaw) ? handleRaw : '';
   const name = (cleanName($('name').value) || (handle ? '' : 'a browser')) || handle;
-  const web = await import('/praxis/web.js?cb=7eaa74c7');
+  const web = await import('/praxis/web.js?cb=cba04121');
   const ac = new AbortController();
   webRun = ac;
   $('web-go').disabled = true; $('web-prog').hidden = false; $('web-msg').textContent = 'Joining the queue…';
@@ -299,7 +306,7 @@ async function drawQueue() {
     if (/^https?:\/\/[^\s"'<>]+$/.test(v.coordinator || '')) { coordinator = v.coordinator; drawCommand(); }
     $('queue').textContent = v.open === false ? 'Closed.' : waitText(v.queue);
     if (Number.isInteger(v.queue)) setNum($('n-queue'), v.queue);
-    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=7eaa74c7'); $('web').hidden = !web.capable(); }
+    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=cba04121'); $('web').hidden = !web.capable(); }
   } catch { $('queue').textContent = ''; }
 }
 

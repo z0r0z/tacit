@@ -1,6 +1,6 @@
 // The "contribute in this browser" path: the work is done by ceremony-phase2/browser (copied to ./browser/), here are only its
 // entry point and the wasm/worker plumbing the page needs.
-import { runContribution } from '/praxis/browser/flow.js?cb=f08920b6';
+import { runContribution } from '/praxis/browser/flow.js?cb=7b8f0c3d';
 
 export const WINDOW = 'https://tacit-praxis-ceremony.onrender.com/api/c';
 
@@ -26,12 +26,14 @@ export function statusText(s) {
     case 'queue': return s.ahead > 0 ? `In the queue, ${s.ahead} ahead. Keep this tab open.` : 'Your turn is next. Keep this tab open.';
     case 'prepare': return 'Your turn. Getting ready…';
     case 'work': {
-      if (!s.total) return 'Starting…';
-      return `Making your contribution: ${Math.floor((100 * s.points) / s.total)}% · ${mb(s.downloaded)} of ${mb(s.size)} read · ${mb(s.sent)} sent`;
+      if (!s.size || !s.downloaded) return 'Starting…';
+      return `Making your contribution: ${Math.floor(100 * done(s))}% · ${mb(s.downloaded)} of ${mb(s.size)} read · ${mb(s.sent)} sent`;
     }
     case 'check': return 'Sent. The coordinator is checking it…';
     case 'done': return 'Accepted.';
     default: return '';
   }
 }
-export const fraction = (s) => (s.phase === 'work' && s.total ? s.points / s.total : s.phase === 'check' || s.phase === 'done' ? 1 : 0);
+// the share of the file made so far: a point is 32 bytes of it (the total is only known as the file is read, so it is not the measure)
+const done = (s) => Math.min(1, ((s.points || 0) * 32) / (s.size || 1));
+export const fraction = (s) => (s.phase === 'work' && s.size ? done(s) : s.phase === 'check' || s.phase === 'done' ? 1 : 0);

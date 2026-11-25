@@ -21,7 +21,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /praxis/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/praxis/app.js?cb=427213fb">
+<link rel="modulepreload" href="/praxis/app.js?cb=d99884c0">
 <link rel="modulepreload" href="/praxis/receipt.js?cb=99cd235c">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -119,7 +119,15 @@ code { font: inherit; }
 #chainview { margin-top: 26px; }
 .chain { display: flex; align-items: center; overflow-x: auto; padding: 10px 2px 16px; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
 .lk { position: relative; flex: none; display: flex; align-items: center; padding: 0; border: 0; background: transparent; cursor: pointer; }
-.lk:not(:last-child)::after { content: ''; width: 14px; height: 2px; background: var(--hair-2); }
+.lk:not(:last-child)::after { content: ''; width: 14px; height: 2px; background: var(--hair-2); animation: lk-wave 5s ease-in-out infinite; animation-delay: calc(var(--w, 0) * 110ms); }
+/* a light runs along the chain from Succinct's first link toward the newest (the delay wraps every 45 links, inside the 5 s) */
+@keyframes lk-wave { 0%, 10%, 100% { background: var(--hair-2); box-shadow: none; } 4% { background: var(--orange); box-shadow: 0 0 8px var(--orange); } }
+/* the first time the chain is drawn, the links arrive one after another */
+.chain.first .lk { animation: lk-in .5s cubic-bezier(.2, .8, .3, 1) both; animation-delay: calc(var(--i, 0) * 22ms); }
+@keyframes lk-in { from { opacity: 0; transform: translateY(10px); } }
+/* the newest link sends out a ring */
+.lk.last::before { content: ''; position: absolute; inset: -3px; border-radius: 13px; border: 2px solid var(--orange); pointer-events: none; animation: lk-ping 2.6s ease-out infinite; }
+@keyframes lk-ping { 0% { transform: scale(.92); opacity: .9; } 70%, 100% { transform: scale(1.55); opacity: 0; } }
 .lk .inv { display: block; border-radius: 10px; image-rendering: pixelated; }
 .lk.sg .inv { width: 34px; height: 34px; filter: grayscale(.85); opacity: .72; }
 .lk.ours .inv { width: 46px; height: 46px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--orange) 70%, transparent); }
@@ -628,7 +636,7 @@ chmod +x tacit-ceremony-darwin-arm64
       </div>
       <div class="web" id="web" hidden>
         <button class="btn big ghost" type="button" id="web-go">Contribute in this browser <em>beta</em></button>
-        <small>No download. Leave this tab open: it takes about an hour of your computer's time once it is your turn, and 1 GB each way.</small>
+        <small>No download. Keep this tab open for about half an hour to an hour once it is your turn, depending on your computer. 1 GB each way.</small>
         <div class="prog" id="web-prog" hidden>
           <div class="bar"><i id="web-fill"></i></div>
           <p id="web-msg" role="status" aria-live="polite"></p>
@@ -642,7 +650,7 @@ chmod +x tacit-ceremony-darwin-arm64
       <button class="x" type="button" data-close aria-label="Close">×</button>
       <div class="cele-coin" id="cele-coin"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></div>
       <h2 id="cele-h">You are #…</h2>
-      <p>Your randomness is in the chain. If one contributor throws theirs away, the key cannot be forged. You may be that one.</p>
+      <p>You are in the chain. If even one contributor throws their secret away, the key can't be forged. That may be you.</p>
       <div class="cele-amt" id="cele-amt" hidden>+<b id="cele-n">5</b> TAC<small>paid once the day is over</small></div>
       <a class="btn big" id="cele-share" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg>Share on X</a>
       <button class="btn ghost" type="button" data-close>Close</button>
@@ -651,10 +659,10 @@ chmod +x tacit-ceremony-darwin-arm64
     <details class="acc" id="use">
       <summary>How it works, in short</summary>
       <div>
-        <p><b>The primitive.</b> Witness encryption encrypts a message to a statement instead of a key. Anyone holding a witness of the statement can decrypt; if the statement is false the message stays hidden. The statement can be that a program accepts some input, and any accepted input is a witness. A ciphertext carries its own release condition: no key to distribute, no party trusted to release it.</p>
-        <p><b>On Bitcoin.</b> Lock coins to a key, then witness-encrypt that key to a condition, for example "a proof that this program accepted these inputs". Whoever produces the proof decrypts the key and spends with an ordinary signature, so Bitcoin sees nothing unusual: programmable conditions with no change to Bitcoin. The paper lists covenants, proof verification and bridges without a custodian among the uses on Bitcoin, and time-lock encryption that opens when a blockchain reaches a given length. The mechanism is not specific to Bitcoin: on Ethereum or any chain it releases a key, an escrow or a sealed reveal on a proven condition, with no committee.</p>
-        <p><b>What this ceremony is.</b> Praxis encrypts to the verifier of a Groth16 proof (BN254). We use the verifier for SP1 v6.1.0's wrapper circuit, which accepts a proof of the run of any program, so one fixed key covers every condition a program can check. Groth16 needs a setup, and whoever kept its secret could forge a proof of a false statement and open every ciphertext made for that key. The ceremony adds many people's randomness to Succinct's 18, so that secret exists only if every one of them kept theirs.</p>
-        <p><b>Limits.</b> A ciphertext is about 7.9 GiB at 100-bit security, so ciphertexts live off-chain and only a key's release touches a chain. A lock works once, because the decryptor learns the key. The cryptography is elliptic-curve (BN254), which a large quantum computer would break.</p>
+        <p><b>Witness encryption.</b> Normally you encrypt to a key. Here you encrypt to a statement: anyone who can prove it true can decrypt, and nobody else can. The statement can be "this program accepts some input".</p>
+        <p><b>On Bitcoin.</b> Lock coins to a key, then encrypt that key to a condition, say a proof that a program ran correctly. Whoever produces the proof gets the key and spends with an ordinary signature, so Bitcoin sees nothing unusual and needs no change. The paper lists covenants, bridges with no custodian and time-locks among the uses. The same works on Ethereum or any other chain.</p>
+        <p><b>This ceremony.</b> Praxis encrypts to a Groth16 proof verifier. We use the one for SP1 v6.1.0, which accepts a proof of any program's run, so a single key covers every condition a program can check. Groth16 needs a setup, and whoever kept its secret could forge proofs. Each contribution adds fresh randomness to Succinct's 18, so that secret exists only if every contributor kept theirs.</p>
+        <p><b>Limits.</b> A ciphertext is about 7.9 GiB, so it lives off-chain and only the release of a key touches a chain. A lock opens once, because the decryptor learns the key. The curve (BN254) is not quantum-safe.</p>
       </div>
     </details>
 
@@ -671,7 +679,7 @@ shasum -a 256 phase2-*</pre></div>
         <div class="cmd"><pre>./tacit-ceremony verify phase2-17 phase2-18</pre></div>
         <span class="lbl">The whole chain, from Succinct's phase2-17 to the head</span>
         <div class="cmd"><pre>./tacit-ceremony verify-chain . 17 <span data-head>18</span></pre></div>
-        <p class="note">phase2-17 must hash to the starting file below, and each later file to its receipt's <code>file_sha256</code>. How phase2-17 descends from Phase 1 and the circuit is not covered by these commands: the starting files were re-derived from the Hermez file and the circuit and match Succinct's byte for byte, as do the key and the verifier on Ethereum (<a href="https://github.com/src-company/tacit/blob/main/ceremony-phase2/genesis/RESULT.md" target="_blank" rel="noopener noreferrer">the record</a>, and a script to run it yourself).</p>
+        <p class="note">phase2-17 must hash to the starting file below, and each later file to its receipt's <code>file_sha256</code>. These commands start at phase2-17. The files before it were re-derived from the Hermez file and the circuit and match Succinct's byte for byte, as do the key and the verifier on Ethereum (<a href="https://github.com/src-company/tacit/blob/main/ceremony-phase2/genesis/RESULT.md" target="_blank" rel="noopener noreferrer">the record</a>, with a script to run it yourself).</p>
         <dl class="fixed">
           <dt>Circuit, <code>groth16_circuit.bin</code> (SP1 v6.1.0)</dt><dd><code>d6a66be2702206e2b1a20bebf7096142864feac9e399a309e5e6e00353264cbc</code></dd>
           <dt>Starting file, Succinct's <code>phase2-17</code></dt><dd><code>bf6f7799c77a90009ae356fd0d3a69a91cf153825e6762ce344fe804cf5db2df</code></dd>
@@ -686,8 +694,8 @@ shasum -a 256 phase2-*</pre></div>
     <details class="acc" id="honest">
       <summary>What it rests on</summary>
       <div>
-        <p>The key it makes is sound if at least one Phase 2 contributor (in Succinct's 18 or here) was honest, at least one of the first 54 contributors to the Perpetual Powers of Tau (Phase 1) was honest, and the starting files were derived correctly from Phase 1 and the circuit.</p>
-        <p class="plain">Where it stands: the ceremony is open, and Praxis is being built on this key. The paper and the SP1 v6 circuits are new work and still under review by the field.</p>
+        <p>The key is sound if at least one Phase 2 contributor (Succinct's 18 or ours) was honest, at least one of the first 54 Perpetual Powers of Tau contributors was honest, and the starting files were derived correctly from Phase 1 and the circuit.</p>
+        <p class="plain">Where it stands: the ceremony is open, and Praxis is being built on this key.</p>
         <p class="note">The ceremony makes a new key (a new delta) for the circuit. It does not change Succinct's deployed SP1 verifier, which keeps its own key. Names and handles are self-declared: each is as its contributor typed it, and the coordinator does not check them. A contributor's own attestation is what ties a contribution to them.</p>
       </div>
     </details>
@@ -699,7 +707,7 @@ shasum -a 256 phase2-*</pre></div>
           <li>Succinct, who organized SP1's v6.1.0 Groth16 setup, and its 18 Phase 2 contributions (phase2-0 to phase2-17), the chain this one extends. L2BEAT's ZK catalog lists them as 18 participants from Etherealize, Polygon, OP Labs, Alpen Labs, Offchain Labs, Succinct, Coinbase and Across Protocol.</li>
           <li>The Perpetual Powers of Tau and Hermez, for Phase 1.</li>
           <li>Worldcoin and the zkbnb-setup authors, for the Phase 2 tools, and gnark.</li>
-          <li>Praxis is by Tse, Vanjani and Vesely (<a href="https://eprint.iacr.org/2026/2971" target="_blank" rel="noopener noreferrer">ePrint 2026/2971</a>). The scheme is theirs and has not been reviewed; they are not part of this ceremony.</li>
+          <li>Praxis is by Tse, Vanjani and Vesely (<a href="https://eprint.iacr.org/2026/2971" target="_blank" rel="noopener noreferrer">ePrint 2026/2971</a>). They are not part of this ceremony.</li>
         </ul>
       </div>
     </details>
@@ -731,6 +739,6 @@ shasum -a 256 phase2-*</pre></div>
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/praxis/app.js?cb=427213fb"></script>
+<script type="module" src="/praxis/app.js?cb=d99884c0"></script>
 </body>
 </html>

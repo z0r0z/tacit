@@ -90,6 +90,10 @@ export async function runContribution(opts) {
     await pool.ready();
     const scalar = newScalar(getRandom);
 
+    // one progress record, updated by the download/compute side and the upload side alike
+    const cur = { points: 0, total: 0, downloaded: 0, size: slot.size, sent: 0 };
+    const report = (u) => { Object.assign(cur, u); onStatus({ phase: 'work', ...cur }); };
+
     // upload in parts as the file is made
     let buf = new Uint8Array(partSize), fill = 0, sent = 0;
     const put = async (bytes) => {
@@ -99,7 +103,7 @@ export async function runContribution(opts) {
           const j = await r.json().catch(() => ({}));
           if (r.status === 409 && typeof j.have === 'number' && j.have === sent + bytes.length) { sent = j.have; return; } // it arrived, the answer did not
           if (!r.ok) throw new Refused(j.error || `the upload answered ${r.status}`, r.status);
-          sent = j.have; onStatus({ phase: 'work', sent, size: slot.size });
+          sent = j.have; report({ sent });
           return;
         } catch (e) {
           if (signal?.aborted || (e instanceof Refused && e.code !== 502 && e.code !== 503) || i >= 5) throw e;
@@ -120,7 +124,7 @@ export async function runContribution(opts) {
     const r = await contribute({
       source: download(api, slot.index, token, slot.size, signal, (n) => { got = n; }),
       write, pool, hash: hasher, scalar,
-      onProgress: (done, total) => onStatus({ phase: 'work', points: done, total, downloaded: got, size: slot.size, sent }),
+      onProgress: (done, total) => report({ points: done, total, downloaded: got }),
     });
     if (fill) await put(buf.subarray(0, fill));
     if (hex(r.challenge) !== slot.sha256) throw new Error('the download does not match the head the coordinator named; nothing was sent for checking');
