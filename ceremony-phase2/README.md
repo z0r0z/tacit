@@ -19,6 +19,9 @@ The key is sound only if all three hold:
 
 The link-by-link checks below cover (2) from `phase2-17` onward; they do not cover (1) or (3).
 
+What a Tacit Praxis ciphertext will encrypt to (the five public inputs, the gate program, the pinned decryptor stack)
+is fixed in [STATEMENT.md](STATEMENT.md).
+
 This tool reads and writes the same files as Succinct's
 [semaphore-gnark-11](https://github.com/succinctlabs/semaphore-gnark-11), on the same gnark (`github.com/p4u/gnark`
 at `cd7874155e26`).
