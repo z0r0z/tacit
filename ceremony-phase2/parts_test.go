@@ -31,6 +31,46 @@ func waitResult(t *testing.T, srv *httptest.Server, tok string) apiResp {
 
 // A contribution sent in parts: resumed after a failed part, refused when a part starts in the wrong place, checked on
 // finish exactly like an upload, and the old PUT /api/upload still works beside it.
+// A part cut off by a dropped connection or a restart leaves bytes past the confirmed end; the next part from the confirmed end replaces them.
+func TestPartReplacesAnUnconfirmedTail(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	c.PerIP = -1
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	in := filepath.Join(f.dir, "in")
+	_ = copyFile(c.path(17), in)
+	out := filepath.Join(f.dir, "out")
+	hash, err := Contribute(in, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(out)
+	tok := joinHTTP(t, srv, "restart")
+	call(t, srv, "POST", "/api/claim", tok, nil, -1)
+	cut := len(data) / 2
+	if r := putPart(t, srv, tok, 0, data[:cut]); r.Code != 200 {
+		t.Fatalf("first part: %d %v", r.Code, r.Body)
+	}
+	// a stray tail past what the client has confirmed (as a cut-off part would leave)
+	p := c.partPath(tok)
+	fh, _ := os.OpenFile(p, os.O_WRONLY|os.O_APPEND, 0)
+	fh.Write([]byte("partial bytes of a part that did not finish"))
+	fh.Close()
+	if r := putPart(t, srv, tok, cut, data[cut:]); r.Code != 200 || r.Body["have"].(float64) != float64(len(data)) {
+		t.Fatalf("the part from the confirmed end: %d %v", r.Code, r.Body)
+	}
+	if got, _ := os.ReadFile(p); !bytes.Equal(got, data) {
+		t.Fatal("the stored file is not the contribution")
+	}
+	if r := call(t, srv, "POST", "/api/upload-finish", tok, nil, -1); r.Code != 202 {
+		t.Fatalf("finish: %d %v", r.Code, r.Body)
+	}
+	if r := waitResult(t, srv, tok); r.Body["state"] != "done" || r.Body["receipt"].(map[string]any)["contribution_hash"] != hash {
+		t.Fatalf("result: %v", r.Body)
+	}
+}
+
 func TestUploadInParts(t *testing.T) {
 	f := newFixture(t)
 	c := f.chain(t)

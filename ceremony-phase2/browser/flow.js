@@ -141,9 +141,12 @@ export async function runContribution(opts) {
 
     onStatus({ phase: 'check' });
     await call(api, 'POST', '/upload-finish', token, null, signal);
+    let nones = 0;
     for (;;) {
       await sleep(3000, signal);
       const res = await call(api, 'GET', '/upload-result', token, null, signal);
+      // the coordinator restarted while it was checking: it no longer knows the file was sent for checking, so say so again
+      if (res.state === 'none' && ++nones >= 3) { nones = 0; try { await call(api, 'POST', '/upload-finish', token, null, signal, 1); } catch { /* it is already being checked */ } }
       if (res.state === 'done') { finished = true; onStatus({ phase: 'done', receipt: res.receipt }); return res.receipt; }
       if (res.state === 'refused') throw new Refused(res.error || 'the contribution was refused', res.code);
     }

@@ -153,7 +153,13 @@ func (c *Coordinator) handlePart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if st.Size() != off {
+	if st.Size() > off {
+		// bytes past the confirmed end belong to a part that was cut off (or to a coordinator restart mid-part): drop them, this part replaces them
+		if err := f.Truncate(off); err != nil {
+			writeErr(w, err)
+			return
+		}
+	} else if st.Size() < off {
 		writeJSON(w, 409, map[string]any{"error": "that part does not start where the stored bytes end", "have": st.Size()})
 		return
 	}
