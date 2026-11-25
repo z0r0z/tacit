@@ -3,7 +3,7 @@
 Status: design + tests. No deployed contract, verifying key or ELF changes. Entry for
 `docs/STUCK-TAC-BOUNTY.md` option D.
 
-- Code: `contracts/sp1/confidential/provenance-anchor/` (crate `provenance-anchor`, 18 offline tests)
+- Code: `contracts/sp1/confidential/provenance-anchor/` (crate `provenance-anchor`, 19 offline tests)
 - Read first: `docs/STUCK-TAC-BOUNTY.md` §1, `contracts/sp1/confidential/DESIGN-btc-shielded-pool.md` §3
 - Fold it changes: `contracts/sp1/confidential/cxfer-core/src/burn_deposit.rs`
   (`fold_burn_deposit`, the `ncx > 256` bound), `contracts/sp1/confidential/src/reflect.rs` step 4
@@ -75,9 +75,12 @@ same reason the spent set and the burn set do, and ride the batch digest the sam
 pub fn credit_shield(
     ledger: &mut BackingLedger,
     carrier: &[u8; 32],        // the shield transaction's txid
-    boundary: &Boundary<'_>,
+    asset: &[u8; 32],          // the asset this fold is accounting for
+    body: &ShieldBody<'_>,     // parsed by `ShieldBody::parse`, the §3 layout
     shielded: u64,
     blinding: &[u8; 32],
+    pool_root: &[u8; 32],
+    pool_ok: ShieldProofCheck<'_>,
     boundary_ok: BoundaryCheck<'_>,
 ) -> Option<()>
 ```
@@ -86,7 +89,8 @@ A `T_BTC_SHIELD` (`0x6C`) moves transparent notes into the pool: the carrier's `
 notes being shielded and `Σ v_in = depC` is what the pool now holds. The ledger credits that sum, but
 only when
 
-- the shield's pool proof verified at its root (`⌐` the caller's `PoolProofCheck`), and
+- the shield is for **this asset** (a shield of another asset cannot fund this fold),
+- the shield's pool proof verified at its root (`⌐` the caller's `ShieldProofCheck`), and
 - the boundary opens to exactly `shielded` under `blinding` — i.e. `depC = v·H + r·G` for the claimed `v`.
 
 A shield that moved nothing (`shielded == 0`) or whose boundary does not open is refused and credits
@@ -291,7 +295,7 @@ Nothing here is a new acceptance rule. The DAG still resolves leaves the same wa
 unchanged, and a node that does not fold pool envelopes produces the same digests it does today — the
 ledger is additive state, which is what makes the change reviewable.
 
-## 8. What the 18 tests cover
+## 8. What the 19 tests cover
 
 All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, no pool).
 
@@ -301,7 +305,8 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 | `ledger_cannot_be_drained_past_its_funding` | the 11th exit is refused, not clamped |
 | `the_same_exit_cannot_back_two_debits` | re-folding the same exit books nothing the second time |
 | `ledger_fund_saturates_and_value_zero_is_never_an_anchor` | `u128` saturation; a zero-value exit is not an anchor |
-| `credit_shield_requires_a_matching_boundary` | a shield that moved nothing, or whose boundary does not open, credits nothing — and re-folding it mints nothing |
+| `shield_parse_reads_the_layout_and_refuses_non_canonical_shapes` | §3 shield layout field by field; wrong opcode, `n_in`/`n_out` out of range, every truncation, trailing bytes |
+| `credit_shield_requires_a_matching_boundary` | a shield that moved nothing, of another asset, whose pool proof failed, or whose boundary does not open, credits nothing — and re-folding it mints nothing |
 | `boundary_parse_rejects_every_wrong_length` | 824 and 826 bytes are refused |
 | `spend_parse_reads_the_exit_where_the_layout_puts_it` | §3 offset arithmetic, field by field |
 | `spend_parse_refuses_every_non_canonical_shape` | wrong opcode, every truncation, trailing bytes, zero/duplicate nullifier, `n_in = 0`, `has_exit = 2`, a spend that creates nothing |
@@ -317,7 +322,7 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 | `spend_parse_is_panic_free_on_a_hostile_corpus` | 4 000 pseudo-random payloads, runaway `n_in` |
 
 Run: `cd contracts/sp1/confidential/provenance-anchor && cargo +stable test --offline`
-Result: `test result: ok. 18 passed; 0 failed`.
+Result: `test result: ok. 19 passed; 0 failed`.
 
 ## 9. What this does not do
 

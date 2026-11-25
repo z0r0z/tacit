@@ -91,11 +91,16 @@ pub const BIND_LEN: usize = 36;
 pub const PROOF_MAX: usize = 4096;
 pub const SPEND_MAX_IN: usize = 2;
 pub const SPEND_MAX_OUT: usize = 3;
+pub const SHIELD_MAX_IN: usize = 8;
+/// §3's `kernel_sig` length on a shield.
+pub const KERNEL_SIG_LEN: usize = 64;
 
 /// What a caller must prove about an exit's pool half: that the spend verified at `h_anchor` against
 /// `pool_root` and is the spend this body describes. The fold injects its witness verification the same way,
 /// so this crate never reimplements a proof system it cannot run offline.
 pub type PoolProofCheck<'a> = &'a dyn Fn(&SpendBody<'_>, &[u8; 32]) -> bool;
+
+pub type ShieldProofCheck<'a> = &'a dyn Fn(&ShieldBody<'_>, &[u8; 32]) -> bool;
 
 /// What a caller must prove about a boundary: that its cross-curve sigma and range proofs verified and that its
 /// commitment opens to `value` under `blinding`. Same seam discipline: the opening is checked by whoever can
@@ -165,17 +170,24 @@ impl BackingLedger {
 /// Credit one shield, after its pool proof and boundary check both said yes.
 ///
 /// `shielded` is the total the caller read out of the boundary commitment (the sum of the transparent notes the
-/// pool took custody of). It refuses a shield that moved nothing and one whose boundary does not open to the
-/// claimed total, so the ledger can never be funded by a figment.
+/// pool took custody of). It refuses a shield that moved nothing, one whose boundary does not open to the
+/// claimed total, and one whose carrier pool proof did not verify at `pool_root`, so the ledger can never be
+/// funded by a figment.
 pub fn credit_shield(
     ledger: &mut BackingLedger,
     carrier: &[u8; 32],
-    boundary: &Boundary<'_>,
+    asset: &[u8; 32],
+    body: &ShieldBody<'_>,
     shielded: u64,
     blinding: &[u8; 32],
+    pool_root: &[u8; 32],
+    pool_ok: ShieldProofCheck<'_>,
     boundary_ok: BoundaryCheck<'_>,
 ) -> Option<()> {
-    if shielded == 0 || !boundary_ok(boundary, shielded, blinding) {
+    if shielded == 0 || &body.asset != asset {
+        return None; // a shield of another asset cannot fund this fold
+    }
+    if !pool_ok(body, pool_root) || !boundary_ok(&body.boundary, shielded, blinding) {
         return None;
     }
     ledger.fund(carrier, shielded)
@@ -248,6 +260,69 @@ pub struct SpendBody<'a> {
     pub proof: &'a [u8],
     /// The canonical body bytes (through `has_want`/`want`), i.e. exactly what the spend message hashes.
     pub body: &'a [u8],
+}
+
+/// A parsed `T_BTC_SHIELD` body (everything before `kernel_sig`), plus the pool proof the caller must verify.
+///
+/// Layout (§3): `0x6C ‖ asset ‖ n_in ‖ n_out ‖ output×n_out ‖ boundary ‖ kernel_sig ‖ proof_len(2) ‖ proof`.
+pub struct ShieldBody<'a> {
+    pub asset: [u8; 32],
+    pub outputs: Vec<[u8; POOL_OUTPUT_LEN]>,
+    pub boundary: Boundary<'a>,
+    pub kernel_sig: [u8; KERNEL_SIG_LEN],
+    /// The proof bytes carried after `proof_len`.
+    pub proof: &'a [u8],
+    /// The canonical body bytes (through `boundary`), i.e. what the shield message hashes.
+    pub body: &'a [u8],
+}
+
+impl<'a> ShieldBody<'a> {
+    /// Read the layout §3 gives for `0x6C`. Rejects a wrong opcode, `n_in ∉ [1, 8]`, `n_out ∉ [1, 3]`,
+    /// `proof_len > 4096`, and trailing bytes, so a truncated payload cannot be read as a shorter valid one.
+    pub fn parse(payload: &'a [u8]) -> Option<Self> {
+        let mut p = 0usize;
+        let take = |n: usize, p: &mut usize| -> Option<&[u8]> {
+            let end = p.checked_add(n)?;
+            let s = payload.get(*p..end)?;
+            *p = end;
+            Some(s)
+        };
+        if *take(1, &mut p)?.first()? != T_BTC_SHIELD {
+            return None;
+        }
+        let asset: [u8; 32] = take(32, &mut p)?.try_into().ok()?;
+        let n_in = *take(1, &mut p)?.first()? as usize;
+        if n_in < 1 || n_in > SHIELD_MAX_IN {
+            return None;
+        }
+        let n_out = *take(1, &mut p)?.first()? as usize;
+        if n_out < 1 || n_out > SPEND_MAX_OUT {
+            return None;
+        }
+        let mut outputs = Vec::with_capacity(n_out);
+        for _ in 0..n_out {
+            outputs.push(take(POOL_OUTPUT_LEN, &mut p)?.try_into().ok()?);
+        }
+        let boundary = Boundary::parse(take(BOUNDARY_LEN, &mut p)?)?;
+        let body = &payload[..p];
+        let kernel_sig: [u8; KERNEL_SIG_LEN] = take(KERNEL_SIG_LEN, &mut p)?.try_into().ok()?;
+        let proof_len = u16::from_le_bytes(take(2, &mut p)?.try_into().ok()?) as usize;
+        if proof_len > PROOF_MAX {
+            return None;
+        }
+        let proof = take(proof_len, &mut p)?;
+        if p != payload.len() {
+            return None; // trailing bytes: the payload is not what it claims to be
+        }
+        Some(Self {
+            asset,
+            outputs,
+            boundary,
+            kernel_sig,
+            proof,
+            body,
+        })
+    }
 }
 
 /// Read a `T_BTC_SPEND` payload: `0x6D ‖ asset ‖ h_anchor ‖ bind ‖ n_in ‖ nf×n_in ‖ n_out ‖ output×n_out ‖

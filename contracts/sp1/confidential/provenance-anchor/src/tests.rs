@@ -344,36 +344,164 @@ fn ledger_fund_saturates_and_value_zero_is_never_an_anchor() {
 
 // ───────────────────────────── boundaries ─────────────────────────────
 
+/// A `T_BTC_SHIELD` payload of the shape §3 gives, carrying whatever boundary and proof the test wants.
+fn shield_payload(boundary: &[u8], proof: &[u8]) -> Vec<u8> {
+    let mut b = vec![T_BTC_SHIELD];
+    b.extend_from_slice(&[0xaa; 32]); // asset
+    b.push(1); // n_in
+    b.push(1); // n_out
+    b.extend_from_slice(&[0x01; POOL_OUTPUT_LEN]); // one pool output
+    b.extend_from_slice(boundary);
+    b.extend_from_slice(&[0x09; KERNEL_SIG_LEN]); // kernel_sig
+    b.extend_from_slice(&(proof.len() as u16).to_le_bytes());
+    b.extend_from_slice(proof);
+    b
+}
+
+#[test]
+fn shield_parse_reads_the_layout_and_refuses_non_canonical_shapes() {
+    let bytes = boundary_bytes(&[0x02u8; 33], &[0x03u8; 32]);
+    let payload = shield_payload(&bytes, &[0x07; 5]);
+    let body = ShieldBody::parse(&payload).expect("a canonical shield");
+    assert_eq!(body.asset, [0xaa; 32]);
+    assert_eq!(body.outputs.len(), 1);
+    assert_eq!(body.boundary.c_bjj, [0x03u8; 32]);
+    assert_eq!(body.proof, &[0x07; 5]);
+    assert_eq!(
+        body.body.len(),
+        1 + 32 + 1 + 1 + POOL_OUTPUT_LEN + BOUNDARY_LEN
+    );
+
+    let mut wrong_op = payload.clone();
+    wrong_op[0] = T_BTC_SPEND;
+    assert!(
+        ShieldBody::parse(&wrong_op).is_none(),
+        "a spend is not a shield"
+    );
+
+    let mut zero_in = payload.clone();
+    zero_in[33] = 0;
+    assert!(ShieldBody::parse(&zero_in).is_none(), "n_in = 0");
+
+    let mut too_many_in = payload.clone();
+    too_many_in[33] = (SHIELD_MAX_IN + 1) as u8;
+    assert!(
+        ShieldBody::parse(&too_many_in).is_none(),
+        "n_in past the cap"
+    );
+
+    let mut zero_out = payload.clone();
+    zero_out[34] = 0;
+    assert!(ShieldBody::parse(&zero_out).is_none(), "n_out = 0");
+
+    // every truncation of a canonical payload is refused, never read as a shorter valid one
+    for n in 0..payload.len() {
+        assert!(
+            ShieldBody::parse(&payload[..n]).is_none(),
+            "truncated at {n}"
+        );
+    }
+    // and a trailing byte is refused
+    let mut trailing = payload.clone();
+    trailing.push(0);
+    assert!(ShieldBody::parse(&trailing).is_none(), "trailing bytes");
+}
+
 #[test]
 fn credit_shield_requires_a_matching_boundary() {
     let bytes = boundary_bytes(&[0x02u8; 33], &[0x03u8; 32]);
-    let boundary = Boundary::parse(&bytes).unwrap();
+    let payload = shield_payload(&bytes, &[0x07; 5]);
+    let body = ShieldBody::parse(&payload).unwrap();
     let blind = [0x11u8; 32];
+    let root = [0x42u8; 32];
     let mut l = BackingLedger::default();
 
     let carrier = [0x77u8; 32];
+    let pool_yes: ShieldProofCheck<'_> = &|_: &ShieldBody<'_>, r: &[u8; 32]| r == &root;
+    let pool_no: ShieldProofCheck<'_> = &|_: &ShieldBody<'_>, _: &[u8; 32]| false;
+
     assert_eq!(
-        credit_shield(&mut l, &carrier, &boundary, 0, &blind, &|_, _, _| true),
+        credit_shield(
+            &mut l,
+            &carrier,
+            &body.asset,
+            &body,
+            0,
+            &blind,
+            &root,
+            pool_yes,
+            &|_, _, _| true
+        ),
         None,
         "a shield that moved nothing"
     );
     assert_eq!(
-        credit_shield(&mut l, &carrier, &boundary, 500, &blind, &|_, _, _| false),
+        credit_shield(
+            &mut l,
+            &carrier,
+            &body.asset,
+            &body,
+            500,
+            &blind,
+            &root,
+            pool_yes,
+            &|_, _, _| false
+        ),
         None,
         "a boundary that does not open"
     );
-    assert_eq!(l.funded, 0, "neither refusal funded anything");
+    assert_eq!(
+        credit_shield(&mut l, &carrier, &body.asset, &body, 500, &blind, &root, pool_no, &|_, _, _| true),
+        None,
+        "a pool proof that did not verify: this is the only way value enters, so it has to be checked here"
+    );
+    assert_eq!(
+        credit_shield(
+            &mut l,
+            &carrier,
+            &[0xff; 32],
+            &body,
+            500,
+            &blind,
+            &root,
+            pool_yes,
+            &|_, _, _| true
+        ),
+        None,
+        "a shield of another asset cannot fund this fold"
+    );
+    assert_eq!(l.funded, 0, "none of the refusals funded anything");
 
     let ok = |b: &Boundary<'_>, v: u64, bl: &[u8; 32]| {
         b.c_bjj == [0x03u8; 32] && v == 500 && bl == &blind
     };
     assert_eq!(
-        credit_shield(&mut l, &carrier, &boundary, 500, &blind, &ok),
+        credit_shield(
+            &mut l,
+            &carrier,
+            &body.asset,
+            &body,
+            500,
+            &blind,
+            &root,
+            pool_yes,
+            &ok
+        ),
         Some(())
     );
     assert_eq!(l.funded, 500);
     assert_eq!(
-        credit_shield(&mut l, &carrier, &boundary, 500, &blind, &ok),
+        credit_shield(
+            &mut l,
+            &carrier,
+            &body.asset,
+            &body,
+            500,
+            &blind,
+            &root,
+            pool_yes,
+            &ok
+        ),
         None,
         "re-folding the same shield must not mint backing"
     );
