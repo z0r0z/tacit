@@ -2,7 +2,7 @@ import { makeBtcSession, short } from '/trade/btc-session.js?cb=2909ef76';
 import { overlay, esc } from '/trade/sheet.js?cb=d857446c';
 import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=62608560';
 import { count } from '/metrics.js?cb=48a20c0d';
-import { notesAt } from '/trade/ext-notes.js?cb=00000000';
+import { notesAt } from '/trade/ext-notes.js?cb=e050b7c2';
 
 const MARKET_URL = '/btc-market.js', CSS_URL = '/trade/btc-market.css?cb=ac513811';
 const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
