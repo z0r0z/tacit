@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-3p/aVPtcnMCQyOeFdOYu7CDEW32Byw/qGO0hlB1O1tE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-nSKj32nyPHVE7P7nN0s3FbZgwPRLrM1nerC45uZ/TMQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -7480,7 +7480,11 @@ async function permit2Args({ t, via, value, status, token: tk = USDT_TOKEN, appr
     }
     tell(`Approve ${show} ${sym} in ${your()}, then the deposit follows…`);
     await waitTx(await sendTx({ to: token, data: '0x095ea7b3' + addrWord(PERMIT2_ADDR) + word(value), via, label: `Approve ${show} ${sym} for Permit2` }), { timeoutMs: 180e3, chainId: 1 });
-    if (wordAt(await ethCall(token, SEL.allowance + addrWord(owner) + addrWord(PERMIT2_ADDR)), 0) < value) throw new Error('The approval has not shown up yet. Try again in a moment.');
+    for (let i = 0; ; i++) {   // the receipt can land before a lagging RPC node shows the new allowance: read it again a few times before calling it missing
+      if (wordAt(await ethCall(token, SEL.allowance + addrWord(owner) + addrWord(PERMIT2_ADDR)), 0) >= value) break;
+      if (i >= 7) throw new Error('The approval has not shown up yet. Try again in a moment.');
+      await new Promise((r) => setTimeout(r, 2000));
+    }
   }
   const expiration = BigInt(chainNow() + 1800), nonce = wordAt(await ethCall(PERMIT2_ADDR, '927da105' + addrWord(owner) + addrWord(token) + addrWord(spender)), 2);
   if (via === 'tacit') {
@@ -9048,7 +9052,11 @@ async function approveFirst(t, amount, step) {
   step(`Approve ${show} ${t.sym} in ${your()}, then the deposit follows`);
   const h = await sendTx({ to: t.token, data: '0x095ea7b3' + addrWord(t.router) + word(amount), label: `Approve ${show} ${t.sym} for the private ${t.sym} pool` });
   await waitTx(h, { timeoutMs: 180e3, chainId: 1 });
-  if (BigInt(await ethCall(t.token, SEL.allowance + addrWord(S.address) + addrWord(t.router))) < amount) throw new Error('The approval has not shown up yet. Try again in a moment.');
+  for (let i = 0; ; i++) {   // the receipt can land before a lagging RPC node shows the new allowance: read it again a few times before calling it missing
+      if (wordAt(await ethCall(t.token, SEL.allowance + addrWord(S.address) + addrWord(t.router)), 0) >= amount) break;
+      if (i >= 7) throw new Error('The approval has not shown up yet. Try again in a moment.');
+      await new Promise((r) => setTimeout(r, 2000));
+    }
   return { kind: 'allowance' };
 }
 async function tokenPull(t, amount, step, status) {
@@ -13837,7 +13845,7 @@ async function hxSendOutQuote(units) {
   return { warn: over || small, fee, minFee, own,
     line: over ? feeRoom(units, size, held, P.scan?.[k]?.notes, show, dp) || `You hold ${show(held)}.`
       : small ? `Send more than ${show(fee)}: the relay fee comes out of it.` : '',
-    rc: over || small ? [] : [['They get', `${fmt(units - fee, d8, dp)} ${as} at that address`], own ? ['Relay fee', 'none: your own proof'] : ['Relay fee', `${show(fee)}, out of it`],
+    rc: over || small ? [] : [[own ? 'You get' : 'They get', `${fmt(units - fee, d8, dp)} ${as} at that address`], own ? ['Relay fee', 'none: your own proof'] : ['Relay fee', `${show(fee)}, out of it`],
       size ? [notes.some((n) => BigInt(n.value) >= units + size) ? 'Splits a note' : 'Combines notes', `${show(size)} first`] : null, ...hxSendSees()] };
 }
 function hxSendSees(k = HX.send) {
