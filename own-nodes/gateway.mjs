@@ -58,6 +58,7 @@ export const ESPLORA_GET = [
   new RegExp('^\\/address\\/[A-Za-z0-9]{14,100}(\\/' + TXS + ')?$'),
   new RegExp('^\\/scripthash\\/' + UTXO + '(\\/' + TXS + ')?$'),
   /^\/fee-estimates$/,
+  /^\/v1\/fees\/recommended$/,
   /^\/mempool(\/(txids|recent))?$/,
 ];
 
@@ -289,6 +290,39 @@ export function makeGateway(o = {}) {
     if (j.error) throw Object.assign(new Error(j.error.message), { code: j.error.code });
     return j.result;
   };
+  const btcRpcBatch = async (calls) => {
+    const r = await cfg.fetchImpl(cfg.btcRpcUrl, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Basic ' + Buffer.from(cfg.btcRpcAuth).toString('base64') },
+      body: JSON.stringify(calls.map(([method, params], id) => ({ jsonrpc: '1.0', id, method, params }))), signal: AbortSignal.timeout(cfg.timeoutMs),
+    });
+    const j = await r.json();
+    if (!Array.isArray(j)) throw new Error('bad answer');
+    const by = new Map(j.map((x) => [x.id, x]));
+    return calls.map((_, id) => { const x = by.get(id); return !x || x.error ? { error: x?.error || { code: -32603 } } : x.result; });
+  };
+  // ── an UNPRUNED bitcoind (txindex) + electrs: every esplora read the pages use (btc-index.mjs, loaded only in this mode) ──────────────
+  let index = null;
+  const btcIndex = () => (index ||= import('./btc-index.mjs').then((m) => ({ m, ix: m.makeBtcIndex({ rpc: btcRpc, rpcBatch: btcRpcBatch, electrum: m.makeElectrum(cfg.electrumUrl, { timeoutMs: cfg.timeoutMs }) }) })));
+  async function handleBtcIndex(req, res, internal, path) {
+    if (req.method === 'POST' || path === '/fee-estimates') return handleBtcShim(req, res, internal, path);
+    if (!ESPLORA_GET.some((re) => re.test(path))) { counters.refused++; return send(res, 404, { error: 'not available here' }); }
+    const { m, ix } = await btcIndex();
+    const wait = spend(req, internal, m.costOf(path));
+    if (wait) { counters.limited++; return send(res, 429, { error: 'rate limit exceeded' }, 'application/json', { 'retry-after': String(wait) }); }
+    try {
+      if (!(await btcFresh()).ok) return send(res, 503, { error: 'node is syncing' }, 'application/json', { 'retry-after': '60' });
+      const ttl = /^\/blocks\/tip\//.test(path) ? cfg.tipMs : /^\/(v1\/fees\/recommended|mempool)$/.test(path) ? 20_000 : 0;
+      const got = ttl ? await cached('btcix:' + path, ttl, () => ix.serve(path)) : await once('btcix:' + path, () => ix.serve(path));
+      counters.requests++;
+      return send(res, got.status, got.body, got.type);
+    } catch (e) {
+      if (e instanceof m.Answer) {
+        if (e.status === 501) counters.refused++;
+        return typeof e.body === 'string' ? send(res, e.status, e.body, 'text/plain') : send(res, e.status, e.body);
+      }
+      counters.upstreamErrors++; return send(res, 502, { error: 'node unavailable' });
+    }
+  }
   // A node that is still syncing, or whose newest block is hours old, must not answer a tip: the header relay would read a stale one as the chain's.
   const btcFresh = () => cached('btc:fresh', 10_000, async () => {
     const i = await btcRpc('getblockchaininfo');
@@ -345,7 +379,7 @@ export function makeGateway(o = {}) {
   }
 
   async function handleBtc(req, res, internal, path, search) {
-    if (!cfg.btcUpstream && cfg.btcRpcUrl) return handleBtcShim(req, res, internal, path);
+    if (!cfg.btcUpstream && cfg.btcRpcUrl) return cfg.electrumUrl ? handleBtcIndex(req, res, internal, path) : handleBtcShim(req, res, internal, path);
     const isTx = path === '/tx';
     if (req.method === 'POST') {
       if (!isTx || !cfg.allowBroadcast) return send(res, 403, { error: 'read-only' });
@@ -391,6 +425,12 @@ export function makeGateway(o = {}) {
     if (!cfg.btcUpstream && cfg.btcRpcUrl) {
       try { const b = await btcFresh(); out.btc = { tip: b.blocks, syncing: !b.ok, ...(b.ok ? {} : { headers: b.headers, progress: Number(b.progress.toFixed(4)) }) }; if (!b.ok) out.ok = false; }
       catch { out.btc = { error: 'unreachable' }; out.ok = false; }
+      if (cfg.electrumUrl && out.btc.tip != null) {
+        // the address index: how many blocks electrs is behind bitcoind (more than 2 and address reads would miss the newest transactions)
+        const t = await (await btcIndex()).ix.indexTip();
+        out.btc.indexBehind = t == null ? null : Math.max(0, out.btc.tip - t);
+        if (t == null || out.btc.indexBehind > 2) out.ok = false;
+      }
     } else if (cfg.btcUpstream) {
       try {
         const r = await cfg.fetchImpl(cfg.btcUpstream + '/blocks/tip/height', { signal: AbortSignal.timeout(5000) });
@@ -440,5 +480,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     traceMaxBytes: Number(e.TRACE_MAX_BYTES) || undefined, traceConcurrency: Number(e.TRACE_CONCURRENCY) || undefined,
     electrumUrl: e.ELECTRUM_URL || '',
   });
-  server.listen(Number(e.PORT) || 8080, '0.0.0.0', () => console.log(`gateway up (eth ${e.ETH_UPSTREAM ? 'on' : 'off'}, btc ${e.BTC_ESPLORA_UPSTREAM ? 'esplora' : e.BTC_RPC_URL ? 'pruned-rpc' : 'off'})`));
+  server.listen(Number(e.PORT) || 8080, '0.0.0.0', () => console.log(`gateway up (eth ${e.ETH_UPSTREAM ? 'on' : 'off'}, btc ${e.BTC_ESPLORA_UPSTREAM ? 'esplora' : e.BTC_RPC_URL ? (e.ELECTRUM_URL ? 'bitcoind+electrs' : 'pruned-rpc') : 'off'})`));
 }
