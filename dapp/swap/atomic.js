@@ -494,10 +494,11 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       + `<small class="nx-n">Send it to any wallet (UniSat, Sparrow, an exchange), or bid for TAC with it on Tacit’s Bitcoin order book. To keep it in another wallet instead, import this wallet’s Bitcoin key: <a href="${WALLET_SHEET}" data-next="elsewhere">Use this wallet’s Bitcoin elsewhere</a>.</small>`;
   }
   // a finished swap of BTC whose ETH was kept private: one button sends it on to an Ethereum address (the page asks where, and shows the fee first)
+  // (a swap found again from the key may not know its ETH amount: the button then asks for one, up to what the private balance holds)
   function payNext(r) {
     const k = D.key ? D.key() : null;
-    if (!payout || !onNext || !k || r.state !== 'done' || !(r.get > 0n) || (r.at && now() - r.at > RECENT_SECS) || payout.want(k.pubHex, r.id)) return '';
-    return `<div class="nx"><button class="nx-b" type="button" data-next="withdraw" data-id="${esc(r.id)}" data-units="${esc(String(r.get))}">Send to an Ethereum address</button></div>`;
+    if (!payout || !onNext || !k || r.state !== 'done' || (r.at && now() - r.at > RECENT_SECS) || payout.want(k.pubHex, r.id)) return '';
+    return `<div class="nx"><button class="nx-b" type="button" data-next="withdraw" data-id="${esc(r.id)}" data-units="${r.get > 0n ? esc(String(r.get)) : ''}">Send to an Ethereum address</button></div>`;
   }
   function paintRecs() {
     const box = recsHost || $('a-sent'), gone = dismissed(), recs = L.recs.filter((r) => !gone.has(r.id)).map(withPress);
@@ -1035,7 +1036,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const nx = e.target.closest('[data-next="send"]');
     if (nx && onNext) { try { onNext({ act: 'send', sats: BigInt(nx.dataset.sats) }); } catch { /* the page's hook */ } }
     const wd = e.target.closest('[data-next="withdraw"]');
-    if (wd && onNext) { try { onNext({ act: 'withdraw', id: wd.dataset.id, units: BigInt(wd.dataset.units) }); } catch { /* the page's hook */ } }
+    if (wd && onNext) { try { onNext({ act: 'withdraw', id: wd.dataset.id, units: wd.dataset.units ? BigInt(wd.dataset.units) : null }); } catch { /* the page's hook */ } }
     const pr = e.target.closest('[data-pay-retry]'); if (pr) payRetry(pr.dataset.payRetry);
   });
 
@@ -1054,6 +1055,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     // a finished swap of BTC's ETH, sent on to `to` by the relay (the page asked where, and showed the fee)
     payTo: (id, to) => { payChosen(id, to); paintRecs(); payDue(); },
     payout: () => payout,
+    // private ETH sent to an address now (btc/payout.js send), and the most one send takes (the largest private amount), for a page's own send of it
+    sendEth: ({ units, to }) => { const k = D.key ? D.key() : null; if (!k || !payout) throw new Error('Open your Tacit wallet first.'); return payout.send({ key: k, units, to }).finally(() => readMe(true)); },
+    largestEth: () => { const k = D.key ? D.key() : null; return k && payout ? payout.largest(k) : Promise.resolve(0n); },
     // the Ethereum address the open key makes (the wallet sheet's), or null
     ethAddress: () => { const k = D.key ? D.key() : null; return k && payout ? payout.tacitAddress(k.priv) : null; },
     // the pair and amount a link names

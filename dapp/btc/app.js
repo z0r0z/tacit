@@ -139,9 +139,9 @@ const lane = makeAtomicLane({
   host: $('atomic'), recsHost: $('mine-list'), notify, wallet: () => null, provider: () => connectedInjected(), getUx, market, dir: first.dir,
   shield: makeAddEth({ getUx }), payout,
   onState: () => follow(lane.state()),
-  onRecs: (recs) => { paintMine(recs); panel?.paint(); },
-  onBal: () => panel?.paint(),
-  onOpen: () => panel?.paint(),
+  onRecs: (recs) => { paintMine(recs); panel?.paint(); paintEth(); },
+  onBal: () => { panel?.paint(); paintEth(); },
+  onOpen: () => { panel?.paint(); paintEth(); },
   // a finished swap's "Send BTC": the panel's send, the amount that arrived filled in
   // and a finished swap of BTC's "Send to an Ethereum address": where, and the relay's fee, asked first
   onNext: ({ act, sats, id, units }) => { if (act === 'send') panel?.openSend({ sats }); else if (act === 'withdraw') withdraw({ id, units }).catch(() => {}); },
@@ -153,36 +153,71 @@ const warm = () => lane.warm();
 if (first.amt) warm();
 for (const ev of ['pointerenter', 'focusin', 'touchstart']) $('atomic').addEventListener(ev, warm, { once: true, passive: true });
 
-// The ETH of a finished swap of BTC, sent from the private balance to an Ethereum address: the key's own (the wallet sheet's) or one typed and checked, with
-// what arrives after the relay's fee said before the press. The lane then sends it and says so on the swap's card.
-async function withdraw({ id, units }) {
+// Private ETH sent to an Ethereum address: the key's own (the wallet sheet's) or one typed and checked, with what arrives after the relay's fee said before
+// the press. From a finished swap of BTC whose amount is known (`id`, `units`), the lane sends it and says so on the swap's card; otherwise (the "Your ETH"
+// panel, or a swap found again from the key, which does not know its amount) the amount is chosen here, up to the largest private amount that goes in one
+// withdrawal (Max), and the dialog sends it and shows the Etherscan link.
+async function withdraw({ id = null, units = null } = {}) {
   const { overlay } = await import('/trade/sheet.js?cb=d857446c');
-  const o = overlay({ title: 'Send to an Ethereum address' });
-  const own = lane.ethAddress();
-  o.body.innerHTML = `<p style="margin:0 0 12px">${esc(fmt(units))} ETH from this swap, from your private balance to an Ethereum address. The relay sends it and takes its fee from it.</p>
+  const o = overlay({ title: 'Send ETH to an address' });
+  const own = lane.ethAddress(), fixed = units != null && units > 0n;
+  const field = 'min-height:40px;padding:6px 10px;font:13px var(--mono, monospace)';
+  o.body.innerHTML = `<p style="margin:0 0 12px">${fixed ? `${esc(fmt(units))} ETH from this swap` : 'ETH'} from your private balance to an Ethereum address. The relay sends it and takes its fee from it.</p>
+    ${fixed ? '' : `<div style="display:flex;gap:8px;align-items:center;margin:0 0 12px"><input data-amt inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount of ETH" style="${field};flex:1;min-width:0"><span>ETH</span><button class="btn ghost" type="button" data-max disabled>Max</button></div>`}
     <div class="pt" style="display:grid;gap:8px">
       ${own ? `<label style="display:flex;gap:8px;align-items:baseline"><input type="radio" name="wd-to" value="own" checked><span>Your Tacit Ethereum address <code>${esc(own.slice(0, 6))}…${esc(own.slice(-4))}</code></span></label>` : ''}
       <label style="display:flex;gap:8px;align-items:baseline"><input type="radio" name="wd-to" value="other"${own ? '' : ' checked'}><span>Another address</span></label>
-      <input data-addr placeholder="0x…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Ethereum address" style="min-height:40px;padding:6px 10px;font:13px var(--mono, monospace)"${own ? ' hidden' : ''}>
+      <input data-addr placeholder="0x…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Ethereum address" style="${field}"${own ? ' hidden' : ''}>
     </div>
-    <p data-say role="status" style="margin:12px 0 0">Reading the relay’s fee…</p>
-    <p class="note" style="margin:8px 0 0">Sent there, it is public from that address on. Sending all of it right after the swap makes the two easy to match by amount and time.</p>
+    <p data-say role="status" style="margin:12px 0 0"></p>
+    <p class="note" style="margin:8px 0 0">Sent there, it is public from that address on. ${fixed ? 'Sending all of it right after the swap makes the two easy to match by amount and time.' : 'An amount sent soon after a swap of the same amount is easy to match to it.'}</p>
     <div class="bsheet-actions" style="margin-top:14px"><button class="btn" type="button" data-go disabled>Send</button><button class="btn ghost" type="button" data-x>Cancel</button></div>`;
-  const q = (s) => o.body.querySelector(s), addr = q('[data-addr]'), say = q('[data-say]'), go = q('[data-go]');
-  let fee = null;
+  const q = (s) => o.body.querySelector(s), addr = q('[data-addr]'), amt = q('[data-amt]'), say = q('[data-say]'), go = q('[data-go]');
+  let fee = null, feeFor = null, max = null, busy = false, seq = 0;
   const target = () => (o.body.querySelector('input[name="wd-to"]:checked')?.value === 'own' ? own : payout.checkAddress(addr.value).address || null);
+  const amount = () => { if (fixed) return units; const t = (amt.value || '').trim(); if (!/^\d{0,8}(\.\d{1,8})?$/.test(t) || !t || t === '.') return null; const [w, f = ''] = t.split('.'); const v = BigInt(w || '0') * 100000000n + BigInt((f + '00000000').slice(0, 8)); return v > 0n ? v : null; };
   const paint = () => {
-    const other = o.body.querySelector('input[name="wd-to"]:checked')?.value !== 'own', t = target(), chk = payout.checkAddress(addr.value);
+    if (busy) return;
+    const other = o.body.querySelector('input[name="wd-to"]:checked')?.value !== 'own', t = target(), chk = payout.checkAddress(addr.value), v = amount();
     addr.hidden = !other;
-    go.disabled = !t || !fee;
-    say.textContent = other && addr.value.trim() && !chk.ok ? chk.why : fee ? `The relay’s fee is about ${fmt(fee.fee)} ETH: about ${fmt(fee.net)} ETH arrives${t ? ` at ${t.slice(0, 6)}…${t.slice(-4)}` : ''}.` : 'Reading the relay’s fee…';
+    if (v && v !== feeFor) { const my = ++seq; feeFor = v; fee = null; payout.quote(v).then((f) => { if (my === seq) { fee = f; paint(); } }, () => { if (my === seq) { say.textContent = 'The relay’s fee could not be read just now. Try again in a moment.'; } }); }
+    const tooMuch = !fixed && v && max != null && v > max, tooLittle = v && fee && fee.net <= 0n;
+    go.disabled = !t || !v || !fee || feeFor !== v || tooMuch || tooLittle;
+    say.textContent = other && addr.value.trim() && !chk.ok ? chk.why
+      : !fixed && !v ? (max == null ? 'Reading your private ETH…' : max > 0n ? `Up to ${fmt(max)} ETH goes in one send.` : 'Your private balance holds no ETH to send.')
+        : tooMuch ? `At most ${fmt(max)} ETH goes in one send: your private ETH is held in more than one amount. Send that, then the rest.`
+          : tooLittle ? 'That is less than the relay’s fee.'
+            : fee && feeFor === v ? `The relay’s fee is about ${fmt(fee.fee)} ETH: about ${fmt(fee.net)} ETH arrives${t ? ` at ${t.slice(0, 6)}…${t.slice(-4)}` : ''}.` : 'Reading the relay’s fee…';
   };
-  o.body.addEventListener('change', paint); addr.addEventListener('input', paint);
+  o.body.addEventListener('change', paint); addr.addEventListener('input', paint); amt?.addEventListener('input', paint);
+  q('[data-max]')?.addEventListener('click', () => { if (max > 0n) { amt.value = fmt(max); paint(); } });
   q('[data-x]').onclick = () => o.close();
-  go.onclick = () => { const t = target(); if (!t) return; lane.payTo(id, t); o.close(); };
-  try { fee = await payout.quote(units); } catch { say.textContent = 'The relay’s fee could not be read just now. Try again in a moment.'; return; }
-  if (!o.closed) paint();
+  go.onclick = async () => {
+    const t = target(), v = amount();
+    if (!t || !v) return;
+    if (fixed && id) { lane.payTo(id, t); o.close(); return; }
+    busy = true; go.disabled = true; q('[data-x]').textContent = 'Close';
+    say.textContent = 'Sending… The relay proves the withdrawal and sends it, a few minutes. You can close this; it goes on.';
+    try {
+      const r = await lane.sendEth({ units: v, to: t });
+      say.innerHTML = `Sent: about ${esc(fmt(r.net || v))} ETH to ${esc(t.slice(0, 6))}…${esc(t.slice(-4))}.${/^0x[0-9a-f]{64}$/i.test(r.txHash || '') ? ` <a href="https://etherscan.io/tx/${esc(r.txHash)}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a>` : ''}`;
+      notify('ETH sent to your address');
+    } catch (e) { busy = false; say.textContent = `Couldn’t send: ${String(e?.message || 'try again in a moment').replace(/^./, (c) => c.toUpperCase()).replace(/([^.])$/, '$1.')}`; go.disabled = false; }
+  };
+  if (!fixed) lane.largestEth().then((m) => { max = m; q('[data-max]').disabled = !(m > 0n); paint(); }, () => { max = 0n; paint(); });
+  paint();
 }
+
+// "Your ETH": the private ETH balance, and a send of it to an Ethereum address (the dialog above)
+function paintEth() {
+  const box = $('ye-box'), say = $('ye-say'), on = lane.unlocked && lane.bitcoin();
+  box.hidden = !on; say.hidden = !!on;
+  if (!on) { say.textContent = lane.unlocked ? 'Reading your private ETH…' : 'Open your Tacit wallet above to see its private ETH.'; return; }
+  const b = lane.balances(), held = b.ethHeld ?? b.eth;
+  $('ye-bal').textContent = held == null ? 'reading…' : `${fmt(held)} ETH`;
+  $('ye-send').disabled = !(held > 0n);
+}
+$('ye-send').addEventListener('click', () => withdraw({}).catch(() => {}));
 
 // (the swaps of an earlier visit are looked for on the chains for a minute or two after the wallet opens: until that ends the list says so, never 'No swaps yet')
 function paintMine(recs) {

@@ -7,6 +7,7 @@
 //   p.tacitAddress(priv)                     -> the Ethereum address the Tacit key makes (the wallet sheet's; its key can be exported there)
 //   p.quote(units)                           -> { fee, net }   pool units (1e-8 ETH): the relay's fee of the withdrawal, and what arrives
 //   p.send({ key, units, to })               -> { txHash, fee, net }
+//   p.largest(key)                           -> the most one withdrawal takes (the largest private ETH amount), pool units
 //   p.want(pub, id) / p.choose(pub, id, rec) / p.drop(pub, id)    the choice kept for a swap: { to, at, state: 'waiting' | 'sending' | 'sent' | 'failed', tx?, why? }
 import { keccak_256, secp, sha256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmAccount } from '/evm-account.js';
@@ -75,8 +76,15 @@ export function makePayout({ getUx }) {
     return { txHash: r.txHash || null, fee: BigInt(r.fee ?? 0n), net: BigInt(r.net ?? 0n) };
   }
 
+  // the most one withdrawal takes: the largest of the key's private ETH amounts (pool units)
+  async function largest(key) {
+    const ux = await getUx();
+    const { byAsset } = await ux.balance(Uint8Array.from(key.priv), { bridge: false, cbtc: false });
+    return ethNotes(byAsset).reduce((m, n) => (BigInt(n.value) > m ? BigInt(n.value) : m), 0n);
+  }
+
   const want = (pub, id) => { const r = readAll(pub)[id]; return r && Date.now() - Number(r.at || 0) < KEEP_MS ? r : null; };
   const choose = (pub, id, rec) => { const m = readAll(pub); m[id] = { at: Date.now(), ...(m[id] || {}), ...rec }; writeAll(pub, m); return m[id]; };
   const drop = (pub, id) => { const m = readAll(pub); delete m[id]; writeAll(pub, m); };
-  return { tacitAddress, quote, send, want, choose, drop, checkAddress };
+  return { tacitAddress, quote, send, largest, want, choose, drop, checkAddress };
 }

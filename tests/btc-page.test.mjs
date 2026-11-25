@@ -741,6 +741,47 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
   await page.close();
 }
 {
+  // a swap of BTC found again from the key does not know its ETH amount (the live check of 11-25): its Done card still offers the send, the amount chosen up
+  // to the largest private amount (Max); and "Your ETH" sends any of the private balance the same way
+  const { page, errs, csp } = await fresh({ init: `window.__atom.bal.eth = 5632297n; window.__atom.recs = [{ id: 'swQ', dir: 'b2e', state: 'done', title: 'Done', detail: 'The ETH is in your private balance, and the provider collected the BTC.', pay: 130000n, get: 0n, steps: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 3600, refundAt: null, backBy: null }];` });
+  await page.click('#a-go');
+  await page.waitForFunction(() => document.querySelector('#mine-list [data-rec="swQ"] [data-next="withdraw"]') && !document.querySelector('#ye-box').hidden, null, { timeout: 15000 });
+  await page.evaluate(() => { window.__ux.notes = [{ value: 4632297n }, { value: 1000000n }]; });
+  ok(/^0\.05632297 ETH$/.test(await text(page, '#ye-bal')) && !(await page.$eval('#ye-send', (e) => e.disabled)) && /public from that address on/.test(await text(page, '#myeth')), '"Your ETH": the private balance, a Send ETH, and what sending shows');
+  await page.$eval('#mine', (e) => e.scrollIntoView());
+  await SHOT(page, 'btc-recovered-done-send', false);
+  await page.click('#mine-list [data-rec="swQ"] [data-next="withdraw"]');
+  await page.waitForFunction(() => document.querySelector('.bsheet [data-max]') && !document.querySelector('.bsheet [data-max]').disabled, null, { timeout: 15000 });
+  ok(/Up to 0\.04632297 ETH goes in one send\./.test(await text(page, '.bsheet [data-say]')), `with no amount known, the most one send takes is said (${await text(page, '.bsheet [data-say]')})`);
+  await page.fill('.bsheet [data-amt]', '0.05');
+  await page.waitForFunction(() => /At most 0\.04632297 ETH goes in one send/.test(document.querySelector('.bsheet [data-say]').textContent), null, { timeout: 15000 });
+  ok(await page.$eval('.bsheet [data-go]', (e) => e.disabled), 'more than one send takes is refused, with the reason');
+  await page.click('.bsheet [data-max]');
+  await page.waitForFunction(() => /about 0\.04602297 ETH arrives at 0x/.test(document.querySelector('.bsheet [data-say]').textContent) && !document.querySelector('.bsheet [data-go]').disabled, null, { timeout: 15000 });
+  await SHOT(page, 'btc-send-eth-dialog', false);
+  await page.click('.bsheet [data-go]');
+  await page.waitForFunction(() => /Sent: about 0\.04602297 ETH to 0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4}\. Etherscan ↗/.test(document.querySelector('.bsheet [data-say]').textContent), null, { timeout: 20000 });
+  let un = await page.evaluate(() => window.__ux.unwraps);
+  ok(un.length === 1 && un[0].value === '4632297' && !un[0].amount, `Max sends the largest private amount whole, to the key's own Ethereum address by default (${JSON.stringify(un)})`);
+  ok((await page.$$('.bsheet [data-say] a[href^="https://etherscan.io/tx/0xefef"]')).length === 1, 'and links the withdrawal on Etherscan');
+  await page.click('.bsheet [data-x]');
+  // "Your ETH": part of an amount, to an address typed and checked
+  await page.click('#ye-send');
+  await page.waitForFunction(() => document.querySelector('.bsheet [data-amt]'), null, { timeout: 15000 });
+  await page.fill('.bsheet [data-amt]', '0.005');
+  await page.click('.bsheet input[value="other"]');
+  await page.fill('.bsheet [data-addr]', '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD');
+  ok(/checksum/.test(await text(page, '.bsheet [data-say]')), 'a mistyped address is refused');
+  await page.fill('.bsheet [data-addr]', '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed');
+  await page.waitForFunction(() => /about 0\.0047 ETH arrives at 0x5aAe…eAed/.test(document.querySelector('.bsheet [data-say]').textContent) && !document.querySelector('.bsheet [data-go]').disabled, null, { timeout: 15000 });
+  await page.click('.bsheet [data-go]');
+  await page.waitForFunction(() => /Sent:/.test(document.querySelector('.bsheet [data-say]').textContent), null, { timeout: 20000 });
+  un = await page.evaluate(() => window.__ux.unwraps);
+  ok(un.length === 2 && un[1].amount === '500000' && un[1].recipient === '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed', `part of an amount is sent from the smallest that holds it, the rest stays private (${JSON.stringify(un[1])})`);
+  ok(errs.length === 0 && csp.length === 0, `no page errors or CSP violations (${errs.concat(csp).join(' | ')})`);
+  await page.close();
+}
+{
   // a finished swap of BTC whose ETH was kept private: "Send to an Ethereum address" asks where, says the fee, and sends
   const { page, errs, csp } = await fresh({ scheme: 'dark', viewport: { width: 390, height: 900 }, init: `window.__atom.recs = [{ id: 'swP', dir: 'b2e', state: 'done', title: 'Done', detail: 'The ETH is in your private balance.', pay: 200000n, get: 6080000n, steps: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 60, refundAt: null, backBy: null }];
     window.__ux_notes = [{ value: 6080000n }];` });
