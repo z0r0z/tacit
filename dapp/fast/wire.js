@@ -17,7 +17,7 @@ import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=7410374b';
 import { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=23680804';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=8b4b5fae';
-import { makeLpService } from '/fastbridge-provider.js?cb=a36d2d7c';
+import { makeLpService } from '/fastbridge-provider.js?cb=c9ab78d8';
 import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=68f14a95';
 import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=514bfcc8';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';

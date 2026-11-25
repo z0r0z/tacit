@@ -37,21 +37,26 @@ test('one reservation looks at a limited number of transactions, and asking agai
   assert.equal(looks, 20, 'and no explorer was asked for it');
 });
 
-test('a provider holds a bounded number of quotes: when the store is full, dead ones are freed sooner, and a quote is refused while it stays full', async () => {
+test('a provider stores a quote only once it holds something: a quote is never refused for the store, a hold is while the store is full, and a look frees what holds nothing', async () => {
   const m = memStore();
   const store = { ...m, del: async (id) => { m.m.delete(id); } };
   const w = await funded({ fwdQuoteStore: store, fwdPolicy: { maxQuotes: 3 } });
   await w.fwd.tick();                                              // counts what the store holds: nothing
-  for (let i = 0; i < 3; i++) assert.ok((await post(w, '/quote', { amount: String(SATS) })).body.id);
-  const full = await post(w, '/quote', { amount: String(SATS) });
-  assert.equal(full.status, 503);
-  assert.match(full.body.error, /too many open quotes/);
-  // the quotes live out their validity and the longest an offer is answered after it: then a look frees them and quoting goes on
-  w.clock.advance(600 + 21600 + 3600 + 10);
+  const qs = [];
+  for (let i = 0; i < 6; i++) { const r = await post(w, '/quote', { amount: String(SATS) }); assert.equal(r.status, 200); qs.push(r.body); }
+  assert.equal((await store.list()).length, 0, 'a quote stores nothing');
+  const reserve = async (q, client) => (await w.fwd.handle({ method: 'POST', path: '/reserve', body: { quoteId: q.id }, client })).body;
+  for (let i = 0; i < 3; i++) assert.equal((await reserve(qs[i], `198.51.100.${i}`)).ok, true);
+  assert.equal((await store.list()).length, 3, 'three holds, three stored');
+  const full = await reserve(qs[3], '198.51.100.9');
+  assert.equal(full.ok, false);
+  assert.match(full.why, /too many open quotes/);
+  // the holds run out: a look frees what they kept, and holding goes on
+  w.clock.advance(301 + 3600);
   await w.providerFeed.refresh();
   await w.fwd.tick();
   assert.equal((await store.list()).length, 0);
-  assert.ok((await post(w, '/quote', { amount: String(SATS) })).body.id);
+  assert.equal((await reserve((await post(w, '/quote', { amount: String(SATS) })).body, '198.51.100.9')).ok, true);
 });
 
 test('an offer whose lock does not pay the take is refused before the history of its note is walked, and one that arrived too late the same', async () => {

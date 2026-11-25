@@ -6,11 +6,21 @@ const FEE_WARM_MS = 30000;
 import { makeEthereumLocker } from './fastbridge-el.js';
 import { isSats } from './adaptor-xswap.js';
 import { deriveLock } from './adaptor-btc-lock.js';
-import { secp, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
+import { secp, sha256, hmac, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 
 const randomHex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.toString(16).padStart(2, '0')).join('');
+const te = new TextEncoder();
 
-export function makeQuoter({ store, now, params }) {
+// A quote whose id carries its own terms: a version, when it was made and until when it stands, the fee of the take, the two amounts and a nonce, then a MAC over
+// those and this side's fixed terms under a key of its seed. Such a quote is stored only once it holds something (a hold, a lock seen for it), and is read back
+// from its id until then; a quote id of 32 hex digits is one stored when it was given (as every quote was before), and is read from the store.
+export const SEALED_QUOTE = /^01[0-9a-f]{120}$/;
+const LEGACY_QUOTE = /^[0-9a-f]{32}$/;
+export const isQuoteId = (v) => LEGACY_QUOTE.test(String(v)) || SEALED_QUOTE.test(String(v));
+const WIDTHS = [8, 8, 8, 16, 32];                                     // created, validUntil, takeSats, btcValue, evmAmount (hex digits)
+
+// `macKey`: the key a quote's id is sealed with (makeLpService derives it from the seed); without one every quote is stored when it is given
+export function makeQuoter({ store, now, params, macKey = null }) {
   const p = params;
   const min = BigInt(p.minAmount), max = BigInt(p.maxAmount), flat = BigInt(p.flatFee ?? 0), bps = BigInt(p.feeBps ?? 0);
   // `rate` is { num, den } (what the provider's side pays for one unit of what it takes), or a function that gives that now (dapp/fastbridge-rate.js feed.rate):
@@ -31,6 +41,31 @@ export function makeQuoter({ store, now, params }) {
     return { btcValue: a, evmAmount: out, fee };
   }
 
+  const inLock = (takeSats) => p.takeInLock === true && Number(takeSats) > 0;
+  const macOf = (body) => bytesToHex(hmac(sha256, macKey, te.encode(['tacit-fastbridge-quote-v1', body, p.claimPub, p.btcAsset, p.evmAsset, p.csvBlocks, p.evmWindowSecs].join('|')))).slice(0, 32);
+  const sealedId = (q) => {
+    const parts = [q.created, q.validUntil, q.takeSats, q.btcValue, q.evmAmount].map((v, i) => BigInt(v).toString(16).padStart(WIDTHS[i], '0'));
+    if (parts.some((h, i) => h.length !== WIDTHS[i])) return null;
+    const body = '01' + parts.join('') + randomHex(8);
+    return body + macOf(body);
+  };
+  // the quote a sealed id stands for, with this side's fixed terms as they are now; null for an id this key did not seal
+  function unseal(id) {
+    if (!macKey || !SEALED_QUOTE.test(String(id))) return null;
+    const body = id.slice(0, 90), mac = macOf(body);
+    let diff = 0;
+    for (let i = 0; i < 32; i++) diff |= mac.charCodeAt(i) ^ id.charCodeAt(90 + i);
+    if (diff) return null;
+    let at = 2;
+    const [created, validUntil, takeSats, btcValue, evmAmount] = WIDTHS.map((w) => { const v = BigInt('0x' + body.slice(at, at + w)); at += w; return v; });
+    const q = {
+      id, btcAsset: p.btcAsset, btcValue: String(btcValue), evmAsset: p.evmAsset, evmAmount: String(evmAmount), claimPub: p.claimPub, csvBlocks: p.csvBlocks,
+      evmWindowSecs: p.evmWindowSecs, minConfs: p.minConfsFor(btcValue), takeSats: Number(takeSats), created: Number(created), validUntil: Number(validUntil),
+    };
+    if (inLock(q.takeSats)) q.takeInLock = true;
+    return q;
+  }
+
   async function quote(amount) {
     const { btcValue, evmAmount } = price(amount);
     const q = {
@@ -39,7 +74,10 @@ export function makeQuoter({ store, now, params }) {
       takeSats: p.takeSats ? await p.takeSats() : 0, created: now(), validUntil: now() + (p.validSecs ?? 600),
     };
     // a provider that takes the fee of its take from a second output of the lock's own script says so; a page that does not know the word locks as it always did
-    if (p.takeInLock === true && q.takeSats > 0) q.takeInLock = true;
+    if (inLock(q.takeSats)) q.takeInLock = true;
+    // (sealed, it costs this side nothing to give: nothing is stored until it is used)
+    const sealed = macKey ? sealedId(q) : null;
+    if (sealed) { q.id = sealed; return q; }
     await store.put(q);
     return q;
   }
@@ -51,20 +89,26 @@ export function makeQuoter({ store, now, params }) {
     while (lo < hi) { const mid = (lo + hi + 1n) / 2n; if (fits(mid)) lo = mid; else hi = mid - 1n; }
     return lo;
   }
-  const get = async (id) => (/^[0-9a-f]{32}$/.test(String(id)) ? store.get(id) : null);
-  return { price, quote, get, maxAmountFor };
+  // a stored quote (one given before quotes were sealed, or a sealed one kept for what it holds) as it was kept; a sealed one not stored, from its id
+  const get = async (id) => {
+    if (LEGACY_QUOTE.test(String(id))) return store.get(id);
+    const q = unseal(id);
+    return q ? (await store.get(id)) || q : null;
+  };
+  return { price, quote, get, maxAmountFor, sealed: (id) => !!unseal(id) };
 }
 
 const TERMINAL = new Set(['done', 'refunded', 'rejected', 'aborted', 'lost']);
 const DAY = 86400;
-const isId = (v) => /^[0-9a-f]{32}$/.test(String(v));
+const isId = isQuoteId;
 const cannotTake = () => Object.assign(new Error('the provider cannot take that amount right now'), { status: 400 });
 
 export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   // a lock of plain sats pays no coin to the provider for its take: the take's fee comes out of the lock itself (dapp/adaptor-btc-tx.js claimSats)
   const sats = isSats(config.quote.btcAsset);
   const takeSats = btc.feeRate && !sats ? async () => takeSatsAt(await btc.feeRate()) : null;
-  const quoter = makeQuoter({ store: quoteStore, now, params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats } });
+  const seedBytes = seed instanceof Uint8Array ? seed : hexToBytes(String(seed).replace(/^0x/, ''));
+  const quoter = makeQuoter({ store: quoteStore, now, macKey: hmac(sha256, seedBytes, te.encode('tacit-fastbridge-quote-mac-v1')), params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats } });
   // `perClient`: the reservations with no lock named yet that one client address holds at once (`perBoard` for the requests that come through a board,
   // which name no address); a new one past that lets go of the client's oldest, so a user who asks again is answered and one address holds a few at most
   const hold = { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 0.5, perClient: 2, perBoard: 4, ...(config.reserve || {}) };
@@ -133,16 +177,24 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     })();
     return inv.p;
   }
-  const stale = () => { inv.at = -Infinity; };
+  let owed = null;
+  const stale = () => { inv.at = -Infinity; owed = null; };
 
-  async function promised() {
-    const t = now();
+  // what the open swaps promise, read from their records again when one changes (stale) or after `owedSecs`, not for every quote and every /info
+  async function owedBySwaps() {
+    if (owed && now() - owed.at < (config.owedSecs ?? 15)) return owed;
     let sum = 0n, count = 0;
     for (const rec of await swaps.list()) {
       if (TERMINAL.has(rec.phase)) continue;
       count++;
       if (!rec.lock && (rec.phase === 'accepted' || rec.phase === 'locking')) sum += BigInt(rec.offer.evm.amount);
     }
+    owed = { at: now(), sum, count };
+    return owed;
+  }
+  async function promised() {
+    const t = now();
+    let { sum, count } = await owedBySwaps();
     for (const [id, r] of reservations) {
       if (r.until <= t) reservations.delete(id);
       else { sum += r.amount; count++; }
@@ -186,9 +238,13 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
     return bytesToHex(deriveLock({ prims: btc.prims, claimerPub: btc.wallet.pub, T: secp.ProjectivePoint.fromHex(strip(lock.T)), lockerXonly: hexToBytes(strip(lock.lockerXonly)), csvBlocks: Number(q.csvBlocks) }).spk);
   };
+  // A quote is stored with what it holds. A sealed one that holds nothing (no hold, no lock seen for it) is not kept: its id gives it back.
   const keep = async (id, also = {}) => {
     const q = await quoter.get(id), r = reservations.get(id);
-    if (q) await quoteStore.put({ ...q, reservedUntil: r ? r.until : 0, reservedTxid: r ? r.txid : null, ...also });
+    if (!q) return;
+    const rec = { ...q, reservedUntil: r ? r.until : 0, reservedTxid: r ? r.txid : null, ...also };
+    if (quoter.sealed(id) && !(rec.reservedUntil > now()) && !rec.seenTxid) { if (quoteStore.del) await quoteStore.del(id); return; }
+    await quoteStore.put(rec);
   };
 
   async function start() {
@@ -233,7 +289,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     // a quote no swap uses is of no use once the longest an offer is answered after it has passed: that is kept for a day when the store is not full
     const dead = full ? Math.max(graceSecs, lateSecs) + 3600 : 2 * DAY;
     let kept = 0;
-    for (const q of await quoteStore.list()) { if (q.validUntil + dead < now() && !used.has(q.id) && !reservations.has(q.id)) await quoteStore.del(q.id); else kept++; }
+    // (a sealed quote that holds nothing now is not kept at all: its id gives it back, and the store holds only what it must)
+    const idle = (q) => quoter.sealed(q.id) && !q.seenTxid && !reservations.has(q.id);
+    for (const q of await quoteStore.list()) { if ((idle(q) || q.validUntil + dead < now()) && !used.has(q.id) && !reservations.has(q.id)) await quoteStore.del(q.id); else kept++; }
     quotesHeld = kept;
   }
 
@@ -363,8 +421,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       }
       if (method === 'POST' && path === '/quote') {
         if (!body || !amountOk(body.amount)) return reply({ error: 'amount must be a whole number' }, 400);
-        if (quotesHeld !== null && quotesHeld >= maxQuotes) return reply({ error: 'the provider holds too many open quotes just now: ask again shortly' }, 503);
-        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount).evmAmount); const made = await quoter.quote(body.amount); if (quotesHeld !== null) quotesHeld++; return made; }));
+        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount).evmAmount); const made = await quoter.quote(body.amount); if (quotesHeld !== null && !quoter.sealed(made.id)) quotesHeld++; return made; }));
       }
       if (method === 'POST' && path === '/reserve') {
         if (!body || !isId(body.quoteId)) return reply({ error: 'quoteId is required' }, 400);
@@ -373,6 +430,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           if (!q) return no('unknown quote');
           if (have && have.until > now()) return reply({ ok: true, until: have.until });
           if (now() > q.validUntil) return no('quote expired');
+          if (quotesHeld !== null && quotesHeld >= maxQuotes) return no('the provider holds too many open quotes just now: ask again shortly', true);
           // the client's oldest holds past its allowance make room for this one, and are kept if this one cannot be made
           const who = client ? `ip:${client}` : 'board', cap = Number(client ? hold.perClient : hold.perBoard) || 0;
           const mine = [...reservations].filter(([, r]) => r.who === who && !r.txid && r.until > now()).sort((a, b) => a[1].seq - b[1].seq);
@@ -386,6 +444,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           const until = now() + hold.reserveSecs;
           reservations.set(q.id, { amount: BigInt(q.evmAmount), until, txid: null, who, seq: ++holdSeq });
           for (const [id] of out) await keep(id);
+          if (quotesHeld !== null && !(await quoteStore.get(q.id))) quotesHeld++;
           await keep(q.id);
           return reply({ ok: true, until });
         });

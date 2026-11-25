@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { makeCounter } from '../dapp/fastbridge-http.js';
 import { pairWorld, SATS, UNITS } from './lib/pair-world.mjs';
+import { memStore } from './lib/fastbridge-world.mjs';
 import { sealRequest } from '../dapp/sealed-request.js';
 import { signSchnorr } from '../dapp/bulletproofs.js';
 import { gatewayOf, makeMailboxServer } from '../dapp/fastbridge-mailbox.js';
@@ -201,6 +202,52 @@ test('provider: /extend without a hold is taken only for a transaction that pays
   assert.ok(reads <= 4, `a quote with no hold looks at a few transactions (${reads})`);
   w.clock.advance(300 + 900 + 1);
   assert.match((await ext({ txid: 'cd'.repeat(32), lock })).body.why, /no reservation/, 'past its grace: refused');
+});
+
+test('provider: a quote costs no store until it is held: a client that asks for one a second fills nothing, and a held quote is kept and read back', async () => {
+  const MAX = 60;
+  const store = Object.assign(memStore(), { del: async function (id) { this.m.delete(id); } });
+  const w = pairWorld({ fwdPolicy: { maxQuotes: MAX }, fwdQuote: { validSecs: 300, graceSecs: 900, lateSecs: 21600 }, fwdQuoteStore: store });
+  await w.ready();
+  w.lEvm.fund(10n * UNITS, 'inv0');
+  let lists = 0;
+  const list = w.stores.lp.list;
+  w.stores.lp.list = async () => { lists++; return list(); };
+  const quote = () => w.fwd.handle({ method: 'POST', path: '/quote', body: { amount: String(SATS) } });
+  await w.fwd.tick();
+  lists = 0;
+  const ids = [];
+  for (let i = 0; i < 4 * MAX; i++) { const r = await quote(); assert.equal(r.status, 200); ids.push(r.body.id); w.clock.advance(1); }
+  assert.equal(store.m.size, 0, 'nothing stored for a quote');
+  assert.ok(lists <= 20, `the open swaps were read ${lists} times for ${4 * MAX} quotes`);
+  // a quote is read back from its id, and one whose id was changed is no quote
+  const q = await w.fwd.quoter.get(ids[0]);
+  assert.equal(q.btcValue, String(SATS));
+  const bent = ids[0].slice(0, 20) + (ids[0][20] === '0' ? '1' : '0') + ids[0].slice(21);
+  assert.equal(await w.fwd.quoter.get(bent), null);
+  assert.match((await w.fwd.handle({ method: 'POST', path: '/reserve', body: { quoteId: bent } })).body.why, /unknown quote/);
+  // a hold stores it, and letting go of the hold lets go of it
+  const last = ids.at(-1);
+  assert.equal((await w.fwd.handle({ method: 'POST', path: '/reserve', body: { quoteId: last } })).body.ok, true);
+  assert.equal(store.m.size, 1);
+  assert.equal((await store.get(last)).reservedUntil > 0, true);
+  w.clock.advance(301);
+  await w.fwd.tick(); w.clock.advance(3601); await w.providerFeed.refresh(); await w.fwd.tick();
+  assert.equal(store.m.size, 0, 'a hold that ran out leaves nothing stored');
+});
+
+test('provider: a quote stored when it was given (before quotes were sealed) is still held and answered', async () => {
+  const store = Object.assign(memStore(), { del: async function (id) { this.m.delete(id); } });
+  const w = pairWorld({ fwdQuoteStore: store });
+  await w.ready();
+  w.lEvm.fund(10n * UNITS, 'inv0');
+  const fresh = (await w.fwd.handle({ method: 'POST', path: '/quote', body: { amount: String(SATS) } })).body;
+  const old = { ...(await w.fwd.quoter.get(fresh.id)), id: 'ab'.repeat(16) };
+  await store.put(old);
+  const r = await w.fwd.handle({ method: 'POST', path: '/reserve', body: { quoteId: old.id } });
+  assert.equal(r.body.ok, true);
+  assert.equal((await w.fwd.quoter.get(old.id)).btcValue, String(SATS));
+  assert.equal((await store.get(old.id)).reservedUntil, r.body.until);
 });
 
 let failed = 0;
