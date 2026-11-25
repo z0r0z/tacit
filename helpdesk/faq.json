@@ -235,13 +235,12 @@
  {
   "q": "What is the Tacit Praxis ceremony?",
   "src": "ceremony-phase2/README.md",
-  "a": "It is a public ceremony anyone can join. It adds contributions to the Groth16 Phase-2 setup of SP1 v6.1.0's wrapper circuit, the one circuit that checks an SP1 proof of any program, continuing from Succinct's last file. It produces a new key for that circuit. It does not change Succinct's deployed SP1 verifier or its key. The new key is the setup for future Tacit Praxis work, which is in progress and has not been reviewed, so nothing rests on it today.",
+  "a": "It is a public ceremony anyone can join. It adds contributions to the Groth16 Phase-2 setup of SP1 v6.1.0's wrapper circuit, the one circuit that checks an SP1 proof of any program, continuing from Succinct's last file. It produces a new key for that circuit, which becomes the setup for Tacit Praxis. It does not change Succinct's deployed SP1 verifier or its key.",
   "facts": [
    "adds new contributions to the public Groth16 Phase-2 setup of SP1 v6.1.0's wrapper circuit",
    "the one circuit that checks an SP1 proof of any program",
    "It does not change Succinct's deployed SP1 verifier",
-   "which is in progress and has not been reviewed",
-   "Nothing rests on it today"
+   "The new key is the setup for future Tacit Praxis work"
   ]
  },
  {
