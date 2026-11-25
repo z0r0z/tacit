@@ -162,7 +162,8 @@ func contributorFlags(name string) (*flag.FlagSet, *ceremony.ClientOptions, *str
 	o := &ceremony.ClientOptions{}
 	fs.StringVar(&o.Coordinator, "coordinator", "", "the coordinator's URL")
 	fs.StringVar(&o.Name, "name", "", "your name, as it will appear in the transcript")
-	fs.StringVar(&o.Handle, "handle", "", "an optional handle (e.g. @you)")
+	fs.StringVar(&o.Handle, "handle", "", "an optional handle (e.g. @you, or your 0x address for the ceremony's points)")
+	fs.StringVar(&o.Lane, "lane", "", `"pool" for a prover-pool machine contributing when idle: it waits behind every person`)
 	fs.StringVar(&o.CoordinatorKey, "coordinator-key", ceremony.PinnedCoordinatorKey, "the coordinator's ed25519 public key (hex); the receipt must be signed with it")
 	out := fs.String("receipt-dir", ".", "where to save receipt-<index>.json")
 	return fs, o, out
@@ -308,6 +309,7 @@ func serve(args []string) error {
 	fs.DurationVar(&cfg.SlotCap, "slot-cap", 2*time.Hour, "time a claimed slot may last")
 	fs.IntVar(&cfg.QueueCap, "queue-cap", 100, "places in the queue")
 	fs.IntVar(&cfg.PerIP, "per-ip", 1, "places one client address (an IPv6 /48) may hold; -1 for no limit")
+	fs.IntVar(&cfg.AcceptedPerIP, "accepted-per-ip", 3, "contributions accepted from one client address over the ceremony (0: no limit)")
 	fs.DurationVar(&cfg.DownloadStart, "download-start", 10*time.Minute, "from the claim, time for the head's download to start (or an offline upload)")
 	fs.DurationVar(&cfg.DownloadBy, "download-by", 75*time.Minute, "from the claim, time for the head's download to complete")
 	fs.DurationVar(&cfg.UploadStart, "upload-start", 105*time.Minute, "from the claim, time for the upload to start")

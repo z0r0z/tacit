@@ -68,6 +68,9 @@ type Config struct {
 	MinFree       int64 // bytes the chain's disk must keep free beyond an upload (1 GiB)
 	FilesPerIP    int   // concurrent file downloads per client address (2); the slot holder's are not limited
 	FilesTotal    int   // concurrent file downloads in all (24)
+	// AcceptedPerIP: contributions accepted from one client address (an IPv6 /48) over the whole ceremony, after which it
+	// may not join again (0: no limit). Kept in accepted.json, never published.
+	AcceptedPerIP int
 	// The client's address is the socket's unless the connection comes from one of TrustedProxies, in which case it is
 	// the last address in ClientIPHeader (e.g. X-Forwarded-For).
 	ClientIPHeader string
@@ -132,6 +135,8 @@ type ticket struct {
 	Joined    time.Time `json:"joined"`
 	HeadSince time.Time `json:"head_since,omitzero"`
 	Claimed   time.Time `json:"claimed,omitzero"`
+	// Lane "pool": a machine of the prover pool that contributes when idle; it waits behind every person in the queue.
+	Lane      string `json:"lane,omitempty"`
 	lastSeen  time.Time
 	uploading bool // the upload's body is arriving
 	verifying bool // the whole body arrived and is being checked: the slot's cap waits (up to verifyGrace)
@@ -151,6 +156,7 @@ type Coordinator struct {
 	headSize int64
 	queue    []*ticket
 	bans     []netip.Prefix
+	accepted map[string]int // contributions accepted per client address key (accepted.json)
 	key      ed25519.PrivateKey
 	verifyMu sync.Mutex // one check of a contribution at a time (each holds several GB)
 	files    fileLimiter
@@ -261,6 +267,13 @@ func open(dir string, now func() time.Time) (*Coordinator, error) {
 	if b, err := os.ReadFile(filepath.Join(dir, "bans.json")); err == nil {
 		if err := json.Unmarshal(b, &c.bans); err != nil {
 			return nil, fmt.Errorf("bans.json: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "accepted.json")); err == nil {
+		if err := json.Unmarshal(b, &c.accepted); err != nil {
+			return nil, fmt.Errorf("accepted.json: %w", err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -503,8 +516,16 @@ func (c *Coordinator) statusL(t *ticket, i int) Status {
 
 // Join the queue.
 func (c *Coordinator) Join(name, handle, ip string) (string, Status, error) {
+	return c.JoinLane(name, handle, ip, "")
+}
+
+// JoinLane: lane "" for a person, "pool" for a prover-pool machine that contributes when no person is waiting.
+func (c *Coordinator) JoinLane(name, handle, ip, lane string) (string, Status, error) {
 	if !nameRe.MatchString(name) || (handle != "" && !nameRe.MatchString(handle)) {
 		return "", Status{}, refuse(400, "a name (and handle) of 1 to 64 printable characters", nil)
+	}
+	if lane != "" && lane != "pool" {
+		return "", Status{}, refuse(400, `lane is "" or "pool"`, nil)
 	}
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -518,6 +539,9 @@ func (c *Coordinator) Join(name, handle, ip string) (string, Status, error) {
 	c.expireL()
 	if c.bannedL(ip) {
 		return "", Status{}, refuse(403, "this address may not join", nil)
+	}
+	if c.AcceptedPerIP > 0 && c.accepted[ipKey(ip)] >= c.AcceptedPerIP {
+		return "", Status{}, refuse(429, fmt.Sprintf("this address has already contributed %d times; thank you", c.accepted[ipKey(ip)]), nil)
 	}
 	if len(c.queue) >= c.queueCap() {
 		return "", Status{}, refuse(429, "the queue is full; try again later", nil)
@@ -534,14 +558,29 @@ func (c *Coordinator) Join(name, handle, ip string) (string, Status, error) {
 		}
 	}
 	now := c.clock()
-	t := &ticket{Token: hex.EncodeToString(b), Name: name, Handle: handle, IP: ip, Joined: now, lastSeen: now}
-	c.queue = append(c.queue, t)
-	if len(c.queue) == 1 {
+	t := &ticket{Token: hex.EncodeToString(b), Name: name, Handle: handle, IP: ip, Joined: now, Lane: lane, lastSeen: now}
+	at := len(c.queue)
+	if lane == "" {
+		// a person goes ahead of every pool machine that has not claimed its slot
+		for i, x := range c.queue {
+			if x.Lane == "pool" && x.Claimed.IsZero() {
+				at = i
+				break
+			}
+		}
+		if at < len(c.queue) {
+			c.queue[at].HeadSince = time.Time{} // a pool machine moved back from the head starts its claim window again later
+		}
+	}
+	c.queue = append(c.queue, nil)
+	copy(c.queue[at+1:], c.queue[at:])
+	c.queue[at] = t
+	if at == 0 {
 		t.HeadSince = now // the claim window starts now
 	}
 	c.saveQueueL()
-	c.logf("queue: %s (%s) joined from %s, %d ahead", short(t.Token), name, ip, len(c.queue)-1)
-	return t.Token, c.statusL(t, len(c.queue)-1), nil
+	c.logf("queue: %s (%s%s) joined from %s, %d ahead", short(t.Token), name, map[string]string{"": "", "pool": ", pool"}[lane], ip, at)
+	return t.Token, c.statusL(t, at), nil
 }
 
 // Poll: the client is still there; its place in the queue.
@@ -643,6 +682,7 @@ type QueueEntry struct {
 	Claimed   string `json:"claimed,omitempty"`
 	LastPoll  string `json:"last_poll"`
 	Uploading bool   `json:"uploading,omitempty"`
+	Lane      string `json:"lane,omitempty"`
 }
 
 // Queue as the operator sees it.
@@ -653,7 +693,7 @@ func (c *Coordinator) Queue() []QueueEntry {
 	out := make([]QueueEntry, 0, len(c.queue))
 	for i, t := range c.queue {
 		e := QueueEntry{Position: i, Token: short(t.Token), Name: t.Name, Handle: t.Handle, IP: t.IP, Joined: t.Joined.UTC().Format(time.RFC3339),
-			LastPoll: t.lastSeen.UTC().Format(time.RFC3339), Uploading: t.uploading}
+			LastPoll: t.lastSeen.UTC().Format(time.RFC3339), Uploading: t.uploading, Lane: t.Lane}
 		if !t.Claimed.IsZero() {
 			e.Claimed = t.Claimed.UTC().Format(time.RFC3339)
 		}
@@ -825,6 +865,17 @@ func (c *Coordinator) accept(upload, name, handle string, owner *ticket) (*Recei
 	}
 	c.state = ns
 	c.headSize = size
+	if owner != nil && owner.IP != "" {
+		if c.accepted == nil {
+			c.accepted = map[string]int{}
+		}
+		c.accepted[ipKey(owner.IP)]++
+		if b, err := json.Marshal(c.accepted); err == nil {
+			if err := writeFileAtomic(filepath.Join(c.Dir, "accepted.json"), b, 0o600); err != nil {
+				c.logf("could not save accepted.json: %v", err)
+			}
+		}
+	}
 	if owner != nil {
 		owner.uploading = false
 		c.removeL(owner)

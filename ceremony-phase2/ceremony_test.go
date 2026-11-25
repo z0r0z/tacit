@@ -66,6 +66,7 @@ func (f *fixture) chain(t *testing.T) *Coordinator {
 		t.Fatal(err)
 	}
 	c.Logf = t.Logf
+	c.MinFree = 1 // the disk check is its own test; a test machine's free space must not decide the others
 	return c
 }
 
