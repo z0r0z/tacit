@@ -11,10 +11,14 @@
 const CSS = `
 .hw { position: fixed; z-index: 800; right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); font: 13px/1.5 var(--mono, ui-monospace, monospace); letter-spacing: -.01em; }
 .hw[hidden], .hw [hidden] { display: none !important; }
-.hw-b { display: grid; place-items: center; width: 48px; height: 48px; padding: 0; cursor: pointer; border-radius: 50%; border: 1px solid var(--hair-2, rgba(26, 26, 26, .28)); color: var(--ink, #1a1a1a); background: var(--card, #f2ebd4);
-  box-shadow: 0 8px 20px -14px rgba(0, 0, 0, .4); -webkit-tap-highlight-color: transparent; transition: transform .2s var(--spring, ease), background .15s, color .15s; }
-.hw-b svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-@media (hover: hover) { .hw-b:hover { transform: scale(1.06); color: var(--card, #f2ebd4); background: var(--ink, #1a1a1a); } }
+.hw-b { display: grid; place-items: center; width: 52px; height: 52px; padding: 0; cursor: pointer; border-radius: 50%; border: 0; color: var(--card, #f2ebd4); background: var(--ink, #1a1a1a);
+  box-shadow: 0 0 0 1px var(--hair-2, rgba(26, 26, 26, .28)), 0 10px 24px -10px rgba(0, 0, 0, .55); -webkit-tap-highlight-color: transparent; transition: transform .2s var(--spring, ease), box-shadow .2s; }
+.hw-b svg { width: 24px; height: 24px; }
+.hw-b .d { fill: var(--ink, #1a1a1a); }
+.hw-b[aria-expanded="true"] svg { transform: scale(.92); }
+@media (hover: hover) { .hw-b:hover { transform: translateY(-2px); box-shadow: 0 0 0 1px var(--hair-2, rgba(26, 26, 26, .28)), 0 14px 28px -10px rgba(0, 0, 0, .6); } }
+.hw-b:active { transform: scale(.95); }
+@media (prefers-reduced-motion: reduce) { .hw-b { transition: none; } }
 .hw-b:focus-visible, .hw-x:focus-visible { outline: 2px solid var(--ink, #1a1a1a); outline-offset: 3px; }
 .hw-p { position: absolute; z-index: 2; right: 0; bottom: 60px; display: flex; flex-direction: column; box-sizing: border-box; width: min(390px, calc(100vw - 32px)); height: min(580px, calc(100vh - 110px)); overflow: hidden;
   color: var(--ink, #1a1a1a); background: var(--card, #f2ebd4); border: 1px solid var(--ink, #1a1a1a); box-shadow: 0 30px 70px -30px rgba(0, 0, 0, .6); }
@@ -34,7 +38,7 @@ const CSS = `
 @media print { .hw { display: none; } }
 `;
 
-const BUBBLE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.7 7.1L4 20.5l1.4-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/></svg>';
+const BUBBLE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3C6.9 3 3 6.6 3 11.2c0 2.2.9 4.1 2.4 5.5-.1 1.3-.6 2.4-1.4 3.3-.2.3 0 .7.4.7 1.9-.1 3.4-.8 4.5-1.7 1 .3 2 .4 3.1.4 5.1 0 9-3.6 9-8.2S17.1 3 12 3z"/><circle class="d" cx="8" cy="11.3" r="1.15"/><circle class="d" cx="12" cy="11.3" r="1.15"/><circle class="d" cx="16" cy="11.3" r="1.15"/></svg>';
 
 const doc = document;
 if (!doc.getElementById('hw')) {
