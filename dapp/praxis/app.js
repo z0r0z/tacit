@@ -1,6 +1,6 @@
 // The Tacit Praxis ceremony page: the chain read from this site's copy of the coordinator's transcript (the coordinator speaks plain HTTP,
 // which an HTTPS page cannot fetch), each receipt's signature checked against the coordinator's key, the copy buttons and the share link.
-import { COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, short, when, normalHash, shareUrl, runCommand, waitText, platformGuess } from '/praxis/receipt.js?cb=ea54ef83';
+import { COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, short, when, normalHash, shareUrl, runCommand, waitText, platformGuess } from '/praxis/receipt.js?cb=7ca6eecc';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };

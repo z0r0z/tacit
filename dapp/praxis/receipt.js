@@ -67,7 +67,7 @@ export function shareUrl(hash) {
   return `https://twitter.com/intent/tweet?${new URLSearchParams({ text, url: PAGE_URL })}`;
 }
 
-export const RELEASE = 'https://github.com/z0r0z/tacit/releases/download/ceremony-v1.0.0';
+export const RELEASE = 'https://github.com/src-company/tacit/releases/download/ceremony-v1.0.0';
 export const MINUTES_PER_SLOT = 20;
 const ADDR40 = /^0x[0-9a-fA-F]{40}$/;
 export const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
