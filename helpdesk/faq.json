@@ -254,5 +254,17 @@
    "at least one of the first 54 contributors to the Perpetual Powers of Tau (Phase 1) was honest",
    "at least one Phase 2 contributor was honest"
   ]
+ },
+ {
+  "q": "What is Praxis, and what does it have to do with the ceremony?",
+  "src": "ceremony-phase2/README.md",
+  "a": "Praxis is a practical witness encryption scheme: it locks a message to a statement so that anyone who holds a proof of that statement can unlock it, and no one else can. It locks to a Groth16 verifier on BN254, so one key serves every statement a zero-knowledge proof can express. The verifier has to be set up honestly, and that setup is what the Tacit Praxis ceremony produces. Its ciphertext is 7.88 GiB at 100-bit security.",
+  "facts": [
+   "Praxis is a practical witness encryption scheme",
+   "anyone who holds a proof of that statement can unlock it",
+   "Groth16 verifier on BN254",
+   "Its ciphertext is 7.88 GiB at 100-bit security",
+   "that setup is what this ceremony produces"
+  ]
  }
 ]
