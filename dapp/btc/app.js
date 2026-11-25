@@ -82,10 +82,9 @@ function side(s, dir) {
 }
 function paintProviders(m) {
   const list = $('pv-list'), cap = $('cap'), live = $('live');
-  if (!m) { cap.textContent = 'The boards could not be read just now.'; return; }
+  if (!m) { cap.textContent = 'The boards could not be read just now.'; setSum('pv-at', 'not read just now'); return; }
   const ps = m.providers || [], tb = m.totals?.b2e, te = m.totals?.e2b;
   const nowB = tb && tb.now > 0n ? `${fmt(tb.now)} BTC` : null, nowE = te && te.now > 0n ? `${fmt(te.now)} ETH` : null;
-  $('pv-at').textContent = ps.length ? `${ps.length} online` : '';
   cap.innerHTML = !ps.length ? 'No provider is online right now. A swap waits for one; anyone can become one, below.'
     : `Now, in one swap: ${nowB ? `up to <b class="num">${esc(nowB)}</b> for ETH` : 'no BTC for ETH'}, and ${nowE ? `up to <b class="num">${esc(nowE)}</b> for BTC` : 'no ETH for BTC'}.`;
   list.innerHTML = ps.length ? ps.map((p) => `<li data-pv="${esc(p.id)}"><span class="nm"><b>${esc(p.name)}</b><span class="num">${esc(String(p.id).slice(0, 10))}…</span></span>${side(p.b2e, 'b2e')}${side(p.e2b, 'e2b')}</li>`).join('') : '';
@@ -95,6 +94,7 @@ function paintProviders(m) {
   bits.push(ps.length ? `${ps.length} provider${ps.length === 1 ? '' : 's'} online` : 'no provider online');
   const upB = tb && tb.now > 0n ? `${twoFigures(tb.now)} BTC` : null, upE = te && te.now > 0n ? `${twoFigures(te.now)} ETH` : null;
   if (upB || upE) bits.push(`up to ${[upB, upE].filter(Boolean).map(esc).join(' or ')} now`);
+  setSum('pv-at', ps.length ? `${ps.length} online${upB || upE ? ` · up to ${[upB, upE].filter(Boolean).join(' or ')}` : ''}` : 'none online');
   live.innerHTML = bits.map((b) => `<span>${b}</span>`).join(' · ');
 }
 
@@ -127,6 +127,70 @@ function paintFund(i) {
   el.hidden = !ok;
 }
 
+// ── the sections under the tile: disclosures (<details>), closed by default and remembered per section ──
+// Opened by the page, not the visitor (a swap under way or needing attention, a send or a receipt, a link to the section), a section is not remembered as chosen.
+const DD_KEY = 'tacit-btc-open';
+const ddPref = () => { try { const o = JSON.parse(localStorage.getItem(DD_KEY) || '{}'); return o && typeof o === 'object' ? o : {}; } catch { return {}; } };
+const ddSave = (id, on) => { try { localStorage.setItem(DD_KEY, JSON.stringify({ ...ddPref(), [id]: on ? 1 : 0 })); } catch { /* a convenience */ } };
+const autoToggle = new Set();
+function ddOpen(id, on = true) {
+  const d = $(id);
+  if (!d || d.open === on) return;
+  autoToggle.add(id); d.open = on;
+}
+for (const d of document.querySelectorAll('details[data-dd]')) {
+  if (ddPref()[d.id] === 1) d.open = true;
+  d.addEventListener('toggle', () => { if (autoToggle.delete(d.id)) return; ddSave(d.id, d.open); });
+}
+// a link to a section (or to something inside one) opens it and goes there
+function ddHash() {
+  let id = ''; try { id = decodeURIComponent(location.hash.slice(1)); } catch { return; }
+  const el = id && document.getElementById(id), d = el && el.closest('details[data-dd]');
+  if (!d) return;
+  ddOpen(d.id);
+  // (again once the section has opened out: until then the page is too short to scroll that far)
+  requestAnimationFrame(() => el.scrollIntoView({ block: 'start' }));
+  setTimeout(() => el.scrollIntoView({ block: 'start' }), 320);
+}
+addEventListener('hashchange', ddHash);
+ddHash();
+// each section's one line: what it holds
+const setSum = (id, t) => { const el = $(id); if (el && el.textContent !== t) el.textContent = t; };
+const recDir = new Map(), seenWorking = new Set(), flagged = new Set(), mineSeen = new Set();
+let minePrimed = false;
+function mineSummary() {
+  const list = $('mine-list'), cards = [...list.querySelectorAll(':scope > div[data-rec]')];
+  const w = cards.filter((c) => c.classList.contains('wait')), dn = cards.filter((c) => c.classList.contains('ok')), wn = cards.filter((c) => c.classList.contains('warn'));
+  const attn = new Set([...wn, ...list.querySelectorAll('small.slow, small.paid.err')].map((e) => (e.closest('[data-rec]') || e).dataset.rec));
+  const fresh = new Set();
+  for (const c of w) { seenWorking.add(c.dataset.rec); fresh.add(c.dataset.rec); }
+  for (const c of dn) if (seenWorking.has(c.dataset.rec)) fresh.add(c.dataset.rec);
+  for (const id of attn) fresh.add(`!${id}`);
+  // a receipt: a swap seen under way that is now done delivers to the other side
+  for (const c of dn) {
+    const id = c.dataset.rec;
+    if (seenWorking.has(id) && !flagged.has(id)) { flagged.add(id); if (minePrimed) ddOpen(recDir.get(id) === 'e2b' ? 'mybtc' : 'myeth'); }
+  }
+  let grew = false;
+  for (const id of fresh) if (!mineSeen.has(id)) { mineSeen.add(id); grew = true; }
+  if (grew) ddOpen('mine');
+  minePrimed = true;
+  const bits = [];
+  if (w.length) bits.push(`${w.length} in progress`);
+  if (attn.size) bits.push(`${attn.size} need${attn.size === 1 ? 's' : ''} attention`);
+  if (dn.length) bits.push(`${dn.length} done`);
+  setSum('mine-sum', bits.length ? bits.join(' · ') : lane.unlocked ? (lane.looking ? 'looking for your swaps…' : 'none yet') : 'open your wallet');
+}
+function walletSummaries() {
+  setSum('yb-sum', !$('yb-box').hidden ? $('yb-bal').textContent : 'address, balance, send');
+  setSum('ye-sum', !$('ye-box').hidden ? `${$('ye-bal').textContent.replace(/ ETH$/, '')} private` : 'private balance, send');
+}
+function ddWatch() {
+  new MutationObserver(mineSummary).observe($('mine-list'), { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+  const w = new MutationObserver(walletSummaries), o = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden'] };
+  w.observe($('yb'), o); w.observe($('ye-box'), o);
+}
+
 // ── the lane ──
 // the pool module reads Ethereum through public nodes and, last, a wallet the site is already connected to; a settle the relay holds is sent from that wallet
 const getUx = async () => { const ux = await loadUx(); ux.useWallet?.(() => connectedInjected()); return ux; };
@@ -139,12 +203,12 @@ const lane = makeAtomicLane({
   host: $('atomic'), recsHost: $('mine-list'), notify, wallet: () => null, provider: () => connectedInjected(), getUx, market, dir: first.dir,
   shield: makeAddEth({ getUx }), payout,
   onState: () => follow(lane.state()),
-  onRecs: (recs) => { paintMine(recs); panel?.paint(); paintEth(); },
+  onRecs: (recs) => { for (const r of recs) recDir.set(r.id, r.dir); paintMine(recs); panel?.paint(); paintEth(); },
   onBal: () => { panel?.paint(); paintEth(); },
   onOpen: () => { panel?.paint(); paintEth(); },
   // a finished swap's "Send BTC": the panel's send, the amount that arrived filled in
   // and a finished swap of BTC's "Send to an Ethereum address": where, and the relay's fee, asked first
-  onNext: ({ act, sats, id, units }) => { if (act === 'send') panel?.openSend({ sats }); else if (act === 'withdraw') withdraw({ id, units }).catch(() => {}); },
+  onNext: ({ act, sats, id, units }) => { if (act === 'send') { ddOpen('mybtc'); panel?.openSend({ sats }); } else if (act === 'withdraw') withdraw({ id, units }).catch(() => {}); },
 });
 panel = mountSendPanel({ host: $('yb'), lane, notify });
 // what the lane reads once the key opens is read ahead as soon as the visitor shows an interest in it (a link that names an amount, a hover, a tap): the
@@ -201,7 +265,7 @@ async function withdraw({ id = null, units = null } = {}) {
     try {
       const r = await lane.sendEth({ units: v, to: t });
       say.innerHTML = `Sent: about ${esc(fmt(r.net || v))} ETH to ${esc(t.slice(0, 6))}…${esc(t.slice(-4))}.${/^0x[0-9a-f]{64}$/i.test(r.txHash || '') ? ` <a href="https://etherscan.io/tx/${esc(r.txHash)}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a>` : ''}`;
-      notify('ETH sent to your address');
+      notify('ETH sent to your address'); ddOpen('myeth');
     } catch (e) { busy = false; say.textContent = `Couldn’t send: ${String(e?.message || 'try again in a moment').replace(/^./, (c) => c.toUpperCase()).replace(/([^.])$/, '$1.')}`; go.disabled = false; }
   };
   if (!fixed) lane.largestEth().then((m) => { max = m; q('[data-max]').disabled = !(m > 0n); paint(); }, () => { max = 0n; paint(); });
@@ -258,6 +322,7 @@ for (const pre of document.querySelectorAll('.cmd pre')) {
   pre.parentElement.append(b);
 }
 
+ddWatch();
 if (first.amt) lane.set({ amt: first.amt });
 market().catch(() => {});
 lane.show();

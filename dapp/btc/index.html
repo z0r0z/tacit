@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=ef1c1ed0">
+<link rel="modulepreload" href="/btc/app.js?cb=58c1503c">
 <link rel="modulepreload" href="/swap/atomic.js?cb=a2f72a29">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -152,10 +152,26 @@ html .lane #atomic .rcpt dd { text-wrap: balance; }      /* a fact that has to b
 }
 
 /* the sections under it: a heading, a line, then the list */
-.sec { margin: 44px 0 0; }
-.sec h2 { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 6px; font: 400 28px/1.1 var(--serif); letter-spacing: -.015em; }
-.sec h2 small { font: 400 12px var(--mono); letter-spacing: 0; color: var(--mute); }
-.sec > p { margin: 0 0 12px; color: var(--mute); font-size: 13px; }
+.sec { margin: 0; }
+/* the sections under the tile: one hairline list of disclosures, each a line (title, what it holds, a chevron) that opens to its panel */
+.dd { border-top: 1px solid var(--hair); interpolate-size: allow-keywords; }
+.dd:last-of-type { border-bottom: 1px solid var(--hair); }
+.dd.first { margin-top: 40px; }
+.dd > summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 14px; min-height: 52px; padding: 14px 0; box-sizing: border-box; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; position: relative; padding-right: 26px; }
+.dd > summary::-webkit-details-marker { display: none; }
+.dd > summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
+.dd h2 { margin: 0; font: 400 22px/1.15 var(--serif); letter-spacing: -.012em; }
+.dd .sum { flex: 1 1 0; min-width: 0; font: 400 12px/1.5 var(--mono); color: var(--mute); }
+.dd .sum b { font-weight: 500; color: var(--ink); }
+.dd .chev { position: absolute; right: 4px; top: 50%; width: 7px; height: 7px; margin-top: -6px; border-right: 1.5px solid var(--mute); border-bottom: 1.5px solid var(--mute); transform: rotate(45deg); transition: transform .25s ease, border-color .15s; }
+.dd[open] > summary .chev { transform: rotate(-135deg); margin-top: -2px; }
+@media (hover: hover) { .dd > summary:hover .chev { border-color: var(--ink); } }
+.dd-b { padding: 2px 0 26px; }
+.dd::details-content { block-size: 0; overflow: clip; transition: block-size .28s ease, content-visibility .28s allow-discrete; }
+.dd[open]::details-content { block-size: auto; }
+@media (max-width: 540px) { .dd > summary { min-height: 56px; } .dd .sum { flex-basis: 100%; } }
+@media (prefers-reduced-motion: reduce) { .dd::details-content, .dd .chev { transition: none; } }
+.dd-b > p { margin: 0 0 12px; color: var(--mute); font-size: 13px; }
 .box { padding: 14px 16px; background: var(--card); border: 1px solid var(--hair); border-radius: 16px; }
 .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 12px; font: 500 12.5px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 10px; cursor: pointer; text-decoration: none; }
 .btn:hover { border-color: var(--ink); }
@@ -615,8 +631,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
     <section class="lane swc atom" aria-label="Swap"><div id="atomic"></div></section>
 
-    <section class="sec" id="mine" aria-labelledby="mine-h">
-      <h2 id="mine-h">Your swaps</h2>
+    <details class="sec dd first" id="mine" data-dd><summary><h2 id="mine-h">Your swaps</h2><span class="sum" id="mine-sum">open your wallet</span><i class="chev" aria-hidden="true"></i></summary><div class="dd-b">
       <p id="mine-say">Open your Tacit wallet above to see your swaps.</p>
       <div class="swc"><div id="mine-list" class="snt atm" hidden></div></div>
       <div class="row" id="mine-keep" hidden>
@@ -626,31 +641,27 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <span id="mine-st" role="status"></span>
         <small class="keep-note">Read only a copy you saved yourself. Never load a file, or paste a key, that someone sends you.</small>
       </div>
-    </section>
+    </div></details>
 
-    <section class="sec" id="mybtc" aria-labelledby="yb-h">
-      <h2 id="yb-h">Your Bitcoin</h2>
+    <details class="sec dd" id="mybtc" data-dd><summary><h2 id="yb-h">Your Bitcoin</h2><span class="sum" id="yb-sum">address, balance, send</span><i class="chev" aria-hidden="true"></i></summary><div class="dd-b">
       <div id="yb"><p class="sec-say">Open your Tacit wallet above to see its Bitcoin address.</p></div>
-    </section>
+    </div></details>
 
-    <section class="sec" id="myeth" aria-labelledby="ye-h">
-      <h2 id="ye-h">Your ETH</h2>
+    <details class="sec dd" id="myeth" data-dd><summary><h2 id="ye-h">Your ETH</h2><span class="sum" id="ye-sum">private balance, send</span><i class="chev" aria-hidden="true"></i></summary><div class="dd-b">
       <p class="sec-say" id="ye-say">Open your Tacit wallet above to see its private ETH.</p>
       <div class="box yb" id="ye-box" hidden>
         <div class="yb-row"><span class="k">Private</span><b class="num" id="ye-bal">…</b><button class="btn" type="button" id="ye-send">Send ETH</button></div>
         <p class="yb-note">Held private in the Tacit pool. Sent to an Ethereum address, it is public from that address on.</p>
       </div>
-    </section>
+    </div></details>
 
-    <section class="sec" id="pv" aria-labelledby="pv-h">
-      <h2 id="pv-h">Providers <small id="pv-at"></small></h2>
+    <details class="sec dd" id="pv" data-dd><summary><h2 id="pv-h">Providers</h2><span class="sum" id="pv-at">reading the boards…</span><i class="chev" aria-hidden="true"></i></summary><div class="dd-b">
       <p id="cap" role="status">Reading the boards…</p>
       <ul class="pv" id="pv-list"></ul>
       <div id="pv-fund" hidden></div>
-    </section>
+    </div></details>
 
-    <section class="sec" id="be" aria-labelledby="be-h">
-      <h2 id="be-h">Become a provider</h2>
+    <details class="sec dd" id="be" data-dd><summary><h2 id="be-h">Become a provider</h2><span class="sum" id="be-sum">a small process with its own key</span><i class="chev" aria-hidden="true"></i></summary><div class="dd-b">
       <p>Anyone can provide. A provider is a small process with its own key: it quotes from the market price plus its fee, and each swap locks both sides, so it never holds anyone’s funds.</p>
       <p>Tacit runs one provider itself and puts what it earns back into its capacity. More providers add room to each swap and keep the prices close: each sets its own terms, and pages ask those with the lowest fees first.</p>
       <p style="font-size:12.5px;color:var(--mute)">Running a node also helps: Ethereum and Bitcoin nodes are listed at <a href="/nodes/">/nodes/</a> and ranked by uptime and accuracy.</p>
@@ -698,7 +709,7 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
         </div>
         <p style="margin:0;font-size:12.5px"><a href="https://github.com/src-company/tacit/blob/main/fastbridge-lp/README.md#a-provider-of-bitcoin-for-eth-pair-mode" target="_blank" rel="noopener noreferrer">The provider’s guide, pair mode ↗</a></p>
       </div>
-    </section>
+    </div></details>
   </main>
 
   <p id="say" role="status" hidden></p>
@@ -729,6 +740,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/btc/app.js?cb=ef1c1ed0"></script>
+<script type="module" src="/btc/app.js?cb=58c1503c"></script>
 </body>
 </html>

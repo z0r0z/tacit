@@ -255,7 +255,12 @@ console.log('btc/send.js: the transaction, signed by the key\'s P2WPKH signer');
 }
 
 const b = await chromium.launch();
-const text = async (page, sel) => ((await page.innerText(sel).catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+// (the sections under the tile are closed disclosures until opened: reading one's text opens it, as a visitor would to read it. The disclosure checks use `raw`.)
+const text = async (page, sel) => { await page.evaluate((q) => { const d = document.querySelector(q)?.closest('details'); if (d && !d.open) { d.open = true; return new Promise((r) => setTimeout(r, 340)); } }, sel).catch(() => {});
+  let t = '';
+  for (let i = 0; i < 12 && !t; i++) { t = (await page.innerText(sel).catch(() => '')) || ''; if (!t) { if (!(await page.$eval(sel, (e) => e.closest('details[open]') && e.textContent.trim()).catch(() => ''))) break; await sleep(80); } }
+  return t.replace(/\s+/g, ' ').trim(); };
+const raw = (page, sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim());
 const SHOT = async (page, name, full = true) => { if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/${name}.png`, fullPage: full }); };
 
 // what the public nodes say of the Ethereum wallet (a test sets it): its balance, the gas price and the deposit's gas, a deposit's receipt
@@ -342,7 +347,7 @@ console.log('the page: the marks, the line, the lane');
   await SHOT(page, 'desktop-light');
 
   console.log('the wallet opens: the swaps');
-  ok(/Open your Tacit wallet above/.test(await text(page, '#mine-say')) && await page.isHidden('#mine-keep'), 'before: the swaps section says how to see them');
+  ok(/Open your Tacit wallet above/.test(await text(page, '#mine-say')) && await page.isHidden('#mine-keep'), `before: the swaps section says how to see them (${await text(page, '#mine-say')}, ${await page.isHidden('#mine-keep')})`);
   await page.click('#a-go');
   await page.waitForFunction(() => window.__btc.unlocked && !document.querySelector('#mine-list').hidden, null, { timeout: 30000 });
   ok(await page.isHidden('#a-sent') && (await page.$$('#mine-list > div')).length === 2, 'the swaps are listed in their own section, not under the lane');
@@ -584,6 +589,7 @@ console.log('One press: a swap of ETH the private balance is short of (the ETH m
   await page.$eval('#mine', (e) => e.scrollIntoView());
   await SHOT(page, 'done-next', false);
   await page.click('#mine-list [data-rec="swD"] [data-next="send"]');
+  await page.waitForFunction(() => document.querySelector('#mybtc').open, null, { timeout: 5000 });
   await page.waitForFunction(() => !document.querySelector('#yb-form').hidden && document.querySelector('#yb-amt').value, null, { timeout: 15000 });
   ok((await page.inputValue('#yb-amt')) === '0.001105' && /110,500 sats/.test(await text(page, '#yb-amt-say')), `Send BTC opens the send with the amount that arrived (${await page.inputValue('#yb-amt')})`);
   await page.fill('#yb-to', 'bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297');
@@ -746,6 +752,9 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
   const { page, errs, csp } = await fresh({ init: `window.__atom.bal.eth = 5632297n; window.__atom.recs = [{ id: 'swQ', dir: 'b2e', state: 'done', title: 'Done', detail: 'The ETH is in your private balance, and the provider collected the BTC.', pay: 130000n, get: 0n, steps: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 3600, refundAt: null, backBy: null }];` });
   await page.click('#a-go');
   await page.waitForFunction(() => document.querySelector('#mine-list [data-rec="swQ"] [data-next="withdraw"]') && !document.querySelector('#ye-box').hidden, null, { timeout: 15000 });
+  ok(!(await page.$eval('#mine', (e) => e.open)) && /1 done/.test(await raw(page, '#mine-sum')), 'a swap found again, never seen under way here, is a collapsed line: "1 done"');
+  await page.evaluate(() => { document.querySelector('#mine').open = true; document.querySelector('#myeth').open = true; });
+  await sleep(400);
   await page.evaluate(() => { window.__ux.notes = [{ value: 4632297n }, { value: 1000000n }]; });
   ok(/^0\.05632297 ETH$/.test(await text(page, '#ye-bal')) && !(await page.$eval('#ye-send', (e) => e.disabled)) && /public from that address on/.test(await text(page, '#myeth')), '"Your ETH": the private balance, a Send ETH, and what sending shows');
   await page.$eval('#mine', (e) => e.scrollIntoView());
@@ -788,6 +797,8 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
   await page.click('#a-go');
   await page.waitForFunction(() => document.querySelector('#mine-list [data-rec="swP"] [data-next="withdraw"]'), null, { timeout: 15000 });
   await page.evaluate(() => { window.__ux.notes = window.__ux_notes; });
+  await page.evaluate(() => { document.querySelector('#mine').open = true; });
+  await sleep(400);
   await page.$eval('#mine', (e) => e.scrollIntoView());
   await SHOT(page, 'btc-done-withdraw-390-dark', false);
   await page.click('#mine-list [data-rec="swP"] [data-next="withdraw"]');
@@ -887,6 +898,72 @@ for (const [path, dir] of [['/?from=BTC&to=ETH&from-at=btc', 'b2e'], ['/?from=ET
   ok(opened && (await page.isVisible('#atomic')), `${path}: the lane opens once the boards answer`);
   ok(dir === 'b2e' ? /From.*Bitcoin/.test(await text(page, '#a-pay')) : /From.*Ethereum, private/.test(await text(page, '#a-pay')) && (await page.inputValue('#a-amt')) === '0.05', `${dir}: the way round${dir === 'e2b' ? ' and the amount' : ''} the link names`);
   ok(dir === 'b2e' ? /from=BTC/.test(page.url()) && /to=ETH/.test(page.url()) : /from=ETH/.test(page.url()) && /to=BTC/.test(page.url()), `${dir}: the address is the lane's (${page.url().replace(BASE, '')})`);
+  await page.close();
+}
+
+console.log('the sections under the tile: closed lines that open (disclosures)');
+{
+  const { page, errs, csp } = await fresh({ viewport: { width: 390, height: 800 } });
+  await listed(page);
+  ok((await page.$$eval('details.dd', (ds) => ds.map((d) => d.id + (d.open ? '+' : '-')).join(','))) === 'mine-,mybtc-,myeth-,pv-,be-', 'all five sections start closed');
+  ok(/^1 online · up to 0\.30 BTC$/.test(await raw(page, '#pv-at')) && (await raw(page, '#mine-sum')) === 'open your wallet', `the one line of Providers carries what is live (${await raw(page, '#pv-at')}) and of Your swaps says how to see them`);
+  ok((await page.$$eval('details.dd > summary', (ss) => ss.map((s) => s.getBoundingClientRect().height))).every((h) => h >= 40), 'each line is a tap target of 40 px or more');
+  ok(!(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)), 'no sideways scroll at a phone width, all closed');
+  ok(await page.$$eval('details.dd > summary h2', (hs) => hs.length === 5), 'each summary holds its heading, so the section is still found by its name');
+  // keyboard: the summary takes focus, Enter and Space open and close it
+  await page.focus('#pv > summary');
+  ok(await page.$eval('#pv > summary', (e) => e === document.activeElement), 'a line takes keyboard focus');
+  await page.keyboard.press('Enter');
+  ok(await page.$eval('#pv', (e) => e.open), 'Enter opens it');
+  await page.keyboard.press('Space');
+  ok(!(await page.$eval('#pv', (e) => e.open)), 'Space closes it');
+  await page.keyboard.press('Enter');
+  await page.click('#be > summary');
+  await sleep(150);
+  // remembered: what the visitor opened stays open on a reload, what they left closed stays closed
+  ok(await page.evaluate(() => { const o = JSON.parse(localStorage.getItem('tacit-btc-open') || '{}'); return o.be === 1 && o.pv === 1; }), 'a choice is kept in this browser');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.querySelector('#a-go') && document.querySelector('#a-go').textContent !== 'Loading…', null, { timeout: 30000 });
+  ok(await page.$eval('#be', (e) => e.open) && await page.$eval('#pv', (e) => e.open) && !(await page.$eval('#mybtc', (e) => e.open)), 'after a reload the sections open and closed are as the visitor left them');
+  ok(errs.length === 0 && csp.length === 0, `no page or CSP errors (${errs.join(' | ')} ${csp.join(' | ')})`);
+  await page.close();
+}
+{
+  // a link to a section opens it and goes there; storage that throws costs nothing
+  const { page, errs } = await fresh({ path: '/btc/#be', init: 'Object.defineProperty(window, "localStorage", { get() { throw new Error("blocked"); } });' });
+  await page.waitForFunction(() => document.querySelector('#be').open, null, { timeout: 5000 });
+  await sleep(500);
+  ok(await page.$eval('#be', (e) => e.open) && (await page.$eval('#be', (e) => Math.abs(e.getBoundingClientRect().top))) < 200, '/btc/#be opens Become a provider and scrolls to it, with browser storage blocked');
+  await page.evaluate(() => { location.hash = '#pv'; });
+  await page.waitForFunction(() => document.querySelector('#pv').open, null, { timeout: 5000 });
+  ok(await page.$eval('#pv', (e) => e.open), 'a later link to #pv opens Providers');
+  ok(errs.length === 0, `no page errors (${errs.join(' | ')})`);
+  await page.close();
+}
+{
+  // the wallet opens with a swap under way: Your swaps opens by itself, the wallet panels stay closed with their balances in the line
+  const { page, errs } = await fresh();
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__btc.unlocked && document.querySelector('#mine').open, null, { timeout: 30000 });
+  ok(!(await page.$eval('#mybtc', (e) => e.open)) && !(await page.$eval('#myeth', (e) => e.open)), 'a swap under way opens Your swaps; the wallet panels stay closed');
+  await page.waitForFunction(() => /0\.5 BTC/.test(document.querySelector('#yb-sum').textContent) && /private/.test(document.querySelector('#ye-sum').textContent), null, { timeout: 15000 });
+  ok(/^1 in progress · 1 done$/.test(await raw(page, '#mine-sum')) && (await raw(page, '#yb-sum')) === '0.5 BTC' && (await raw(page, '#ye-sum')) === '4 private', `the lines say it: ${await raw(page, '#mine-sum')}, ${await raw(page, '#yb-sum')}, ${await raw(page, '#ye-sum')}`);
+  ok(/Read only a copy you saved yourself/.test(await text(page, '#mine-keep')) && await page.isVisible('#mine-list [data-rec="sw1"] .stay'), 'the warning and the swap\'s "keep this page open" are in the open section, in view');
+  await page.click('#mine > summary');
+  await sleep(150);
+  ok(!(await page.$eval('#mine', (e) => e.open)), 'Your swaps closes when the visitor closes it');
+  ok(errs.length === 0, `no page errors (${errs.join(' | ')})`);
+  await page.close();
+}
+{
+  // a swap that needs attention opens its section even when the visitor had closed it
+  const init = `localStorage.setItem('tacit-btc-open', '{"mine":0}'); window.__atom.recs = [{ id: 'swS', dir: 'b2e', state: 'working', title: 'Waiting for the provider', detail: 'The provider has not answered.', pay: 1000000n, get: 30400000n, steps: [{ key: 'lock', title: 'You lock BTC', state: 'active' }], etaSecs: 0, at: Math.floor(Date.now() / 1000) - 7200, refundAt: null, backBy: null, stuck: true, slow: 'This is taking longer than usual.' }];`;
+  const { page } = await fresh({ init });
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__btc.unlocked && document.querySelector('#mine-list [data-rec="swS"]'), null, { timeout: 30000 });
+  await page.waitForFunction(() => document.querySelector('#mine').open, null, { timeout: 5000 });
+  await sleep(450);
+  ok(/need/.test(await raw(page, '#mine-sum')) && await page.isVisible('#mine-list .slow'), `a stuck swap forces its section open, the line says so (${await raw(page, '#mine-sum')})`);
   await page.close();
 }
 
