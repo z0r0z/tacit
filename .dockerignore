@@ -13,6 +13,7 @@
 !dapp/*.js
 !dapp/vendor/*.js
 !dapp/trade/rpc.js
+!dapp/fast/split-plan.js
 !dapp/evm-pool/token-pool-code.json
 !dapp/btc-pool/pin.json
 !dapp/btc-pool/vk.bin

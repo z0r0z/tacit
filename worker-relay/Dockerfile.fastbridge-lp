@@ -21,6 +21,7 @@ COPY dapp/package.json /app/dapp/package.json
 COPY dapp/*.js /app/dapp/
 COPY dapp/vendor/*.js /app/dapp/vendor/
 COPY dapp/trade/rpc.js /app/dapp/trade/rpc.js
+COPY dapp/fast/split-plan.js /app/dapp/fast/split-plan.js
 COPY dapp/evm-pool/token-pool-code.json /app/dapp/evm-pool/token-pool-code.json
 
 WORKDIR /app/worker-relay
