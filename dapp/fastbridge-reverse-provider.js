@@ -270,7 +270,12 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
         if (method === 'GET' && !m[2]) { const s = await swaps.get(m[1]); return s ? reply({ phase: s.phase, why: s.why || null, lockTxid: s.phase !== 'built' && s.lock && /^[0-9a-f]{64}$/.test(String(s.lock.txid || '')) ? s.lock.txid : null }) : reply({ error: 'unknown swap' }, 404); }
         if (method === 'GET' && m[2] === '/offer') { const o = await offers.get(m[1]); return o ? reply(o.offer) : reply({ error: 'no offer yet' }, 404); }
         if (method === 'GET' && m[2] === '/early-offer') return await earlyOffer(m[1]);
-        if (method === 'POST' && m[2] === '/evm-offer') return await keepEvmOffer(m[1], body);
+        if (method === 'POST' && m[2] === '/evm-offer') {
+          const r = await keepEvmOffer(m[1], body);
+          // (every pool offer refused is said with its reason; one taken, once)
+          log(r.body && r.body.ok ? { level: 'info', msg: 'reverse pool offer taken', id: m[1], kept: !!r.body.kept } : { level: 'warn', msg: 'reverse pool offer refused', id: m[1], status: r.status, why: String((r.body && (r.body.why || r.body.error)) || '').slice(0, 200) });
+          return r;
+        }
       }
       return reply({ error: 'not found' }, 404);
     } catch (e) {

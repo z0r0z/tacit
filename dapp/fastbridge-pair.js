@@ -183,6 +183,11 @@ export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip 
     title = 'The provider locked BTC for you';
     detail = join(`Waiting for ${waitWords(need)}${confs > 0 ? ` (${confs} so far)` : ''}. A block comes about every ten minutes, some sooner, some later. Your ETH is locked after that${rec.pre ? ', and is made ready meanwhile so it goes in at once' : ''}.`, slowBlockLine(tip, now(), SAFE_REV));
   } else if (rec.phase === 'taking') detail = join(detail, slowBlockLine(tip, now(), SAFE_TAKE));
+  // (a swap found again from the key whose provider has not yet taken its pool offer is said as being told, not as waiting for a claim: tellRecovered)
+  else if (rec.phase === 'offered' && rec.recovered && !rec.toldBy) {
+    [at, title] = [1, 'Telling the provider'];
+    detail = 'Your ETH is locked. This swap was found again from your key, and the provider is being told of the lock; it is asked again every few minutes. If it does not claim by the deadline, your ETH comes back to your private balance by itself.';
+  }
   const state = rec.phase === 'done' ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' || rec.phase === 'lost' ? 'stopped' : 'working';
   // what reached the user's address: the lock less the fee of the take that spent it, when this page made the take
   const got = rec.take && rec.lockValue != null && rec.take.fee != null && !rec.takenBy && BigInt(rec.lockValue) > BigInt(rec.take.fee) ? BigInt(rec.lockValue) - BigInt(rec.take.fee) : null;

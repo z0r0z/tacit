@@ -164,6 +164,7 @@ test('ETH for BTC, the page closes after its lock lands and before the provider 
   const sm = new Map(), mem = (k) => { if (!sm.has(k)) sm.set(k, memStore()); return sm.get(k); };
   const fresh = w.makePair({ stores: { fwd: mem('fwd'), index: mem('index'), swaps: (id) => mem('swaps:' + id), quotes: (id) => mem('quotes:' + id) } });
   assert.equal(await fresh.recover(), 1, 'found from the key');
+  assert.equal((await fresh.records()).find((r) => r.dir === 'e2b').title, 'Telling the provider', 'said as being told until the provider takes the offer, not as waiting for a claim');
   await drive(w, fresh, async () => (await mem('swaps:recovered').list())[0]?.phase === 'done');
   const r = (await mem('swaps:recovered').list())[0];
   assert.equal(r.toldBy, 'lp1', 'the provider was told of the lock by the page that found it');
