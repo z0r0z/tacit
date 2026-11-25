@@ -99,9 +99,17 @@ async function bswOffer(box, n) {
   if (!(await bswMod()).DESK) return;
   const s = await bswOpen(), q = s ? await s.quote(n.amount).catch(() => null) : null;
   if (!box.isConnected || !q?.id) return;
-  mount(box, html`<p class="note">Or swap it on Bitcoin for ${fmt(BigInt(q.out), 8, 4)} TAC that bridges in one step, in about a day.</p><button class="btn ghost" type="button" id="br-swapgo">Swap it</button>`);
+  const amount = BigInt(n.amount), out = BigInt(q.out);
+  if (BigInt(q.value) !== amount || out <= 0n || out > amount) return;
+  mount(box, html`<p class="note">Swap ${fmt(amount, 8, 8)} TAC on Bitcoin for ${fmt(out, 8, 8)} TAC that can bridge. The desk keeps ${fmt(amount - out, 8, 8)} TAC. Bitcoin miner fees are separate.</p><button class="btn ghost" type="button" id="br-swapgo">Swap it</button>`);
   const go = $('#br-swapgo', box);
   go.onclick = () => busy(go, async () => {
+    if (Date.now() >= Number(q.validUntil) * 1000) {
+      mount(box, html`<p class="note">This quote expired. Checking the current price…</p>`);
+      await bswOffer(box, n);
+      if (!$('#br-swapgo', box)) mount(box, html`<p class="note">The desk has no quote for this amount right now.</p>`);
+      return;
+    }
     await s.start({ txid: n.txid, vout: n.vout, value: n.sats, amount: BigInt(n.amount), blinding: BigInt(n.blinding) }, q);
     BSW.recs = await s.records();
     rerender('tac');

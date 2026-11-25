@@ -69,9 +69,10 @@ export function world({ desk: deskOver = {}, holder: holderOver = {}, tracked = 
     holderStore: memStore(), deskStore: memStore(), quoteStore: memStore(),
     deskUp: true, deskOnline: true, holderOnline: true,
   };
-  w.makeDesk = () => makeBtcSwapDesk({
+  w.makeDesk = (options = {}) => makeBtcSwapDesk({
     seed: partyKeys('desk').seed, now: clock.now, policy: deskPolicy, store: w.deskStore, quotes: w.quoteStore, btc: dBtc,
     inventory: { notes: async () => w.deskNotes }, tracking: tracking('desk'), log: (o) => { if (process.env.TRACE && o.level !== 'info') console.log('  desk', JSON.stringify(o)); }, alert: (a) => (w.alerts ||= []).push(a),
+    ...options,
   });
   w.deskNotes = [deskNote];
   w.desk = w.makeDesk();
