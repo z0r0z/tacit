@@ -162,4 +162,17 @@ func TestCeremonyEndToEnd(t *testing.T) {
 	if err := groth16.Verify(proof, vk, bad); err == nil {
 		t.Fatal("and must not verify for another statement")
 	}
+	vkPath := filepath.Join(dir, "vk")
+	vf, _ := os.Create(vkPath)
+	if _, err := vk.WriteTo(vf); err != nil {
+		t.Fatal(err)
+	}
+	vf.Close()
+	var sol strings.Builder
+	if err := Solidity(vkPath, &sol); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sol.String(), "DELTA_NEG_X_0") || !strings.Contains(sol.String(), "function verifyProof") {
+		t.Fatal("the Solidity verifier is missing its delta or its verify function")
+	}
 }

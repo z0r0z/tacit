@@ -14,9 +14,11 @@
 //	tacit-ceremony init <dir> <base-file> <base-index> <label>                   start a chain from a transcript's last file
 //	tacit-ceremony serve [flags] <dir> <addr>                                    run the queue and API
 //	tacit-ceremony queue|kick|close --admin <url> ...                            the operator's view, drop a place, close
+//	tacit-ceremony ban <prefix | address>                                        refuse new places from a prefix
 //	tacit-ceremony close --dir <dir>                                             close a chain whose coordinator is stopped
 //	tacit-ceremony beacon [--signature <hex>] <bitcoin-block-hash> <quicknet-round>   the Phase 2 beacon
-//	tacit-ceremony seal <phase1> <head> <evals> <beacon-hex> <out-dir>           extract the keys (pk, vk)
+//	tacit-ceremony seal <phase1> <head> <evals> <beacon-hex> <out-dir>           extract the keys (pk, vk) and the Solidity verifier
+//	tacit-ceremony solidity <vk> [out.sol]                                       the Solidity verifier of a verifying key
 package main
 
 import (
@@ -60,7 +62,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) < 1 {
-		return usageErr("contribute|contribute-file|upload|verify|verify-chain|version|init|serve|queue|kick|close|beacon|seal ...")
+		return usageErr("contribute|contribute-file|upload|verify|verify-chain|version|init|serve|queue|kick|ban|close|beacon|seal|solidity ...")
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
@@ -120,12 +122,21 @@ func run(args []string) error {
 		return nil
 	case "serve":
 		return serve(rest)
-	case "queue", "kick", "close":
+	case "queue", "kick", "close", "ban":
 		return admin(cmd, rest)
 	case "beacon":
 		return beacon(rest)
 	case "seal":
 		return seal(rest)
+	case "solidity":
+		if len(rest) < 1 || len(rest) > 2 {
+			return usageErr("solidity <groth16_vk.bin> [out.sol | -]")
+		}
+		out := "-"
+		if len(rest) == 2 {
+			out = rest[1]
+		}
+		return writeSolidity(rest[0], out)
 	}
 	return fmt.Errorf("unknown command %q", cmd)
 }
@@ -370,6 +381,11 @@ func admin(cmd string, args []string) error {
 		} else {
 			body = map[string]string{"token": fs.Arg(0)}
 		}
+	case "ban":
+		if fs.NArg() != 1 {
+			return usageErr("ban [--admin <url>] <prefix | address>   (e.g. 203.0.113.0/24, 2001:db8::/32)")
+		}
+		method, path, body = "POST", "/admin/ban", map[string]string{"prefix": fs.Arg(0)}
 	}
 	var rd io.Reader
 	if body != nil {
@@ -465,5 +481,22 @@ func seal(args []string) error {
 		sum, _ := ceremony.FileSHA256(p)
 		fmt.Printf("%s sha256 %s\n", k.name, sum)
 	}
-	return nil
+	return writeSolidity(filepath.Join(args[4], "groth16_vk.bin"), filepath.Join(args[4], "Groth16Verifier.sol"))
+}
+
+func writeSolidity(vkPath, out string) error {
+	var b bytes.Buffer
+	if err := ceremony.Solidity(vkPath, &b); err != nil {
+		return err
+	}
+	sum, err := ceremony.FileSHA256(vkPath)
+	if err != nil {
+		return err
+	}
+	if out == "-" {
+		_, err = os.Stdout.Write(b.Bytes())
+	} else if err = os.WriteFile(out, b.Bytes(), 0o644); err == nil {
+		fmt.Printf("%s written; the verifier hash (sha256 of the vk) is 0x%s\n", out, sum)
+	}
+	return err
 }

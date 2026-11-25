@@ -609,6 +609,11 @@ func (c *Client) downloadOnce(ctx context.Context, url, part string, size int64,
 	if have > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
 	}
+	c.mu.Lock()
+	if c.token != "" {
+		req.Header.Set(TokenHeader, c.token) // the slot's download: never limited, and counted as its progress
+	}
+	c.mu.Unlock()
 	resp, err := c.big.Do(req)
 	if err != nil {
 		return err

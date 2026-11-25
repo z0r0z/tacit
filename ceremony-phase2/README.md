@@ -38,7 +38,9 @@ Leave it running. It:
 
 - joins the queue and polls the coordinator to keep the place (a place that stops polling for a minute is given to
   the next person; Ctrl-C gives it up and deletes the tool's files);
-- claims the slot when it is your turn (within 3 minutes; the slot then lasts at most 2 hours);
+- claims the slot when it is your turn (within 3 minutes; the slot then lasts at most 2 hours, and must keep moving:
+  the head's download starts within 10 minutes and is complete within 75, and the upload starts within 105, so a
+  place cannot be held without working on it);
 - downloads the head, resuming after a dropped connection, and checks its SHA-256;
 - adds your contribution with fresh randomness (dropped when the program exits: run it on a machine you trust, ideally
   with no swap) and prints your contribution hash;
@@ -81,7 +83,12 @@ curl -fO <coordinator URL>/f/phase2-N && shasum -a 256 phase2-N
 ```sh
 ./tacit-ceremony verify <phase2-N> <phase2-N+1>           # one contribution
 ./tacit-ceremony verify-chain <dir> 17 <head>             # every contribution from Succinct's last file
+./tacit-ceremony solidity <groth16_vk.bin> [out.sol]      # a key's Solidity verifier, to compare with a deployed one
 ```
+
+Every accepted file is also copied to a second store (Filebase, which pins it on IPFS); the copy is made only for
+files whose receipts are signed by the coordinator key and chain from `phase2-17`. The list, with each file's IPFS CID,
+is at `https://tacit-praxis-ceremony.onrender.com/api/mirror`. Any copy checks against the SHA-256s in the transcript.
 
 Each contribution must carry the hash of the file before it (its challenge); a file without one is refused. Each file
 must be exactly the size its layout accounts for, checked before it is read.
@@ -104,7 +111,7 @@ public key before its randomness (SHA-256 of the signature) is used.
 ```sh
 ./tacit-ceremony beacon <block hash> <quicknet round>                       # fetches the round from api.drand.sh
 ./tacit-ceremony beacon --signature <hex> <block hash> <quicknet round>     # offline, from the round's signature
-./tacit-ceremony seal <phase1> <head> <evals> <beacon hex> <out dir>        # the keys
+./tacit-ceremony seal <phase1> <head> <evals> <beacon hex> <out dir>        # the keys and their Solidity verifier
 ```
 
 ## Coordinator
@@ -115,16 +122,18 @@ public key before its randomness (SHA-256 of the signature) is used.
     [--client-ip-header X-Forwarded-For --trusted-proxies 10.0.0.0/8] [--admin 127.0.0.1:8081] <dir> :8080
 ./tacit-ceremony queue                     # on the coordinator's machine: every place in the queue
 ./tacit-ceremony kick <position | token prefix>
+./tacit-ceremony ban <prefix | address>      # refuse new places from a prefix and drop the ones it holds
 ./tacit-ceremony close                     # no more contributions (or close --dir <dir> while serve is stopped)
 ```
 
 `<dir>` holds `state.json` (the chain and its receipts), `queue.json` (the queue, so it survives a restart),
-`coordinator.key` and the files. One place per client address (an IPv6 /64); behind a proxy, the address comes from
+`coordinator.key` and the files. One place per client address (an IPv6 /48); behind a proxy, the address comes from
 `--client-ip-header`, believed only from `--trusted-proxies`. The operator's endpoints listen on a loopback address only.
 
 API (the token goes in the `X-Ceremony-Token` header, never the URL): `GET /api/head`, `GET /f/phase2-<n>` (byte
 ranges), `POST /api/join`, `GET /api/slot` (poll), `POST /api/claim`, `PUT /api/upload` (exactly the head's size),
-`DELETE /api/leave`, `GET /api/transcript`.
+`DELETE /api/leave`, `GET /api/transcript`. A join must be sent as `application/json`. Anyone may download the
+files, a couple of connections per address at a time; the slot holder's download (sent with its token) is never limited.
 
 ## Release binaries
 

@@ -57,6 +57,17 @@ type Config struct {
 	SlotCap     time.Duration // from the claim, the time to download, contribute and upload (2 h)
 	QueueCap    int           // places in the queue (100)
 	PerIP       int           // places one client address may hold (1; negative: no limit)
+	// A claimed slot must show progress, so a place cannot be held by polling alone: from the claim, the head's
+	// download must start within DownloadStart (10 min) and be complete within DownloadBy (75 min), and the upload must
+	// start within UploadStart (105 min). An offline contributor, who uploads without downloading, starts the upload
+	// within DownloadStart.
+	DownloadStart time.Duration
+	DownloadBy    time.Duration
+	UploadStart   time.Duration
+	MaxRefused    int   // uploads refused as contributions before the slot is given up (2)
+	MinFree       int64 // bytes the chain's disk must keep free beyond an upload (1 GiB)
+	FilesPerIP    int   // concurrent file downloads per client address (2); the slot holder's are not limited
+	FilesTotal    int   // concurrent file downloads in all (24)
 	// The client's address is the socket's unless the connection comes from one of TrustedProxies, in which case it is
 	// the last address in ClientIPHeader (e.g. X-Forwarded-For).
 	ClientIPHeader string
@@ -82,6 +93,29 @@ func (c Config) perIP() int {
 	return c.PerIP
 }
 
+func (c Config) downloadStart() time.Duration { return orDur(c.DownloadStart, 10*time.Minute) }
+func (c Config) downloadBy() time.Duration    { return orDur(c.DownloadBy, 75*time.Minute) }
+func (c Config) uploadStart() time.Duration   { return orDur(c.UploadStart, 105*time.Minute) }
+func (c Config) maxRefused() int              { return orInt(c.MaxRefused, 2) }
+func (c Config) filesPerIP() int              { return orInt(c.FilesPerIP, 2) }
+func (c Config) filesTotal() int              { return orInt(c.FilesTotal, 24) }
+func (c Config) minFree() int64 {
+	if c.MinFree > 0 {
+		return c.MinFree
+	}
+	return 1 << 30
+}
+
+// the check of an upload is bounded too: past the slot's cap it may run this much longer
+const verifyGrace = 30 * time.Minute
+
+func orInt(v, def int) int {
+	if v > 0 {
+		return v
+	}
+	return def
+}
+
 func orDur(d, def time.Duration) time.Duration {
 	if d > 0 {
 		return d
@@ -99,7 +133,12 @@ type ticket struct {
 	HeadSince time.Time `json:"head_since,omitzero"`
 	Claimed   time.Time `json:"claimed,omitzero"`
 	lastSeen  time.Time
-	uploading bool
+	uploading bool // the upload's body is arriving
+	verifying bool // the whole body arrived and is being checked: the slot's cap waits (up to verifyGrace)
+	// progress of a claimed slot (restored as done after a restart, so a restart never drops a slot)
+	served        int64 // bytes of the head sent to this slot's token
+	uploadStarted bool
+	refused       int
 }
 
 // Coordinator: one contributor at a time, first come first served; an upload becomes the head only if it verifies
@@ -111,7 +150,10 @@ type Coordinator struct {
 	state    State
 	headSize int64
 	queue    []*ticket
+	bans     []netip.Prefix
 	key      ed25519.PrivateKey
+	verifyMu sync.Mutex // one check of a contribution at a time (each holds several GB)
+	files    fileLimiter
 	now      func() time.Time
 	// tests: runs after an upload is verified and before it is committed
 	beforeCommit func()
@@ -208,10 +250,27 @@ func open(dir string, now func() time.Time) (*Coordinator, error) {
 			if i == 0 && t.Claimed.IsZero() {
 				t.HeadSince = now
 			}
+			if !t.Claimed.IsZero() {
+				t.served, t.uploadStarted = c.headSize, true // a restart never costs a slot its progress
+			}
 		}
 		c.queue = saved.Tickets
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "bans.json")); err == nil {
+		if err := json.Unmarshal(b, &c.bans); err != nil {
+			return nil, fmt.Errorf("bans.json: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	// uploads cut off by a crash or a restart
+	if old, _ := filepath.Glob(filepath.Join(dir, "upload-*")); len(old) > 0 {
+		for _, p := range old {
+			os.Remove(p)
+		}
+		c.logf("removed %d unfinished upload(s)", len(old))
 	}
 	return c, nil
 }
@@ -274,10 +333,8 @@ func (c *Coordinator) expireL() {
 			t.HeadSince = now
 			changed = true
 		}
-		if t.Claimed.IsZero() && now.Sub(t.HeadSince) > c.claimWindow() {
-			c.logf("queue: %s (%s) left: slot not claimed in %s", short(t.Token), t.Name, c.claimWindow())
-		} else if !t.Claimed.IsZero() && now.Sub(t.Claimed) > c.slotCap() {
-			c.logf("queue: %s (%s) left: slot ran past %s", short(t.Token), t.Name, c.slotCap())
+		if why := c.slotOverL(t, now); why != "" {
+			c.logf("queue: %s (%s) left: %s", short(t.Token), t.Name, why)
 		} else {
 			break
 		}
@@ -287,6 +344,33 @@ func (c *Coordinator) expireL() {
 	if changed {
 		c.saveQueueL()
 	}
+}
+
+// slotOverL: why the head's place ends now, or "" (lock held).
+func (c *Coordinator) slotOverL(t *ticket, now time.Time) string {
+	if t.Claimed.IsZero() {
+		if now.Sub(t.HeadSince) > c.claimWindow() {
+			return fmt.Sprintf("slot not claimed in %s", c.claimWindow())
+		}
+		return ""
+	}
+	in := now.Sub(t.Claimed)
+	switch {
+	case t.verifying:
+		if in > c.slotCap()+verifyGrace {
+			return "the check of the upload ran past the slot's cap"
+		}
+	case in > c.slotCap():
+		return fmt.Sprintf("slot ran past %s", c.slotCap())
+	case t.uploadStarted || t.uploading:
+	case t.served == 0 && in > c.downloadStart():
+		return fmt.Sprintf("the head's download did not start within %s", c.downloadStart())
+	case t.served < c.headSize && in > c.downloadBy():
+		return fmt.Sprintf("the head's download was not complete within %s", c.downloadBy())
+	case in > c.uploadStart():
+		return fmt.Sprintf("the upload did not start within %s", c.uploadStart())
+	}
+	return ""
 }
 
 func (c *Coordinator) findL(tok string) (*ticket, int) {
@@ -328,7 +412,8 @@ func (r *refusal) Unwrap() error { return r.detail }
 
 func refuse(code int, msg string, detail error) error { return &refusal{code, msg, detail} }
 
-// ipKey groups addresses for the per-address limit: an IPv6 client by its /64.
+// ipKey groups addresses for the per-address limits: an IPv6 client by its /48 (the block a site is usually given,
+// and free tunnel brokers hand out), an IPv4 client by its address.
 func ipKey(ip string) string {
 	a, err := netip.ParseAddr(ip)
 	if err != nil {
@@ -336,10 +421,56 @@ func ipKey(ip string) string {
 	}
 	a = a.Unmap()
 	if a.Is6() {
-		p, _ := a.Prefix(64)
+		p, _ := a.Prefix(48)
 		return p.String()
 	}
 	return a.String()
+}
+
+func (c *Coordinator) bannedL(ip string) bool {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	a = a.Unmap()
+	for _, p := range c.bans {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// Ban refuses new places from a prefix (e.g. 203.0.113.0/24 or 2001:db8::/32) and drops the places it holds now,
+// except a slot already uploading. It returns how many places were dropped.
+func (c *Coordinator) Ban(prefix string) (int, error) {
+	p, err := netip.ParsePrefix(prefix)
+	if err != nil {
+		a, aerr := netip.ParseAddr(prefix)
+		if aerr != nil {
+			return 0, fmt.Errorf("a prefix like 203.0.113.0/24 or an address: %w", err)
+		}
+		p = netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen())
+	}
+	p = p.Masked()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	bans := append(append([]netip.Prefix(nil), c.bans...), p)
+	b, _ := json.MarshalIndent(bans, "", "  ")
+	if err := writeFileAtomic(filepath.Join(c.Dir, "bans.json"), b, 0o600); err != nil {
+		return 0, err
+	}
+	c.bans = bans
+	n := 0
+	for _, t := range append([]*ticket(nil), c.queue...) {
+		if c.bannedL(t.IP) && !t.uploading && !t.verifying {
+			c.removeL(t)
+			n++
+		}
+	}
+	c.expireL()
+	c.logf("queue: %s banned, %d place(s) dropped", p, n)
+	return n, nil
 }
 
 // Status of a place in the queue, as the client sees it.
@@ -385,6 +516,9 @@ func (c *Coordinator) Join(name, handle, ip string) (string, Status, error) {
 		return "", Status{}, refuse(403, "the ceremony is closed", nil)
 	}
 	c.expireL()
+	if c.bannedL(ip) {
+		return "", Status{}, refuse(403, "this address may not join", nil)
+	}
 	if len(c.queue) >= c.queueCap() {
 		return "", Status{}, refuse(429, "the queue is full; try again later", nil)
 	}
@@ -402,7 +536,9 @@ func (c *Coordinator) Join(name, handle, ip string) (string, Status, error) {
 	now := c.clock()
 	t := &ticket{Token: hex.EncodeToString(b), Name: name, Handle: handle, IP: ip, Joined: now, lastSeen: now}
 	c.queue = append(c.queue, t)
-	c.expireL() // starts the claim window if this is the head
+	if len(c.queue) == 1 {
+		t.HeadSince = now // the claim window starts now
+	}
 	c.saveQueueL()
 	c.logf("queue: %s (%s) joined from %s, %d ahead", short(t.Token), name, ip, len(c.queue)-1)
 	return t.Token, c.statusL(t, len(c.queue)-1), nil
@@ -547,16 +683,59 @@ func (c *Coordinator) beginUpload(tok string, length int64) (*ticket, time.Time,
 	if length != c.headSize {
 		return nil, time.Time{}, refuse(400, fmt.Sprintf("the upload must be exactly %d bytes (the size of the head)", c.headSize), nil)
 	}
-	t.uploading = true
+	if free, err := diskFree(c.Dir); err == nil && int64(free) < c.headSize+c.minFree() {
+		c.logf("upload: refused, the disk has %d bytes free", free)
+		return nil, time.Time{}, refuse(503, "the coordinator is short of disk space; the operator has been told, try again later", nil)
+	}
+	t.uploading, t.uploadStarted = true, true
 	t.lastSeen = c.clock()
 	return t, t.Claimed.Add(c.slotCap()), nil
 }
 
+// bodyDone: the whole upload arrived; while it is checked the slot's cap waits (up to verifyGrace).
+func (c *Coordinator) bodyDone(t *ticket) {
+	c.mu.Lock()
+	t.verifying = true
+	c.mu.Unlock()
+}
+
 func (c *Coordinator) endUpload(t *ticket) {
 	c.mu.Lock()
-	t.uploading = false
+	t.uploading, t.verifying = false, false
 	t.lastSeen = c.clock()
+	c.expireL()
 	c.mu.Unlock()
+}
+
+// refusedUpload counts an upload refused as a contribution; past MaxRefused the slot goes to the next place.
+func (c *Coordinator) refusedUpload(t *ticket) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t.refused++
+	if t.refused >= c.maxRefused() {
+		if _, i := c.findL(t.Token); i >= 0 {
+			c.removeL(t)
+			c.logf("queue: %s (%s) left: %d uploads refused", short(t.Token), t.Name, t.refused)
+			c.expireL()
+		}
+	}
+}
+
+// headServed counts bytes of the head sent to the token of the claimed slot.
+func (c *Coordinator) headServed(tok string, n int64) {
+	c.mu.Lock()
+	if t, i := c.findL(tok); i == 0 && !t.Claimed.IsZero() {
+		t.served += n
+	}
+	c.mu.Unlock()
+}
+
+// isSlotHolder: tok holds the claimed slot.
+func (c *Coordinator) isSlotHolder(tok string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t, i := c.findL(tok)
+	return i == 0 && !t.Claimed.IsZero()
 }
 
 // Accept verifies a file against the head and, if it verifies, makes it the head and returns the receipt (the
@@ -591,6 +770,8 @@ func (c *Coordinator) accept(upload, name, handle string, owner *ticket) (*Recei
 	if st, err := os.Stat(upload); err != nil || st.Size() != size {
 		return nil, refuse(400, fmt.Sprintf("the upload must be exactly %d bytes (the size of the head)", size), err)
 	}
+	c.verifyMu.Lock()
+	defer c.verifyMu.Unlock()
 	prev, err := Read(c.path(headIdx))
 	if err != nil {
 		return nil, refuse(500, "the coordinator could not read its head", err)

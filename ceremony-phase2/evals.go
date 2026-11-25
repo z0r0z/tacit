@@ -3,6 +3,7 @@ package ceremony
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
@@ -87,14 +88,26 @@ func WritePhase2Evaluations(evals *mpcsetup.Phase2Evaluations, w io.Writer) erro
 	return nil
 }
 
-// readPhase2Evaluations deserializes Phase2Evaluations from a reader
-func ReadPhase2Evaluations(r io.Reader) (*mpcsetup.Phase2Evaluations, error) {
+// ReadPhase2Evaluations deserializes Phase2Evaluations from a reader holding size bytes. Every length is checked
+// against the bytes left (a point takes at least 32 bytes in G1 and 64 in G2) before anything is allocated.
+func ReadPhase2Evaluations(r io.Reader, size int64) (*mpcsetup.Phase2Evaluations, error) {
+	lr := &io.LimitedReader{R: r, N: size}
+	r = lr
 	dec := curve.NewDecoder(r)
+	fits := func(n uint32, each int64) error {
+		if int64(n)*each > lr.N {
+			return fmt.Errorf("evaluations: a length of %d does not fit in the %d bytes left", n, lr.N)
+		}
+		return nil
+	}
 	evals := &mpcsetup.Phase2Evaluations{}
 
 	// Read G1.A
 	var lenA uint32
 	if err := binary.Read(r, binary.BigEndian, &lenA); err != nil {
+		return nil, err
+	}
+	if err := fits(lenA, 32); err != nil {
 		return nil, err
 	}
 	evals.G1.A = make([]curve.G1Affine, lenA)
@@ -109,6 +122,9 @@ func ReadPhase2Evaluations(r io.Reader) (*mpcsetup.Phase2Evaluations, error) {
 	if err := binary.Read(r, binary.BigEndian, &lenB); err != nil {
 		return nil, err
 	}
+	if err := fits(lenB, 32); err != nil {
+		return nil, err
+	}
 	evals.G1.B = make([]curve.G1Affine, lenB)
 	for i := range evals.G1.B {
 		if err := dec.Decode(&evals.G1.B[i]); err != nil {
@@ -119,6 +135,9 @@ func ReadPhase2Evaluations(r io.Reader) (*mpcsetup.Phase2Evaluations, error) {
 	// Read G1.VKK
 	var lenVKK uint32
 	if err := binary.Read(r, binary.BigEndian, &lenVKK); err != nil {
+		return nil, err
+	}
+	if err := fits(lenVKK, 32); err != nil {
 		return nil, err
 	}
 	evals.G1.VKK = make([]curve.G1Affine, lenVKK)
@@ -133,10 +152,16 @@ func ReadPhase2Evaluations(r io.Reader) (*mpcsetup.Phase2Evaluations, error) {
 	if err := binary.Read(r, binary.BigEndian, &lenCKK); err != nil {
 		return nil, err
 	}
+	if err := fits(lenCKK, 4); err != nil {
+		return nil, err
+	}
 	evals.G1.CKK = make([][]curve.G1Affine, lenCKK)
 	for i := range evals.G1.CKK {
 		var innerLen uint32
 		if err := binary.Read(r, binary.BigEndian, &innerLen); err != nil {
+			return nil, err
+		}
+		if err := fits(innerLen, 32); err != nil {
 			return nil, err
 		}
 		evals.G1.CKK[i] = make([]curve.G1Affine, innerLen)
@@ -152,6 +177,9 @@ func ReadPhase2Evaluations(r io.Reader) (*mpcsetup.Phase2Evaluations, error) {
 	if err := binary.Read(r, binary.BigEndian, &lenG2B); err != nil {
 		return nil, err
 	}
+	if err := fits(lenG2B, 64); err != nil {
+		return nil, err
+	}
 	evals.G2.B = make([]curve.G2Affine, lenG2B)
 	for i := range evals.G2.B {
 		if err := dec.Decode(&evals.G2.B[i]); err != nil {
@@ -164,10 +192,16 @@ func ReadPhase2Evaluations(r io.Reader) (*mpcsetup.Phase2Evaluations, error) {
 	if err := binary.Read(r, binary.BigEndian, &lenPACC); err != nil {
 		return nil, err
 	}
+	if err := fits(lenPACC, 4); err != nil {
+		return nil, err
+	}
 	evals.PublicAndCommitmentCommitted = make([][]int, lenPACC)
 	for i := range evals.PublicAndCommitmentCommitted {
 		var innerLen uint32
 		if err := binary.Read(r, binary.BigEndian, &innerLen); err != nil {
+			return nil, err
+		}
+		if err := fits(innerLen, 4); err != nil {
 			return nil, err
 		}
 		evals.PublicAndCommitmentCommitted[i] = make([]int, innerLen)
@@ -176,9 +210,15 @@ func ReadPhase2Evaluations(r io.Reader) (*mpcsetup.Phase2Evaluations, error) {
 			if err := binary.Read(r, binary.BigEndian, &val); err != nil {
 				return nil, err
 			}
+			if val < 0 {
+				return nil, fmt.Errorf("evaluations: a negative wire index %d", val)
+			}
 			evals.PublicAndCommitmentCommitted[i][j] = int(val)
 		}
 	}
 
+	if lr.N != 0 {
+		return nil, fmt.Errorf("evaluations: %d bytes left over", lr.N)
+	}
 	return evals, nil
 }

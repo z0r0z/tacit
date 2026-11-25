@@ -141,7 +141,11 @@ func Seal(phase1Path, headPath, evalsPath string, phase1Beacon, phase2Beacon []b
 		return nil, nil, err
 	}
 	defer ef.Close()
-	evals, err := ReadPhase2Evaluations(ef)
+	est, err := ef.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	evals, err := ReadPhase2Evaluations(bufio.NewReaderSize(ef, 1<<20), est.Size())
 	if err != nil {
 		return nil, nil, err
 	}
