@@ -13,8 +13,8 @@
 
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
-import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=397565fc';
-import { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=4560aa10';
+import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=7410374b';
+import { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=0125d1fa';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=8b4b5fae';
 import { makeLpService } from '/fastbridge-provider.js?cb=4e060540';
@@ -159,7 +159,7 @@ function sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag, forNotes, w
     ...(forNotes ? { tacit: T, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]), poolAddress: ux.cfg.pool, binding: ux.chainBindingHex(), keccak256: keccak_256, secp } : {}),
   });
   const seed = hmac(sha256, priv, enc.encode(seedTag));
-  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: asset.evmAsset, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)) }), quorum: makeNodeQuorum({ fetchImpl }) });
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: asset.evmAsset, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)), pool: ux.cfg.pool }), quorum: makeNodeQuorum({ fetchImpl }) });
   return { prims, btc, seed, evm };
 }
 

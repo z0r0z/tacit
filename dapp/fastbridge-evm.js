@@ -13,10 +13,15 @@ const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
 const SETTLE_SELECTOR = '717fd7f2';
 const TRACE_PER_LOOK = 24;
 const TX_READS_AT_ONCE = 4;                              // findClaim's reads of the window's transactions, at once
+const TRACE_RETRY_MS = 15000, TRACE_RETRY_MAX_MS = 10 * 60 * 1000;
+const UNREAD_SAY_MS = 30 * 60 * 1000;
 
 // `trace(txHash)` -> the calls a transaction made, [{ to, input }] (makeTxTracer): how a claim settled through another contract is read when its calldata does not show it
 // `quorum` (makeNodeQuorum): the nodes that must agree before a read ends a swap (findClaim, spentAgreed, lockAbsent); with none, one node's answer is taken as before
-export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, ownAccount = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {}, trace = null, quorum = null }) {
+// `onUnread(o)`: told (with the lock and a transaction hash) when a spent lock's claim cannot be read because no node traced a transaction it may be in; a provider
+// alerts its operator with it. Default: the log.
+export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, ownAccount = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {}, trace = null, quorum = null, onUnread = null }) {
+  if (!onUnread) onUnread = (o) => log(o);
   const te = new TextEncoder();
   const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
   const bytes = (h) => Uint8Array.from(strip(h).match(/../g).map((x) => parseInt(x, 16)));
@@ -116,11 +121,20 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   // the settles the pool itself ran in a transaction, read from its trace (a call that reverted, or sits under one that did, ran nothing)
   const poolSettlesOf = (calls) => calls.filter((c) => String(c.to || '').toLowerCase() === poolTo && strip(c.input || '').startsWith(SETTLE_SELECTOR))
     .map((c) => { try { return ux.lockScan.decodeSettleCalls(c.input); } catch { return null; } }).filter(Boolean).flatMap((d) => d.calls);
+  // A transaction no node traced is asked again later, each time a while later than the last (from TRACE_RETRY_MS, doubling, to TRACE_RETRY_MAX_MS)
+  const traceMiss = new Map();
   async function pooledSettles(txHash) {
     if (!traced.has(txHash)) {
+      const miss = traceMiss.get(txHash);
+      if (miss && clock() < miss.next) return null;
       let calls = null;
-      try { calls = await trace(txHash); } catch (e) { log({ level: 'warn', msg: 'a transaction could not be traced', tx: txHash, error: String((e && e.message) || e).slice(0, 160) }); }
+      try { calls = await trace(txHash); } catch (e) {
+        const n = (miss ? miss.n : 0) + 1;
+        traceMiss.set(txHash, { n, next: clock() + Math.min(TRACE_RETRY_MAX_MS, TRACE_RETRY_MS * 2 ** Math.min(n - 1, 16)) }); cap(traceMiss, 4096);
+        log({ level: 'warn', msg: 'a transaction could not be traced', tx: txHash, tries: n, error: String((e && e.message) || e).slice(0, 160) });
+      }
       if (!calls) return null;                           // asked again on a later look
+      traceMiss.delete(txHash);
       traced.set(txHash, poolSettlesOf(calls));
       cap(traced, 4096);
     }
@@ -259,7 +273,11 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
       // the newest first, a few new traces a look (a trace read once is kept), so a long window is read over several looks
       let fresh = 0;
       for (const h of others.reverse()) {
-        if (!traced.has(h) && fresh++ >= TRACE_PER_LOOK) break;
+        if (!traced.has(h)) {
+          const m = traceMiss.get(h);
+          if (m && clock() < m.next) continue;           // (waiting to be asked again)
+          if (fresh++ >= TRACE_PER_LOOK) break;
+        }
         const r = naming(await pooledSettles(h), key);
         if (!r.named) continue;
         // (a trace is a node's word: with a check, only a kernel that opens the swap is taken from it)
@@ -270,7 +288,24 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
       }
     }
     if (landed) return out(landed.s, landedSrc);
+    sayUnread(key, others);
     throw new Error('the lock is spent, and the settle that spent it is not found yet');
+  }
+  // A spent lock whose settle is not found while transactions of its window could not be traced (or nothing traces at all) is said out loud, with the transaction,
+  // at most every UNREAD_SAY_MS for one lock: the claim may be in one of them, and only a node that traces it gives the swap's secret.
+  const unreadSaid = new Map();
+  function sayUnread(key, others) {
+    const stuck = trace ? others.filter((h) => !traced.has(h) && traceMiss.has(h)) : others;
+    if (!stuck.length) return;
+    const last = unreadSaid.get(key);
+    if (last != null && clock() - last < UNREAD_SAY_MS) return;
+    unreadSaid.set(key, clock()); cap(unreadSaid, 1024);
+    const newest = stuck[stuck.length - 1];
+    onUnread({
+      level: 'alert', lock: key, tx: newest, untraced: stuck.length, tries: (traceMiss.get(newest) || {}).n || 0,
+      msg: trace ? 'a pool lock is spent and its claim cannot be read: no trace node traced the transaction that may carry it. Point FB_LP_TRACE_RPCS at a node of your own that traces, and look at the transaction'
+        : 'a pool lock is spent and its claim cannot be read: no trace node is set, and the transaction that may carry it does not show the claim in its input',
+    });
   }
 
   const own = new Map();
@@ -575,18 +610,30 @@ export function makeNodeQuorum({ nodes = AGREE_NODES, fetchImpl = (...a) => fetc
 // ── what the pool ran: a transaction's calls, from a node that traces ──
 // The public nodes that answered debug_traceTransaction (callTracer) or trace_transaction for a pool settle (2026-11-24). A settle sent through a contract that does not
 // carry it as it is (any other forwarder or wallet) is read from here; `nodes` is the operator's to set (an own node first).
+//
+// The pool keeps no record of a claim's kernel apart from the call that carried it (ConfidentialPool emits none), so a claim sent through a contract of the claimer's,
+// in a form of its own, is read only from a trace. A transaction can be made costly to trace (deep, wide call trees, a large output) and a public node may refuse it:
+// the reliable reader is a node of the operator's own that keeps state and traces without limits (FB_LP_TRACE_RPCS first). Each node is asked first with a tracer that
+// keeps only the calls made to the pool (`pool`), so the answer stays small whatever else the transaction did; then with callTracer; then with trace_transaction.
 export const TRACE_NODES = ['https://eth.drpc.org', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://ethereum-mainnet.gateway.tatum.io', 'https://ethereum-json-rpc.stakely.io'];
-// -> trace(txHash) -> [{ to, input }]: every call that ran (one that reverted, or sits under one that did, is left out), in order
-export function makeTxTracer({ nodes = TRACE_NODES, fetchImpl = (...a) => fetch(...a), timeoutMs = 20000 } = {}) {
+// A JavaScript tracer (geth, reth) that keeps only the plain calls (CALL) made to `pool` that ran: a frame that reverted takes the calls under it with it.
+export const poolCallsTracer = (pool) => `{ pool: ${JSON.stringify(String(pool).toLowerCase())}, st: [], top: [],
+  enter: function (f) { var to = toHex(f.getTo()).toLowerCase(); this.st.push({ me: f.getType() === 'CALL' && to === this.pool ? { to: to, input: toHex(f.getInput()) } : null, calls: [] }); },
+  exit: function (r) { var f = this.st.pop(); if (r.getError()) return; var up = this.st.length ? this.st[this.st.length - 1].calls : this.top; if (f.me) up.push(f.me); for (var i = 0; i < f.calls.length; i++) up.push(f.calls[i]); },
+  fault: function () {},
+  result: function (ctx) { if (ctx.error) return []; var out = [], to = toHex(ctx.to).toLowerCase(); if (ctx.type === 'CALL' && to === this.pool) out.push({ to: to, input: toHex(ctx.input) }); for (var i = 0; i < this.top.length; i++) out.push(this.top[i]); return out; } }`;
+// -> trace(txHash) -> [{ to, input }]: every call that ran (one that reverted, or sits under one that did, is left out), in order; with `pool`, the calls to the pool among them
+export function makeTxTracer({ nodes = TRACE_NODES, fetchImpl = (...a) => fetch(...a), timeoutMs = 20000, pool = null, traceTimeout = '60s' } = {}) {
   const post = async (url, method, params) => {
     const r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(timeoutMs) });
     const j = await r.json();
     if (!j || j.error || j.result == null) throw new Error(`${method}: ${String((j && j.error && j.error.message) || r.status).slice(0, 80)}`);
     return j.result;
   };
+  // (a call that is not a plain CALL, such as a delegatecall into the pool's code or a static call, changes nothing of the pool's: it is not what the pool ran)
   const fromCallTracer = (root) => {
     const out = [];
-    const walk = (f) => { if (!f || f.error) return; out.push({ to: f.to, input: f.input }); for (const c of f.calls || []) walk(c); };
+    const walk = (f) => { if (!f || f.error) return; if (!f.type || String(f.type).toUpperCase() === 'CALL') out.push({ to: f.to, input: f.input }); for (const c of f.calls || []) walk(c); };
     walk(root);
     return out;
   };
@@ -594,10 +641,17 @@ export function makeTxTracer({ nodes = TRACE_NODES, fetchImpl = (...a) => fetch(
     const at = (t) => (t.traceAddress || []).join('.');
     const failed = list.filter((t) => t.error).map(at);
     const ran = (a) => !failed.some((b) => b === '' || a === b || a.startsWith(b + '.'));
-    return list.filter((t) => t.type === 'call' && t.action && ran(at(t))).map((t) => ({ to: t.action.to, input: t.action.input }));
+    return list.filter((t) => t.type === 'call' && t.action && (!t.action.callType || t.action.callType === 'call') && ran(at(t))).map((t) => ({ to: t.action.to, input: t.action.input }));
   };
+  const poolOnly = pool ? poolCallsTracer(pool) : null;
   const one = async (url, txHash) => {
-    try { return fromCallTracer(await post(url, 'debug_traceTransaction', [txHash, { tracer: 'callTracer' }])); } catch { /* the other form */ }
+    if (poolOnly) {
+      try {
+        const r = await post(url, 'debug_traceTransaction', [txHash, { tracer: poolOnly, timeout: traceTimeout }]);
+        if (Array.isArray(r) && r.every((c) => c && typeof c.input === 'string' && typeof c.to === 'string')) return r;
+      } catch { /* a node without JavaScript tracers: the other forms */ }
+    }
+    try { return fromCallTracer(await post(url, 'debug_traceTransaction', [txHash, { tracer: 'callTracer', timeout: traceTimeout, tracerConfig: { onlyTopCall: false, withLog: false } }])); } catch { /* the other form */ }
     const r = await post(url, 'trace_transaction', [txHash]);
     if (!Array.isArray(r)) throw new Error('trace_transaction: not a list');
     return fromParity(r);
@@ -611,6 +665,7 @@ export function makeTxTracer({ nodes = TRACE_NODES, fetchImpl = (...a) => fetch(
   };
   // every node's trace at once, null for one that gave none: what a reading taken from a trace is checked against
   tracer.all = (txHash) => Promise.all(nodes.map((u) => one(u, txHash).catch(() => null)));
+  tracer.nodes = [...nodes];
   return tracer;
 }
 

@@ -6,6 +6,7 @@
 //   FB_LP_KEY=<64 hex>        the LP's key: its Bitcoin wallet, its pool identity, the root of its swap seed. Env only.
 //   FB_LP_CONFIG=<path>       the config file (README.md). Default ./fastbridge-lp/config.json
 //   FB_LP_ALERT_WEBHOOK=<url> optional: alerts are POSTed there as JSON as well as logged
+//   FB_LP_TRACE_RPCS=<urls>   the nodes that trace a transaction (comma separated, an own archive node first): how a claim sent through another contract is read
 //   PORT, FB_LP_DATA_DIR, FB_LP_NAME, FB_LP_BOARDS, FB_LP_MIN_AMOUNT, FB_LP_MAX_AMOUNT, FB_LP_FEE_BPS, FB_LP_FLAT_FEE   optional: set over the config (lib/env-config.mjs)
 //   node fastbridge-lp/server.mjs [--dry-run]     (Node 22; run from the repository root)
 //
@@ -77,7 +78,11 @@ const selfSettle = (x) => turn(async () => {
   await ux.rpc('eth_call', [{ from: acct.address, to: ux.cfg.pool, data: ux.settleCalldata(x) }, 'latest']);
   return ux.settleFromAccount({ settlerPriv: key, publicValues: x.publicValues, proof: x.proof, memos: x.memos || [] });
 });
-// the nodes asked for a transaction's trace, to read a claim settled through a contract other than the pool or its relayer (README `traceRpcs`)
+const alert = makeAlert({ log, webhook: process.env.FB_LP_ALERT_WEBHOOK || null, name: C.name || undefined });
+// the nodes asked for a transaction's trace, to read a claim settled through a contract other than the pool or its relayer (README `traceRpcs`). The pool keeps no
+// record of a claim's kernel apart from the call that carried it, so a claim sent through a contract in a form of its own is read only from a trace, and a public node
+// may refuse a transaction made costly to trace. Until the pool records claims, a node of the operator's own that keeps state and traces (an archive node, first in
+// FB_LP_TRACE_RPCS) is what reads every claim; a claim no node traced is alerted with its transaction (onUnread below).
 const traceNodes = String(process.env.FB_LP_TRACE_RPCS || '').split(',').map((s) => s.trim()).filter(Boolean);
 if (!traceNodes.length) traceNodes.push(...(Array.isArray(C.traceRpcs) && C.traceRpcs.length ? C.traceRpcs : TRACE_NODES));
 // the nodes that must agree (two or more, all that answer alike) before a swap is taken as claimed, refunded or lost (README `agreeRpcs`)
@@ -85,7 +90,7 @@ const agreeNodes = String(process.env.FB_LP_AGREE_RPCS || '').split(',').map((s)
 if (!agreeNodes.length) agreeNodes.push(...(Array.isArray(C.agreeRpcs) && C.agreeRpcs.length ? C.agreeRpcs : AGREE_NODES));
 if (agreeNodes.length < 2) { console.error('agreeRpcs (FB_LP_AGREE_RPCS) must name two Ethereum nodes or more'); process.exit(1); }
 if (traceNodes.length < 2) log({ level: 'warn', msg: 'traceRpcs names one node: a claim read from a trace is taken only once two nodes trace it alike' });
-const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs }, selfSettle, ownAccount: { address: acct.address }, selfRetryMs: 60000, log, trace: makeTxTracer({ nodes: traceNodes }), quorum: makeNodeQuorum({ nodes: agreeNodes }) });
+const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs }, selfSettle, ownAccount: { address: acct.address }, selfRetryMs: 60000, log, trace: makeTxTracer({ nodes: traceNodes, pool: C.poolAddress }), quorum: makeNodeQuorum({ nodes: agreeNodes }), onUnread: (o) => alert(o) });
 const btc = makeNodeBtcChain({
   bases: C.btcBases, tacit, prims, builder, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]),
   poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log,
@@ -126,7 +131,6 @@ const config = {
   },
 };
 const data = resolve(C.dataDir || 'fastbridge-lp/data');
-const alert = makeAlert({ log, webhook: process.env.FB_LP_ALERT_WEBHOOK || null, name: C.name || undefined });
 // a pair provider with no price quotes nothing: said, and again each alertSecs while it stays so, and once when the price is back
 if (PAIR) {
   let priced = true, saidAt = -Infinity;

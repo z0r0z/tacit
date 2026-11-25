@@ -45,7 +45,7 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   // the lock goes out for the next block or two and not under 2 sat/vB (see fastbridge-btc.js minFeeRate)
   const btc = makeEsploraBtcChain({ bases, prims, builder, fetchImpl, feeTarget: '1', minFeeRate: 2 });
   const seed = hmac(sha256, priv, enc.encode('tacit-fastbridge-user-pair-seed'));
-  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: ETH_ASSET, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)) }), quorum: makeNodeQuorum({ fetchImpl }) });   // (the nodes the page's CSP reaches)
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: ETH_ASSET, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)), pool: ux.cfg.pool }), quorum: makeNodeQuorum({ fetchImpl }) });   // (the nodes the page's CSP reaches)
   // an ETH-for-Bitcoin swap is found again from the key by its pool lock's memo (pair.recover)
   evm.findOwnLocks = makeOwnLockFinder({ ux, hmacSha256, walletPriv: priv });
 
