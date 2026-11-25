@@ -9600,7 +9600,7 @@ function brPlanSet(pub, id, plan) {
 const brPlanOf = (rec) => (rec && S.key ? brPlans(S.key.pubHex)[rec.id] || null : null);
 const FAST_TOLD = 'tacit-fast-want-told-v1';
 const fastWants = lazy(async () => {
-  const [{ makeWants }, lists] = await Promise.all([import('/fast/want.js?cb=4c56ebdc'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]);
+  const [{ makeWants }, lists] = await Promise.all([import('/fast/want.js?cb=aef09b79'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]);
   return makeWants({ boards: lists.boards || [], providers: lists.providers || [] });
 });
 let fastAt = 0;

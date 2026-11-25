@@ -2950,7 +2950,7 @@ function probeAtomic() {
     if (yes && $('#atomic')) enterAtomic(atomicAsk(p)); else load(p, { fresh: true });
   };
   if (!$('.mode') || (typeof navigator !== 'undefined' && navigator.connection?.saveData)) { settle(false); return; }
-  ATOM.probing = import('/swap/atomic-probe.js?cb=590d41c3').then((m) => m.probeAtomic()).catch(() => false).then(settle);
+  ATOM.probing = import('/swap/atomic-probe.js?cb=a367ec6d').then((m) => m.probeAtomic()).catch(() => false).then(settle);
 }
 function arrows(box, attr) {
   box.addEventListener('keydown', (e) => {

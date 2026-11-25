@@ -41,7 +41,7 @@ export function makeBoardHandler(board, { adKeysPerClient = 3, now = () => Math.
       if (method === 'POST' && (m = /^\/m\/([0-9a-f]{66})$/.exec(path))) return reply(board.post(m[1], unb64(body && body.b), { claimPub: body && body.k != null ? body.k : null, client }));
       if (method === 'GET' && (m = /^\/m\/([0-9a-f]{66})\/(\d{1,12})$/.exec(path))) {
         const r = board.inbox(m[1], Number(m[2]));
-        return reply({ boot: r.boot, next: r.next, items: r.items.map((x) => ({ seq: x.seq, id: x.id, b: b64(x.bytes) })) });
+        return reply({ boot: r.boot, next: r.next, items: r.items.map((x) => ({ seq: x.seq, id: x.id, b: b64(x.bytes), ...(x.from ? { f: x.from } : {}) })) });
       }
       if (method === 'PUT' && (m = /^\/r\/([0-9a-f]{32})$/.exec(path))) return reply(board.putReply(m[1], unb64(body && body.b), body && body.sig));
       if (method === 'PUT' && (m = /^\/d\/([0-9a-f]{32})$/.exec(path))) return reply(board.drop(m[1], body && body.sig));

@@ -24,13 +24,13 @@ function ipNum(addr) {
   if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;
   return { bits: 128, n: groups.reduce((s, g) => (s << 16n) | BigInt(parseInt(g, 16)), 0n) };
 }
-// A client's address as a key: an IPv6 one by its /64, since a network gives all the rest of it to one customer.
+// A client's address as a key: an IPv6 one by its /48, since a network may give a customer that much (a /56 or a /48, not only a /64).
 function ipKey(addr) {
   const a = String(addr).trim().toLowerCase();
   if (!a.includes(':') || /^(::ffff:)?\d+\.\d+\.\d+\.\d+$/.test(a)) return a;
   const [h, t = ''] = a.split('::'), head = h ? h.split(':') : [], tail = t ? t.split(':') : [];
   const full = a.includes('::') ? [...head, ...Array(Math.max(0, 8 - head.length - tail.length)).fill('0'), ...tail] : head;
-  return `${full.slice(0, 4).map((x) => x.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+  return `${full.slice(0, 3).map((x) => x.replace(/^0+(?=.)/, '')).join(':')}::/48`;
 }
 // Cloudflare's own addresses (https://www.cloudflare.com/ips/, read 2026-11-25): an entry of the forwarded list in one of them is a hop of its edge.
 export const CLOUDFLARE = [

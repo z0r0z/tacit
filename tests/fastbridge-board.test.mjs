@@ -312,17 +312,20 @@ test('answered requests no longer count against the provider\'s queue: only the 
   assert.deepEqual(board.inbox(gw, 0).items.map((m) => m.seq), [7, 8, 9], 'answering one makes room for the next');
 });
 
-test('all of a provider\'s requests that are still kept are bounded too, answered or not, and run out', () => {
-  const c = clock(), board = makeBoard({ now: c.now, limits: { maxQueue: 3, maxPosted: 4 } });
+test('the requests waiting for a provider are bounded and answered ones count no longer; one address\'s requests still known are bounded too, and run out', () => {
+  const c = clock(), board = makeBoard({ now: c.now, limits: { maxQueue: 3, maxPosted: 4, maxPostedFrom: 4 } });
   const ad = adOf(1, T0), p = priv(1), gw = ad.gateway;
   board.putAd(ad);
   const answer = (id, n) => { const b = bytesOf(1200, n); board.putReply(id, b, bytesToHex(signSchnorr(replyDigest(id, b), p))); };
   for (let n = 1; n <= 4; n++) { const { id } = board.post(gw, bytesOf(4100, n)); answer(id, n); }
-  assert.equal(thrown(() => board.post(gw, bytesOf(4100, 5))).status, 503, 'four kept, with the queue empty: a fifth is turned away');
+  assert.ok(board.post(gw, bytesOf(4100, 5)).seq > 4, 'four answered, with the queue empty: a fifth is taken');
   assert.equal(board.post(gw, bytesOf(4100, 1)).kept, true, 'a kept one posted again is not counted twice');
+  for (let n = 6; n <= 9; n++) { const { id } = board.post(gw, bytesOf(4100, n), { client: 'ip:a' }); answer(id, n); }
+  assert.equal(thrown(() => board.post(gw, bytesOf(4100, 10), { client: 'ip:a' })).status, 503, 'one address with four still known: its fifth is turned away');
+  assert.ok(board.post(gw, bytesOf(4100, 11), { client: 'ip:b' }).id, 'another address is taken');
   c.advance(601);
   board.putAd(adOf(1, c.t));
-  assert.equal(board.post(gw, bytesOf(4100, 5)).seq > 4, true, 'once they have run out there is room again');
+  assert.equal(board.post(gw, bytesOf(4100, 10), { client: 'ip:a' }).seq > 9, true, 'once they have run out there is room again');
   // another provider's requests are not counted against this one
   const other = adOf(2, c.t); board.putAd(other);
   assert.equal(board.post(other.gateway, bytesOf(4100, 6)).seq > 5, true);
@@ -659,8 +662,9 @@ test('behind Render the client is the address its Cloudflare edge added to the f
   // a request that did not come through the edge: the last entry is the address that connected, and it is the client
   assert.equal(await who({ 'x-forwarded-for': '192.0.2.77, 198.51.100.10' }), '198.51.100.10');
   assert.equal(await who({ 'x-forwarded-for': '198.51.100.11' }), '198.51.100.11');
-  assert.equal(await who({ 'x-forwarded-for': '2001:db8:1:2:aaaa:bbbb:cccc:dddd, 2a06:98c0:3600::103' }), '2001:db8:1:2::/64', 'an IPv6 client is one client by its /64');
-  assert.equal(await who({ 'x-forwarded-for': '2001:0db8:0001:0002:1111::4444, 2606:4700::1' }), '2001:db8:1:2::/64');
+  assert.equal(await who({ 'x-forwarded-for': '2001:db8:1:2:aaaa:bbbb:cccc:dddd, 2a06:98c0:3600::103' }), '2001:db8:1::/48', 'an IPv6 client is one client by its /48');
+  assert.equal(await who({ 'x-forwarded-for': '2001:0db8:0001:0002:1111::4444, 2606:4700::1' }), '2001:db8:1::/48');
+  assert.equal(await who({ 'x-forwarded-for': '2001:db8:1:ffff::1, 2606:4700::1' }), '2001:db8:1::/48', 'another /64 of the same /48 is the same client');
   assert.equal(await who({ 'x-forwarded-for': 'not an ip!, 104.23.0.1' }), '127.0.0.1', 'an entry that is not an address is not a client: the socket\'s is used');
   assert.equal(await who({}), '127.0.0.1');
 });

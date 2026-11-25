@@ -98,7 +98,8 @@ export function makeMailboxServer({ board, keys, handle, signReply, now = () => 
               if (e instanceof SealedError && board.drop) await Promise.resolve(board.drop(m.id, bytesToHex(signReply(dropDigest(m.id))))).catch(() => {});
               throw e;
             }
-            const out = await handle({ method: req.method, path: req.path, body: req.body });
+            // (the board's tag of the client address, when it gives one: the provider's holds are then shared out per client and not among all of the board's)
+            const out = await handle({ method: req.method, path: req.path, body: req.body, ...(typeof m.from === 'string' && /^[0-9a-f]{16}$/.test(m.from) ? { client: `board:${m.from}` } : {}) });
             const bytes = await req.reply(out.status, {}, te.encode(JSON.stringify(out.body)));
             await board.putReply(m.id, bytes, bytesToHex(signReply(replyDigest(m.id, bytes))));
           } catch (e) { log({ level: 'warn', msg: 'a request was not answered', error: String((e && e.message) || e).slice(0, 120) }); }
