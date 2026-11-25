@@ -1,4 +1,4 @@
-import { mountHelp } from '/help/ui.js?cb=7603d020';
+import { mountHelp } from '/help/ui.js?cb=7bf23972';
 
 // The help desk is a service of its own (the community's machines answer, a gateway queues the questions); the page only asks it.
 const HELP_API = 'https://tacit-helpdesk.onrender.com';
