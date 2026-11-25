@@ -14,10 +14,12 @@ The key is sound only if all three hold:
 1. at least one of the first 54 contributors to the Perpetual Powers of Tau (Phase 1) was honest;
 2. at least one Phase 2 contributor was honest: one of Succinct's 18 contributions, or one here;
 3. the starting files (the Phase 1 commons, the initial Phase 2 file and the evaluations) were derived correctly from
-   Phase 1 and the circuit. Re-deriving them from `powersOfTau28_hez_final_24.ptau` is a separate check, not yet done
-   here.
+   Phase 1 and the circuit. They were re-derived from `powersOfTau28_hez_final_24.ptau` and the circuit and match
+   Succinct's files byte for byte, with the rest of the chain up to the key on Ethereum:
+   [genesis/RESULT.md](genesis/RESULT.md), and [genesis/reproduce.sh](genesis/reproduce.sh) to run it yourself.
 
-The link-by-link checks below cover (2) from `phase2-17` onward; they do not cover (1) or (3).
+The link-by-link checks below cover (2) from `phase2-17` onward. Checking files cannot show (1), or that one of Succinct's 18
+contributors was honest.
 
 What a Tacit Praxis ciphertext will encrypt to (the five public inputs, the gate program, the pinned decryptor stack)
 is fixed in [STATEMENT.md](STATEMENT.md).
