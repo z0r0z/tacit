@@ -972,6 +972,13 @@ export const CFG = {
   pointsMineSchedule: opt('POINTS_MINE_SCHEDULE', ''),
   pointsMinePocket: opt('POINTS_MINE_POCKET_WEI', ''),
   pointsMineEndSec: opt('POINTS_MINE_END_SEC', ''),
+  // The Tacit Praxis ceremony's points: the same shape as proof mining with its own pocket and credit ids (pc:), off unless all four
+  // are set. POINTS_CEREMONY_FEED is the ceremony proxy's GET /api/credits (one credit per address, CEREMONY_POINTS points each);
+  // with "<day>:daily=<TAC>,cap=<TAC per point>" a cap of 0.05 at 100 points pays 5 TAC a contribution while the day's amount is enough.
+  pointsCeremonyFeed: opt('POINTS_CEREMONY_FEED', ''),
+  pointsCeremonySchedule: opt('POINTS_CEREMONY_SCHEDULE', ''),
+  pointsCeremonyPocket: opt('POINTS_CEREMONY_POCKET_WEI', ''),
+  pointsCeremonyEndSec: opt('POINTS_CEREMONY_END_SEC', ''),
   // Where the balance monitor reads the points service's /rewards funding report.
   pointsApiBase: opt('POINTS_API_BASE', 'https://tacit-points.onrender.com'),
   pointsSettleMaxWaitSecs: num('POINTS_SETTLE_MAX_WAIT_SECS', 21600),

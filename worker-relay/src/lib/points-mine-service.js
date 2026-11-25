@@ -63,29 +63,32 @@ export function allocateMineDay({ tally, dailyWei, capWeiPerPoint }) {
 }
 
 export function createMine({ store, cfg, fetchJson, fundingInputs, budgetFor, graceSecs = 0, nowSec = () => Math.floor(Date.now() / 1000), log = () => {} }) {
+  // cfg.campaign: another campaign of the same shape (the ceremony's) keeps its own credit ids, tables and name
+  const NS = { name: 'mine', prefix: CREDIT_PREFIX, table: 'pm', ...(cfg.campaign || {}) };
+  if (!/^[a-z]{2,8}:$/.test(NS.prefix) || !/^[a-z]{2,8}$/.test(NS.table)) throw new Error('bad campaign prefix or table');
   const feeds = [].concat(cfg.feedUrl || []).filter(Boolean);
   const enabled = feeds.length > 0 && cfg.pocketWei > 0n && cfg.endSec > 0 && (cfg.schedule ?? []).length > 0;
   const reserveDays = cfg.reserveDays ?? 2;
   const db = store.db;
   if (enabled) {
     db.exec(`
-      CREATE TABLE IF NOT EXISTS pm_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS pm_days (day INTEGER PRIMARY KEY, paid_at INTEGER NOT NULL, wei TEXT NOT NULL, sha256 TEXT NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ${NS.table}_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ${NS.table}_days (day INTEGER PRIMARY KEY, paid_at INTEGER NOT NULL, wei TEXT NOT NULL, sha256 TEXT NOT NULL, json TEXT NOT NULL);
     `);
   }
   const stmts = new Map();
   const q = (sql) => { if (!stmts.has(sql)) stmts.set(sql, db.prepare(sql)); return stmts.get(sql); };
-  const getMeta = (k) => q('SELECT v FROM pm_meta WHERE k = ?').get(k)?.v ?? null;
-  const setMeta = (k, v) => q('INSERT INTO pm_meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').run(k, String(v));
+  const getMeta = (k) => q(`SELECT v FROM ${NS.table}_meta WHERE k = ?`).get(k)?.v ?? null;
+  const setMeta = (k, v) => q(`INSERT INTO ${NS.table}_meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).run(k, String(v));
   let lastHold = '';
   const said = (why, text) => { if (why !== lastHold) { lastHold = why; log(`mining credits wait: ${why} (${text})`); } };
 
   // The day's credits, the mark that it is paid and its record go in together, and only while the pocket covers them.
   const applyAll = db.transaction((credits, day, t, record) => {
     const total = credits.reduce((s, c) => s + c.wei, 0n);
-    if (store.creditedWithPrefix(CREDIT_PREFIX) + total > cfg.pocketWei) throw new Hold('pocket');
+    if (store.creditedWithPrefix(NS.prefix) + total > cfg.pocketWei) throw new Hold('pocket');
     for (const c of credits) store.applyAdjustment({ id: c.id, address: c.address, wei: c.wei });
-    q('INSERT INTO pm_days (day, paid_at, wei, sha256, json) VALUES (?, ?, ?, ?, ?)').run(day, t, String(total), hashRecord(record), JSON.stringify(record));
+    q(`INSERT INTO ${NS.table}_days (day, paid_at, wei, sha256, json) VALUES (?, ?, ?, ?, ?)`).run(day, t, String(total), hashRecord(record), JSON.stringify(record));
     return total;
   });
   async function holdFor(wei, t) {
@@ -93,14 +96,14 @@ export function createMine({ store, cfg, fetchJson, fundingInputs, budgetFor, gr
     const ledger = store.allRewards().reduce((s, r) => s + BigInt(r.cumulativeWei), 0n);
     const need = inputs ? reserveFor({ reserveDays, nextDay: inputs.nextDay, budgetFor }) : reserveDays;
     return holdReason({
-      wei, creditedWei: store.creditedWithPrefix(CREDIT_PREFIX), pocketWei: cfg.pocketWei, nowSec: t, endSec: cfg.endSec, reserveDays: need,
+      wei, creditedWei: store.creditedWithPrefix(NS.prefix), pocketWei: cfg.pocketWei, nowSec: t, endSec: cfg.endSec, reserveDays: need,
       status: (extra) => (inputs ? fundingStatus({ heldWei: inputs.heldWei, claimedWei: inputs.claimedWei, ledgerWei: ledger + extra, budgetFor, nextDay: inputs.nextDay, graceSecs }) : null),
     });
   }
 
   // Days in order, each once it is over: a day that cannot be read or paid yet holds the ones after it.
   async function settle() {
-    const lastPaid = q('SELECT MAX(day) AS d FROM pm_days').get()?.d;
+    const lastPaid = q(`SELECT MAX(day) AS d FROM ${NS.table}_days`).get()?.d;
     let day = lastPaid == null ? Math.max(dayOf(Number(getMeta('enabled_at') ?? nowSec())), cfg.schedule[0].fromDay) : lastPaid + 1;
     const t = nowSec();
     for (; dayIsDone(day, t, graceSecs); day++) {
@@ -114,10 +117,10 @@ export function createMine({ store, cfg, fetchJson, fundingInputs, budgetFor, gr
         catch (err) { said('feed', `day ${day}: ${short(err)}`); return; }
       }
       const credits = terms
-        ? allocateMineDay({ tally, dailyWei: terms.dailyWei, capWeiPerPoint: terms.capWeiPerUsdDay }).map((a) => ({ id: dayId(day, a.address), address: a.address, wei: a.wei }))
+        ? allocateMineDay({ tally, dailyWei: terms.dailyWei, capWeiPerPoint: terms.capWeiPerUsdDay }).map((a) => ({ id: `${NS.prefix}day:${day}:${String(a.address).toLowerCase()}`, address: a.address, wei: a.wei }))
         : [];
       const record = {
-        v: RECORD_VERSION, campaign: 'mine', day, feed: cfg.feedUrl,
+        v: RECORD_VERSION, campaign: NS.name, day, feed: cfg.feedUrl,
         terms: terms ? { dailyWei: String(terms.dailyWei), capWeiPerPoint: String(terms.capWeiPerUsdDay) } : null,
         tally, credits: credits.map((c) => ({ id: c.id, address: c.address, wei: String(c.wei) })),
       };
@@ -141,25 +144,25 @@ export function createMine({ store, cfg, fetchJson, fundingInputs, budgetFor, gr
 
   // ── what a page shows ──
 
-  const likePrefix = CREDIT_PREFIX.replace(/[\\%_]/g, (c) => '\\' + c);
+  const likePrefix = NS.prefix.replace(/[\\%_]/g, (c) => '\\' + c);
   const sumFor = (address) => db.prepare(`SELECT wei FROM reward_adjustments WHERE id LIKE ? ESCAPE '\\' AND address = ?`).all(`${likePrefix}%`, address).reduce((s, r) => s + BigInt(r.wei), 0n);
   function dayRecord(day) {
-    const r = enabled && Number.isInteger(day) ? q('SELECT sha256, json FROM pm_days WHERE day = ?').get(day) : null;
+    const r = enabled && Number.isInteger(day) ? q(`SELECT sha256, json FROM ${NS.table}_days WHERE day = ?`).get(day) : null;
     return r ? { sha256: r.sha256, record: JSON.parse(r.json) } : null;
   }
   function view({ address = null } = {}) {
     if (!enabled) return { enabled: false };
-    const day = dayOf(nowSec()), credited = store.creditedWithPrefix(CREDIT_PREFIX);
+    const day = dayOf(nowSec()), credited = store.creditedWithPrefix(NS.prefix);
     const termsOut = (e) => (!e ? null : e.off ? { fromDay: e.fromDay, off: true } : { fromDay: e.fromDay, dailyWei: String(e.dailyWei), capWeiPerPoint: String(e.capWeiPerUsdDay) });
     const me = address ? String(address).toLowerCase() : null;
     return {
       enabled: true, endSec: cfg.endSec, feed: cfg.feedUrl,
       pocket: { totalWei: String(cfg.pocketWei), creditedWei: String(credited), remainingWei: String(cfg.pocketWei > credited ? cfg.pocketWei - credited : 0n) },
       terms: termsOut(lpTermsForDay(cfg.schedule, day)), next: termsOut(nextLpTerms(cfg.schedule, day)),
-      lastPaidDay: q('SELECT MAX(day) AS d FROM pm_days').get()?.d ?? null,
+      lastPaidDay: q(`SELECT MAX(day) AS d FROM ${NS.table}_days`).get()?.d ?? null,
       ...(me && ADDR.test(me) ? { account: { address: me, creditedWei: String(sumFor(me)) } } : {}),
     };
   }
 
-  return { enabled, name: 'mine', cycle, settle, view, dayRecord, endSec: cfg.endSec, pocketWei: cfg.pocketWei, credited: () => store.creditedWithPrefix(CREDIT_PREFIX) };
+  return { enabled, name: NS.name, cycle, settle, view, dayRecord, endSec: cfg.endSec, pocketWei: cfg.pocketWei, credited: () => store.creditedWithPrefix(NS.prefix) };
 }

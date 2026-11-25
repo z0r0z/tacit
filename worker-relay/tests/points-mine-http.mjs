@@ -22,6 +22,8 @@ const env = {
   ...(mode === 'on' ? {
     POINTS_MINE_FEED: 'https://api.tacit.finance/prover/pool/credits', POINTS_MINE_SCHEDULE: `${today}:daily=10,cap=0.05;${today + 50}:off;nonsense`,
     POINTS_MINE_POCKET_WEI: String(1000n * TAC), POINTS_MINE_END_SEC: String((today + 53) * DAY),
+    POINTS_CEREMONY_FEED: 'https://tacit-praxis-ceremony.onrender.com/api/credits', POINTS_CEREMONY_SCHEDULE: `${today}:daily=1000,cap=0.05`,
+    POINTS_CEREMONY_POCKET_WEI: String(600n * TAC), POINTS_CEREMONY_END_SEC: String((today + 14) * DAY),
   } : mode === 'two' ? {
     POINTS_MINE_FEED: 'https://api.tacit.finance/prover/pool/credits, https://api.tacit.finance/prover/board/credits', POINTS_MINE_SCHEDULE: `${today}:daily=10,cap=0.05`,
     POINTS_MINE_POCKET_WEI: String(1000n * TAC), POINTS_MINE_END_SEC: String((today + 53) * DAY),
@@ -56,10 +58,20 @@ try {
     assert.match(out, /ignoring POINTS_MINE_SCHEDULE entry "nonsense"/);
     assert.equal((await get('/mine/day/1')).error, 'no record for that day');
     console.log('ok - /mine with the campaign on:', JSON.stringify({ pocket: v.pocket, terms: v.terms }));
+    const cv = await get(`/ceremony?address=${A}`);
+    assert.equal(cv.enabled, true, JSON.stringify(cv));
+    assert.deepEqual(cv.pocket, { totalWei: String(600n * TAC), creditedWei: '0', remainingWei: String(600n * TAC) });
+    assert.deepEqual(cv.terms, { fromDay: today, dailyWei: String(1000n * TAC), capWeiPerPoint: String(5n * TAC / 100n) });
+    assert.equal(cv.feed, 'https://tacit-praxis-ceremony.onrender.com/api/credits');
+    assert.match(out, /ceremony points on: tally from https:\/\/tacit-praxis-ceremony\.onrender\.com\/api\/credits, pocket 600 TAC/);
+    assert.equal((await get('/ceremony/day/1')).error, 'no record for that day');
+    console.log('ok - /ceremony beside /mine:', JSON.stringify({ pocket: cv.pocket, terms: cv.terms }));
     const rw = await get('/rewards');
     const pk = (rw.pockets || []).find((p) => p.name === 'mine');
     assert.ok(pk && pk.remainingWei === String(1000n * TAC), `the funding report lists the pocket: ${JSON.stringify(rw.pockets)}`);
     console.log('ok - /rewards lists the mining pocket:', JSON.stringify(pk));
+    const pc = (rw.pockets || []).find((p) => p.name === 'ceremony');
+    assert.ok(pc && pc.remainingWei === String(600n * TAC), `the funding report lists the ceremony pocket: ${JSON.stringify(rw.pockets)}`);
   } else if (mode === 'two') {
     assert.equal(v.enabled, true, JSON.stringify(v));
     assert.deepEqual(v.feed, ['https://api.tacit.finance/prover/pool/credits', 'https://api.tacit.finance/prover/board/credits']);

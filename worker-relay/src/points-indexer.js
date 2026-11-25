@@ -1869,13 +1869,16 @@ function startHttp(store, evmState) {
       }
       // Proof mining (lib/points-mine-service.js): its terms and pocket, with ?address= what that account has been credited; /mine/day/<n>
       // is a paid day's record (the terms and the API's tally) with its hash.
-      if (url.pathname === '/mine' || /^\/mine\/day\/\d{1,6}$/.test(url.pathname)) {
-        if (url.pathname === '/mine') {
+      // /ceremony and /ceremony/day/<n>: the same for the ceremony's points.
+      const feedRoute = url.pathname.match(/^\/(mine|ceremony)(?:\/day\/(\d{1,6}))?$/);
+      if (feedRoute) {
+        const camp = feedRoute[1] === 'mine' ? mine : ceremony;
+        if (!feedRoute[2]) {
           res.setHeader('Cache-Control', 'public, max-age=30');
-          res.end(JSON.stringify(mine ? mine.view({ address: /^0x[0-9a-fA-F]{40}$/.test(url.searchParams.get('address') ?? '') ? url.searchParams.get('address') : null }) : { enabled: false }));
+          res.end(JSON.stringify(camp ? camp.view({ address: /^0x[0-9a-fA-F]{40}$/.test(url.searchParams.get('address') ?? '') ? url.searchParams.get('address') : null }) : { enabled: false }));
           return;
         }
-        const day = Number(url.pathname.split('/').pop()), kept = mine?.dayRecord(day);
+        const day = Number(feedRoute[2]), kept = camp?.dayRecord(day);
         if (!kept) { res.statusCode = 404; res.end(JSON.stringify({ error: 'no record for that day' })); return; }
         res.setHeader('Cache-Control', 'public, max-age=300');
         res.end(JSON.stringify({ day, ...kept }));
@@ -2076,9 +2079,9 @@ function setupTasks(store) {
 }
 
 // The liquidity campaign (lib/points-lp-service.js): off unless POINTS_LP_SCHEDULE, POINTS_LP_POOLS, POINTS_LP_POCKET_WEI and POINTS_LP_END_SEC are set.
-let lp = null, lpFarms = [], tokpool = null, mine = null;
+let lp = null, lpFarms = [], tokpool = null, mine = null, ceremony = null;
 // Every campaign paid from a pocket of its own: the liquidity campaign, its virtual farms, the token pools' campaign and proof mining.
-const lpCampaigns = () => [lp, ...lpFarms, tokpool, mine].filter(Boolean);
+const lpCampaigns = () => [lp, ...lpFarms, tokpool, mine, ceremony].filter(Boolean);
 // What the campaigns have yet to credit (a pocket less what it has paid, while the campaign runs): the distributor holds it for them, so the
 // headroom that is the regular pot's is what is left after it.
 function lpFundingFields(funding) {
@@ -2155,15 +2158,21 @@ function setupTokPool(store) {
   return t;
 }
 
-// Proof mining (lib/points-mine-service.js): off unless POINTS_MINE_FEED, _SCHEDULE, _POCKET_WEI and _END_SEC are set.
-function setupMine(store) {
-  const schedule = parseLpSchedule(CFG.pointsMineSchedule, (m) => log(m.replace('POINTS_LP_SCHEDULE', 'POINTS_MINE_SCHEDULE')));
-  const set = parseLpSettings({ pocket: CFG.pointsMinePocket, endSec: CFG.pointsMineEndSec }, (m) => log(m.replace(/POINTS_LP_/g, 'POINTS_MINE_')));
+// Proof mining (lib/points-mine-service.js): off unless POINTS_MINE_FEED, _SCHEDULE, _POCKET_WEI and _END_SEC are set. The ceremony's
+// campaign is the same with POINTS_CEREMONY_* and its own credit ids.
+const FEED_CAMPAIGNS = {
+  mine: { env: 'MINE', feed: 'pointsMineFeed', schedule: 'pointsMineSchedule', pocket: 'pointsMinePocket', endSec: 'pointsMineEndSec', label: 'proof mining' },
+  ceremony: { env: 'CEREMONY', feed: 'pointsCeremonyFeed', schedule: 'pointsCeremonySchedule', pocket: 'pointsCeremonyPocket', endSec: 'pointsCeremonyEndSec', label: 'ceremony points', campaign: { name: 'ceremony', prefix: 'pc:', table: 'pc' } },
+};
+function setupMine(store, kind = 'mine') {
+  const K = FEED_CAMPAIGNS[kind];
+  const schedule = parseLpSchedule(CFG[K.schedule], (m) => log(m.replace('POINTS_LP_SCHEDULE', `POINTS_${K.env}_SCHEDULE`)));
+  const set = parseLpSettings({ pocket: CFG[K.pocket], endSec: CFG[K.endSec] }, (m) => log(m.replace(/POINTS_LP_/g, `POINTS_${K.env}_`)));
   // One URL, or several separated by commas whose tallies are summed (the proof pool's and the prover board's); each https, or this
   // machine's own address for a local run.
-  const feeds = CFG.pointsMineFeed.split(',').map((f) => f.trim()).filter(Boolean);
+  const feeds = CFG[K.feed].split(',').map((f) => f.trim()).filter(Boolean);
   const bad = feeds.find((f) => !/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)[:/])[^\s?#,]+$/.test(f));
-  if (bad) { log(`ignoring POINTS_MINE_FEED="${bad}": expected an https URL with no query`); return null; }
+  if (bad) { log(`ignoring POINTS_${K.env}_FEED="${bad}": expected an https URL with no query`); return null; }
   const feedUrl = feeds.length > 1 ? feeds : feeds[0];
   if (!feedUrl || !set || !CFG.pointsProgramStartSec || !schedule.length) return null;
   const fetchJson = async (url) => {
@@ -2171,8 +2180,8 @@ function setupMine(store) {
     if (!r.ok) throw new Error(`${new URL(url).host} answered ${r.status}`);
     return r.json();
   };
-  const m = createMine({ ...lpDeps(store), fetchJson, cfg: { schedule, feedUrl, pocketWei: set.pocketWei, endSec: set.endSec } });
-  log(`proof mining on: tally from ${feeds.join(' + ')}, pocket ${formatTac(set.pocketWei)} TAC, until ${new Date(set.endSec * 1000).toISOString()}`);
+  const m = createMine({ ...lpDeps(store), fetchJson, cfg: { schedule, feedUrl, pocketWei: set.pocketWei, endSec: set.endSec, ...(K.campaign ? { campaign: K.campaign } : {}) } });
+  log(`${K.label} on: tally from ${feeds.join(' + ')}, pocket ${formatTac(set.pocketWei)} TAC, until ${new Date(set.endSec * 1000).toISOString()}`);
   return m;
 }
 
@@ -2229,6 +2238,7 @@ async function main() {
   try { lpFarms = setupLpFarms(store); } catch (err) { log('virtual farms not started:', err?.message || err); lpFarms = []; }
   try { tokpool = setupTokPool(store); } catch (err) { log("token pools' campaign not started:", err?.message || err); tokpool = null; }
   try { mine = setupMine(store); } catch (err) { log('proof mining not started:', err?.message || err); mine = null; }
+  try { ceremony = setupMine(store, 'ceremony'); } catch (err) { log('ceremony points not started:', err?.message || err); ceremony = null; }
   startHttp(store, evmState);
 
   // One loop runs every scanner, the daily settlement and every campaign's payout in turn, so a call that never answers would hold all of them back
@@ -2339,7 +2349,7 @@ async function main() {
     }
     wd.stage('campaigns');
     // After the regular settlement, which comes first: the campaign's own scan and credits can wait a cycle, the daily pot cannot.
-    for (const c of lpCampaigns()) { try { await stage(`campaign-${c === tokpool ? 'tokpool' : c === mine ? 'mine' : c.name ? `farm-${c.name}` : 'lp'}`, () => c.cycle()); } catch (err) { log(`${c === tokpool ? "token pools' campaign" : c === mine ? 'proof mining' : c.name ? `virtual farm "${c.name}"` : 'liquidity campaign'} cycle failed:`, err?.message || err); } }
+    for (const c of lpCampaigns()) { try { await stage(`campaign-${c === tokpool ? 'tokpool' : c === mine ? 'mine' : c === ceremony ? 'ceremony' : c.name ? `farm-${c.name}` : 'lp'}`, () => c.cycle()); } catch (err) { log(`${c === tokpool ? "token pools' campaign" : c === mine ? 'proof mining' : c === ceremony ? 'ceremony points' : c.name ? `virtual farm "${c.name}"` : 'liquidity campaign'} cycle failed:`, err?.message || err); } }
     wd.stage('holding');
     if (holding) { try { await stage('holding', () => holding.cycle()); } catch (err) { log('holding cycle failed:', err?.message || err); } }
     wd.stage('sleep');

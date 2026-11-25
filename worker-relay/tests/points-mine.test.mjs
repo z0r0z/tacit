@@ -192,3 +192,32 @@ test('off unless a feed, a schedule, a pocket and an end are all set', () => {
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a second campaign of the same shape (the ceremony) keeps its own credit ids, tables and pocket, and pays a flat amount', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mine2-'));
+  try {
+    const store = openStore(join(dir, 'points.db'));
+    const clock = { t: T(D0, 1) };                      // the campaigns start on day D0 and pay it once it is over
+    const tallies = {
+      'https://pool/credits': { day: D0, over: true, miners: [{ miner: A, proofs: 2, points: 40 }] },
+      'https://ceremony/credits': { day: D0, over: true, miners: [{ miner: A, proofs: 1, points: 100 }, { miner: B, proofs: 1, points: 100 }] },
+    };
+    const fetchJson = async (url) => tallies[new URL(url).origin + new URL(url).pathname];
+    const base = { store, fetchJson, budgetFor: () => 1111n * WAD, graceSecs: 1800, nowSec: () => clock.t, fundingInputs: async () => ({ heldWei: 100_000n * WAD, claimedWei: 0n, nextDay: D0 + 1 }) };
+    const mine = createMine({ ...base, cfg: { schedule: parseLpSchedule(`${D0}:daily=10,cap=0.05`), feedUrl: 'https://pool/credits', pocketWei: 500n * WAD, endSec: T(D0 + 60) } });
+    // 100 points a contribution at a cap of 0.05 TAC a point, with a day's amount that never binds: 5 TAC each
+    const cer = createMine({ ...base, cfg: { schedule: parseLpSchedule(`${D0}:daily=1000,cap=0.05`), feedUrl: 'https://ceremony/credits', pocketWei: 600n * WAD, endSec: T(D0 + 30), campaign: { name: 'ceremony', prefix: 'pc:', table: 'pc' } } });
+    await mine.cycle(); await cer.cycle();
+    clock.t = T(D0 + 1, 2);
+    await mine.cycle(); await cer.cycle();
+    const adj = store.listAdjustments().map((a) => [a.id, BigInt(a.wei)]).sort();
+    assert.deepEqual(adj, [[`pc:day:${D0}:${A}`, tac(5)], [`pc:day:${D0}:${B}`, tac(5)], [`pm:day:${D0}:${A}`, tac(2)]]);
+    assert.equal(cer.view().pocket.creditedWei, String(tac(10)), 'the ceremony pocket counts only its own credits');
+    assert.equal(mine.view().pocket.creditedWei, String(tac(2)));
+    assert.equal(cer.dayRecord(D0).record.campaign, 'ceremony');
+    assert.equal(mine.dayRecord(D0).record.campaign, 'mine');
+    await cer.cycle();
+    assert.equal(store.listAdjustments().length, 3, 'a paid day is not paid again');
+    assert.throws(() => createMine({ ...base, cfg: { feedUrl: 'x', campaign: { prefix: 'pm', table: 'pc' } } }), /bad campaign/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
