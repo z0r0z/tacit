@@ -407,7 +407,7 @@ console.log('One press: a swap of ETH the private balance is short of (the ETH m
   const unit = await page.evaluate(async () => { const m = await import('/btc/add-eth.js'); const a = await import('/swap/atomic.js'); return [m.addUnits(5000000n, 0n), m.addUnits(5000000n, 3000000n), m.addUnits(5000000n, 5000000n), m.addUnits(5000000n, null), a.addUnits(5000000n, 1n), m.leastFor(100000000000000n)].map(String); });
   ok(JSON.stringify(unit) === JSON.stringify(['5000000', '2000000', '0', '5000000', '4999999', '200000']), `the shortfall math: the amount with nothing available, else what is short, nothing when covered; the lane's copy agrees; the least deposit a tip allows (${unit})`);
   const spans = await page.evaluate(async () => { const a = await import('/swap/atomic.js'); return [a.etaSpan(1770), a.etaSpan(1410), a.etaSpan(600)]; });
-  ok(JSON.stringify(spans) === JSON.stringify(['about 20–30 minutes', 'about 15–25 minutes', 'about 10 minutes']), `the time a swap of ETH has left: a range while two Bitcoin blocks are ahead, one figure nearer the end (${spans})`);
+  ok(JSON.stringify(spans) === JSON.stringify(['about 20\u2060–\u206030 minutes', 'about 15\u2060–\u206025 minutes', 'about 10 minutes']), `the time a swap of ETH has left: a range while two Bitcoin blocks are ahead, one figure nearer the end (${spans})`);
   await SHOT(page, 'oneclick-ask');
   // the relay holds the deposit after it is mined: the swap is started on it meanwhile
   await page.evaluate(() => { window.__add.hold = true; });
@@ -420,7 +420,7 @@ console.log('One press: a swap of ETH the private balance is short of (the ETH m
   const card = await text(page, '#mine-list [data-rec="sw9"]');
   const steps = await page.$$eval('#mine-list [data-rec="sw9"] .stp li', (ls) => ls.map((l) => `${l.textContent}:${l.className}`));
   ok(steps.length === 5 && steps[0] === 'Made private:active' && steps[1] === 'They lock BTC:active', `one view of the whole swap: its ETH being made private, alongside the provider's lock (${steps})`);
-  ok(/about 20–30 minutes/.test(card) && /The provider is locking BTC for you/.test(card), `one time for all of it, as a range (${card.slice(0, 160)})`);
+  ok(/about 20\u2060–\u206030 minutes/.test(card) && /The provider is locking BTC for you/.test(card), `one time for all of it, as a range (${card.slice(0, 160)})`);
   ok(/Locked in: the provider has been asked, so this swap can no longer be cancelled\./.test(card) && !(await page.$('#mine-list [data-press-cancel]')) && !(await page.$('#a-q [data-press-cancel]')), 'the provider has been asked: no Cancel, and the card says it is locked in');
   ok((await page.inputValue('#a-amt')) === '' && /^Adding ETH to your private balance…$/.test(await text(page, '#a-go')), 'the lane is cleared for the next swap, which waits while the deposit lands');
   await SHOT(page, 'oneclick-started');
@@ -455,15 +455,15 @@ console.log('One press: a swap of ETH the private balance is short of (the ETH m
 }
 {
   // Cancel, while it costs the provider nothing: the deposit sent but not mined, so the provider has not been asked
-  const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', init: 'window.__atom.bal.eth = 0n; window.__add.holdReceipt = true;' });
+  const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', scheme: 'dark', init: 'window.__atom.bal.eth = 0n; window.__add.holdReceipt = true;' });
   await page.click('#a-go');
   await page.waitForFunction(() => /^Swap 0\.05 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
   await page.click('#a-go');
   await page.waitForFunction(() => window.__add.mine && document.querySelector('#a-q [data-press-cancel]'), null, { timeout: 15000 });
   const press = await text(page, '#mine-list [data-rec="press"]');
-  ok(/Adding your ETH privately/.test(press) && /about 20–30 minutes/.test(press) && (await page.$$('#mine-list [data-rec="press"] .stp li')).length === 5 && !!(await page.$('#mine-list [data-rec="press"] [data-press-cancel]')), `while the deposit waits for a block: one card for the whole swap, its first step under way, with a Cancel (${press.slice(0, 140)})`);
+  ok(/Adding your ETH privately/.test(press) && /about 20\u2060–\u206030 minutes/.test(press) && (await page.$$('#mine-list [data-rec="press"] .stp li')).length === 5 && !!(await page.$('#mine-list [data-rec="press"] [data-press-cancel]')), `while the deposit waits for a block: one card for the whole swap, its first step under way, with a Cancel (${press.slice(0, 140)})`);
   ok(/The deposit is sent/.test(await text(page, '#a-q')) && /^Adding your ETH privately…$/.test(await text(page, '#a-go')), 'the line says where the deposit is; the button waits');
-  await SHOT(page, 'oneclick-cancel-offered');
+  await SHOT(page, 'oneclick-cancel-offered-dark');
   await page.click('#a-q [data-press-cancel]');
   ok(/Cancelled: no swap starts\. The deposit is already sent, so its ETH lands in your private balance/.test(await text(page, '#a-q')) && !(await page.$('[data-press-cancel]')), 'cancelled: no swap will start, and the deposit is said to stay in the private balance');
   await page.evaluate(() => window.__add.mine());
@@ -473,7 +473,7 @@ console.log('One press: a swap of ETH the private balance is short of (the ETH m
 }
 {
   // the quote ran out while the deposit was mined, and the new one gives less: nothing starts until the new price is accepted
-  const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', init: 'window.__atom.bal.eth = 0n; window.__add.holdReceipt = true; window.__atom.ttl = 100;' });
+  const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', viewport: { width: 390, height: 900 }, scheme: 'dark', init: 'window.__atom.bal.eth = 0n; window.__add.holdReceipt = true; window.__atom.ttl = 100;' });
   await page.click('#a-go');
   await page.waitForFunction(() => /^Swap 0\.05 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
   await page.click('#a-go');
@@ -482,7 +482,7 @@ console.log('One press: a swap of ETH the private balance is short of (the ETH m
   await page.waitForFunction(() => /^Accept the new price$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
   const said = await text(page, '#a-q');
   ok((await atom(page, 'A.calls.start.length')) === 0 && /The price moved while your ETH was made private: 0\.00163973 → 0\.00162328 BTC\. Accept the new price to go on/.test(said) && !!(await page.$('#a-q [data-press-cancel]')), `a renewed quote that gives less is not swapped on: old and new are shown, with a way to keep the ETH private instead (${said})`);
-  await SHOT(page, 'oneclick-worse');
+  await SHOT(page, 'oneclick-worse-390-dark', false);
   await page.click('#a-go');
   await page.waitForFunction(() => window.__atom.calls.start.length === 1, null, { timeout: 15000 });
   ok((await atom(page, 'String(A.calls.start[0].get)')) === String((5000000n * 10n * 99n) / 304n / 100n), 'accepted: the swap starts on the new quote');

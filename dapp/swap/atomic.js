@@ -21,8 +21,8 @@
 // to be seen again can miss its window); and the page asks before it is left while one is under way.
 import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 
-const BTC_MODULE = '/trade/btc.js?cb=f4f79584';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=af4d888c';
+const BTC_MODULE = '/trade/btc.js?cb=0ca9eea7';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=abd9017c';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
 // A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
@@ -63,7 +63,7 @@ export const etaSpan = (secs) => {
   const s = Number(secs);
   if (!(s >= 1200)) return etaText(s);
   const lo = Math.max(5, Math.round((s * 0.7) / 300) * 5), hi = Math.max(lo + 5, Math.round((s * 1.1) / 300) * 5);
-  return `about ${lo}–${hi} minutes`;
+  return `about ${lo}\u2060–\u2060${hi} minutes`;                         // (kept on one line: the range does not break at its dash)
 };
 // How long until a time (seconds since the epoch), in words, for a refund that opens then.
 export const untilText = (at, now = nowSecs()) => {
