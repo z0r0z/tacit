@@ -9,6 +9,10 @@
 //
 // GET /api/credits?day=<n> is the ceremony's points feed (credits.mjs): one credit per 0x address, from signed receipts only;
 // CEREMONY_POINTS (100) points a credit, CEREMONY_EXCLUDE a comma-separated list of addresses never credited.
+//
+// GET /api/coordinator tells a prover-pool machine where to contribute: { open, coordinator, key, queue } (COORDINATOR_PUBLIC_URL,
+// default COORDINATOR_URL). The machine pins the key and the tool's hashes itself; only the address comes from here, so the
+// coordinator can move without a new release.
 import { createServer } from 'node:http';
 import { startMirror } from './mirror.mjs';
 import { dayTally, DAY_MS } from './credits.mjs';
@@ -24,6 +28,7 @@ const mirror = process.env.MIRROR_BUCKET
       key: process.env.MIRROR_KEY, secret: process.env.MIRROR_SECRET })
   : null;
 
+const PUBLIC_URL = String(process.env.COORDINATOR_PUBLIC_URL || UPSTREAM).replace(/\/$/, '');
 const CREDIT_POINTS = Number(process.env.CEREMONY_POINTS || 100);
 const EXCLUDE = String(process.env.CEREMONY_EXCLUDE || '').split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -58,6 +63,13 @@ createServer(async (req, res) => {
   if (req.method === 'GET' && path === '/api/mirror') {
     res.writeHead(mirror ? 200 : 404, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30', ...cors });
     return res.end(JSON.stringify(mirror ? { bucket: process.env.MIRROR_BUCKET, files: mirror.status() } : { error: 'no mirror' }));
+  }
+  if (req.method === 'GET' && path === '/api/coordinator') {
+    const v = await upstream('/api/head');
+    let head = null;
+    try { head = v.status === 200 && !v.stale ? JSON.parse(v.body) : null; } catch {}
+    res.writeHead(head ? 200 : 502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...cors });
+    return res.end(JSON.stringify(head ? { open: head.closed === false, coordinator: PUBLIC_URL, key: process.env.COORDINATOR_KEY || null, queue: head.queue, index: head.index } : { error: 'the coordinator did not answer' }));
   }
   if (req.method === 'GET' && path === '/api/credits') {
     const day = Number(new URL(req.url, 'http://x').searchParams.get('day'));
