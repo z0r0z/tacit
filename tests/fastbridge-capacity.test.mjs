@@ -250,6 +250,19 @@ test('provider: a quote stored when it was given (before quotes were sealed) is 
   assert.equal((await store.get(old.id)).reservedUntil, r.body.until);
 });
 
+test('provider: the reverse side lets go of the quotes no swap uses once they have run out, and keeps the one that started a swap', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.stores.rv.quotes.del = async function (id) { this.m.delete(id); };
+  const claimPub = pubOf(priv(5));
+  const ids = [];
+  for (let i = 0; i < 200; i++) { const r = await w.rev.handle({ method: 'POST', path: '/reverse/quote', body: { amount: String(UNITS), claimPub } }); assert.equal(r.status, 200); ids.push(r.body.id); }
+  const started = await w.rev.handle({ method: 'POST', path: '/reverse/start', body: { quoteId: ids[0] } });
+  assert.equal(started.body.ok, true);
+  for (let d = 0; d < 3 * 24; d++) { w.clock.advance(3600); await w.rev.tick(); }
+  assert.deepEqual([...w.stores.rv.quotes.m.keys()], [ids[0]], 'only the quote that started a swap is kept');
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log('ok   ' + name); } catch (e) { failed++; console.log('FAIL ' + name + '\n     ' + String((e && e.stack) || e).split('\n').slice(0, 6).join('\n     ')); }

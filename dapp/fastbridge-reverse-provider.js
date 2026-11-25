@@ -256,8 +256,22 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
 
   async function start() { await swaps.list(); stale(); }
 
+  // A quote that started no swap is of no use once it has run out: it is let go `quoteKeepSecs` after (a look every ten minutes at most), and sooner, as soon as it
+  // runs out, while more than `maxQuotes` such quotes are kept. One that started a swap stays with it.
+  let lastPrune = -Infinity;
+  async function pruneQuotes() {
+    if (!quotes.del || now() - lastPrune < 600) return 0;
+    lastPrune = now();
+    const keepSecs = config.quoteKeepSecs ?? 3600, cap = config.maxQuotes ?? 5000;
+    const loose = (await quotes.list()).filter((r) => r && !r.swapId);
+    let n = 0;
+    for (const r of loose) if (Number(r.validUntil) + keepSecs < now() || (loose.length > cap && Number(r.validUntil) < now())) { await quotes.del(r.id); n++; }
+    return n;
+  }
+
   const lastAlert = new Map();
   async function tick() {
+    await pruneQuotes().catch((e) => log({ level: 'warn', msg: 'the reverse quotes could not be pruned', error: String((e && e.message) || e).slice(0, 160) }));
     for (const rec of await swaps.list()) {
       if (TERMINAL.has(rec.phase)) continue;
       const before = rec.phase;
