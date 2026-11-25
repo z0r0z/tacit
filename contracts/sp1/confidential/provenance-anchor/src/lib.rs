@@ -32,8 +32,11 @@
 //!
 //! With that, an exit note is real supply on the same footing as `C_0`, because the value behind it is on the
 //! ledger and that value entered through shields the pool proved. The provenance DAG gains the exit note as
-//! one more admissible leaf — no acceptance rule is added, and a blob that presents no anchor folds exactly as
-//! it does today.
+//! one more admissible leaf, and a blob that presents no anchor folds exactly as it does today. This does add a
+//! rule — [`read_exit`] decides which confirmed transactions are admissible supply, and [`lineage`] decides
+//! which presentation shapes are — so the honest statement is narrower than "nothing changes": every hop the DAG
+//! accepted before is still accepted, and the only blobs that newly pass are ones that bottom out at the anchor
+//! this ledger covers.
 //!
 //! ## What is added for the 256-step cap
 //!
@@ -137,11 +140,14 @@ impl BackingLedger {
         self.funded.saturating_sub(self.exited)
     }
 
-    /// Credit a verified shield: the pool now holds `value` more. [`credit_shield`] is the checked form.
+    /// Credit a verified shield: the pool now holds `value` more. [`credit_shield`] is the checked form,
+    /// and it is the ONLY caller: `fund` is private precisely so no seam can mint backing without the
+    /// pool proof and the boundary opening. A test that needs backing builds it through
+    /// [`credit_shield`] with a settling seam, never by calling this.
     ///
     /// Idempotent by `carrier` (the shield transaction's txid) for the same reason `debit` is: re-folding a
     /// block must not mint backing. Returns `None` and credits nothing on a repeat.
-    pub fn fund(&mut self, carrier: &[u8; 32], value: u64) -> Option<()> {
+    fn fund(&mut self, carrier: &[u8; 32], value: u64) -> Option<()> {
         if value == 0 || !self.shielded.insert(*carrier) {
             return None;
         }
@@ -171,8 +177,14 @@ impl BackingLedger {
 ///
 /// `shielded` is the total the caller read out of the boundary commitment (the sum of the transparent notes the
 /// pool took custody of). It refuses a shield that moved nothing, one whose boundary does not open to the
-/// claimed total, and one whose carrier pool proof did not verify at `pool_root`, so the ledger can never be
-/// funded by a figment.
+/// claimed total, and one whose carrier pool proof did not verify at `pool_root`.
+///
+/// What that buys is narrower than "cannot be funded by a figment", and the difference is the seam: this crate
+/// cannot open a curve commitment, run a range proof, or resolve a shield's inputs to supply, so `shielded`,
+/// `pool_ok` and `boundary_ok` are the caller's. An honest caller can only fund the ledger through a shield
+/// whose pool proof verified and whose boundary opens; a caller who lies to both seams can fund it. Risk 1 in
+/// §10 of the design doc is that assumption, stated plainly. What this function does own is the shape: the
+/// asset, the carrier txid, the pool root, the length and the non-zero rule are all enforced here.
 pub fn credit_shield(
     ledger: &mut BackingLedger,
     carrier: &[u8; 32],
@@ -438,8 +450,9 @@ pub struct ExitWitness {
     /// The pool note-tree root the spend was proven against (`h_anchor`), as the indexer committed it at that
     /// height.
     pub pool_root: [u8; 32],
-    /// The exit note's opening. Public once the exit is on Bitcoin; the rule binds it to the commitment the
-    /// spend created, so a wrong opening is refused rather than skipped.
+    /// The exit note's opening. Public once the exit is on Bitcoin: an exit carries no `ct_note`, so the
+    /// exiter reveals the opening to claim the note (`DESIGN-btc-shielded-pool.md` §3), and the rule here
+    /// binds that claim to the commitment the spend created. A wrong opening is refused rather than skipped.
     pub value: u64,
     pub blinding: [u8; 32],
 }
@@ -501,6 +514,16 @@ pub fn read_exit(
     }
 
     let exit = body.exit?;
+    // The exit must name a REAL output of this carrier, and that output's script must hash to
+    // `dest_spk_hash`. Without these two checks `exit_vout` and `dest_spk_hash` would be free witnesses:
+    // a prover could name vout 7 on a one-output carrier, or fork one confirmed exit into unlimited
+    // distinct anchors by varying `exit_vout`, and each would debit the ledger. Mirrors
+    // `worker/src/btc-shielded-pool.js` (`exit_vout is not an output of the carrier`,
+    // `exit scriptPubKey does not match dest_spk_hash`) and `DESIGN-btc-shielded-pool.md` §3.
+    let (_value, spk) = cxfer_core::bitcoin::parse_tx_output(&w.tx, exit.exit_vout)?;
+    if cxfer_core::bitcoin::sha256_once(&spk) != exit.dest_spk_hash {
+        return None; // the exit pays to a script the body did not commit to
+    }
     if !boundary_ok(&exit.boundary, w.value, &w.blinding) {
         return None; // the opening must be the commitment the exit actually created
     }
@@ -519,8 +542,13 @@ pub fn read_exit(
 /// Admit an anchor and debit the ledger. The whole "the fold accepts pool exits" rule.
 ///
 /// One function, no knobs: a value the ledger does not hold is refused and nothing is booked, so the pool's own
-/// state is untouched and the note stays spendable on Bitcoin.
-pub fn admit_exit(ledger: &mut BackingLedger, anchor: &ExitAnchor) -> Option<()> {
+/// state is untouched and the note stays spendable on Bitcoin. The asset is checked here as well as in
+/// [`read_exit`], because a ledger is one asset (§2.1): an exit of one asset must not drain another's
+/// backing, and `ExitAnchor` carries `asset` as a public field a caller can set to anything.
+pub fn admit_exit(ledger: &mut BackingLedger, anchor: &ExitAnchor, asset: &[u8; 32]) -> Option<()> {
+    if &anchor.asset != asset {
+        return None; // an exit of another asset cannot drain this one's backing
+    }
     ledger.debit(&anchor.outpoint, anchor.value)
 }
 
@@ -549,12 +577,16 @@ pub enum Lineage {
 /// anchor instead, and the fold names the anchor rather than the etch. With no anchor inside the cap there is
 /// nothing to present, so it refuses: a burn whose provenance cannot be shown is not mintable, which is the
 /// conservative direction.
+///
+/// The bound is `hops <= ANCHOR_MAX_HOPS`, because `burn_deposit.rs` refuses only `ncx > 256`: a blob with
+/// exactly 256 steps parses today, so it must keep parsing. A `>` here would tighten acceptance on a lineage
+/// the current system already carries.
 pub fn lineage(hops: u32, anchor: Option<([u8; 32], u32)>) -> Lineage {
-    if hops < ANCHOR_MAX_HOPS {
+    if hops <= ANCHOR_MAX_HOPS {
         return Lineage::Full { hops, steps: hops };
     }
     match anchor {
-        Some((from, d)) if d < ANCHOR_MAX_HOPS => Lineage::Anchored {
+        Some((from, d)) if d <= ANCHOR_MAX_HOPS => Lineage::Anchored {
             hops,
             from,
             distance: d,
@@ -567,18 +599,25 @@ pub fn lineage(hops: u32, anchor: Option<([u8; 32], u32)>) -> Lineage {
 }
 
 /// The valid-leaf set the provenance DAG should be given for one burn: the leaves it already had, plus every
-/// admitted anchor. This is the entire wiring change — `valid_leaves` grows and no acceptance rule is added, so
-/// a blob that presents no anchor folds byte-for-byte as it does today.
+/// admitted anchor. `valid_leaves` grows and no acceptance rule is added, so a blob that presents no anchor
+/// folds byte-for-byte as it does today.
+///
+/// An anchor is refused when the base set already carries its outpoint with a DIFFERENT commitment. Appending
+/// it would give one outpoint two identities, and `verify_provenance_dag_leaves` resolves a hop against
+/// `(outpoint, commitment)`, so the second identity would open a leaf the DAG had already resolved — the
+/// outpoint-binding gap `reflect.rs` step 4 refuses pool-membership leaves for. The base set wins.
 pub fn valid_leaves(
     base: &[([u8; 32], [u8; 32])],
     anchors: &[ExitAnchor],
 ) -> Vec<([u8; 32], [u8; 32])> {
     let mut out = base.to_vec();
     for a in anchors {
-        if !out
-            .iter()
-            .any(|(o, c)| *o == a.outpoint && *c == a.commitment)
-        {
+        let same_outpoint = out.iter().any(|(o, c)| *o == a.outpoint && *c == a.commitment);
+        let taken = out.iter().any(|(o, _)| *o == a.outpoint);
+        if taken && !same_outpoint {
+            continue; // the outpoint is already resolved to another commitment: refuse, do not fork
+        }
+        if !same_outpoint {
             out.push((a.outpoint, a.commitment));
         }
     }

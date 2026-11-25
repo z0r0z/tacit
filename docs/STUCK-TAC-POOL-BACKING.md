@@ -95,12 +95,19 @@ only when
 
 A shield that moved nothing (`shielded == 0`) or whose boundary does not open is refused and credits
 nothing, and a carrier txid already in `shielded` is refused so a re-fold cannot mint backing. This is the
-only place `funded` moves, so the ledger can never be funded by a figment.
+only place `funded` moves: `fund` is private and `credit_shield` is its only caller, so no code path in
+this crate can credit the ledger without a shield. What that does **not** buy is a proof that the shield
+was real. `boundary_ok` is a closure the caller supplies — the curve math cannot run in this crate — so a
+caller that passes `|_, _, _| true` can credit any value it names. §10 states that as the central
+assumption; the honest reading of the code is "no unverified *path*", not "no unverified *claim*".
 
 ### 2.2 An exit is admissible iff the ledger covers it, and admitting it debits exactly that much
 
 ```rust
-pub fn admit_exit(ledger: &mut BackingLedger, anchor: &ExitAnchor) -> Option<()> {
+pub fn admit_exit(ledger: &mut BackingLedger, anchor: &ExitAnchor, asset: &[u8; 32]) -> Option<()> {
+    if &anchor.asset != asset {
+        return None; // an exit of another asset cannot drain this one's backing
+    }
     ledger.debit(&anchor.outpoint, anchor.value)
 }
 ```
@@ -122,14 +129,17 @@ An exit note is now admissible on the same footing as `C_0`, because
 - that value entered through shields whose pool proofs verified and whose boundaries opened.
 
 So the exit is backed by value the reflection can trace, not by pool membership alone. The DAG gains one
-more admissible leaf and **no acceptance rule is relaxed**: `valid_leaves` grows, and a blob that
-presents no anchor folds byte-for-byte as it does today.
+more admissible leaf. That **is** a new acceptance rule — a blob presenting an admitted anchor is newly
+accepted — but nothing is relaxed: `valid_leaves` only grows, and a blob that presents no anchor folds
+byte-for-byte as it does today.
 
 ## 3. Reading an exit out of a confirmed transaction
 
-`read_exit` authenticates a `T_BTC_SPEND` carrying an exit all the way to a block's txid root. Nothing in
-it is a free witness; every field is either read back out of the confirmed bytes or attested by the
-caller's header chain.
+`read_exit` authenticates a `T_BTC_SPEND` carrying an exit all the way to a block's txid root. Every field
+it depends on is either read back out of the confirmed bytes or attested by the caller's header chain —
+with two exceptions the earlier draft claimed did not exist, now closed: `exit_vout` must name an output
+the carrier actually has, and `dest_spk_hash` must be that output's script hash (§3 step 9). `value` and
+`blinding` are still the caller's, bound only to the boundary (§10, risk 1).
 
 ```rust
 pub fn read_exit(
@@ -150,14 +160,20 @@ Checks, in order, each returning `None` on failure:
 3. The envelope on input `vin` (witness item 1, the slot `worker-relay` reads) decodes as
    `OP_CHECKSIG OP_FALSE OP_IF "TACIT" 0x01 <payload> OP_ENDIF` with no trailing bytes and a present
    `OP_ENDIF`.
-4. `parse_spend` accepts the payload as a canonical `T_BTC_SPEND` (§3 rules, §4 below).
+4. `parse_spend` accepts the payload as a canonical `T_BTC_SPEND` (the `DESIGN-btc-shielded-pool.md`
+   §3 rules; §4 below records where `btc-pool-core` disagrees with them).
 5. `body.asset == asset` — a spend of another asset cannot back this fold.
 6. `value != 0`.
 7. `pool_ok(body, pool_root)` — the pool-side seam (Halo2/SP1 verification against the root the indexer
    committed at `h_anchor`).
 8. `body.exit.is_some()` — a spend that creates no transparent note anchors nothing.
-9. `boundary_ok(exit.boundary, value, blinding)` — the exit's commitment opens to the claimed value.
-10. `commitment_hash_compressed(exit.boundary.c_secp)` — the DAG's identity for the note is the same
+9. `parse_tx_output(tx, exit.exit_vout)` returns an output, and `sha256(scriptPubKey)` equals
+   `exit.dest_spk_hash` — the exit names an output this carrier actually has, and pays the script the body
+   committed to. Mirrors `worker/src/btc-shielded-pool.js` (`exit_vout is not an output of the carrier`,
+   `exit scriptPubKey does not match dest_spk_hash`). Without it `exit_vout` is a free witness: one
+   confirmed exit could be forked into unlimited anchors and each would debit the ledger.
+10. `boundary_ok(exit.boundary, value, blinding)` — the exit's commitment opens to the claimed value.
+11. `commitment_hash_compressed(exit.boundary.c_secp)` — the DAG's identity for the note is the same
     `commitment_hash` the reflection stores for a transparent note.
 
 The result:
@@ -227,8 +243,9 @@ pub enum Lineage {
 pub fn lineage(hops: u32, anchor: Option<([u8; 32], u32)>) -> Lineage
 ```
 
-- `hops < 256` → `Full`, the existing path unchanged.
-- otherwise, with an anchor at distance `d < 256` → `Anchored`: present the `d` transfers from that
+- `hops <= 256` → `Full`, the existing path unchanged. The bound is inclusive because `burn_deposit.rs`
+  refuses only `ncx > 256`: a 256-step lineage parses today and must keep parsing.
+- otherwise, with an anchor at distance `d <= 256` → `Anchored`: present the `d` transfers from that
   anchor down to the burned note, and name the anchor instead of the etch. Admissible anchors are an
   admitted exit note, a cmint leaf, or `C_0` — all supply the fold already accepts.
 - otherwise → `Refused`. A burn whose provenance cannot be shown is not mintable, which is the
@@ -246,14 +263,22 @@ unspent notes (5.06%) over the history limit, pool exits not counted** — not f
 pool-exit class is the one this design adds, so the real stuck share is **higher** than 5.06%.
 
 Assume a provider takes `L = 100 TAC` per bridge and screens nothing (`anyTac`). Stuck value is additive:
-`0.0506 · L` per bridge.
+`0.0506 · L` per bridge — **but only under an assumption the bounty's count does not support.** 230 of
+4,546 is a count of *notes*, not of *value*: it says 5.06% of unspent notes are over the limit, and turns
+into 5.06% of value only if stuck notes are the same size as clean ones. A provider whose stuck notes are
+larger than average loses more than this column says; one whose stuck notes are dust loses less. I did not
+measure the value split, so read the numbers below as "5.06% *of notes*, valued at par", not as a measured
+haircut.
 
-| Bridges | Taken on Bitcoin | Stuck without this entry | Stuck with it (modelled) |
+The last column is what the entry can close **if** every stuck note is a covered class and an anchor is in
+reach. It is not `0`, because neither condition holds for every note.
+
+| Bridges | Taken on Bitcoin | Stuck without this entry | Stuck this entry can close |
 | --- | --- | --- | --- |
-| 10 | 1 000 | 50.6 TAC | 0 |
-| 50 | 5 000 | 253 TAC | 0 |
-| 100 | 10 000 | 506 TAC | 0 |
-| 500 | 50 000 | 2 530 TAC | 0 |
+| 10 | 1 000 | 50.6 TAC | ≤ 50.6 TAC |
+| 50 | 5 000 | 253 TAC | ≤ 253 TAC |
+| 100 | 10 000 | 506 TAC | ≤ 506 TAC |
+| 500 | 50 000 | 2 530 TAC | ≤ 2 530 TAC |
 
 Read the share, not the absolute: stuck inventory is a **constant fraction** (≈5%) of Bitcoin-side
 holdings, not a growing percentage — every bridge contributes the same slice. What grows is the absolute
@@ -268,10 +293,14 @@ capacity on them. That is the whole mechanism — no subsidy, no discount, no re
 - **Histories past 256** become presentable by re-anchoring at an admitted exit note, a cmint leaf, or
   `C_0` (§5).
 
-**What is not modelled here, stated plainly:** the 0 column assumes every stuck note is one of the two
+**What is not modelled here, stated plainly:** the last column assumes every stuck note is one of the two
 covered classes and that an anchor is in reach within 256 hops. A note past the cap with **no** admitted
 anchor within reach is still `Refused` — that residual is real, unbounded in principle, and I did not
 measure it. The honest claim is a bound on what this closes, not a claim that stuck TAC goes to zero.
+
+Note also that the 230/4,546 count does not separate the two classes: it counts notes over the history
+limit, not notes this design can present. The `≤` column is arithmetic on a share I was given, not a
+measurement of this entry's effect.
 
 ## 7. The fold change
 
@@ -291,11 +320,25 @@ Three edits in `burn_deposit.rs`, none of them crypto:
    `Lineage::Anchored` verdict to present from `from` instead of the etch. A `Lineage::Refused` verdict
    keeps today's behaviour: the burn is refused.
 
-Nothing here is a new acceptance rule. The DAG still resolves leaves the same way, the blob format is
-unchanged, and a node that does not fold pool envelopes produces the same digests it does today — the
-ledger is additive state, which is what makes the change reviewable.
+This is not a change that leaves the fold untouched. Two claims in an earlier draft were wrong and are
+withdrawn here:
 
-## 8. What the 19 tests cover
+- **"Nothing here is a new acceptance rule."** False. `read_exit` decides which confirmed transactions
+  count as supply, and `lineage` decides which presentation shapes the parser accepts. Both are new rules,
+  and a blob that presents a pool-exit anchor is newly accepted because of them. The narrower true claim is
+  the other direction: no hop the DAG accepted before is refused now.
+- **"A node that does not fold pool envelopes produces the same digests it does today."** False, and it
+  contradicts §7.1 three paragraphs above. Adding `backing` to the committed set changes `digest()`. A node
+  on the old code and a node on the new code diverge the moment a pool envelope is folded, which is a hard
+  fork, not an additive side-table. Either the field is committed — and the digests differ, as an upgrade
+  must — or it is not committed, and §7.1's re-fold argument collapses. This entry takes the first option
+  and says so.
+
+What *is* additive is the state, not the digest: the ledger is a new field, and the events that move it
+already exist in the reflection. That is what makes the change reviewable — but reviewable is not
+digest-compatible.
+
+## 8. What the 22 tests cover
 
 All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, no pool).
 
@@ -314,9 +357,12 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 | `read_exit_refuses_a_wrong_asset_or_a_seam_that_says_no` | both seams are load-bearing |
 | `read_exit_refuses_a_spend_without_an_exit` | no exit, no anchor |
 | `read_exit_refuses_a_tampered_carrier` | **the witness-swap forgery** (txid unchanged, commitment breaks), wrong block, wrong opening, zero value |
-| `lineage_presents_short_histories_whole` | a 255-hop lineage is presented whole even when an anchor exists |
-| `lineage_re_anchors_past_the_cap` | 256 and 10 000 hops re-anchor |
+| `lineage_presents_short_histories_whole` | a 255-hop lineage is presented whole even when an anchor exists, and 256 hops stay `Full` to match `ncx > 256` |
+| `lineage_re_anchors_past_the_cap` | 257 and 10 000 hops re-anchor; an anchor at distance 256 is still in reach |
 | `lineage_refuses_an_out_of_reach_anchor` | no anchor, or an anchor beyond the cap, refuses |
+| `no_path_credits_backing_without_a_shield` | the figment route: zero-value, wrong-asset and failed-pool shields credit nothing, a re-fold mints nothing, and a permissive `boundary_ok` *does* mint — §10 as a test |
+| `read_exit_binds_vout_to_a_real_output_and_its_script` | `exit_vout` must name a real output and `dest_spk_hash` must be that output's script, both directions |
+| `admit_exit_refuses_an_anchor_in_another_asset` | one asset's backing cannot pay another asset's exit |
 | `valid_leaves_adds_each_anchor_once` | dedupe; the base set is never re-pointed |
 | `witness_reading_is_panic_free_on_every_truncation` | every prefix of a carrier; missing `OP_ENDIF`; trailing bytes; foreign magic |
 | `spend_parse_is_panic_free_on_a_hostile_corpus` | 4 000 pseudo-random payloads, runaway `n_in` |
@@ -372,10 +418,13 @@ Stated the way the brief asks, worst first.
 
 1. **Which wire constant is right?** §3 + `worker` (89/861) or `btc-pool-core` (218/100). This entry pins
    §3 because it is what lands on Bitcoin, but the contradiction should be resolved in-tree.
-2. **Debit at admission or at spend?** This design debits at admission — value leaves the pool when the
-   exit is confirmed, and the transparent note is then an ordinary Tacit note with its own history. Deferring
-   the debit to the burn would let one exit back two anchors. Whichever is chosen, the transition must stay
-   keyed on the outpoint (see §2): the counters cannot distinguish a re-fold on their own.
+2. **Debit at admission or at spend?** The code debits in `admit_exit`, i.e. at admission: once an exit is
+   confirmed and admitted, the value has left the pool and the transparent note is an ordinary Tacit note
+   with its own history. **Nothing calls `admit_exit` yet** — no guest links this crate (§9), so "this design
+   debits at admission" is a statement about where the transition belongs, not an observed behaviour. The
+   argument for that placement is that deferring the debit to the burn would let one exit back two anchors.
+   Whichever is chosen, the transition must stay keyed on the outpoint (see §2): the counters cannot
+   distinguish a re-fold on their own.
 3. **What happens to `funded` across a generational rebase?** The ledger must ride the same rebase anchor
    as the other counters (`generational_rebase_anchor`), or a successor generation starts funded by
    nothing.
