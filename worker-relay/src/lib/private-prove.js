@@ -10,6 +10,20 @@ export function privateProvePlan(env, timeoutMs) {
   const cap = Number(env.PRIVATE_ATTEMPT_MS) > 0 ? Number(env.PRIVATE_ATTEMPT_MS) : 6 * 60_000;
   return { fallback: true, privateMs: Math.max(60_000, Math.min(cap, Math.floor(timeoutMs * 0.6))) };
 }
+// Ops proved with a private input or not at all. An adaptor claim carries its kernel, and with it the swap's secret to the one side that holds the matching
+// pre-signature: a public input would hand it to that side before the claim lands, and a claim that then misses its deadline loses the claimer both legs (the
+// other side refunds its lock and takes the Bitcoin with the secret). A refund of an adaptor lock goes the same way, so that nothing of a swap is ever public before
+// the pool has it. When no private request can be made (PRIVATE_STDIN is not 1, or the network refuses private inputs) or none is proved in time, the job fails:
+// the claimer sends it again while time is left, and else takes the timelock's refund.
+export const PRIVATE_ONLY_TYPES = Object.freeze(['adaptorclaim', 'adaptorrefund']);
+export const privateOnly = (type) => PRIVATE_ONLY_TYPES.includes(type);
+// -> null when a private request can be made for a private-only op, else why not (in words a job's holder can read)
+export function privateOnlyRefusal(env, off = false) {
+  if (env.PRIVATE_STDIN !== '1') return 'the relay is not set to prove with private inputs, and this op is not proved with a public one';
+  if (off) return 'the prover network is refusing private inputs just now, and this op is not proved with a public one';
+  return null;
+}
+
 // The network's refusal of every private input (PERMISSION_DENIED "private stdin is not enabled on this network"; nothing
 // is created or charged). It is remembered for ten minutes, so the jobs after it go public at once instead of each
 // spending a binary start and a refused request first (about half a minute per job).

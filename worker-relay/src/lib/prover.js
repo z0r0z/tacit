@@ -16,7 +16,7 @@ import { keccak256, encodeFunctionData, parseAbi } from 'viem';
 import { CFG } from './config.js';
 import { POOL, POOL_ABI, publicClient, settleWallet } from './chain.js';
 import { reflectionEthProofPatient } from './worker-client.js';
-import { privateProvePlan, retryPublic, privateRefused, rememberRefusal, privateOff, unexecutable } from './private-prove.js';
+import { privateProvePlan, retryPublic, privateRefused, rememberRefusal, privateOff, unexecutable, privateOnly, privateOnlyRefusal } from './private-prove.js';
 import { CREDIT_SHORT } from './prove-pause.js';
 import { makeStdinProver, batchInput } from './stdin-prover.js';
 import { makeBoardProver } from './board-prover.js';
@@ -598,6 +598,8 @@ export async function proveSealed({ type, sealed, memos = [], timeoutMs }) {
 let stdinProver = null;
 export async function proveMixed({ items, timeoutMs }) {
   if (!CFG.networkPrivateKey) throw new Error('proveMixed: NETWORK_PRIVATE_KEY is not set');
+  // (an op proved with a private input or not at all is proved on its own, by proveSettle: a mixed request may go public)
+  if (items.some((i) => privateOnly(i.type))) throw new Error('proveMixed: an adaptor op is proved on its own');
   const built = batchInput(items);
   const first = await viaBoard({ ...built, label: `mixed(${items.length})`, memos: items.flatMap((i) => i.memos || []), timeoutMs });
   if (first.proof) return { ...first.proof, numOps: built.numOps };
@@ -723,6 +725,16 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
   // The witness file stays for every attempt below (a public retry reads it again) and goes once the last one is over.
   try { return await attempts(); } finally { await rm(opFile, { force: true }); releaseFiles(); }
   async function attempts() {
+  // An op that carries an adaptor kernel goes as a private input with the whole time, or fails (lib/private-prove.js PRIVATE_ONLY_TYPES): never a public retry.
+  if (privateOnly(type)) {
+    const why = privateOnlyRefusal(process.env, privateOff());
+    if (why) throw Object.assign(new Error(`exec:${type} — ${why}; nothing was spent: send it again`), { code: 'private_only' });
+    try { return laned(await attempt({ PRIVATE_STDIN: '1', PRIVATE_FALLBACK_PUBLIC: '0' }, timeoutMs), 'network-private'); }
+    catch (e) {
+      if (privateRefused(e)) rememberRefusal();
+      throw Object.assign(new Error(`exec:${type} — not proved with a private input (${String(e.message).split('\n')[0].slice(0, 160)}); it is not proved with a public one: send it again`), { code: 'private_only', creditShort: e.creditShort, unexecutable: e.unexecutable });
+    }
+  }
   const plan = privateProvePlan(process.env, timeoutMs);
   if (!plan.fallback) return laned(await attempt({}, timeoutMs), process.env.PRIVATE_STDIN === '1' ? 'network-private' : 'network-public');
   // The witness goes as a private input, which only provers that fetch it with the signed GetStdinUri call can read

@@ -195,6 +195,27 @@ test('while no node traces the transaction a claim may be in, the lock stays unr
   assert.equal(told.length, 2, 'and again half an hour on while it stays unread');
 });
 
+// ── 2. A claim the relay does not prove ──
+// The relay proves a claim (it carries the kernel, and so t to the side holding the pre-signature) with a private input or not at all
+// (worker-relay/src/lib/private-prove.js PRIVATE_ONLY_TYPES): a claim it could not prove privately fails, and the Bitcoin locker sends it again while time is left.
+test('a claim the relay fails (no private prove) is sent again while time is left, the page says so, and the swap ends with each side paid', async () => {
+  const w = satsWorld();
+  const submit = w.blCtx.submit;
+  let refused = 0;
+  w.blCtx.submit = async (type, op) => (type === 'adaptorclaim' && refused++ === 0 ? { jobId: 'refused-by-the-relay' } : submit(type, op));
+  const rec = await w.start();
+  await w.run(async () => ((await w.blRec()) || {}).claimFailures === 1);
+  const { describeFwd } = await import('../dapp/fastbridge-pair.js');
+  const said = describeFwd({ ...(await w.blRec()), phase: 'claiming' }, () => w.clock.now());
+  assert.match(said.detail, /sent again while there is time/, 'the page says the claim is being sent again');
+  await w.run(async () => ['done', 'counter-took'].includes((await w.blRec()).phase) && (await w.elRec()).phase === 'done');
+  const claims = [...w.evm.jobs.values()].filter((j) => j.type === 'adaptorclaim');
+  assert.deepEqual(claims.map((j) => j.status), ['settled'], 'the second send landed');
+  assert.equal((await w.blRec()).claimFailures, 1);
+  assert.ok((await w.elRec()).t, 'the Ethereum locker read t from the claim that landed, and took the sats');
+  assert.equal(rec.phase, 'built');
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

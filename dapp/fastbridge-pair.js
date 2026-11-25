@@ -109,6 +109,7 @@ const REV_SAYS = {
 const NODES_WAIT = 'The Ethereum nodes this page reads have not agreed on this swap for a while, so it is read again until two of them do. Nothing is decided on one node’s word, and a refund still goes out at its time.';
 const nodesWait = (rec, nowSecs) => rec.nodesSince != null && !['done', 'refunded', 'aborted', 'lost', 'counter-took'].includes(rec.phase) && nowSecs - rec.nodesSince >= 600;
 const andNodes = (detail, rec, nowSecs) => (nodesWait(rec, nowSecs) ? [detail, NODES_WAIT].filter(Boolean).join(' ') : detail);
+const CLAIM_AGAIN = 'The last try did not go through, so the claim is being sent again while there is time. If the time runs out, your BTC comes back when its timelock ends.';
 // A reason kept on a record, as a sentence of its own after the detail
 const sentenceOf = (why) => { const w = String(why || '').trim().replace(/[.\s]*$/, ''); return !w ? '' : /^found from the key$/i.test(w) ? 'It was found again from your key.' : w.charAt(0).toUpperCase() + w.slice(1) + '.'; };
 const withWhy = (detail, why) => [detail, sentenceOf(why)].filter(Boolean).join(' ');
@@ -125,8 +126,10 @@ export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000)) {
   const [at, title, detail, eta] = FWD_SAYS[rec.phase] || [0, rec.phase, '', null];
   const state = FWD_DONE.has(rec.phase) ? 'done' : rec.phase === 'refunded' ? 'returned' : 'working';
   const lockAt = rec.lockAt || rec.confirmedAt || null;
+  // a claim the relay could not prove (it proves a claim only with a private input) is sent again while there is time, and the page says so
+  const text = rec.phase === 'refund-wait' ? withWhy(detail, rec.why) : rec.phase === 'claiming' && rec.claimFailures ? `${detail} ${CLAIM_AGAIN}` : detail;
   return {
-    id: rec.id, dir: 'b2e', state, title, detail: andNodes(rec.phase === 'refund-wait' ? withWhy(detail, rec.why) : detail, rec, now()),
+    id: rec.id, dir: 'b2e', state, title, detail: andNodes(text, rec, now()),
     // (what is left, to the ETH in the private balance: the wait for the lock's block counts down from its send, and never says less than a minute plus what follows)
     pay: BigInt(rec.amount), get: BigInt(rec.evmAmount || 0), steps: stepsOf('b2e', at, state), etaSecs: state !== 'working' || eta == null ? 0 : rec.phase === 'broadcast' && rec.broadcastAt ? 420 + Math.max(60, 600 - Math.max(0, now() - Number(rec.broadcastAt))) : eta, at: rec.created,
     refundAt: state === 'working' && lockAt ? lockAt + rec.csvBlocks * 600 : null, lockTxid: rec.lock ? rec.lock.txid : null, error: rec.lastError || null, provider: rec.providerName || null,
