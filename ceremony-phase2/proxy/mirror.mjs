@@ -1,12 +1,29 @@
 // Copies every accepted contribution, and the transcript, from the coordinator to an S3 bucket (Filebase, which also
 // pins each object on IPFS), so the chain outlives the coordinator's machine and has a second place to download from.
 // A file is streamed through (never held), hashed on the way, and recorded only if its SHA-256 is the one in the
-// coordinator's signed transcript; a mismatch is reported and retried later.
+// coordinator's transcript, whose receipts are checked against the pinned coordinator key and chained from the pinned
+// base (trustedFiles); a mismatch is reported and retried later.
 import crypto from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
 import { Transform } from 'node:stream';
 import { s3 } from './s3.mjs';
+import { verifyReceipt, brokenLink, BASE_INDEX, BASE_SHA256, COORDINATOR_KEY } from '../../dapp/praxis/receipt.js';
+
+// The receipts that may be copied: from the pinned base, each linked to the one before and signed by the pinned key.
+// The link to the coordinator is plain HTTP, so nothing it says is believed without these checks.
+export async function trustedFiles(t, key = COORDINATOR_KEY) {
+  if (t.base_index !== BASE_INDEX || t.base_sha256 !== BASE_SHA256 || t.coordinator_pubkey !== key) return { files: [], why: 'the transcript is not the pinned chain' };
+  const rs = t.receipts || [];
+  const bad = brokenLink(t);
+  const upto = bad === -1 ? rs.length : bad;
+  const files = [{ index: t.base_index, file_sha256: t.base_sha256 }];
+  for (const r of rs.slice(0, upto)) {
+    if ((await verifyReceipt(r, key)) !== true) return { files, why: `receipt ${r.index} is not signed by the pinned key` };
+    files.push(r);
+  }
+  return { files, why: bad === -1 ? null : `receipt ${rs[bad]?.index ?? 'head'} does not link to the one before` };
+}
 
 export function startMirror({ upstream, endpoint, key, secret, bucket, everyMs = 60_000, log = console.log }) {
   const c = s3({ endpoint, key, secret });
@@ -62,7 +79,8 @@ export function startMirror({ upstream, endpoint, key, secret, bucket, everyMs =
       const tr = await (await fetch(upstream + '/api/transcript', { signal: AbortSignal.timeout(15_000) })).text();
       const t = JSON.parse(tr);
       const head = await (await fetch(upstream + '/api/head', { signal: AbortSignal.timeout(15_000) })).json();
-      const files = [{ index: t.base_index, file_sha256: t.base_sha256 }, ...(t.receipts || [])];
+      const { files, why } = await trustedFiles(t);
+      if (why) log(`mirror: ${why}; copying the ${files.length} file(s) before it`);
       for (const r of files) {
         if (!Number.isInteger(r.index) || !/^[0-9a-f]{64}$/.test(r.file_sha256 || '')) continue;
         if (done.get(r.index)?.sha256 === r.file_sha256) continue;
