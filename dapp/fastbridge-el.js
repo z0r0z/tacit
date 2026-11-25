@@ -101,6 +101,11 @@ export function makeEthereumLocker(ctx) {
   async function receiveOnce({ quoteId, offer, id, early = false }) {
     const known = await store.get(id);
     // (an early record that ran out its wait for the block before anything was built on it is no answer: the offer is judged again)
+    // (an early record the offer now comes for is held to its quote as of now, as the step after the block holds it: see 'accepted')
+    if (known && known.early && known.phase === 'accepted' && !known.lock) {
+      const q = await quotes.get(known.quoteId, { offer: known.offer });
+      if (!q || ctx.now() > q.validUntil) { await dropPre(known); await save(known, { phase: 'aborted', why: 'quote expired', expired: true }); return { ok: false, retry: false, why: 'quote expired' }; }
+    }
     if (known && !(known.early && known.phase === 'aborted' && !known.lock && known.expired)) return { ok: true, rec: known };
     const reject = (why, retry = false) => ({ ok: false, retry, why });
     // `admit({ id, offer })`: a reason this side will not answer the offer, from what it keeps beyond this store (a Bitcoin lock that another swap of the
@@ -291,6 +296,13 @@ export function makeEthereumLocker(ctx) {
             return rec;
           }
           height = a.height;
+        }
+        // An offer taken early is held to its quote as it would have been had it come now, with the lock confirmed: a quote priced from the market is not
+        // answered at its old price once the market has moved past what this side allows (the provider's quotes.get). One that no longer stands ends here,
+        // nothing locked, and the offer sent after the block is judged again, and refused, as before.
+        if (rec.early) {
+          const quote = await quotes.get(rec.quoteId, { offer: rec.offer });
+          if (!quote || ctx.now() > quote.validUntil) { await dropPre(rec); return save(rec, { phase: 'aborted', why: 'quote expired', expired: true }); }
         }
         const consumed = X.isSats(rec.offer.btc.asset) ? null : await btc.crossLaneBlocked(await btc.fetchTx(rec.lockTxid));
         if (consumed) { await dropPre(rec); return save(rec, { phase: 'aborted', why: 'a spent note is already consumed on Ethereum: ' + consumed }); }

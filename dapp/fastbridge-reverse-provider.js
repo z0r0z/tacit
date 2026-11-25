@@ -229,6 +229,14 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     // than this side accepts; the machine checks both again before it claims)
     if (Number(offer.deadline) - (await evm.now()) > (pol.maxEvmWindowSecs ?? 6 * 3600)) return no('offer: the deadline is further out than this side accepts');
     await evmOffers.put({ id, offer });
+    // (the swap is stepped now rather than at the next tick: the claim is built at once; steps of one swap run one at a time, so this and a tick never overlap)
+    (async () => {
+      for (let i = 0, was = null; i < 4; i++) {
+        const r = await bl.step((await swaps.get(id)) || swap), at = r && JSON.stringify([r.phase, !!r.claim, !!(r.claim && r.claim.jobId)]);
+        if (!r || !['broadcast', 'offered', 'claiming'].includes(r.phase) || (r.claim && r.claim.jobId) || at === was) break;
+        was = at;
+      }
+    })().catch(() => {});
     return reply({ ok: true });
   }
 

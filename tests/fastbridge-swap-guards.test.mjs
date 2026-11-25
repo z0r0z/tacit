@@ -237,7 +237,8 @@ test('the same with no claim: the swap found from the key takes the ETH back aft
   w.uEvm.fund(UNITS, 'inv0');
   await w.pair.start(await w.pair.quote({ dir: 'e2b', amount: UNITS }));
   const recOf = async () => (await w.mems.get('swaps:lp1').list())[0];
-  for (let i = 0; i < 300 && (await recOf())?.phase !== 'offered'; i++) { await stepAll(w, [w.pair]); w.clock.advance(60); if (i % 10 === 9) mine(w); }
+  // (stopped once the lock is in the pool, before the page tells the provider: a provider that is told steps its claim at once)
+  for (let i = 0; i < 300 && !['locked', 'offered'].includes((await recOf())?.phase); i++) { await stepAll(w, [w.pair]); w.clock.advance(60); if (i % 10 === 9) mine(w); }
   const old = await recOf();
   const fresh = w.makePair({ stores: { fwd: memStore(), index: memStore(), swaps: (() => { const m = new Map(); return (id) => { if (!m.has(id)) m.set(id, memStore()); return m.get(id); }; })(), quotes: () => memStore() } });
   assert.equal(await fresh.recover(), 1);
