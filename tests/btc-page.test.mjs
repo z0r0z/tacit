@@ -76,7 +76,9 @@ const UX_STUB = `
 const U = window.__ux = { unwraps: [], notes: [], fee: 30000n, fail: false };
 const ux = { useWallet() {}, fetchEvents: async () => [], warmWrapLogs: async () => {},
   quoteOpFee: async () => U.fee, quoteUnwrapFee: (v, t, o) => ({ fee: o.minFee, net: BigInt(v) - o.minFee, value: BigInt(v) }),
-  balance: async () => ({ byAsset: { '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34': { notes: U.notes } } }),
+  // (the pool module names an asset with its 0x, as the real one does: a lookup by the bare id found no note on the canary of 11-25)
+  balance: async () => ({ byAsset: { '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34': { notes: U.notes } } }),
+  sendUnwrap: async ({ note, recipient, amount }) => { U.unwraps.push({ value: String(note.value), amount: String(amount), recipient }); return { status: 'settled', txHash: '0x' + 'ed'.repeat(32), fee: U.fee, net: BigInt(amount) - U.fee }; },
   unwrap: async ({ note, recipient }) => { U.unwraps.push({ value: String(note.value), recipient }); if (U.fail) throw new Error('the relay is paused'); return { status: 'settled', txHash: '0x' + 'ef'.repeat(32), fee: U.fee, net: BigInt(note.value) - U.fee }; } };
 export async function getUx() { return ux; }
 export async function forgetUx() {}`;
@@ -648,6 +650,23 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
   await page.fill('#a-amt', '0.002');
   await page.waitForFunction(() => /^Add 0\.002\d* BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
   ok(true, 'no Bitcoin wallet here: the button adds BTC (the address, its QR and a copy)');
+  await page.close();
+}
+{
+  // the real sequence of the canary of 11-25, opened again: a swap of BTC done while the page was closed, its ETH to go to an address chosen at the start.
+  // Opened, the page sends it by itself; a note not there yet is said on the card from the second try, and Try again sends it once it is.
+  const pub = '02' + 'ab'.repeat(32), to = '0x15fbF9F529190bBB0D35E0E9a59bc437cBB1F9c7'.toLowerCase();
+  const { page, errs } = await fresh({ init: `window.__atom.recs = [{ id: 'swR', dir: 'b2e', state: 'done', title: 'Done', detail: 'The ETH is in your private balance.', pay: 130000n, get: 4632297n, steps: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 1200, refundAt: null, backBy: null }];
+    localStorage.setItem('tacit-btc-payout-v1:${pub}', JSON.stringify({ swR: { at: Date.now() - 1200e3, to: '${to}', state: 'waiting', tries: 1 } }));` });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /Couldn’t send to 0x15fb…f9c7 yet: The swap’s ETH is not in your private balance yet\. Trying again by itself\./.test(document.querySelector('#mine-list [data-rec="swR"]')?.textContent || ''), null, { timeout: 20000 });
+  ok(true, 'opened again with the swap done: the send is tried at once, and a note not there yet is said plainly on the card, with Try again now');
+  await page.evaluate(() => { window.__ux.notes = [{ value: 4632297n }]; });
+  await page.click('#mine-list [data-rec="swR"] [data-pay-retry]');
+  await page.waitForFunction(() => /Sent to 0x15fb…f9c7: 0\.04602297 ETH\. Etherscan/.test(document.querySelector('#mine-list [data-rec="swR"]')?.textContent || ''), null, { timeout: 20000 });
+  const un = await page.evaluate(() => window.__ux.unwraps);
+  ok(un.length === 1 && un[0].value === '4632297' && un[0].recipient.toLowerCase() === to, `the note of the swap's amount, found under the pool's 0x name, withdrawn to the address chosen (${JSON.stringify(un)})`);
+  ok(errs.length === 0, `no page errors (${errs.join(' | ')})`);
   await page.close();
 }
 {

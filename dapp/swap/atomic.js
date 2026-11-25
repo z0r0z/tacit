@@ -298,10 +298,10 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         if (g !== gen) return;
         L.recs = recs;
         p.providers().then((ps) => { if (g === gen) { L.terms = ps; paint(); } }, () => {});
-        paint();
+        paint(); payDue();
         clearInterval(refreshTimer);
         // (a press under way renews its own quote when it starts the swap: the refresh leaves it be)
-        refreshTimer = setInterval(() => { if (!document.hidden && L.open) { readMe(true); if (!recovered) findPast(); if (L.q && !L.busy && !L.chain && L.q.expiresAt - now() < RENEW_SECS) requote(true, true); } }, REFRESH_MS);
+        refreshTimer = setInterval(() => { if (!document.hidden && L.open) { readMe(true); payDue(); if (!recovered) findPast(); if (L.q && !L.busy && !L.chain && L.q.expiresAt - now() < RENEW_SECS) requote(true, true); } }, REFRESH_MS);
         if (recovered) follow(1000); else await findPast();
       } catch (e) { if (g === gen) say(esc(plainError(e)), 'err'); }
       finally { if (g === gen) began = null; }
@@ -925,7 +925,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         payout.choose(k.pubHex, due.id, { state: 'sent', tx: r.txHash, net: String(r.net), fee: String(r.fee) });
         notify('ETH sent to your address');
       } catch (e) {
-        payout.choose(k.pubHex, due.id, e?.retry ? { state: 'waiting', nextAt: Date.now() + 30000 } : { state: 'failed', why: plainError(e) });
+        // (one that may yet go is asked again by itself, its reason said on the card from the second try; one that cannot waits for Try again)
+        const tries = Number(w.tries || 0) + 1;
+        payout.choose(k.pubHex, due.id, e?.retry ? { state: 'waiting', nextAt: Date.now() + 30000, tries, why: plainError(e) } : { state: 'failed', tries, why: plainError(e) });
       } finally { paying = false; paintRecs(); }
     };
     const locks = typeof navigator !== 'undefined' ? navigator.locks : null;
@@ -940,13 +942,14 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (!w) return '';
     const to = `${w.to.slice(0, 6)}…${w.to.slice(-4)}`;
     if (w.state === 'sent') return `<small class="paid">Sent to ${esc(to)}${w.net && w.net !== '0' ? `: ${esc(fmt(BigInt(w.net)))} ETH` : ''}.${/^0x[0-9a-f]{64}$/i.test(w.tx || '') ? ` <a href="https://etherscan.io/tx/${esc(w.tx)}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a>` : ''}</small>`;
-    if (w.state === 'failed') return `<small class="paid err">Could not send to ${esc(to)}: ${esc(w.why || 'try again')} <button class="link" type="button" data-pay-retry="${esc(r.id)}">Try again</button></small>`;
+    if (w.state === 'failed') return `<small class="paid err">Couldn’t send to ${esc(to)}: ${esc(w.why || 'try again.')} <button class="link" type="button" data-pay-retry="${esc(r.id)}">Try again</button></small>`;
+    if (w.state === 'waiting' && w.why && Number(w.tries || 0) >= 2) return `<small class="paid err">Couldn’t send to ${esc(to)} yet: ${esc(w.why)} Trying again by itself. <button class="link" type="button" data-pay-retry="${esc(r.id)}">Try again now</button></small>`;
     return `<small class="paid">${w.state === 'sending' ? `Sending the ETH to ${esc(to)}…` : `Then sent to ${esc(to)}, once the ETH has arrived.`}</small>`;
   }
   function payRetry(id) {
     const k = D.key ? D.key() : null;
     if (!payout || !k) return;
-    payout.choose(k.pubHex, id, { state: 'waiting', why: null, nextAt: 0 }); paintRecs(); payDue();
+    payout.choose(k.pubHex, id, { state: 'waiting', why: null, nextAt: 0, tries: 0 }); paintRecs(); payDue();
   }
 
   // a deposit this browser kept (a reload, or a wait that ran out) is finished while the key is open
