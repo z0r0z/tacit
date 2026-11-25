@@ -35,7 +35,7 @@
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /auto-claim.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
+<!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /auto-claim.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js /rescan-gate.js /pub-address.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -87,6 +87,8 @@
 <link rel="modulepreload" href="/reward-pop.js?cb=88973dac">
 <link rel="modulepreload" href="/evm-pool-tokens.js?cb=16e0e196">
 <link rel="modulepreload" href="/net-pick.js?cb=9229f173">
+<link rel="modulepreload" href="/rescan-gate.js?cb=69bb32ff">
+<link rel="modulepreload" href="/pub-address.js?cb=cb1da32d">
 <link rel="modulepreload" href="/front/tac.js?cb=3c017966">
 <!-- preload:end -->
 <style>
@@ -361,6 +363,14 @@ main:focus { outline: none; }
 
 /* ── hero ── */
 .hero { padding: 48px 0 28px; }
+/* a quiet line above the title that leads to the Tacit Praxis ceremony */
+.pxb { display: flex; align-items: center; gap: 10px; width: fit-content; max-width: 100%; margin: -18px auto 26px; padding: 6px 14px 6px 6px; border: 1px solid var(--hair-2); border-radius: 99px; font-size: 12px; line-height: 1.35; text-decoration: none; color: var(--mute); transition: border-color .15s, color .15s; }
+.pxb .tk { width: 24px; height: 24px; flex: none; }
+.pxb b { font-weight: 500; color: var(--ink); }
+.pxb i { font-style: normal; color: var(--ink); flex: none; }
+@media (hover: hover) { .pxb:hover { border-color: var(--ink); color: var(--ink); } }
+.pxb:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+@media (max-width: 480px) { .pxb { margin-top: -26px; font-size: 11.5px; } }
 .hero-t { margin: 0 auto 40px; text-align: center; }
 /* What is new, under the count: the chain and, while it is open, the airdrop. Two quiet pills of one make, each opening its page; side by side where they fit. */
 .says { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px 12px; margin: 36px 0 0; }
@@ -2611,6 +2621,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <div id="ppg-body"></div>
   </section>
   <section class="hero" aria-labelledby="hero-h">
+    <a class="pxb" href="/praxis/" id="pxb"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>Tacit Praxis ceremony.</b> The cryptography for smart contracts on Bitcoin: help build its key, earn up to 5 TAC.</span><i aria-hidden="true">→</i></a>
     <div class="hero-t">
       <h1 id="hero-h">Private <span class="hero-w2">DeFi</span><span class="sr"> on BTC and ETH</span><span class="hero-pair" aria-hidden="true"><svg class="tk"><use href="#tk-btc"/></svg><svg class="tk"><use href="#tk-eth"/></svg></span></h1>
       <p class="sub">One <b>tacit1</b>&nbsp;ID for both chains. Private inside the pool.</p>
