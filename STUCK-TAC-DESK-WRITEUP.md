@@ -88,7 +88,7 @@ the same pledge at once is not covered by a test: the desk refuses the second dr
 
 ## Tests
 
-Run with Node 22 from the repo root, after `npm ci` (no new dependencies). All four suites pass.
+Run with Node 22 or later from the repo root, after `npm ci` (no new dependencies). All four suites pass.
 
 - `node tests/btcswap-sim.test.mjs`: all 10 passed. The baseline swap flow is unchanged by this entry.
 - `node tests/btcswap-reflect.test.mjs`: passed. The desk's lock and the holder's MuSig2 key-path claim fold live.

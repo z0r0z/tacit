@@ -21,7 +21,7 @@ BTCSWAP_DESK_KEY=<64 hex> node btcswap-desk/server.mjs --dry-run    # answers /i
 BTCSWAP_DESK_KEY=<64 hex> node btcswap-desk/server.mjs
 ```
 
-Node 22, from the repository root. The key's P2WPKH address holds the desk's TAC and the sats that fund its transactions; fund it
+Node 22 or later, from the repository root. The key's P2WPKH address holds the desk's TAC and the sats that fund its transactions; fund it
 with TAC the proof follows (the Bridge tab says which notes those are) and a few hundred thousand sats. `/info` shows the tracked
 TAC on hand. Keep `dataDir` on a persistent disk: each swap record is its safety state (the signing sessions above all).
 
