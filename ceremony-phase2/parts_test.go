@@ -31,6 +31,98 @@ func waitResult(t *testing.T, srv *httptest.Server, tok string) apiResp {
 
 // A contribution sent in parts: resumed after a failed part, refused when a part starts in the wrong place, checked on
 // finish exactly like an upload, and the old PUT /api/upload still works beside it.
+// A one-byte part must not freeze the slot rules: an upload that has not moved 64 MiB within ten minutes is dropped; one that has is kept to the cap.
+func TestTrickleUploadIsDropped(t *testing.T) {
+	oldB := floorBytes
+	floorBytes = 100
+	defer func() { floorBytes = oldB }()
+	f := newFixture(t)
+	c := f.chain(t)
+	clk := withClock(c)
+	c.PerIP = -1
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	in := filepath.Join(f.dir, "in")
+	_ = copyFile(c.path(17), in)
+	out := filepath.Join(f.dir, "out")
+	if _, err := Contribute(in, out); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(out)
+	pollFor := func(tok string, d time.Duration) error {
+		for el := time.Duration(0); el < d; el += 30 * time.Second {
+			clk.add(30 * time.Second)
+			if _, err := c.Poll(tok); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	slow := joinHTTP(t, srv, "trickle")
+	call(t, srv, "POST", "/api/claim", slow, nil, -1)
+	if r := putPart(t, srv, slow, 0, data[:1]); r.Code != 200 {
+		t.Fatalf("a part: %d %v", r.Code, r.Body)
+	}
+	if err := pollFor(slow, floorWindow-time.Minute); err != nil {
+		t.Fatalf("a slot is not dropped inside the window: %v", err)
+	}
+	if err := pollFor(slow, 2*time.Minute); err == nil {
+		t.Fatal("a slot whose upload has moved a byte in ten minutes is dropped")
+	}
+	// a second holder that moved enough keeps the slot
+	fast := joinHTTP(t, srv, "steady")
+	call(t, srv, "POST", "/api/claim", fast, nil, -1)
+	if r := putPart(t, srv, fast, 0, data[:200]); r.Code != 200 {
+		t.Fatalf("a part: %d %v", r.Code, r.Body)
+	}
+	if err := pollFor(fast, 30*time.Minute); err != nil {
+		t.Fatalf("a slot whose upload is moving is kept: %v", err)
+	}
+}
+
+// A single-request upload that trickles is cut once it is clearly too slow, and one that moves is not.
+func TestFloorReader(t *testing.T) {
+	oldW, oldB := floorWindow, floorBytes
+	floorWindow, floorBytes = 40*time.Millisecond, 10
+	defer func() { floorWindow, floorBytes = oldW, oldB }()
+	slow := &floorReader{r: bytes.NewReader(make([]byte, 100)), t0: time.Now()}
+	buf := make([]byte, 1)
+	slow.Read(buf)
+	time.Sleep(60 * time.Millisecond)
+	if _, err := slow.Read(buf); err != errTooSlow {
+		t.Fatalf("a body that moved one byte in the window is cut: %v", err)
+	}
+	ok := &floorReader{r: bytes.NewReader(make([]byte, 100)), t0: time.Now()}
+	ok.Read(make([]byte, 50))
+	time.Sleep(60 * time.Millisecond)
+	if _, err := ok.Read(buf); err != nil {
+		t.Fatalf("a body that moved enough is not: %v", err)
+	}
+}
+
+// Parts no claimed place owns are removed at start-up; the holder's are kept.
+func TestStartupRemovesStrayParts(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	clk := withClock(c)
+	c.PerIP = -1
+	a, _, _ := c.Join("alice", "", "192.0.2.1")
+	c.Claim(a)
+	mine := c.partPath(a)
+	stray := filepath.Join(c.Dir, "part-deadbeefdeadbeef")
+	os.WriteFile(mine, []byte("x"), 0o600)
+	os.WriteFile(stray, []byte("y"), 0o600)
+	if _, err := open(c.Dir, clk.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(mine); err != nil {
+		t.Fatal("the holder's parts are kept")
+	}
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Fatal("a stray part is removed")
+	}
+}
+
 // A part cut off by a dropped connection or a restart leaves bytes past the confirmed end; the next part from the confirmed end replaces them.
 func TestPartReplacesAnUnconfirmedTail(t *testing.T) {
 	f := newFixture(t)

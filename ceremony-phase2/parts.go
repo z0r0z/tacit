@@ -3,6 +3,7 @@ package ceremony
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,7 +23,33 @@ import (
 //	GET  /api/upload-result    (token)         {state: none | verifying | done | refused, receipt | error}
 const maxPart = 64 << 20
 
+// An upload that moves under floorBytes in its first floorWindow cannot finish inside a slot, and a trickle must not hold the slot to its cap:
+// the slot is dropped then (a chunked upload) or the request is cut (a single request). Any connection that can finish in time is far above it.
+var (
+	floorWindow       = 10 * time.Minute
+	floorBytes  int64 = 64 << 20
+)
+
+var errTooSlow = errors.New("the upload is too slow to finish inside the slot")
+
+// floorReader fails a body that has moved less than floorBytes by floorWindow after it began.
+type floorReader struct {
+	r  io.Reader
+	t0 time.Time
+	n  int64
+}
+
+func (f *floorReader) Read(b []byte) (int, error) {
+	n, err := f.r.Read(b)
+	f.n += int64(n)
+	if err == nil && f.n < floorBytes && time.Since(f.t0) > floorWindow {
+		return n, errTooSlow
+	}
+	return n, err
+}
+
 type finishResult struct {
+	at      time.Time
 	state   string // verifying, done, refused
 	receipt *Receipt
 	code    int
@@ -181,6 +208,10 @@ func (c *Coordinator) handlePart(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Lock()
 	t.uploadStarted = true // the upload has begun: the "upload did not start" rule is met
+	if t.uploadFirst.IsZero() {
+		t.uploadFirst = c.clock()
+	}
+	t.partBytes = off + n
 	t.lastSeen = c.clock()
 	c.mu.Unlock()
 	writeJSON(w, 200, map[string]int64{"have": off + n})
@@ -205,7 +236,12 @@ func (c *Coordinator) handleFinish(w http.ResponseWriter, r *http.Request) {
 	if c.finishRes == nil {
 		c.finishRes = map[string]*finishResult{}
 	}
-	res := &finishResult{state: "verifying"}
+	for k, old := range c.finishRes { // answers older than an hour are no longer asked for
+		if old.state != "verifying" && time.Since(old.at) > time.Hour {
+			delete(c.finishRes, k)
+		}
+	}
+	res := &finishResult{state: "verifying", at: time.Now()}
 	c.finishRes[tok] = res
 	t.verifying = true // as bodyDone does, with the lock already held
 	c.mu.Unlock()

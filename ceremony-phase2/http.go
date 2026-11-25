@@ -203,7 +203,7 @@ func (c *Coordinator) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	name := f.Name()
 	defer os.Remove(name) // a no-op once the file became the head
-	n, err := io.Copy(f, http.MaxBytesReader(w, r.Body, r.ContentLength))
+	n, err := io.Copy(f, &floorReader{r: http.MaxBytesReader(w, r.Body, r.ContentLength), t0: time.Now()})
 	if err == nil && n != r.ContentLength {
 		err = io.ErrUnexpectedEOF
 	}
