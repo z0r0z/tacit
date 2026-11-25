@@ -44,6 +44,17 @@ const pointOk = (h) => { try { return !pt(h).equals(Pt.ZERO); } catch { return f
 // visible in the locker's own history, so every secret below can be derived again from the key and the chain.
 export const swapIdOf = (txid, vout) => concatBytes(bx(txid), u32le(vout));
 
+// One transaction may hold several locks of plain sats, one for each provider of a split (dapp/fastbridge-pair.js quote across providers): each is a swap of its own, and
+// each needs a secret of its own, since a secret shared by two providers would let the one that sees the other's claim take its lock without paying. The lock at output k
+// of the transaction is named by the first coin the transaction spends with k in the top byte of the vout field: the lock at output 0 is named as it always was, so a lone
+// lock is unchanged, and no two locks of one transaction (nor of any two transactions, a coin being spent once) share an id. A coin's own vout is far below 2^24.
+export const LEG_SHIFT = 2 ** 24;
+export function legSwapId(txid, vout, lockVout = 0) {
+  if (!Number.isInteger(lockVout) || lockVout < 0 || lockVout > 255) throw new Error('xswap: a lock is at output 0 to 255');
+  if (!Number.isInteger(vout) || vout < 0 || (lockVout > 0 && vout >= LEG_SHIFT)) throw new Error('xswap: the coin\'s output number is out of range');
+  return swapIdOf(txid, vout + lockVout * LEG_SHIFT);
+}
+
 function scalarOf(seed, tag, swapId) {
   for (let i = 0; ; i++) {
     const k = bytes32ToBigint(taggedHash('tacit-xswap-v1', seed, te.encode(tag), swapId, Uint8Array.of(i)));
@@ -74,10 +85,10 @@ export function evmLockBlinding({ seed, swapId, T }) {
 // The swap id of a Bitcoin lock transaction as the chain shows it: the first note input (vin[1]; vin[0] is the
 // envelope's commit output). `tx` is an esplora transaction. A lock of plain sats ({ sats: true }) has no commit, and
 // its first input is the coin that names the swap.
-export function swapIdFromLockTx(tx, { sats = false } = {}) {
+export function swapIdFromLockTx(tx, { sats = false, vout = 0 } = {}) {
   const i = tx?.vin?.[sats ? 0 : 1];
   if (!i) throw new Error(sats ? 'xswap: the lock transaction spends no coin' : 'xswap: the lock transaction spends no note');
-  return swapIdOf(i.txid, i.vout);
+  return legSwapId(i.txid, i.vout, sats ? vout : 0);
 }
 
 // The Bitcoin side of a swap of plain sats (no Tacit note) is named by this asset id, which no note has: the quote, the
@@ -108,6 +119,53 @@ export function lockHintScript({ seed, swapId, claimerPub, csvBlocks, value, bar
   const sealed = xor(plain, hintStream(seed, swapId));
   const data = bare ? sealed : concatBytes(HINT_MAGIC, sealed);
   return concatBytes(Uint8Array.of(0x6a, data.length), data);
+}
+
+// The hint of a transaction that holds several locks (one OP_RETURN is all a transaction may carry and be relayed, and 80 bytes of it): the number of locks, and for each, in the
+// order of the lock outputs, a four-byte fingerprint of its claimer's key and its timelock, sealed like the single hint under the stream of the transaction's first lock. A key
+// cannot be opened from four bytes: the key finds the lock again by trying the claimer keys it knows (the providers it has met, the ones the site lists) against the outputs,
+// and an output is its lock only if the script is exactly the one that key makes (recoverBtcBatch).
+export const BATCH_MAX = 8;
+const fpOf = (claimerPub) => sha256(typeof claimerPub === 'string' ? bx(claimerPub) : claimerPub).slice(0, 4);
+export function lockBatchHintScript({ seed, swapId, legs }) {
+  if (!Array.isArray(legs) || legs.length < 2 || legs.length > BATCH_MAX) throw new Error('xswap: a batch hint names two to eight locks');
+  const plain = concatBytes(Uint8Array.of(legs.length), ...legs.map((l) => concatBytes(fpOf(l.claimerPub), beN(l.csvBlocks, 2))));
+  const sealed = xor(plain, hintStream(seed, swapId).slice(0, plain.length));
+  return concatBytes(Uint8Array.of(0x6a, sealed.length), sealed);
+}
+export function readBatchHint({ seed, swapId, script }) {
+  const s = typeof script === 'string' ? bx(script) : script;
+  if (!(s.length >= 2 && s[0] === 0x6a && s[1] === s.length - 2)) return null;
+  const sealed = s.slice(2);
+  if (sealed.length < 1 + 6 * 2 || sealed.length > 1 + 6 * BATCH_MAX || (sealed.length - 1) % 6) return null;
+  const plain = xor(sealed, hintStream(seed, swapId).slice(0, sealed.length)), n = plain[0];
+  if (n !== (sealed.length - 1) / 6) return null;
+  const legs = Array.from({ length: n }, (_, i) => ({ fp: hx(plain.slice(1 + 6 * i, 5 + 6 * i)), csvBlocks: Number(fromBe(plain.slice(5 + 6 * i, 7 + 6 * i))) }));
+  return legs.some((l) => l.csvBlocks < 1) ? null : { legs };
+}
+// The locks of one transaction that holds several, found again from the key. `outputs` are the transaction's outputs as { script } bytes or { scriptpubkey } hex (with `value`),
+// `first` its first input ({ txid, vout }), `claimerKeys` the keys of the providers this key may have locked to. Each lock is a leg: { vout, swapId, claimerPub, csvBlocks, lock,
+// t, value }, where the lock is the script of that output and no other; a leg whose key is not among those given is in `unknown` (its output is found, its refund is not
+// buildable without the key). Null when the transaction carries no batch hint of this key.
+export function recoverBtcBatch({ prims, seed, first, lockerXonly, outputs, claimerKeys }) {
+  const spks = outputs.map((o) => hx(o.script || bx(o.scriptpubkey)));
+  const swapId0 = legSwapId(first.txid, first.vout, 0);
+  let hint = null;
+  for (const spk of spks) { hint = readBatchHint({ seed, swapId: swapId0, script: spk }); if (hint) break; }
+  if (!hint || hint.legs.length > spks.length) return null;
+  const keys = [...new Set((claimerKeys || []).map((k) => strip(k)))];
+  const legs = [], unknown = [];
+  hint.legs.forEach((h, k) => {
+    const swapId = legSwapId(first.txid, first.vout, k), sec = deriveSwapSecrets({ seed, swapId });
+    for (const key of keys) {
+      if (hx(fpOf(key)) !== h.fp) continue;
+      let lock;
+      try { lock = deriveLock({ prims, claimerPub: key, T: sec.T, lockerXonly, csvBlocks: h.csvBlocks }); } catch { continue; }
+      if (spks[k] === hx(lock.spk)) { legs.push({ vout: k, swapId: hx(swapId), claimerPub: key, csvBlocks: h.csvBlocks, lock, t: sec.t, value: BigInt(outputs[k].value) }); return; }
+    }
+    unknown.push({ vout: k, swapId: hx(swapId), fp: h.fp, csvBlocks: h.csvBlocks });
+  });
+  return { legs, unknown };
 }
 
 export function readLockHint({ seed, swapId, script }) {
@@ -229,7 +287,8 @@ function checkBtcLockOffer(offer, { prims, myClaimerPub, expect, chain, minConfs
   if (!(chain.confirmations >= minConfs)) reasons.push(`fewer than ${minConfs} confirmation(s)`);
   const first = chain.noteInputs && chain.noteInputs[0];
   if (!first) reasons.push('the lock transaction\'s note inputs were not read');
-  else if (hs(o.swapId || '') !== hx(swapIdOf(first.txid, first.vout))) reasons.push('the swap id is not the outpoint the lock transaction spends');
+  // (the lock at output k of a transaction that holds several is named by the coin and k: legSwapId; a lock at output 0, and every lock of a note, as always)
+  else if (hs(o.swapId || '') !== hx(legSwapId(first.txid, first.vout, isSats(b.asset) && b.vout <= 255 ? b.vout : 0))) reasons.push('the swap id is not the outpoint the lock transaction spends');
   return { ok: reasons.length === 0, reasons, lock };
 }
 
