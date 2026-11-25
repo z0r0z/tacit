@@ -74,6 +74,22 @@ export async function chooseLeader({ cfg, route = null, fetchImpl = (...a) => gl
   return { base: cfg.leader, until: Infinity, f: await ask(cfg.leader) };
 }
 
+// The Ethereum transaction that landed a Tacit block: TacitBlocks emits Landed(height indexed, ...), so the block's own height finds it.
+// Best effort and quick (a node that refuses the range, or a tx not yet indexed, gives null and never an error): the page links it when there is one.
+const LANDED_TOPIC = hx(keccak_256(te.encode('Landed(uint256,bytes32,bytes32,address)')));
+export async function landedTxOf({ cfg, rpcCall }, height) {
+  if (!Number.isSafeInteger(height) || height < 0) return null;
+  try {
+    const head = Number(BigInt(await rpcCall('eth_blockNumber', [])));
+    for (const span of [300, 9000]) {
+      const logs = await rpcCall('eth_getLogs', [{ address: cfg.blocks, topics: [LANDED_TOPIC, '0x' + word(height)], fromBlock: '0x' + Math.max(0, head - span).toString(16), toBlock: 'latest' }]);
+      const hash = Array.isArray(logs) && logs.length ? logs[logs.length - 1]?.transactionHash : null;
+      if (/^0x[0-9a-fA-F]{64}$/.test(hash || '')) return hash;
+    }
+  } catch { /* the Landed line just goes without a link */ }
+  return null;
+}
+
 export async function chainStatus({ cfg, rpcCall, fetchImpl = (...a) => globalThis.fetch(...a), timeoutMs = 10e3 }) {
   if (!cfg) throw new Error('tacit chain: not deployed');
   const read = async (sig) => big(await rpcCall('eth_call', [{ to: cfg.blocks, data: '0x' + sel(sig) }, 'latest']));
@@ -339,7 +355,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, root = undefined, 
     for (const K of sets()) K.st.notes = K.st.notes.filter((n) => !gone.has(strip(n.nullifier)));
     save();
     onStatus?.({ id: r.id, status: 'landed', height });
-    return { id: r.id, height };
+    return { id: r.id, height, tx: await landedTxOf({ cfg, rpcCall }, height) };
   }
 
   async function offer(spent, extra = {}, { kind = 'spend', units = null, meta = {}, base = cfg.leader } = {}) {
