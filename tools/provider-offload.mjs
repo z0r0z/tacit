@@ -31,7 +31,9 @@ const arg = (k, d) => {
 const DRY = process.argv.includes('--dry-run');
 const DESK = arg('--desk', 'https://tacit-btcswap-desk.onrender.com').replace(/\/$/, '');
 const cfgPath = resolve(arg('--config', 'provider.json'));
-const C = JSON.parse(readFileSync(cfgPath, 'utf8'));
+let C;
+try { C = JSON.parse(readFileSync(cfgPath, 'utf8')); }
+catch { console.error(`provider-offload: cannot read --config ${cfgPath} (the provider's own config: network, asset, btcBases, poolAddress, apiBase, dataDir)`); process.exit(1); }
 const FLOOR = Number(arg('--floor', C.provider?.floorBps ?? 300));
 const keyHex = String(process.env.PROVIDER_KEY || '').trim().replace(/^0x/, '');
 if (!/^[0-9a-f]{64}$/i.test(keyHex)) { console.error('PROVIDER_KEY must be 64 hex characters (set it in the environment)'); process.exit(1); }
