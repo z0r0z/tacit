@@ -890,6 +890,11 @@ for (const [path, dir] of [['/?from=BTC&to=ETH&from-at=btc', 'b2e'], ['/?from=ET
   await page.close();
 }
 
+{
+  const html = readFileSync(new URL('../dapp/btc/index.html', import.meta.url), 'utf8');
+  ok(/Running a node also helps:[^<]*<a href="\/nodes\/">\/nodes\/<\/a> and ranked by uptime and accuracy/.test(html), 'the provider area points at /nodes/');
+}
+
 await b.close();
 server.close();
 console.log(`\n${n} checks passed${fails ? `, ${fails} FAILED` : ''}`);

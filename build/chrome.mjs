@@ -101,6 +101,7 @@ const OUT = [
   ['github', 'Source', 'https://github.com/src-company/tacit', 'Source'],
   ['contract', 'Pool contract', 'https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC', 'Contract'],
   ['stats', 'Stats', '/weld/stats/', 'Stats'],
+  ['stats', 'Nodes', '/nodes/'],
   ['llama', 'DefiLlama', 'https://defillama.com/protocol/tacit'],
   ['ethbeat', 'Listed on ETHBeat', 'https://ethbeat.org/privacy/projects/tacit-pay'],
   ['x', '@tacitfi on X', 'https://x.com/tacitfi'],

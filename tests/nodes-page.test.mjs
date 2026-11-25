@@ -120,3 +120,9 @@ test('trust: a signature older than an hour is flagged, a missing key is flagged
   assert.equal(trust(signed(), { check: c, pubs: [pub(9)], now: T }).stale, false);
   assert.equal(trust(STATUS, { check: c, pubs: [], now: T }).preview, true);
 });
+
+test('the page links to the swap-provider guide and the own-nodes runbook', () => {
+  const doc = new JSDOM(PAGE).window.document;
+  assert.ok(doc.querySelector('main a[href="/btc/#be"]'));
+  assert.ok(doc.querySelector('main a[href$="/tree/main/own-nodes"]'));
+});
