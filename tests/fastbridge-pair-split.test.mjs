@@ -108,7 +108,7 @@ test('a provider that goes quiet after the send: its leg is returned by its own 
   await w.run(ok);
   let card = (await w.pair.records())[0];
   assert.equal(card.state, 'working', 'the card goes on while one part waits');
-  assert.match(card.detail, /Each part is a swap of its own/);
+  assert.match(card.detail, /Each part is its own swap/);
   const b = card.batch.legs.find((l) => l.provider === 'Bravo');
   assert.ok(b.state === 'working' && b.refundAt > 0, 'Bravo\'s part says when its BTC returns');
   assert.ok(!w.btc.spends.get(`${lockTxid}:1`), 'the lock of the quiet provider is unspent');
@@ -118,7 +118,7 @@ test('a provider that goes quiet after the send: its leg is returned by its own 
   card = (await w.pair.records())[0];
   assert.equal(card.state, 'done');
   assert.match(card.title, /^Done: 2 of 3 parts$/);
-  assert.match(card.detail, /did not go through and the BTC of it came back/);
+  assert.match(card.detail, /did not go through; that BTC is back/);
   assert.deepEqual(card.batch.legs.map((l) => [l.provider, l.state]), [['Alpha', 'done'], ['Bravo', 'returned'], ['Charlie', 'done']]);
   const done = q.split.legs.filter((l) => l.provider.name !== 'Bravo').reduce((t, l) => t + l.get, 0n);
   assert.equal(card.got, done, 'what the two that went through paid');
@@ -234,7 +234,7 @@ test('the card for a mixed state counts what came and what returned (describeBat
   const c = describeBatch('b', [leg(0, 'done', 'Done'), leg(1, 'returned', 'Returned'), leg(2, 'working', 'Waiting for Bitcoin')]);
   assert.equal(c.state, 'working');
   assert.equal(c.title, 'Swapping across 3 providers');
-  assert.match(c.detail, /one part is being returned/);
+  assert.match(c.detail, /one part is returning/);
   const d = describeBatch('b', [leg(0, 'returned', 'Returned'), leg(1, 'returned', 'Returned')]);
   assert.equal(d.state, 'returned');
   assert.equal(d.get, 0n);

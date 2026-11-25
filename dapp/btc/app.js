@@ -2,13 +2,13 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=0a565a73';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=47cdbb87';
 import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=8ce2e31b';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
 import { makeAddEth } from '/btc/add-eth.js?cb=eae599fd';
-import { mountSendPanel } from '/btc/panel.js?cb=d25967e5';
+import { mountSendPanel } from '/btc/panel.js?cb=4e01aedd';
 import { makePayout } from '/btc/payout.js?cb=3b028d52';
 
 const $ = (id) => document.getElementById(id);
@@ -85,7 +85,7 @@ function paintProviders(m) {
   if (!m) { cap.textContent = 'The boards could not be read just now.'; setSum('pv-at', 'not read just now'); return; }
   const ps = m.providers || [], tb = m.totals?.b2e, te = m.totals?.e2b;
   const nowB = tb && tb.now > 0n ? `${fmt(tb.now)} BTC` : null, nowE = te && te.now > 0n ? `${fmt(te.now)} ETH` : null;
-  cap.innerHTML = !ps.length ? 'No provider is online right now. A swap waits for one; anyone can become one, below.'
+  cap.innerHTML = !ps.length ? 'No provider is online. Swaps wait for one. Run one below.'
     : `Now, in one swap: ${nowB ? `up to <b class="num">${esc(nowB)}</b> for ETH` : 'no BTC for ETH'}, and ${nowE ? `up to <b class="num">${esc(nowE)}</b> for BTC` : 'no ETH for BTC'}.`;
   list.innerHTML = ps.length ? ps.map((p) => `<li data-pv="${esc(p.id)}"><span class="nm"><b>${esc(p.name)}</b><span class="num">${esc(String(p.id).slice(0, 10))}…</span></span>${side(p.b2e, 'b2e')}${side(p.e2b, 'e2b')}</li>`).join('') : '';
   // the line at the top: each part kept whole (the line breaks between them), and what can be swapped now to two figures, rounded down
@@ -226,7 +226,7 @@ async function withdraw({ id = null, units = null } = {}) {
   const o = overlay({ title: 'Send ETH to an address' });
   const own = lane.ethAddress(), fixed = units != null && units > 0n;
   const field = 'min-height:40px;padding:6px 10px;font:13px var(--mono, monospace)';
-  o.body.innerHTML = `<p style="margin:0 0 12px">${fixed ? `${esc(fmt(units))} ETH from this swap` : 'ETH'} from your private balance to an Ethereum address. The relay sends it and takes its fee from it.</p>
+  o.body.innerHTML = `<p style="margin:0 0 12px">${fixed ? `${esc(fmt(units))} ETH from this swap` : 'ETH'} sent from your private balance to an Ethereum address. A small fee comes out of it.</p>
     ${fixed ? '' : `<div style="display:flex;gap:8px;align-items:center;margin:0 0 12px"><input data-amt inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount of ETH" style="${field};flex:1;min-width:0"><span>ETH</span><button class="btn ghost" type="button" data-max disabled>Max</button></div>`}
     <div class="pt" style="display:grid;gap:8px">
       ${own ? `<label style="display:flex;gap:8px;align-items:baseline"><input type="radio" name="wd-to" value="own" checked><span>Your Tacit Ethereum address <code>${esc(own.slice(0, 6))}…${esc(own.slice(-4))}</code></span></label>` : ''}
@@ -234,7 +234,7 @@ async function withdraw({ id = null, units = null } = {}) {
       <input data-addr placeholder="0x…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Ethereum address" style="${field}"${own ? ' hidden' : ''}>
     </div>
     <p data-say role="status" style="margin:12px 0 0"></p>
-    <p class="note" style="margin:8px 0 0">Sent there, it is public from that address on. ${fixed ? 'Sending all of it right after the swap makes the two easy to match by amount and time.' : 'An amount sent soon after a swap of the same amount is easy to match to it.'}</p>
+    <p class="note" style="margin:8px 0 0">It is public from that address on. ${fixed ? 'Sending it all right after the swap makes the two easy to match.' : 'An amount sent soon after a swap of the same size is easy to match.'}</p>
     <div class="bsheet-actions" style="margin-top:14px"><button class="btn" type="button" data-go disabled>Send</button><button class="btn ghost" type="button" data-x>Cancel</button></div>`;
   const q = (s) => o.body.querySelector(s), addr = q('[data-addr]'), amt = q('[data-amt]'), say = q('[data-say]'), go = q('[data-go]');
   let fee = null, feeFor = null, max = null, busy = false, seq = 0;
@@ -244,7 +244,7 @@ async function withdraw({ id = null, units = null } = {}) {
     if (busy) return;
     const other = o.body.querySelector('input[name="wd-to"]:checked')?.value !== 'own', t = target(), chk = payout.checkAddress(addr.value), v = amount();
     addr.hidden = !other;
-    if (v && v !== feeFor) { const my = ++seq; feeFor = v; fee = null; payout.quote(v).then((f) => { if (my === seq) { fee = f; paint(); } }, () => { if (my === seq) { say.textContent = 'The relay’s fee could not be read just now. Try again in a moment.'; } }); }
+    if (v && v !== feeFor) { const my = ++seq; feeFor = v; fee = null; payout.quote(v).then((f) => { if (my === seq) { fee = f; paint(); } }, () => { if (my === seq) { say.textContent = 'The fee could not be read just now. Try again soon.'; } }); }
     const tooMuch = !fixed && v && max != null && v > max, tooLittle = v && fee && fee.net <= 0n;
     go.disabled = !t || !v || !fee || feeFor !== v || tooMuch || tooLittle;
     say.textContent = other && addr.value.trim() && !chk.ok ? chk.why
@@ -261,7 +261,7 @@ async function withdraw({ id = null, units = null } = {}) {
     if (!t || !v) return;
     if (fixed && id) { lane.payTo(id, t); o.close(); return; }
     busy = true; go.disabled = true; q('[data-x]').textContent = 'Close';
-    say.textContent = 'Sending… The relay proves the withdrawal and sends it, a few minutes. You can close this; it goes on.';
+    say.textContent = 'Sending… this takes a few minutes. You can close this.';
     try {
       const r = await lane.sendEth({ units: v, to: t });
       say.innerHTML = `Sent: about ${esc(fmt(r.net || v))} ETH to ${esc(t.slice(0, 6))}…${esc(t.slice(-4))}.${/^0x[0-9a-f]{64}$/i.test(r.txHash || '') ? ` <a href="https://etherscan.io/tx/${esc(r.txHash)}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a>` : ''}`;
@@ -276,7 +276,7 @@ async function withdraw({ id = null, units = null } = {}) {
 function paintEth() {
   const box = $('ye-box'), say = $('ye-say'), on = lane.unlocked && lane.bitcoin();
   box.hidden = !on; say.hidden = !!on;
-  if (!on) { say.textContent = lane.unlocked ? 'Reading your private ETH…' : 'Open your Tacit wallet above to see its private ETH.'; return; }
+  if (!on) { say.textContent = lane.unlocked ? 'Reading your private ETH…' : 'Sign in above to see your private ETH.'; return; }
   const b = lane.balances(), held = b.ethHeld ?? b.eth;
   $('ye-bal').textContent = held == null ? 'reading…' : `${fmt(held)} ETH`;
   $('ye-send').disabled = !(held > 0n);
@@ -286,7 +286,7 @@ $('ye-send').addEventListener('click', () => withdraw({}).catch(() => {}));
 // (the swaps of an earlier visit are looked for on the chains for a minute or two after the wallet opens: until that ends the list says so, never 'No swaps yet')
 function paintMine(recs) {
   const open = lane.unlocked, look = lane.looking;
-  $('mine-say').textContent = !open ? 'Open your Tacit wallet above to see your swaps.'
+  $('mine-say').textContent = !open ? 'Sign in above to see your swaps.'
     : look === 'failed' ? `Your ${recs.length ? 'other ' : ''}past swaps could not be looked for just now. Trying again.`
       : look ? (recs.length ? 'Looking for more of your past swaps…' : 'Looking for your past swaps on Bitcoin and Ethereum. This can take a minute or two.')
         : recs.length ? '' : 'No swaps yet. A swap you start shows here, with its steps.';
@@ -295,7 +295,7 @@ function paintMine(recs) {
 // a copy of the swaps as a file: a swap of ETH for BTC is found again from this copy or this browser's storage, not from the key alone
 $('keep-save').addEventListener('click', () => {
   const k = lane.keep(), st = $('mine-st');
-  if (!k) { st.textContent = 'Open your Tacit wallet first.'; return; }
+  if (!k) { st.textContent = 'Sign in first.'; return; }
   const blob = new Blob([JSON.stringify(k.save(), null, 1)], { type: 'application/json' }), url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement('a'), { href: url, download: `tacit-btc-eth-swaps-${new Date().toISOString().slice(0, 10)}.json` });
   document.body.append(a); a.click(); a.remove();
@@ -306,7 +306,7 @@ $('keep-file').addEventListener('change', async (e) => {
   const f = e.target.files && e.target.files[0], k = lane.keep(), st = $('mine-st');
   e.target.value = '';
   if (!f) return;
-  if (!k) { st.textContent = 'Open your Tacit wallet first.'; return; }
+  if (!k) { st.textContent = 'Sign in first.'; return; }
   try { const n = k.load(await f.text()); st.textContent = n ? `${n} record${n === 1 ? '' : 's'} read back.` : 'Nothing new in that copy.'; await lane.reread(); }
   catch (err) { st.textContent = String(err?.message || 'That file could not be read.'); }
 });

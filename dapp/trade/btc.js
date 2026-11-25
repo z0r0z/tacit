@@ -22,7 +22,7 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
     const here = wallet(), btcFirst = prefer === 'btc' && session.btcSeen() && !session.known() && !here;
     return signInSheet(session, {
       pick: pickWalletSheet, first: btcFirst ? 'btc' : 'eth', here,
-      why: `Open your Tacit wallet to ${purpose}. It comes from a signature or a passkey, so there is nothing to back up, and it stays open in this tab only, until you close it, lock it, or leave the site idle for 30 minutes.`,
+      why: `Sign in to ${purpose}. One signature or a passkey; nothing to back up. It stays open in this tab until you close it or leave the site idle for 30 minutes.`,
     });
   }
   function pickFor(k) {

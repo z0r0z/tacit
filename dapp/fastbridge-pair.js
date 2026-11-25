@@ -87,50 +87,50 @@ const TAKE_VSIZE = 110;                                          // a key-path t
 
 // short enough to sit side by side on one line each, four to a row (two on a phone); 'they' is the provider
 const STEP_TITLES = {
-  b2e: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'],
-  e2b: ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'],
+  b2e: ['You send BTC', 'They send ETH', 'You get ETH', 'They get BTC'],
+  e2b: ['They send BTC', 'You send ETH', 'They confirm', 'You get BTC'],
 };
 const KEYS = ['lock', 'match', 'claim', 'take'];
 const stepsOf = (dir, at, state) => STEP_TITLES[dir].map((title, i) => ({
   key: KEYS[i], title, state: state === 'done' ? 'done' : state === 'returned' ? (i === 0 && dir === 'b2e' ? 'done' : 'todo') : i < at ? 'done' : i === at && state === 'working' ? 'active' : 'todo',
 }));
 const FWD_SAYS = {
-  built: [0, 'Sending your BTC', 'The lock transaction is being sent.', 1050],
-  broadcast: [0, 'Waiting for Bitcoin', 'Your lock waits for a Bitcoin block, about ten minutes, some sooner, some later.', 1020],
-  offered: [1, 'The provider is locking ETH for you', 'It locks the ETH in the pool against your lock, then you can claim it.', 420],
-  claiming: [2, 'Claiming your ETH', 'Your claim is being settled in the pool.', 210],
-  claimed: [3, 'Finishing', 'The ETH is yours in the pool. The provider collects the BTC next.', 0],
+  built: [0, 'Sending your BTC', 'Your payment is going out.', 1050],
+  broadcast: [0, 'Waiting for Bitcoin', 'Waiting for a Bitcoin block: about 10 min, sometimes more.', 1020],
+  offered: [1, 'Provider is sending ETH', 'The ETH goes to the pool for you. Then you receive it.', 420],
+  claiming: [2, 'Receiving your ETH', 'Settling in the pool.', 210],
+  claimed: [3, 'Finishing', 'Your ETH is in. The provider collects the BTC next.', 0],
   done: [4, 'Done', 'The ETH is in your private balance.', 0],
-  'counter-took': [4, 'Done', 'The ETH is in your private balance, and the provider collected the BTC.', 0],
-  'refund-wait': [0, 'Returning your BTC', 'The lock returns to your Bitcoin address when its timelock ends.', null],
-  refunded: [4, 'Returned', 'Your BTC came back to your Bitcoin address.', 0],
+  'counter-took': [4, 'Done', 'The ETH is in your private balance.', 0],
+  'refund-wait': [0, 'Returning your BTC', 'Your BTC returns to your Bitcoin address when the wait ends.', null],
+  refunded: [4, 'Returned', 'Your BTC is back at your Bitcoin address.', 0],
   // (the lock is not sent once its quote has run out: dapp/fastbridge-bl.js 'built')
-  aborted: [0, 'Stopped', 'The lock was not sent before the quote ran out, so your BTC never left your Bitcoin address. Ask for a new quote to swap.', null],
+  aborted: [0, 'Stopped', 'The quote ran out before your BTC was sent, so it never left your Bitcoin address. Ask for a new quote.', null],
 };
 const REV_SAYS = {
-  accepted: [0, 'Waiting for the Bitcoin lock', 'The provider’s lock is on Bitcoin and needs its confirmations before your ETH is locked.', 1650],
-  locking: [1, 'Locking your ETH in the pool', 'Your private ETH is being locked in the pool for the provider.', 1050],
-  locked: [1, 'Telling the provider', 'Your ETH is locked. The provider is being told.', 870],
-  offered: [2, 'Waiting for the provider to claim', 'The provider is claiming the ETH you locked. When it does, your BTC is yours to take.', 840],
-  taking: [3, 'Your BTC is on its way', 'Your BTC is sent to your Bitcoin address. It is yours to spend once Bitcoin confirms it, about ten minutes.', 600],
+  accepted: [0, 'Waiting for the provider’s BTC', 'It needs its confirmations before you send your ETH.', 1650],
+  locking: [1, 'Sending your ETH', 'Your private ETH is going to the pool for the provider.', 1050],
+  locked: [1, 'Telling the provider', 'Your ETH is sent. The provider is being told.', 870],
+  offered: [2, 'Waiting for the provider', 'It confirms your ETH, then your BTC is yours.', 840],
+  taking: [3, 'Your BTC is on its way', 'Sent to your Bitcoin address. Yours to spend once Bitcoin confirms it (about 10 min).', 600],
   done: [4, 'Done', 'The BTC is at your Bitcoin address.', 0],
-  refunding: [2, 'Taking your ETH back', 'The provider did not claim in time, so the ETH you locked is coming back to your private balance.', null],
-  refunded: [4, 'Returned', 'Your ETH came back to your private balance.', 0],
-  aborted: [0, 'Stopped', 'This swap was stopped before anything was lost.', null],
-  lost: [0, 'Needs a look', 'The provider claimed with a signature that does not give your BTC. Do not close this page.', null],
+  refunding: [2, 'Returning your ETH', 'The provider did not confirm in time. Your ETH is returning to your private balance.', null],
+  refunded: [4, 'Returned', 'Your ETH is back in your private balance.', 0],
+  aborted: [0, 'Stopped', 'Stopped before anything was lost.', null],
+  lost: [0, 'Needs a look', 'The provider’s confirmation does not give you the BTC. Keep this page open.', null],
 };
 
 // A swap that has waited ten minutes or more on Ethereum nodes that do not agree (dapp/fastbridge-el.js and -bl.js `nodesSince`), said after the detail
-const NODES_WAIT = 'The Ethereum nodes this page reads have not agreed on this swap for a while, so it is read again until two of them do. Nothing is decided on one node’s word, and a refund still goes out at its time.';
+const NODES_WAIT = 'The Ethereum nodes this page reads disagree about this swap, so it is read again until two match. A refund still goes out on time.';
 const nodesWait = (rec, nowSecs) => rec.nodesSince != null && !['done', 'refunded', 'aborted', 'lost', 'counter-took'].includes(rec.phase) && nowSecs - rec.nodesSince >= 600;
 const andNodes = (detail, rec, nowSecs) => (nodesWait(rec, nowSecs) ? [detail, NODES_WAIT].filter(Boolean).join(' ') : detail);
-const CLAIM_AGAIN = 'The last try did not go through, so the claim is being sent again while there is time. If the time runs out, your BTC comes back when its timelock ends.';
+const CLAIM_AGAIN = 'The last try failed, so it is being sent again while there is time. If time runs out, your BTC returns to your Bitcoin address.';
 // A reason kept on a record, as a sentence of its own after the detail
 const sentenceOf = (why) => { const w = String(why || '').trim().replace(/[.\s]*$/, ''); return !w ? '' : /^found from the key$/i.test(w) ? 'It was found again from your key.' : w.charAt(0).toUpperCase() + w.slice(1) + '.'; };
 const withWhy = (detail, why) => [detail, sentenceOf(why)].filter(Boolean).join(' ');
 // A swap found again from the key is listed as being checked until its first step has read the chains: never as returning or waiting on a guess
 const checking = (dir, rec, providerName = null) => ({
-  id: rec.id, dir, state: 'working', title: 'Checking', detail: 'This swap was found again from your key. What became of it is being read from the chains.',
+  id: rec.id, dir, state: 'working', title: 'Checking', detail: 'Found again from your key. Reading what became of it.',
   pay: dir === 'b2e' ? BigInt(rec.amount || 0) : rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: dir === 'b2e' ? BigInt(rec.evmAmount || 0) : rec.offer ? BigInt(rec.offer.btc.value) : 0n,
   steps: stepsOf(dir, -1, 'checking'), etaSecs: 0, at: rec.created, refundAt: null, lockTxid: dir === 'b2e' ? (rec.lock ? rec.lock.txid : null) : rec.lockTxid || null,
   error: null, provider: providerName, backBy: null, checking: true,
@@ -141,11 +141,11 @@ const checking = (dir, rec, providerName = null) => ({
 export const SLOW_BLOCK_SECS = 900;
 export function slowBlockLine(tip, nowSecs, safe) {
   if (!tip || !(Number(tip.at) > 0) || nowSecs - Number(tip.at) < SLOW_BLOCK_SECS) return '';
-  return `No Bitcoin block for ${Math.floor((nowSecs - Number(tip.at)) / 60)} min. This happens: blocks come about every ten minutes on average, and now and then an hour goes by without one. ${safe}`;
+  return `No Bitcoin block for ${Math.floor((nowSecs - Number(tip.at)) / 60)} min. Blocks come every 10 min on average; gaps of an hour happen. ${safe}`;
 }
-const SAFE_FWD = 'Your swap is safe: if it does not go through, your BTC comes back to your address by itself.';
-const SAFE_REV = 'Your swap is safe: nothing of yours is locked until the provider’s lock is confirmed.';
-const SAFE_TAKE = 'The BTC is yours: the transaction only has to confirm, with hours to spare.';
+const SAFE_FWD = 'Your swap is safe: if it does not finish, your BTC returns to your address.';
+const SAFE_REV = 'Your swap is safe: nothing of yours moves until the provider’s BTC is confirmed.';
+const SAFE_TAKE = 'The BTC is yours: it only has to confirm, with hours to spare.';
 // The time a wait for Bitcoin confirmations has left: about ten minutes for each one still to come, from now, however long the last one took (a block does not
 // come sooner for being late), and then the steps after it
 const confsLeft = (need, confs) => Math.max(1, Number(need) - Math.max(0, Number(confs) || 0)) * 600;
@@ -184,13 +184,13 @@ export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip 
   // (waiting for the provider's lock to confirm: said as the asked swap says it, its confirmations so far, a slow block, and the ETH lock made ready meanwhile)
   if (rec.phase === 'accepted' && rec.offer) {
     const need = confsForSats(rec.offer.btc.value), confs = Number(rec.lockConfs) || 0;
-    title = 'The provider locked BTC for you';
-    detail = join(`Waiting for ${waitWords(need)}${confs > 0 ? ` (${confs} so far)` : ''}. A block comes about every ten minutes, some sooner, some later. Your ETH is locked after that${rec.pre ? ', and is made ready meanwhile so it goes in at once' : ''}.`, slowBlockLine(tip, now(), SAFE_REV));
+    title = 'Provider sent BTC';
+    detail = join(`Waiting for ${waitWords(need)}${confs > 0 ? ` (${confs} so far)` : ''}. A block takes about 10 min, sometimes more. Your ETH goes in after that${rec.pre ? ' and is made ready meanwhile' : ''}.`, slowBlockLine(tip, now(), SAFE_REV));
   } else if (rec.phase === 'taking') detail = join(detail, slowBlockLine(tip, now(), SAFE_TAKE));
   // (a swap found again from the key whose provider has not yet taken its pool offer is said as being told, not as waiting for a claim: tellRecovered)
   else if (rec.phase === 'offered' && rec.recovered && !rec.toldBy) {
     [at, title] = [1, 'Telling the provider'];
-    detail = 'Your ETH is locked. This swap was found again from your key, and the provider is being told of the lock; it is asked again every few minutes. If it does not claim by the deadline, your ETH comes back to your private balance by itself.';
+    detail = 'Your ETH is sent. The swap was found again from your key and the provider is being told, every few minutes. If it does not confirm by the deadline, your ETH returns to your private balance.';
   }
   const state = rec.phase === 'done' ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' || rec.phase === 'lost' ? 'stopped' : 'working';
   // what reached the user's address: the lock less the fee of the take that spent it, when this page made the take
@@ -212,7 +212,7 @@ export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip 
 // Each leg is a swap of its own (describeFwd); the card says them together, with the legs inside it. It is working while any leg is, done when the legs have ended and any
 // of them is done (what came back to the private balance is the sum of the done legs'; a leg that was returned says so by itself, with the BTC that came back), returned or
 // stopped when none went through. One time left (the longest of the legs'), one page-back time (the earliest of the legs'), one refund time (the latest).
-const LEG_NOTE = 'Each part is a swap of its own with its own provider: one that does not go through returns its own BTC to your Bitcoin address when its timelock ends, and the others finish.';
+const LEG_NOTE = 'Each part is its own swap with its own provider. One that fails returns its BTC to you; the others finish.';
 export function describeBatch(id, legs, now = () => Math.floor(Date.now() / 1000)) {
   const n = legs.length, working = legs.filter((l) => l.state === 'working'), done = legs.filter((l) => l.state === 'done'), ended = legs.filter((l) => l.state !== 'working');
   const state = working.length ? 'working' : done.length ? 'done' : legs.every((l) => l.state === 'stopped') ? 'stopped' : 'returned';
@@ -223,14 +223,14 @@ export function describeBatch(id, legs, now = () => Math.floor(Date.now() / 1000
   let title, detail;
   if (state === 'working') {
     title = `Swapping across ${n} providers`;
-    detail = `${n} parts from one Bitcoin transaction. ${back.length ? `${word(back.length)} ${back.length === 1 ? 'is' : 'are'} being returned: that BTC comes back to your Bitcoin address when its timelock ends. ` : ''}${LEG_NOTE}`;
+    detail = `${n} parts from one Bitcoin payment. ${back.length ? `${word(back.length)} ${back.length === 1 ? 'is' : 'are'} returning: that BTC comes back to your Bitcoin address. ` : ''}${LEG_NOTE}`;
   } else if (state === 'done') {
     const lost = n - done.length;
     title = lost ? `Done: ${done.length} of ${n} parts` : 'Done';
-    detail = lost ? `The ETH of ${word(done.length)} is in your private balance. ${word(lost)} did not go through and the BTC of ${lost === 1 ? 'it' : 'them'} came back to your Bitcoin address.` : `The ETH from all ${n} providers is in your private balance.`;
+    detail = lost ? `The ETH of ${word(done.length)} is in your private balance. ${word(lost).replace(/^./, (c) => c.toUpperCase())} did not go through; that BTC is back at your Bitcoin address.` : `The ETH from all ${n} providers is in your private balance.`;
   } else {
     title = state === 'stopped' ? 'Stopped' : 'Returned';
-    detail = state === 'stopped' ? `The lock was not sent before the quote ran out, so your BTC never left your Bitcoin address.` : 'No part went through. Your BTC came back to your Bitcoin address.';
+    detail = state === 'stopped' ? `The quote ran out before your BTC was sent, so it never left your Bitcoin address.` : 'No part went through. Your BTC is back at your Bitcoin address.';
   }
   // the steps are the ones every part still going has reached; a part that ended is not waited for
   const live = legs.filter((l) => !going(l));
@@ -265,10 +265,10 @@ const noCounter = () => { const no = async () => { throw new Error('this swap wa
 // What the page says of a provider's refusal: this side's own words, never the provider's. An error the provider's answer carries (one with its HTTP status) is said
 // as one of a few fixed sentences picked by what it is about, or as `fallback`; the page's own checks of a quote and its transports are worded here and kept.
 const REMOTE_WORDS = [
-  [/no price/i, 'the provider has no price for this pair right now'],
-  [/busy|rate.?limit|too many/i, 'the provider is busy just now'],
+  [/no price/i, 'the provider has no price right now'],
+  [/busy|rate.?limit|too many/i, 'the provider is busy'],
   [/expired|too late/i, 'the quote expired: ask again'],
-  [/amount|available|hold|limit|liquidity|funds/i, 'the provider cannot take that amount right now'],
+  [/amount|available|hold|limit|liquidity|funds/i, 'the provider cannot take that amount'],
 ];
 const said = (e, fallback) => {
   if (!e || typeof e.message !== 'string' || !e.message) return fallback;
@@ -770,12 +770,12 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   function safeWords(dir, rec) {
     if (dir === 'b2e') {
       const back = rec.lockAt || rec.confirmedAt ? `, about ${untilWords((rec.lockAt || rec.confirmedAt) + rec.csvBlocks * 600)}` : ', about a day after it confirmed';
-      return `Your funds are safe: if the swap does not finish, your BTC comes back to your Bitcoin address by itself after its timelock${back}.`;
+      return `Your funds are safe. If the swap does not finish, your BTC returns to your Bitcoin address${back}.`;
     }
-    if (rec.phase === 'accepted') return 'Your funds are safe: nothing of yours is locked yet.';
-    if (rec.phase === 'taking') return 'The BTC is yours: this page keeps sending the transaction that takes it, and raises its fee if it waits.';
-    if (rec.phase === 'refunding') return 'Your funds are safe: the refund does not depend on the provider, and this page keeps sending it.';
-    return rec.deadline ? `Your funds are safe: if the provider has not claimed by the deadline, ${untilWords(rec.deadline)}, your ETH comes back to your private balance by itself.` : 'Your funds are safe: nothing of yours is spent until this step goes through.';
+    if (rec.phase === 'accepted') return 'Your funds are safe: nothing of yours has moved yet.';
+    if (rec.phase === 'taking') return 'The BTC is yours. This page keeps sending it and raises the fee if it waits.';
+    if (rec.phase === 'refunding') return 'Your funds are safe. The refund does not depend on the provider, and this page keeps sending it.';
+    return rec.deadline ? `Your funds are safe. If the provider has not confirmed ${untilWords(rec.deadline)}, your ETH returns to your private balance.` : 'Your funds are safe: nothing is spent until this step goes through.';
   }
   const untilWords = (at) => { const s = Number(at) - now(); if (!(s > 0)) return 'now'; const h = Math.floor(s / 3600), m = Math.ceil((s % 3600) / 60); return h ? `in about ${h} h${m && m < 60 ? ` ${m} min` : ''}` : `in about ${Math.max(1, m)} min`; };
   // One look at a swap: whether it is stuck, and (stepping) a fresh read for it once a minute while it is

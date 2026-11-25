@@ -108,7 +108,7 @@ test('a page with no way to let its reads go says so after the step\'s time and 
   await drive(w, pair, async () => w.clock.now() - at > WATCH.e2b.locking + 330);
   const shown = await recOf(pair, 'e2b');
   assert.equal(shown.stuck, true);
-  assert.match(shown.slow, /^Taking longer than usual\. Your funds are safe: if the provider has not claimed by the deadline, in about \d+ h( \d+ min)?, your ETH comes back to your private balance by itself\.$/);
+  assert.match(shown.slow, /^Taking longer than usual\. Your funds are safe\. If the provider has not confirmed in about \d+ h( \d+ min)?, your ETH returns to your private balance\.$/);
   ctx.forget = s.ctx.forget;                                                  // (the page that can: Check again lets every read go and steps the swap now)
   const after = await pair.checkAgain(shown.id);
   assert.notEqual((await revRec(w)).phase, 'locking', 'Check again moved it on at once, no reload');

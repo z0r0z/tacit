@@ -191,7 +191,7 @@ test('a provider with no price of its own right now is asked again later, in wor
   w.market.providerDown = true;
   w.clock.advance(4000);                                           // the provider's last read has aged out
   await w.clientFeed.refresh();
-  await assert.rejects(() => w.pair.quote({ dir: 'b2e', amount: SATS }), /no price for this pair right now/);
+  await assert.rejects(() => w.pair.quote({ dir: 'b2e', amount: SATS }), /no price right now/);
   w.market.providerDown = false; await w.providerFeed.refresh();
   await assert.rejects(() => w.pair.quote({ dir: 'b2e', amount: 5_000n }), /no provider takes that amount/);
   await assert.rejects(() => w.pair.quote({ dir: 'b2e', amount: 0n }), /enter an amount/);
@@ -376,11 +376,11 @@ test('the pair\'s numbers: ETH per BTC from a quote, and the market comparison f
 
 test('a swap that has waited ten minutes on Ethereum nodes that do not agree says so in plain words, and one that has not says nothing of it', () => {
   const fwd = { id: 'x', phase: 'claimed', amount: '100000', evmAmount: '3531520', csvBlocks: 144, created: 5, lockAt: 1000 };
-  assert.match(describeFwd({ ...fwd, nodesSince: 1000 }, () => 1700).detail, /Ethereum nodes this page reads have not agreed/);
+  assert.match(describeFwd({ ...fwd, nodesSince: 1000 }, () => 1700).detail, /Ethereum nodes this page reads disagree/);
   assert.doesNotMatch(describeFwd({ ...fwd, nodesSince: 1000 }, () => 1300).detail, /Ethereum nodes/);
   assert.doesNotMatch(describeFwd(fwd, () => 1700).detail, /Ethereum nodes/);
   const rev = { id: 'y', phase: 'offered', created: 5, deadline: 9000, offer: { evm: { amount: '1' }, btc: { value: '2' } } };
-  assert.match(describeRev({ ...rev, nodesSince: 1000 }, () => 1700).detail, /a refund still goes out at its time/);
+  assert.match(describeRev({ ...rev, nodesSince: 1000 }, () => 1700).detail, /A refund still goes out on time/);
   assert.doesNotMatch(describeRev({ ...rev, phase: 'done', nodesSince: 1000 }, () => 1700).detail, /Ethereum nodes/);
 });
 
@@ -409,7 +409,7 @@ test('found again from the key: a Bitcoin-for-ETH swap that completed is listed 
   assert.equal(await fresh.recover(), 1);
   const [r] = await fresh.records();
   assert.deepEqual([r.dir, r.state, r.title], ['b2e', 'done', 'Done']);
-  assert.equal(r.detail, 'The ETH is in your private balance, and the provider collected the BTC.');
+  assert.equal(r.detail, 'The ETH is in your private balance.');
   assert.equal(r.refundAt, null);
 });
 
@@ -591,7 +591,7 @@ test('a provider\'s refusal is said in the page\'s own words: what its answer sa
   const e = await pair.quote({ dir: 'b2e', amount: 1_000_000n }).then(() => null, (x) => x);
   assert.equal(e && e.message, 'no provider could quote that amount just now');
   const busy = wordsWorld({ quote: () => { throw Object.assign(new Error('rate limited, ' + PROVIDER_TEXT), { status: 429 }); } });
-  assert.equal(await busy.quote({ dir: 'b2e', amount: 1_000_000n }).then(() => null, (x) => x.message), 'the provider is busy just now', 'a refusal of a known kind gets the page\'s sentence for it');
+  assert.equal(await busy.quote({ dir: 'b2e', amount: 1_000_000n }).then(() => null, (x) => x.message), 'the provider is busy', 'a refusal of a known kind gets the page\'s sentence for it');
   const held = wordsWorld({ reserve: () => ({ ok: false, why: PROVIDER_TEXT }) });
   const q = await held.quote({ dir: 'b2e', amount: 1_000_000n });
   assert.equal(q.blocked, null);
@@ -689,7 +689,7 @@ test('one press: a deposit that is mined but not yet a note starts an ETH-for-Bi
   assert.match(id, /^[0-9a-f]{72}$/, 'a deposit of exactly the amount, mined and landing, starts the swap');
   assert.equal((await w.rev.handle({ method: 'GET', path: '/reverse/info' })).body.open, 1, 'and the provider was asked to lock');
   // the provider locks and the lock confirms; the note has not landed, so no lock of ETH can be made yet
-  await w.run(async () => (await w.pair.records()).some((r) => r.id === id && r.title === 'Locking your ETH in the pool'));
+  await w.run(async () => (await w.pair.records()).some((r) => r.id === id && r.title === 'Sending your ETH'));
   for (let i = 0; i < 4; i++) { await w.step(); w.clock.advance(30); }
   assert.deepEqual(w.evm.submitted.filter((j) => j.type === 'adaptorlock'), [], 'nothing is locked before the note is there');
   const waiting = (await w.pair.records()).find((r) => r.id === id);
@@ -716,14 +716,14 @@ test('the lane\'s words for an ETH-for-Bitcoin swap: the wait for the provider\'
   // the provider sends its lock and says its txid: the page shows it, and its confirmations, while the lock waits for its block
   await w.rev.tick(); await w.pair.pump();
   const seen = (await w.pair.records()).find((r) => r.id === id);
-  assert.equal(seen.title, 'The provider locked BTC for you');
+  assert.equal(seen.title, 'Provider sent BTC');
   assert.match(seen.lockTxid || '', /^[0-9a-f]{64}$/, 'the lock\'s txid, for a link to it');
-  assert.match(seen.detail, /Waiting for one Bitcoin confirmation\. A block comes about every ten minutes/);
+  assert.match(seen.detail, /Waiting for one Bitcoin confirmation\. A block takes about 10 min/);
   assert.equal(seen.etaSecs, 1650, 'counted from when the lock was seen');
   w.clock.advance(3600);
   const late = (await w.pair.records()).find((r) => r.id === id);
   assert.equal(late.etaSecs, 1650, 'a block that is late is still about ten minutes away: the time left does not freeze at a minute, it stays honest');
-  assert.match(late.detail, /No Bitcoin block for \d+ min\. This happens.*Your swap is safe: nothing of yours is locked until the provider’s lock is confirmed\./, 'a slow block is said, and that the swap is safe');
+  assert.match(late.detail, /No Bitcoin block for \d+ min\. Blocks come.*Your swap is safe: nothing of yours moves until the provider’s BTC is confirmed\./, 'a slow block is said, and that the swap is safe');
   assert.equal(describeRev({ id, phase: 'taking', phaseAt: 0, offer: { evm: { amount: '1' }, btc: { value: '1' } } }, () => 120).title, 'Your BTC is on its way');
 });
 

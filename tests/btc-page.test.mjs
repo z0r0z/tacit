@@ -126,7 +126,7 @@ const FAKE = `
 (() => {
   const now = () => Math.floor(Date.now() / 1000);
   const calls = { quote: [], start: [], pump: 0, records: 0, recover: 0 };
-  const TITLES = { b2e: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'], e2b: ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'] };
+  const TITLES = { b2e: ['You send BTC', 'They send ETH', 'You get ETH', 'They get BTC'], e2b: ['They send BTC', 'You send ETH', 'They confirm', 'You get BTC'] };
   const steps = (dir, at, state) => TITLES[dir].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: state === 'done' ? 'done' : i < at ? 'done' : i === at && state === 'working' ? 'active' : 'todo' }));
   window.__add = { wraps: [], quotes: [], asked: [], finished: [], connects: 0, account: '0x' + '12'.repeat(20), reject: false, noWallet: false, hold: false, pending: [] };
   window.__bit = { coins: [{ txid: 'a1'.repeat(32), vout: 0, value: 30000000 }, { txid: 'b2'.repeat(32), vout: 1, value: 19000000 }, { txid: 'd4'.repeat(32), vout: 0, value: 1000000 }, { txid: 'c3'.repeat(32), vout: 2, value: 546 }],
@@ -313,8 +313,8 @@ console.log('the page: the marks, the line, the lane');
   const marks = await page.$$eval('.hero .mk use', (us) => us.map((u) => u.getAttribute('href')));
   const size = await page.$eval('.hero .mk .tk', (e) => e.getBoundingClientRect().width);
   ok(JSON.stringify(marks) === JSON.stringify(['#tk-btc', '#tk-eth']) && size >= 64, `the hero has the front page's BTC and ETH marks, large (${JSON.stringify(marks)}, ${Math.round(size)} px)`);
-  ok(/BTC\s*⇄\s*ETH/.test(await text(page, 'h1')) && /Swap BTC and ETH with a provider\. Private on the Ethereum side\./.test(await text(page, '.hero .sub')), 'one heading and one line');
-  ok(await page.isVisible('#atomic #a-go') && /Open your Tacit wallet/.test(await text(page, '#a-go')) && /From.*Bitcoin/.test(await text(page, '#a-pay')) && /To.*Ethereum, private/.test(await text(page, '#a-get')), 'the lane is mounted, BTC to ETH, and asks for the wallet');
+  ok(/BTC\s*⇄\s*ETH/.test(await text(page, 'h1')) && /Swap Bitcoin and ETH directly\. Your ETH arrives private\./.test(await text(page, '.hero .sub')), 'one heading and one line');
+  ok(await page.isVisible('#atomic #a-go') && /Sign in to swap/.test(await text(page, '#a-go')) && /From.*Bitcoin/.test(await text(page, '#a-pay')) && /To.*Ethereum, private/.test(await text(page, '#a-get')), 'the lane is mounted, BTC to ETH, and asks for the wallet');
 
   console.log('providers, read with no wallet open');
   await listed(page);
@@ -347,18 +347,18 @@ console.log('the page: the marks, the line, the lane');
   await page.waitForFunction(() => /^≈/.test(document.querySelector('#a-out').textContent), null, { timeout: 8000 });
   const est = await text(page, '#a-out'), rc = await text(page, '#a-rcpt');
   ok(/^≈ 0\.30\d+$/.test(est) && (await page.$eval('#a-out', (e) => e.classList.contains('est'))), `the amount out is an estimate, marked as one (${est})`);
-  ok(/Market\s*1 BTC = 30\.62 ETH/.test(rc) && /Limits\s*0\.0005 to 1 BTC/.test(rc) && /Available now\s*up to 0\.3 BTC/.test(rc) && /Firm price\s*once your wallet is open/.test(rc), `with the market, the limits and what is available (${rc})`);
+  ok(/Market\s*1 BTC = 30\.62 ETH/.test(rc) && /Limits\s*0\.0005\u2060–\u20600\.3 BTC/.test(rc) && /Price\s*after you sign in/.test(rc), `with the market, the limits and what is available (${rc})`);
   ok((await atom(page, 'A.calls.quote.length')) === 0, 'no provider is asked for a quote before the wallet is open');
   await SHOT(page, 'desktop-light');
 
   console.log('the wallet opens: the swaps');
-  ok(/Open your Tacit wallet above/.test(await text(page, '#mine-say')) && await page.isHidden('#mine-keep'), `before: the swaps section says how to see them (${await text(page, '#mine-say')}, ${await page.isHidden('#mine-keep')})`);
+  ok(/Sign in above/.test(await text(page, '#mine-say')) && await page.isHidden('#mine-keep'), `before: the swaps section says how to see them (${await text(page, '#mine-say')}, ${await page.isHidden('#mine-keep')})`);
   await page.click('#a-go');
   await page.waitForFunction(() => window.__btc.unlocked && !document.querySelector('#mine-list').hidden, null, { timeout: 30000 });
   ok(await page.isHidden('#a-sent') && (await page.$$('#mine-list > div')).length === 2, 'the swaps are listed in their own section, not under the lane');
   const mine = await text(page, '#mine-list');
   ok(/Claiming your ETH/.test(mine) && /0\.01 BTC → about 0\.304 ETH/.test(mine) && (await page.$$('#mine-list .wait .stp li')).length === 4 && (await page.$$('#mine-list .wait .stp li.done')).length === 2, 'a swap under way: its amounts and its four steps, two done');
-  ok(/Keep this page open until it is done\. If you close it, come back by \d{1,2}:\d\d(?: [AP]M)? (today|tomorrow): the ETH has to be claimed by then, or your BTC returns by itself after about a day\./.test(mine), `it says when to be back, and what happens if not (${mine.slice(0, 400)})`);
+  ok(/Keep this page open\. If you close it, come back by \d{1,2}:\d\d(?: [AP]M)? (today|tomorrow) to receive your ETH; otherwise your BTC returns after about a day\./.test(mine), `it says when to be back, and what happens if not (${mine.slice(0, 400)})`);
   ok(/If it stops, your BTC returns in 2\d h/.test(mine) && /Done/.test(await text(page, '#mine-list .ok')), 'its refund time, and a finished swap marked done');
   ok(await page.isVisible('#keep-save') && (await text(page, '#mine-say')) === '', 'a copy of the swaps can be saved');
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 8000 }).catch(() => null), page.click('#keep-save')]);
@@ -410,7 +410,7 @@ console.log('a new browser: the swaps of an earlier visit are looked for, listed
   ok(true, 'the balance is read while the look runs');
   // a swap found partway (the look has stored it and still reads what became of it): listed at once, as being checked
   await page.evaluate(() => {
-    const A = window.__atom, steps = ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'todo' }));
+    const A = window.__atom, steps = ['They send BTC', 'You send ETH', 'They confirm', 'You get BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'todo' }));
     A.recs = [{ id: 'swF', dir: 'e2b', state: 'working', title: 'Checking', detail: 'This swap was found again from your key. What became of it is being read from the chains.', pay: 4500000n, get: 125898n, steps, etaSecs: 0, at: Math.floor(Date.now() / 1000) - 86400, refundAt: null, backBy: null }];
   });
   await page.waitForFunction(() => document.querySelectorAll('#mine-list > div').length === 1, null, { timeout: 8000 });
@@ -494,12 +494,12 @@ console.log('One press: a swap of ETH the private balance is short of (the ETH m
   await page.waitForFunction(() => /^Swap 0\.05 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
   ok(!(await page.$eval('#a-go', (e) => e.disabled)), 'with no private ETH the one button swaps the amount, which it first makes private as one note of exactly it');
   const hint = await text(page, '#a-q');
-  ok(/^One wallet transaction\. Your ETH is made private first\./.test(hint) && /deposit from your wallet is public\. The swap and your Bitcoin address are not linked to it on chain\./.test(hint), `under the button: what one press does, and what its deposit shows on chain (${hint})`);
+  ok(/^One transaction from your wallet adds your ETH, then swaps\./.test(hint) && /The deposit is public\. Nothing on chain links it to the swap or your Bitcoin address\./.test(hint), `under the button: what one press does, and what its deposit shows on chain (${hint})`);
   ok((await atom(page, 'A.calls.quote.length')) >= 1, 'the quote is asked for before the press: the button swaps on it');
   const unit = await page.evaluate(async () => { const m = await import('/btc/add-eth.js'); const a = await import('/swap/atomic.js'); return [m.addUnits(5000000n, 0n), m.addUnits(5000000n, 3000000n), m.addUnits(5000000n, 5000000n), m.addUnits(5000000n, null), a.addUnits(5000000n, 1n), m.leastFor(100000000000000n)].map(String); });
   ok(JSON.stringify(unit) === JSON.stringify(['5000000', '2000000', '0', '5000000', '4999999', '200000']), `the shortfall math: the amount with nothing available, else what is short, nothing when covered; the lane's copy agrees; the least deposit a tip allows (${unit})`);
   const spans = await page.evaluate(async () => { const a = await import('/swap/atomic.js'); return [a.etaSpan(1770), a.etaSpan(1410), a.etaSpan(600)]; });
-  ok(JSON.stringify(spans) === JSON.stringify(['about 20\u2060–\u206030 minutes', 'about 15\u2060–\u206025 minutes', 'about 10 minutes']), `the time a swap of ETH has left: a range while two Bitcoin blocks are ahead, one figure nearer the end (${spans})`);
+  ok(JSON.stringify(spans) === JSON.stringify(['20\u2060–\u206030 min', '15\u2060–\u206025 min', 'about 10 min']), `the time a swap of ETH has left: a range while two Bitcoin blocks are ahead, one figure nearer the end (${spans})`);
   await SHOT(page, 'oneclick-ask');
   // the relay holds the deposit after it is mined: the swap is started on it meanwhile
   await page.evaluate(() => { window.__add.hold = true; });
@@ -511,10 +511,10 @@ console.log('One press: a swap of ETH the private balance is short of (the ETH m
   ok((await atom(page, 'A.calls.coming[0]')) === '5000000' && (await page.evaluate(() => window.__atom.bal.eth)) === 0n, `once the deposit is mined the swap starts, while the relay is still settling it: the deposit is named as coming (${await atom(page, 'A.calls.coming[0]')})`);
   const card = await text(page, '#mine-list [data-rec="sw9"]');
   const steps = await page.$$eval('#mine-list [data-rec="sw9"] .stp li', (ls) => ls.map((l) => `${l.textContent}:${l.className}`));
-  ok(steps.length === 5 && steps[0] === 'Made private:active' && steps[1] === 'They lock BTC:active', `one view of the whole swap: its ETH being made private, alongside the provider's lock (${steps})`);
-  ok(/about 20\u2060–\u206030 minutes/.test(card) && /The provider is locking BTC for you/.test(card), `one time for all of it, as a range (${card.slice(0, 160)})`);
-  ok(/Locked in: the provider has been asked, so this swap can no longer be cancelled\./.test(card) && !(await page.$('#mine-list [data-press-cancel]')) && !(await page.$('#a-q [data-press-cancel]')), 'the provider has been asked: no Cancel, and the card says it is locked in');
-  ok((await page.inputValue('#a-amt')) === '' && /^Adding ETH to your private balance…$/.test(await text(page, '#a-go')), 'the lane is cleared for the next swap, which waits while the deposit lands');
+  ok(steps.length === 5 && steps[0] === 'Adding ETH:active' && steps[1] === 'They send BTC:active', `one view of the whole swap: its ETH being made private, alongside the provider's lock (${steps})`);
+  ok(/20\u2060–\u206030 min/.test(card) && /The provider is locking BTC for you/.test(card), `one time for all of it, as a range (${card.slice(0, 160)})`);
+  ok(/Can’t be cancelled now\./.test(card) && !(await page.$('#mine-list [data-press-cancel]')) && !(await page.$('#a-q [data-press-cancel]')), 'the provider has been asked: no Cancel, and the card says it is locked in');
+  ok((await page.inputValue('#a-amt')) === '' && /^Adding ETH…$/.test(await text(page, '#a-go')), 'the lane is cleared for the next swap, which waits while the deposit lands');
   await SHOT(page, 'oneclick-started');
   await page.setViewportSize({ width: 390, height: 900 });
   await page.$eval('#mine', (e) => e.scrollIntoView());
@@ -553,11 +553,11 @@ console.log('One press: a swap of ETH the private balance is short of (the ETH m
   await page.click('#a-go');
   await page.waitForFunction(() => window.__add.mine && document.querySelector('#a-q [data-press-cancel]'), null, { timeout: 15000 });
   const press = await text(page, '#mine-list [data-rec="press"]');
-  ok(/Adding your ETH privately/.test(press) && /about 20\u2060–\u206030 minutes/.test(press) && (await page.$$('#mine-list [data-rec="press"] .stp li')).length === 5 && !!(await page.$('#mine-list [data-rec="press"] [data-press-cancel]')), `while the deposit waits for a block: one card for the whole swap, its first step under way, with a Cancel (${press.slice(0, 140)})`);
-  ok(/The deposit is sent/.test(await text(page, '#a-q')) && /^Adding your ETH privately…$/.test(await text(page, '#a-go')), 'the line says where the deposit is; the button waits');
+  ok(/Adding ETH/.test(press) && /20\u2060–\u206030 min/.test(press) && (await page.$$('#mine-list [data-rec="press"] .stp li')).length === 5 && !!(await page.$('#mine-list [data-rec="press"] [data-press-cancel]')), `while the deposit waits for a block: one card for the whole swap, its first step under way, with a Cancel (${press.slice(0, 140)})`);
+  ok(/Deposit sent/.test(await text(page, '#a-q')) && /^Adding ETH…$/.test(await text(page, '#a-go')), 'the line says where the deposit is; the button waits');
   await SHOT(page, 'oneclick-cancel-offered-dark');
   await page.click('#a-q [data-press-cancel]');
-  ok(/Cancelled: no swap starts\. The deposit is already sent, so its ETH lands in your private balance/.test(await text(page, '#a-q')) && !(await page.$('[data-press-cancel]')), 'cancelled: no swap will start, and the deposit is said to stay in the private balance');
+  ok(/Cancelled\. The deposit is sent, so its ETH lands in your private balance/.test(await text(page, '#a-q')) && !(await page.$('[data-press-cancel]')), 'cancelled: no swap will start, and the deposit is said to stay in the private balance');
   await page.evaluate(() => window.__add.mine());
   await page.waitForFunction(() => /Your ETH is in your private balance\. No swap was started\./.test(document.querySelector('#a-q').textContent), null, { timeout: 20000 });
   ok((await atom(page, 'A.calls.start.length')) === 0 && !(await page.$('#mine-list [data-rec="press"]')), 'mined and landed: the provider was never asked');
@@ -582,15 +582,15 @@ console.log('One press: a swap of ETH the private balance is short of (the ETH m
 }
 {
   // a finished swap of ETH for BTC: what to do with the BTC, in its card
-  const { page, errs, csp } = await fresh({ init: `window.__atom.recs = [{ id: 'swD', dir: 'e2b', state: 'done', title: 'Done', detail: 'The BTC is at your Bitcoin address.', pay: 4000000n, get: 111000n, got: 110500n, steps: ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 60, refundAt: null, backBy: null },
-    { id: 'swL', dir: 'e2b', state: 'working', title: 'Waiting for the provider to claim', detail: 'The provider is claiming the ETH you locked.', pay: 4000000n, get: 111000n, steps: ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: i < 2 ? 'done' : i === 2 ? 'active' : 'todo' })), etaSecs: 840, at: Math.floor(Date.now() / 1000) - 900, refundAt: Math.floor(Date.now() / 1000) + 3 * 3600, backBy: Math.floor(Date.now() / 1000) + 3 * 3600 }];` });
+  const { page, errs, csp } = await fresh({ init: `window.__atom.recs = [{ id: 'swD', dir: 'e2b', state: 'done', title: 'Done', detail: 'The BTC is at your Bitcoin address.', pay: 4000000n, get: 111000n, got: 110500n, steps: ['They send BTC', 'You send ETH', 'They confirm', 'You get BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 60, refundAt: null, backBy: null },
+    { id: 'swL', dir: 'e2b', state: 'working', title: 'Waiting for the provider to claim', detail: 'The provider is claiming the ETH you locked.', pay: 4000000n, get: 111000n, steps: ['They send BTC', 'You send ETH', 'They confirm', 'You get BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: i < 2 ? 'done' : i === 2 ? 'active' : 'todo' })), etaSecs: 840, at: Math.floor(Date.now() / 1000) - 900, refundAt: Math.floor(Date.now() / 1000) + 3 * 3600, backBy: Math.floor(Date.now() / 1000) + 3 * 3600 }];` });
   await page.click('#a-go');
   await page.waitForFunction(() => document.querySelector('#mine-list [data-rec="swD"] .nx'), null, { timeout: 15000 });
   const done = await text(page, '#mine-list [data-rec="swD"]');
-  ok(/0\.04 ETH → 0\.001105 BTC/.test(done) && /Send it to any wallet \(UniSat/.test(done), `done: what arrived, the lock less the take's fee (${done.slice(0, 120)})`);
+  ok(/0\.04 ETH → 0\.001105 BTC/.test(done) && /Send it to any wallet or exchange/.test(done), `done: what arrived, the lock less the take's fee (${done.slice(0, 120)})`);
   ok((await page.getAttribute('#mine-list [data-rec="swD"] [data-next="book"]', 'href')) === '/trade/tac/?lane=btc' && (await page.getAttribute('#mine-list [data-rec="swD"] [data-next="elsewhere"]', 'href')) === '/#wallet', 'next: the Bitcoin order book of TAC, and the wallet sheet for the key to use elsewhere');
   const locked = await text(page, '#mine-list [data-rec="swL"]');
-  ok(/Locked in: it goes through, or if the provider has not claimed by \d{1,2}:\d\d(?: [AP]M)? (today|tomorrow), your ETH returns to your private balance\./.test(locked) && !/If it stops/.test(locked), `once the ETH is locked: locked in, and when the ETH comes back if the provider does not claim (${locked.slice(0, 260)})`);
+  ok(/Can’t be cancelled now\. It finishes, or your ETH returns to your private balance by \d{1,2}:\d\d(?: [AP]M)? (today|tomorrow)\./.test(locked) && !/If it stops/.test(locked), `once the ETH is locked: locked in, and when the ETH comes back if the provider does not claim (${locked.slice(0, 260)})`);
   await page.$eval('#mine', (e) => e.scrollIntoView());
   await SHOT(page, 'done-next', false);
   await page.click('#mine-list [data-rec="swD"] [data-next="send"]');
@@ -639,7 +639,7 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
   await page.fill('#a-amt', '0.002');
   await page.waitForFunction(() => /^Swap 0\.002 BTC → ETH$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
   const hint = await text(page, '#a-q');
-  ok(/^One payment from your Bitcoin wallet, straight into the swap\./.test(hint) && /A Bitcoin payment is public, as every one is\. The ETH arrives private, in your Tacit wallet\./.test(hint), `with a Bitcoin wallet here and nothing at the address, one press pays in and swaps (${hint})`);
+  ok(/^One payment from your Bitcoin wallet starts the swap\./.test(hint) && /Bitcoin payments are public\. Your ETH arrives private\./.test(hint), `with a Bitcoin wallet here and nothing at the address, one press pays in and swaps (${hint})`);
   const checks = await page.evaluate(async () => { const m = await import('/btc/payout.js'); const c = (t) => { const r = m.checkAddress(t); return r.ok ? r.address : `no: ${r.why}`; };
     return [c('0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'), c('0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed'), c('0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD'), c('0x' + '0'.repeat(40)), c('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4'), c('vitalik.eth'), c('0x1234')]; });
   ok(checks[0] === '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed' && checks[1] === checks[0] && /checksum/.test(checks[2]) && /zero address/.test(checks[3]) && /Bitcoin address/.test(checks[4]) && /not a name/.test(checks[5]) && /40 letters/.test(checks[6]), `Ethereum addresses: EIP-55 checked when in mixed case, one case taken and checksummed, the zero address, a Bitcoin address, a name and a short one refused (${checks.join(' | ')})`);
@@ -648,9 +648,9 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
   await page.click('input[name="a-pt"][value="tacit"]');
   await page.waitForFunction(() => /arrives at 0x/.test(document.querySelector('#a-pt-say').textContent), null, { timeout: 15000 });
   const say = await text(page, '#a-pt-say'), own = await page.getAttribute('#a-pt-own', 'title');
-  ok(/The relay’s fee, about 0\.0003 ETH, comes out of it: about 0\.0605 ETH arrives at 0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4}\./.test(say) && /public from that address on/.test(say) && /easy to match by amount and time/.test(say), `sent to the key's own Ethereum address: the fee and what arrives, and what it shows (${say})`);
+  ok(/Fee ≈ 0\.0003 ETH\. About 0\.0605 ETH arrives at 0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4}\./.test(say) && /public from that address on/.test(say) && /easy to match/.test(say), `sent to the key's own Ethereum address: the fee and what arrives, and what it shows (${say})`);
   await page.click('input[name="a-pt"][value="other"]');
-  ok(/^Enter the Ethereum address$/.test(await text(page, '#a-go')) && await page.$eval('#a-go', (e) => e.disabled), 'another address: none yet, so nothing can be pressed');
+  ok(/^Enter an Ethereum address$/.test(await text(page, '#a-go')) && await page.$eval('#a-go', (e) => e.disabled), 'another address: none yet, so nothing can be pressed');
   await page.fill('#a-pt-addr', '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD');
   ok(/checksum/.test(await text(page, '#a-pt-say')) && await page.$eval('#a-go', (e) => e.disabled), 'a mistyped address fails its checksum and is not taken');
   await page.click('input[name="a-pt"][value="tacit"]');
@@ -662,7 +662,7 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
   ok(JSON.stringify(sent) === '[201800]', `one payment from the Bitcoin wallet: the amount and the lock's fee with half of it again in hand (${sent})`);
   ok(coins && coins.length === 1 && coins[0].txid === 'f0'.repeat(32) && coins[0].value === 201800, 'the lock is made from that payment as soon as it shows, not after its block');
   const card = await text(page, '#mine-list [data-rec="swB"]');
-  ok(/Then sent to 0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4}, once the ETH has arrived\./.test(card) && /about 1\d⁠–⁠\d\d minutes/.test(card), `the card says where the ETH goes, and the time as a range (${card.slice(0, 220)})`);
+  ok(/Then sent to 0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4}, once the ETH has arrived\./.test(card) && /1\d⁠–⁠\d\d min/.test(card), `the card says where the ETH goes, and the time as a range (${card.slice(0, 220)})`);
   const kept = await page.evaluate(() => JSON.parse(localStorage.getItem('tacit-btc-payout-v1:02' + 'ab'.repeat(32)) || '{}'));
   ok(kept.swB && kept.swB.to === own && kept.swB.state === 'waiting', 'the choice is kept by key and swap, so a page opened again carries it out');
   await SHOT(page, 'btc-press-started');
@@ -738,7 +738,7 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
   // the real sequence of the canary of 11-25, opened again: a swap of BTC done while the page was closed, its ETH to go to an address chosen at the start.
   // Opened, the page sends it by itself; a note not there yet is said on the card from the second try, and Try again sends it once it is.
   const pub = '02' + 'ab'.repeat(32), to = '0x15fbF9F529190bBB0D35E0E9a59bc437cBB1F9c7'.toLowerCase();
-  const { page, errs } = await fresh({ init: `window.__atom.recs = [{ id: 'swR', dir: 'b2e', state: 'done', title: 'Done', detail: 'The ETH is in your private balance.', pay: 130000n, get: 4632297n, steps: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 1200, refundAt: null, backBy: null }];
+  const { page, errs } = await fresh({ init: `window.__atom.recs = [{ id: 'swR', dir: 'b2e', state: 'done', title: 'Done', detail: 'The ETH is in your private balance.', pay: 130000n, get: 4632297n, steps: ['You send BTC', 'They send ETH', 'You get ETH', 'They get BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 1200, refundAt: null, backBy: null }];
     localStorage.setItem('tacit-btc-payout-v1:${pub}', JSON.stringify({ swR: { at: Date.now() - 1200e3, to: '${to}', state: 'waiting', tries: 1 } }));` });
   await page.click('#a-go');
   await page.waitForFunction(() => /Couldn’t send to 0x15fb…f9c7 yet: The swap’s ETH is not in your private balance yet\. Trying again by itself\./.test(document.querySelector('#mine-list [data-rec="swR"]')?.textContent || ''), null, { timeout: 20000 });
@@ -754,7 +754,7 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
 {
   // a swap of BTC found again from the key does not know its ETH amount (the live check of 11-25): its Done card still offers the send, the amount chosen up
   // to the largest private amount (Max); and "Your ETH" sends any of the private balance the same way
-  const { page, errs, csp } = await fresh({ init: `window.__atom.bal.eth = 5632297n; window.__atom.recs = [{ id: 'swQ', dir: 'b2e', state: 'done', title: 'Done', detail: 'The ETH is in your private balance, and the provider collected the BTC.', pay: 130000n, get: 0n, steps: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 3600, refundAt: null, backBy: null }];` });
+  const { page, errs, csp } = await fresh({ init: `window.__atom.bal.eth = 5632297n; window.__atom.recs = [{ id: 'swQ', dir: 'b2e', state: 'done', title: 'Done', detail: 'The ETH is in your private balance, and the provider collected the BTC.', pay: 130000n, get: 0n, steps: ['You send BTC', 'They send ETH', 'You get ETH', 'They get BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 3600, refundAt: null, backBy: null }];` });
   await page.click('#a-go');
   await page.waitForFunction(() => document.querySelector('#mine-list [data-rec="swQ"] [data-next="withdraw"]') && !document.querySelector('#ye-box').hidden, null, { timeout: 15000 });
   ok(!(await page.$eval('#mine', (e) => e.open)) && /1 done/.test(await raw(page, '#mine-sum')), 'a swap found again, never seen under way here, is a collapsed line: "1 done"');
@@ -797,7 +797,7 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
 }
 {
   // a finished swap of BTC whose ETH was kept private: "Send to an Ethereum address" asks where, says the fee, and sends
-  const { page, errs, csp } = await fresh({ scheme: 'dark', viewport: { width: 390, height: 900 }, init: `window.__atom.recs = [{ id: 'swP', dir: 'b2e', state: 'done', title: 'Done', detail: 'The ETH is in your private balance.', pay: 200000n, get: 6080000n, steps: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 60, refundAt: null, backBy: null }];
+  const { page, errs, csp } = await fresh({ scheme: 'dark', viewport: { width: 390, height: 900 }, init: `window.__atom.recs = [{ id: 'swP', dir: 'b2e', state: 'done', title: 'Done', detail: 'The ETH is in your private balance.', pay: 200000n, get: 6080000n, steps: ['You send BTC', 'They send ETH', 'You get ETH', 'They get BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'done' })), etaSecs: 0, at: Math.floor(Date.now() / 1000) - 60, refundAt: null, backBy: null }];
     window.__ux_notes = [{ value: 6080000n }];` });
   await page.click('#a-go');
   await page.waitForFunction(() => document.querySelector('#mine-list [data-rec="swP"] [data-next="withdraw"]'), null, { timeout: 15000 });
@@ -824,7 +824,7 @@ console.log('One press of BTC: paid in from a Bitcoin wallet and swapped, the ET
 console.log('Send BTC: the Tacit wallet\'s own bitcoin to any address');
 {
   const { page, errs, csp } = await fresh();
-  ok(/Open your Tacit wallet above to see its Bitcoin address/.test(await text(page, '#mybtc')) && await page.isHidden('#yb-box'), 'before the wallet opens the panel says how to see it');
+  ok(/Sign in above to see your Bitcoin address/.test(await text(page, '#mybtc')) && await page.isHidden('#yb-box'), 'before the wallet opens the panel says how to see it');
   await page.click('#a-go');
   await page.waitForFunction(() => !document.querySelector('#yb-box').hidden && /0\.5 BTC/.test(document.querySelector('#yb-bal').textContent), null, { timeout: 15000 });
   const own = await text(page, '#yb-addr');
@@ -883,7 +883,7 @@ console.log('Send BTC: the Tacit wallet\'s own bitcoin to any address');
   // opened again: the send is still listed, and its status read
   await page.evaluate(() => { window.__bit.confirmed = true; });
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => document.querySelector('#a-go') && /Open your Tacit wallet/.test(document.querySelector('#a-go').textContent), null, { timeout: 30000 });
+  await page.waitForFunction(() => document.querySelector('#a-go') && /Sign in to swap/.test(document.querySelector('#a-go').textContent), null, { timeout: 30000 });
   await page.evaluate(() => { window.__bit.confirmed = true; });
   await page.click('#a-go');
   await page.waitForFunction(() => /Confirmed/.test(document.querySelector('#yb-sent').textContent), null, { timeout: 15000 });
@@ -911,7 +911,7 @@ console.log('the sections under the tile: closed lines that open (disclosures)')
   const { page, errs, csp } = await fresh({ viewport: { width: 390, height: 800 } });
   await listed(page);
   ok((await page.$$eval('details.dd', (ds) => ds.map((d) => d.id + (d.open ? '+' : '-')).join(','))) === 'mine-,mybtc-,myeth-,pv-,be-', 'all five sections start closed');
-  ok(/^1 online · up to 0\.30 BTC$/.test(await raw(page, '#pv-at')) && (await raw(page, '#mine-sum')) === 'open your wallet', `the one line of Providers carries what is live (${await raw(page, '#pv-at')}) and of Your swaps says how to see them`);
+  ok(/^1 online · up to 0\.30 BTC$/.test(await raw(page, '#pv-at')) && (await raw(page, '#mine-sum')) === 'sign in', `the one line of Providers carries what is live (${await raw(page, '#pv-at')}) and of Your swaps says how to see them`);
   ok((await page.$$eval('details.dd > summary', (ss) => ss.map((s) => s.getBoundingClientRect().height))).every((h) => h >= 40), 'each line is a tap target of 40 px or more');
   ok(!(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)), 'no sideways scroll at a phone width, all closed');
   ok(await page.$$eval('details.dd > summary h2', (hs) => hs.length === 5), 'each summary holds its heading, so the section is still found by its name');
@@ -938,7 +938,7 @@ console.log('the sections under the tile: closed lines that open (disclosures)')
   const { page, errs } = await fresh({ path: '/btc/#be', init: 'Object.defineProperty(window, "localStorage", { get() { throw new Error("blocked"); } });' });
   await page.waitForFunction(() => document.querySelector('#be').open, null, { timeout: 5000 });
   await sleep(500);
-  ok(await page.$eval('#be', (e) => e.open) && (await page.$eval('#be', (e) => Math.abs(e.getBoundingClientRect().top))) < 200, '/btc/#be opens Become a provider and scrolls to it, with browser storage blocked');
+  ok(await page.$eval('#be', (e) => e.open) && (await page.$eval('#be', (e) => Math.abs(e.getBoundingClientRect().top))) < 200, '/btc/#be opens Run a provider and scrolls to it, with browser storage blocked');
   await page.evaluate(() => { location.hash = '#pv'; });
   await page.waitForFunction(() => document.querySelector('#pv').open, null, { timeout: 5000 });
   ok(await page.$eval('#pv', (e) => e.open), 'a later link to #pv opens Providers');

@@ -18,7 +18,7 @@ export function mountSendPanel({ host, lane, notify = () => {} }) {
   const $ = (id) => host.querySelector(`#${id}`);
   const S = { open: false, rates: null, ratesAt: 0, ratesP: null, tier: 'normal', max: false, plan: null, review: null, busy: false, sent: [], timer: 0, coins: null, heldSats: 0n };
   host.innerHTML = `
-    <p class="sec-say" id="yb-say">Open your Tacit wallet above to see its Bitcoin address.</p>
+    <p class="sec-say" id="yb-say">Sign in above to see your Bitcoin address.</p>
     <div class="box yb" id="yb-box" hidden>
       <div class="yb-row"><span class="k">Address</span><code class="yb-addr" id="yb-addr"></code><button class="btn" type="button" id="yb-copy">Copy</button></div>
       <div class="yb-row"><span class="k">Balance</span><b class="num" id="yb-bal">…</b><button class="btn" type="button" id="yb-send" aria-expanded="false" aria-controls="yb-form">Send BTC</button></div>
@@ -76,7 +76,7 @@ export function mountSendPanel({ host, lane, notify = () => {} }) {
     const b = bitcoin(), on = !!(lane.unlocked && b);
     $('yb-box').hidden = !on;
     $('yb-say').hidden = on;
-    if (!on) { $('yb-say').textContent = lane.unlocked ? 'Reading your Bitcoin address…' : 'Open your Tacit wallet above to see its Bitcoin address.'; if (!lane.unlocked) close(); return; }
+    if (!on) { $('yb-say').textContent = lane.unlocked ? 'Reading your Bitcoin address…' : 'Sign in above to see your Bitcoin address.'; if (!lane.unlocked) close(); return; }
     $('yb-addr').textContent = b.address;
     // (the fee estimates are read as soon as the address shows, so a send has them when its form opens)
     if (shownFor !== b.address) { shownFor = b.address; S.sent = readSent(); paintSent(); readStatus(); S.rates = null; readRates().catch(() => {}); }
