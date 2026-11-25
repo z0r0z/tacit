@@ -38,7 +38,7 @@ const { makeConfidentialPoolUx } = await import('../dapp/confidential-pool-ux.js
 const { setActiveNetwork } = await import('../dapp/confidential-deployments.js');
 const { makeBtcWallet } = await import('../dapp/bitcoin-taproot-wallet.js');
 const { makeAdaptorBtcTx, tacitKit } = await import('../dapp/adaptor-btc-tx.js');
-const { makeFastBridgeEvm, makeTxTracer, TRACE_NODES } = await import('../dapp/fastbridge-evm.js');
+const { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES, AGREE_NODES } = await import('../dapp/fastbridge-evm.js');
 const { makeFileStore, makeFileLogStore, makeMemoryStore } = await import('./lib/store.mjs');
 const { makeNodeBtcChain } = await import('./lib/btc-chain.mjs');
 const { makeLpService } = await import('./lib/service.mjs');
@@ -83,7 +83,12 @@ const selfSettle = (x) => turn(async () => {
 // the nodes asked for a transaction's trace, to read a claim settled through a contract other than the pool or its relayer (README `traceRpcs`)
 const traceNodes = String(process.env.FB_LP_TRACE_RPCS || '').split(',').map((s) => s.trim()).filter(Boolean);
 if (!traceNodes.length) traceNodes.push(...(Array.isArray(C.traceRpcs) && C.traceRpcs.length ? C.traceRpcs : TRACE_NODES));
-const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs }, selfSettle, ownAccount: { address: acct.address }, selfRetryMs: 60000, log, trace: makeTxTracer({ nodes: traceNodes }) });
+// the nodes that must agree (two or more, all that answer alike) before a swap is taken as claimed, refunded or lost (README `agreeRpcs`)
+const agreeNodes = String(process.env.FB_LP_AGREE_RPCS || '').split(',').map((s) => s.trim()).filter(Boolean);
+if (!agreeNodes.length) agreeNodes.push(...(Array.isArray(C.agreeRpcs) && C.agreeRpcs.length ? C.agreeRpcs : AGREE_NODES));
+if (agreeNodes.length < 2) { console.error('agreeRpcs (FB_LP_AGREE_RPCS) must name two Ethereum nodes or more'); process.exit(1); }
+if (traceNodes.length < 2) log({ level: 'warn', msg: 'traceRpcs names one node: a claim read from a trace is taken only once two nodes trace it alike' });
+const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs }, selfSettle, ownAccount: { address: acct.address }, selfRetryMs: 60000, log, trace: makeTxTracer({ nodes: traceNodes }), quorum: makeNodeQuorum({ nodes: agreeNodes }) });
 const btc = makeNodeBtcChain({
   bases: C.btcBases, tacit, prims, builder, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]),
   poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log,

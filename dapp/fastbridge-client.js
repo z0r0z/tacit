@@ -382,6 +382,8 @@ export function describe(rec, clock = null) {
     title = found ? 'Returning to Bitcoin' : 'Did not go through';
     detail = [found ? '' : plainWhy(rec.why), returnLine(opens, now)].filter(Boolean).join(' ');
   }
+  // (a swap that has waited ten minutes or more on Ethereum nodes that do not agree says so)
+  if (!ended && rec.nodesSince != null && now - rec.nodesSince >= 600) detail = [detail, 'The Ethereum nodes this page reads have not agreed on this swap for a while, so it is read again until two of them do. Nothing is decided on one node’s word, and a refund still goes out at its time.'].filter(Boolean).join(' ');
   return {
     id: rec.id, phase: rec.phase, title, detail,
     at, steps: STEPS, ended, returned: back, amount: rec.amount, receive: back ? '0' : rec.evmAmount, created: rec.created,

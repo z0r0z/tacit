@@ -16,7 +16,7 @@ const tidyBtc = (v) => `${btc(v)} BTC`;
 
 export function mountSendPanel({ host, lane, notify = () => {} }) {
   const $ = (id) => host.querySelector(`#${id}`);
-  const S = { open: false, rates: null, ratesAt: 0, tier: 'normal', max: false, plan: null, review: null, busy: false, sent: [], timer: 0, coins: null, heldSats: 0n };
+  const S = { open: false, rates: null, ratesAt: 0, ratesP: null, tier: 'normal', max: false, plan: null, review: null, busy: false, sent: [], timer: 0, coins: null, heldSats: 0n };
   host.innerHTML = `
     <p class="sec-say" id="yb-say">Open your Tacit wallet above to see its Bitcoin address.</p>
     <div class="box yb" id="yb-box" hidden>
@@ -41,7 +41,14 @@ export function mountSendPanel({ host, lane, notify = () => {} }) {
       <ul class="yb-sent" id="yb-sent"></ul>
     </div>`;
 
-  const bitcoin = () => lane.bitcoin();
+  // the open key's `bitcoin`; while the lane opens its pair client again for the same key (it does when the key's session stirs), the one it had stays in use,
+  // so the panel keeps showing the address, the balance and what was sent rather than going back to reading the address
+  let last = null, lastBal = null;
+  const bitcoin = () => {
+    const b = lane.bitcoin();
+    if (b) { last = { b, key: lane.key }; return b; }
+    return lane.unlocked && last && lane.key != null && last.key === lane.key ? last.b : null;
+  };
   const own = () => bitcoin()?.address || null;
   const say = (id, h, cls = '') => { const el = $(id); el.className = `yb-say${cls ? ` ${cls}` : ''}`; el.innerHTML = h; };
 
@@ -71,8 +78,12 @@ export function mountSendPanel({ host, lane, notify = () => {} }) {
     $('yb-say').hidden = on;
     if (!on) { $('yb-say').textContent = lane.unlocked ? 'Reading your Bitcoin address…' : 'Open your Tacit wallet above to see its Bitcoin address.'; if (!lane.unlocked) close(); return; }
     $('yb-addr').textContent = b.address;
-    if (shownFor !== b.address) { shownFor = b.address; S.sent = readSent(); paintSent(); readStatus(); }
-    const bal = lane.balances();
+    // (the fee estimates are read as soon as the address shows, so a send has them when its form opens)
+    if (shownFor !== b.address) { shownFor = b.address; S.sent = readSent(); paintSent(); readStatus(); S.rates = null; readRates().catch(() => {}); }
+    // (the balance last read for this key stays until the next read lands, as the address does)
+    const now = lane.balances();
+    if (now.sats != null) lastBal = { bal: now, key: lane.key };
+    const bal = now.sats == null && lastBal && lastBal.key === lane.key ? lastBal.bal : now;
     $('yb-bal').textContent = bal.sats == null ? 'reading…' : `${tidyBtc(bal.sats)}${bal.pending > 0n ? ` · ${tidyBtc(bal.pending)} confirming` : ''}`;
     $('yb-send').disabled = bal.sats == null || bal.sats <= DUST;
   }
@@ -94,14 +105,20 @@ export function mountSendPanel({ host, lane, notify = () => {} }) {
     const heldSats = all.filter((x) => held.has(`${x.txid}:${x.vout}`)).reduce((s, x) => s + BigInt(x.value), 0n);
     return { coins, heldSats };
   }
-  async function readRates(force = false) {
-    if (!force && S.rates && Date.now() - S.ratesAt < 60000) return S.rates;
-    const r = await bitcoin().feeRates();
-    if (!r || (!r.fast && !r.normal && !r.slow)) throw new Error('The fee estimates could not be read just now. Try again in a moment.');
-    // a slower tier never asks more than a faster one; one that did not answer takes the next answer up
-    const fast = r.fast || r.normal || r.slow, normal = Math.min(r.normal || fast, fast), slow = Math.min(r.slow || normal, normal);
-    S.rates = { fast, normal, slow }; S.ratesAt = Date.now();
-    return S.rates;
+  // (one read at a time: the form opened while the first read is out waits for that one)
+  function readRates() {
+    if (S.rates && Date.now() - S.ratesAt < 60000) return Promise.resolve(S.rates);
+    if (S.ratesP) return S.ratesP;
+    const b = bitcoin();
+    const p = S.ratesP = (async () => {
+      const r = await b.feeRates();
+      if (!r || (!r.fast && !r.normal && !r.slow)) throw new Error('The fee estimates could not be read just now. Try again in a moment.');
+      // a slower tier never asks more than a faster one; one that did not answer takes the next answer up
+      const fast = r.fast || r.normal || r.slow, normal = Math.min(r.normal || fast, fast), slow = Math.min(r.slow || normal, normal);
+      S.rates = { fast, normal, slow }; S.ratesAt = Date.now();
+      return S.rates;
+    })().finally(() => { if (S.ratesP === p) S.ratesP = null; if (S.open) paintTiers(); });
+    return p;
   }
   const rateNow = () => S.rates?.[S.tier] || null;
 
@@ -111,7 +128,7 @@ export function mountSendPanel({ host, lane, notify = () => {} }) {
       const r = S.rates?.[k];
       const p = r && S.coins ? (S.max ? planSend({ coins: S.coins, max: true, rate: r, scriptLen: len }) : amountSats() ? planSend({ coins: S.coins, amount: amountSats(), rate: r, scriptLen: len }) : null) : null;
       const fee = p && !p.error ? p.fee : r ? BigInt(vsizeOf(1, [len, 22])) * BigInt(r) : null;
-      return `<label class="yb-t"><input type="radio" name="yb-tier" value="${k}"${S.tier === k ? ' checked' : ''}${r ? '' : ' disabled'}><span><b>${name}</b><small>${when}</small><small class="num">${r ? `${r} sat/vB · ${p && !p.error ? '' : 'about '}${sats(fee)}` : 'not read'}</small></span></label>`;
+      return `<label class="yb-t"><input type="radio" name="yb-tier" value="${k}"${S.tier === k ? ' checked' : ''}${r ? '' : ' disabled'}><span><b>${name}</b><small>${when}</small><small class="num">${r ? `${r} sat/vB · ${p && !p.error ? '' : 'about '}${sats(fee)}` : S.ratesP ? 'reading…' : 'not read'}</small></span></label>`;
     }).join('');
   }
   const amountSats = () => { const v = parseUnits($('yb-amt').value.trim(), 8); return v && v > 0n ? v : null; };
@@ -149,17 +166,20 @@ export function mountSendPanel({ host, lane, notify = () => {} }) {
     if (S.open) return;
     S.open = true; S.max = false; locks = null;
     $('yb-form').hidden = false; $('yb-rv').hidden = true; $('yb-send').setAttribute('aria-expanded', 'true');
-    say('yb-form-say', 'Reading the fee estimates…');
+    say('yb-form-say', 'Checking your coins…');
     paintTiers();
     $('yb-to').focus();
+    // the coins are read while the fee estimates finish (they were asked for when the address showed)
+    const rates = readRates();
+    rates.catch(() => {});
     try {
-      await readRates(true);
-      paintTiers();
-      say('yb-form-say', 'Checking your coins…');
       const { coins, heldSats } = await readCoins();
       S.coins = coins; S.heldSats = heldSats;
       $('yb-held').hidden = !(heldSats > 0n);
       $('yb-held').textContent = heldSats > 0n ? `${tidyBtc(heldSats)} of it is in a swap under way, and is not sent from here.` : '';
+      paintTiers();
+      if (!S.rates) say('yb-form-say', 'Reading the fee estimates…');
+      await rates;
       say('yb-form-say', '');
       paintTiers();
     } catch (e) { say('yb-form-say', esc(e.message || 'Could not read your coins just now.'), 'err'); }
@@ -256,5 +276,20 @@ export function mountSendPanel({ host, lane, notify = () => {} }) {
     if (S.max) $('yb-max').click(); else paintTiers();
   });
 
-  return { paint };
+  // The send opened from a finished swap: the amount that arrived filled in, or Max when the coins do not cover that and the fee (the swap's BTC is the
+  // address's only coin, as it is for a new wallet). The address is left to the sender.
+  async function openSend({ sats = null } = {}) {
+    if (!bitcoin()) return;
+    if (!S.open) await open();
+    host.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+    $('yb-to').focus({ preventScroll: true });
+    const want = sats != null ? BigInt(sats) : null;
+    if (!want || !S.coins) return;
+    const r = rateNow(), have = S.coins.reduce((s, c) => s + BigInt(c.value), 0n);
+    const p = r ? planSend({ coins: S.coins, amount: want, rate: r, scriptLen: 22 }) : null;
+    if (r && (want >= have || (p && p.error === 'short'))) { $('yb-max').click(); return; }
+    S.max = false; $('yb-amt').value = btc(want); checkAmt(false); paintTiers();
+  }
+
+  return { paint, openSend };
 }

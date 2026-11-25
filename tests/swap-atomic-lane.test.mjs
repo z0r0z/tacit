@@ -233,6 +233,9 @@ console.log('a provider: the switch appears, and the lane opens');
   ok(/Price\s*1 ETH = 0\.032895 BTC/.test(await text(page, '#a-rcpt')) && /If it stops\s*your ETH returns to your private balance/.test(await text(page, '#a-rcpt')) && /Bitcoin fee\s*about 500 sats, from the lock when you take it/.test(await text(page, '#a-rcpt')), 'ETH to BTC is priced per ETH, says where the ETH goes if it stops, and names the fee of taking the Bitcoin');
   const getNow = parseFloat(await text(page, '#a-out')), want = Number((await atom(page, 'A.calls.quotes.at(-1).get')) - 500n) / 1e8;
   ok(Math.abs(getNow - want) < 1e-9, `the amount shown is what arrives, the lock less the fee of taking it (${getNow} = ${want})`);
+  await type(page, '5');
+  await page.waitForFunction(() => /^Not enough ETH in your private balance$/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 }).catch(() => {});
+  ok(/^Not enough ETH in your private balance$/.test(await text(page, '#a-go')) && (await page.$eval('#a-go', (e) => e.disabled)) && !/One wallet transaction/.test(await text(page, '#a-q')), 'with no way to add ETH here, more than the private balance says so: the one press that adds it is the BTC page\'s');
   await page.click('#a-flip');
 
   console.log('starting: once, with the quote shown');

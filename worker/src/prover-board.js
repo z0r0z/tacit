@@ -108,6 +108,10 @@ export const PROVER_BOARD = Object.freeze({
   bestRecordMin: 1,                                    // batches taken before a machine has a record
   turnLeaseFactor: 3,
   turnLeaseMinMs: 5 * 60_000,
+  // A turn's lease is renewable: a machine that is still working checks in (beat) with a count of what it has proved so far (shards), and each check-in that
+  // shows more than the last starts its lease afresh, so a batch is never cut off for being slower than its size suggested (proving time follows the
+  // batch's contents, not its megabytes). The turn goes on when the check-ins stop, or at turnHardCapMs from its start. PROVER_BOARD_TURN_CAP_MS
+  turnHardCapMs: 6 * 3600_000,
   // A batch's first machine, once its turn has run out and the batch has gone on to the next, may still answer: its proof is taken while the batch is open, as any sound proof is
   // (0: refused, as before). PROVER_BOARD_TURN_LATE
   turnLate: 1,
@@ -153,6 +157,7 @@ export function proverBoardConfig(env = {}) {
     drawFreshMs: Math.min(PROVER_BOARD.turnSeenMs, n(env.PROVER_BOARD_BLOCK_DRAW_FRESH_MS, PROVER_BOARD.drawFreshMs, 1000)),
     communityFast: n(env.PROVER_BOARD_COMMUNITY_FAST, PROVER_BOARD.communityFast) === 0 ? 0 : 1,
     turnLate: n(env.PROVER_BOARD_TURN_LATE, PROVER_BOARD.turnLate) === 0 ? 0 : 1,
+    turnHardCapMs: n(env.PROVER_BOARD_TURN_CAP_MS, PROVER_BOARD.turnHardCapMs, 60_000),
     communityViewMs: n(env.PROVER_BOARD_VIEW_MS, PROVER_BOARD.communityViewMs),
   });
 }
@@ -522,7 +527,8 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
     if (!(w.blocks && w.blockSecs > 0)) w.sliceAt = clock();
     await storage.putWorkers(ws);
   }
-  const liveRacers = (j) => (j.racers || []).filter((r) => clock() - ((j.racedAt || {})[r] || 0) < ((j.racerLease || {})[r] ?? leaseFor(j)));
+  // a turn's lease runs from its start or its last check-in, whichever is later
+  const liveRacers = (j) => (j.racers || []).filter((r) => clock() - Math.max((j.racedAt || {})[r] || 0, (j.beatAt || {})[r] || 0) < ((j.racerLease || {})[r] ?? leaseFor(j)));
   // A batch the relay took: the machine's record (the batches taken from it, and as running averages its usual time from turn to proof and
   // its time per MB of input, which ranks it and sets how long it has for a turn).
   async function noteBatch(name, secs, mb) {
@@ -796,10 +802,12 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
         // when its late answer comes
         const tookIt = new Set(j.raced), ofThose = (o) => Object.fromEntries(Object.entries(o).filter(([r]) => tookIt.has(r)));
         j.racedAt = ofThose({ ...since, [worker.name]: clock() });
+        j.beatAt = ofThose(j.beatAt || {}); j.beatN = ofThose(j.beatN || {}); delete j.beatAt[worker.name]; delete j.beatN[worker.name];
         j.racedBy = ofThose({ ...(j.racedBy || {}), ...(worker.client != null ? { [worker.name]: worker.client } : {}) });
         await storage.putJob(j.id, j);
         return { jobId: j.id, class: j.class, program: j.program || 'confidential', mode: 'groth16', stdin: await inputOf(j), sealed: null, cycleLimit: j.cycleLimit, gasLimit: j.gasLimit,
-          deadline: j.deadline, leaseUntil: turnMs != null ? Math.min(j.deadline * 1000, clock() + turnMs) : j.deadline * 1000, label: j.label, race: true };
+          deadline: j.deadline, leaseUntil: turnMs != null ? Math.min(j.deadline * 1000, clock() + turnMs) : j.deadline * 1000, label: j.label, race: true,
+          ...(turnMs != null ? { beatMs: Math.max(1000, Math.floor(turnMs / 3)) } : {}) };
       }
       return null;
     });
@@ -872,6 +880,31 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
 
   // The worker's answer: the proof with its public values (hex), or why it could not prove the job. A groth16 proof is the hex
   // settle() takes; a compressed one is the base64 of the bincode SP1ProofWithPublicValues.
+  // A check-in from the machine whose turn it is: `progress` is a whole number of what it has proved so far (shards), and a check-in that shows more
+  // than the last one (the first needs only to be a number) starts its lease afresh, until turnHardCapMs after its turn began. A check-in that shows
+  // no more, from a machine that no longer holds the turn, or for a batch that is done is refused, and the lease runs on as it was.
+  const hardCap = cfg.turnHardCapMs ?? PROVER_BOARD.turnHardCapMs;
+  async function beat({ worker, jobId, progress } = {}) {
+    if (!worker || !worker.community) throw new Error('community worker is required');
+    return urgent(async () => {
+      const j = await storage.getJob(String(jobId || ''));
+      if (!j) return { ok: false, error: 'no such job' };
+      const name = worker.name, t = clock();
+      if (!PROVER_BOARD.turnPrograms.includes(j.program)) return { ok: false, code: 'no_beat', error: 'this job has no renewable turn' };
+      if (!['queued', 'claimed'].includes(j.status) || !liveRacers(j).includes(name)) return { ok: false, code: 'not_your_turn', error: 'this turn is no longer yours' };
+      if (placeOf(j, name, worker.client) !== worker.client) return { ok: false, code: 'other_place', error: 'check in from the connection that claimed the job' };
+      const n = Number(progress);
+      if (!Number.isSafeInteger(n) || n < 0) return { ok: false, code: 'bad_progress', error: 'progress must be a whole number' };
+      const last = (j.beatN || {})[name];
+      if (last !== undefined && n <= last) return { ok: false, code: 'no_progress', error: 'no more proved than at the last check-in' };
+      if (t - ((j.racedAt || {})[name] || t) >= hardCap) return { ok: false, code: 'hard_cap', error: 'this turn has reached its longest time' };
+      j.beatAt = { ...(j.beatAt || {}), [name]: t }; j.beatN = { ...(j.beatN || {}), [name]: n };
+      await storage.putJob(j.id, j);
+      const lease = (j.racerLease || {})[name] ?? leaseFor(j);
+      return { ok: true, leaseUntil: Math.min(t + lease, ((j.racedAt || {})[name] || t) + hardCap + lease), beatMs: Math.max(1000, Math.floor(lease / 3)) };
+    });
+  }
+
   async function result({ worker, jobId, publicValues = null, proof = null, error = null } = {}) {
     if (!worker) throw new Error('worker is required');
     return urgent(async () => {
@@ -1011,7 +1044,7 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
       line: spot >= 0 ? { position: spot + 1, seats, ahead: Math.max(0, spot - seats + 1), of: line.length } : null, why, text: lines.join('\n') };
   }
 
-  return { post, status, cancel, claim, result, raceVerdict, summary, credits, standing };
+  return { post, status, cancel, claim, beat, result, raceVerdict, summary, credits, standing };
 }
 
 const kvLocks = new WeakMap(), kvMemory = new WeakMap();

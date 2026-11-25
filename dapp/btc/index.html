@@ -22,8 +22,8 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=c5150232">
-<link rel="modulepreload" href="/swap/atomic.js?cb=1ca6a34b">
+<link rel="modulepreload" href="/btc/app.js?cb=bd23ac34">
+<link rel="modulepreload" href="/swap/atomic.js?cb=3d9b1bf4">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -31,10 +31,10 @@
 <link rel="modulepreload" href="/wallet-prompts.js">
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
-<link rel="modulepreload" href="/swap/atomic-market.js?cb=c19ede9d">
-<link rel="modulepreload" href="/fast/discover.js?cb=cf4a0fcc">
+<link rel="modulepreload" href="/swap/atomic-market.js?cb=a626d195">
+<link rel="modulepreload" href="/fast/discover.js?cb=4a1bb265">
 <link rel="modulepreload" href="/fastbridge-http.js">
-<link rel="modulepreload" href="/fastbridge-client.js?cb=09156465">
+<link rel="modulepreload" href="/fastbridge-client.js?cb=8b4b5fae">
 <link rel="modulepreload" href="/fastbridge-bl.js">
 <link rel="modulepreload" href="/adaptor-xswap.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -50,8 +50,8 @@
 <link rel="modulepreload" href="/fastbridge-rate.js?cb=be7769e1">
 <link rel="modulepreload" href="/swap/atomic-probe.js?cb=590d41c3">
 <link rel="modulepreload" href="/trade/poolux.js?cb=59d125e5">
-<link rel="modulepreload" href="/btc/add-eth.js?cb=8b0ccea0">
-<link rel="modulepreload" href="/btc/panel.js?cb=f2c12e0e">
+<link rel="modulepreload" href="/btc/add-eth.js?cb=eae599fd">
+<link rel="modulepreload" href="/btc/panel.js?cb=d25967e5">
 <link rel="modulepreload" href="/btc/send.js?cb=990d748a">
 <!-- preload:end -->
 <link rel="stylesheet" href="/swap/card.css?cb=a36205be">
@@ -62,7 +62,7 @@
 @font-face { font-family: 'Instrument Serif'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/instrument-serif-400i-latin.woff2') format('woff2'); }
 
 :root {
-  --paper: #E8E0CC; --card: #F2EBD4; --field: #FAF6EA; --soft: #EBE3CB;
+  --paper: #E8E0CC; --card: #F2EBD4; --field: #FAF6EA; --soft: color-mix(in srgb, #fff 40%, var(--card));
   --ink: #1A1A1A; --mute: #625C4F;
   --hair: rgba(26,26,26,.12); --hair-2: rgba(26,26,26,.28);
   --orange: #f7931a; --blue: #627eea; --ok: #0a7234; --warn: #9a4a00; --err: #b8341d;
@@ -76,7 +76,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #15130E; --card: #1F1C15; --field: #191711; --soft: #262219;
+    --paper: #15130E; --card: #1F1C15; --field: #191711; --soft: color-mix(in srgb, var(--ink) 4.5%, var(--card));
     --ink: #EDE5CF; --mute: #A39B85;
     --hair: rgba(237,229,207,.12); --hair-2: rgba(237,229,207,.28);
     --blue: #8da2f0; --ok: #8fcf9a; --warn: #f7931a; --err: #f08a6c;
@@ -134,6 +134,18 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .lane { margin: 26px 0 0; padding: 16px; background: var(--card); border: 1px solid var(--hair); border-radius: 20px; box-shadow: 0 30px 60px -48px rgba(0,0,0,.5); }
 /* the button stays in the card: the page is short, and a phone's bar of sections sits where the card's sticky button would */
 .lane .act { position: static; margin-left: -16px; margin-right: -16px; background: none; }
+/* an amount sized to its field: as large as the card draws it, smaller as it gets longer, never cut (--n is its length, set by the lane) */
+.lane .fm { container-type: inline-size; }
+html .lane #atomic .fm :is(.amt, .big) { font-size: clamp(20px, calc((100cqi - 112px) / (var(--n, 5) * .6)), 38px); }
+html .lane #atomic .rcpt dd { text-wrap: balance; }      /* a fact that has to break keeps its number with its unit */
+/* a phone: a little more room for the facts under the fields; a small one lists them as rows, so none breaks in two */
+@media (max-width: 420px) { .lane { padding: 12px; } .lane .act { margin-left: -12px; margin-right: -12px; } }
+@media (max-width: 359px) {
+  html .lane #atomic .rcpt { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 4px 12px; border-radius: 12px; background: var(--field); }
+  html .lane #atomic .rcpt > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 7px 0; background: none; border-radius: 0; }
+  html .lane #atomic .rcpt > div + div { border-top: 1px solid var(--hair); }
+  html .lane #atomic .rcpt dd { min-width: 0; text-align: right; font-size: 12.5px; }
+}
 
 /* the sections under it: a heading, a line, then the list */
 .sec { margin: 44px 0 0; }
@@ -145,14 +157,32 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .btn:hover { border-color: var(--ink); }
 .btn:disabled { opacity: .45; cursor: default; border-color: var(--hair-2); }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+@media (pointer: coarse), (max-width: 540px) { .btn { min-height: 40px; padding: 0 14px; } }
 
-/* your swaps: the lane's own list, moved here */
+/* your swaps: the lane's own list, moved here, each on a card like every other list on the page */
 #mine .snt { margin: 0; }
+#mine .snt > div { background: var(--card); border-color: var(--hair); }
 #mine-say { margin: 0; font-size: 13px; color: var(--mute); }
 .keep-note { flex-basis: 100%; font-size: 12px; color: var(--mute); }
 #mine-say:empty { display: none; }
 #mine .row { margin-top: 12px; }
 #mine-st { font-size: 12px; color: var(--mute); }
+/* one press: what it does under the button, then what its deposit shows, smaller */
+html .lane #atomic .q.hint { color: var(--ink); }
+html .lane #atomic .q small { display: block; margin-top: 2px; color: var(--mute); font-size: 11.5px; }
+html .lane #atomic .q button.link, #mine .snt button.link.cx { padding: 0 2px; font: 500 12px var(--mono); color: var(--ink); text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; cursor: pointer; }
+/* a swap started with one press has five steps: one row where they fit, three and two where they do not, two a row on a phone */
+#mine .snt.atm .stp.s5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 640px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 420px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* locked in, said plainly; and a finished swap's next steps for its BTC */
+#mine .snt small.sure { color: var(--ink); }
+#mine .snt .nx { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+#mine .snt .nx-b { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 0 16px; font: 500 12.5px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 10px; cursor: pointer; text-decoration: none; }
+#mine .snt .nx-b:hover { border-color: var(--ink); }
+#mine .snt .nx-b.main { color: var(--card); background: var(--ink); border-color: var(--ink); }
+@media (pointer: coarse), (max-width: 540px) { #mine .snt .nx-b { min-height: 42px; flex: 1 1 140px; } }
+#mine .snt small.nx-n { color: var(--mute); }
 
 /* your Bitcoin: the address, what it holds, and a send of it (btc/panel.js) */
 .sec-say { margin: 0; font-size: 13px; color: var(--mute); }
@@ -220,6 +250,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .pv .d b { display: flex; align-items: center; gap: 5px; font-weight: 500; color: var(--ink); }
 .pv .d b .tk { width: 14px; height: 14px; }
 .pv .d .off { color: var(--warn); }
+.pv .d .nw { white-space: nowrap; }
 .pv .none { display: block; padding: 14px; color: var(--mute); font-size: 13px; }
 @media (max-width: 420px) { .pv li { grid-template-columns: 1fr; } }
 
@@ -231,8 +262,14 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 #be li { margin: 3px 0; }
 #be li::marker { color: var(--mute); }
 .cmd { position: relative; margin: 6px 0 0; }
-.cmd pre { margin: 0; padding: 10px 44px 10px 12px; overflow-x: auto; font: 12px/1.6 var(--mono); background: var(--field); border: 1px solid var(--hair); border-radius: 10px; white-space: pre; }
-.cmd button { position: absolute; top: 6px; right: 6px; min-height: 28px; padding: 0 8px; font: 500 11px var(--mono); color: var(--mute); background: var(--card); border: 1px solid var(--hair); border-radius: 8px; cursor: pointer; }
+/* a command wraps rather than runs off the edge: each line of it hangs, so a wrapped line reads as the same command; the copy button sits clear of the first */
+.cmd pre { margin: 0; padding: 9px 12px; font: 12px/1.6 var(--mono); background: var(--field); border: 1px solid var(--hair); border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cmd pre .ln { display: block; padding-left: 2ch; text-indent: -2ch; }
+.cmd pre .ln:first-child { padding-right: 56px; }
+.cmd pre .w { display: inline-block; max-width: 100%; text-indent: 0; vertical-align: top; }
+@media (max-width: 420px) { #be li .cmd { margin-left: -20px; } }
+.cmd button { position: absolute; top: 5px; right: 5px; min-height: 30px; padding: 0 9px; font: 500 11px var(--mono); color: var(--mute); background: var(--card); border: 1px solid var(--hair); border-radius: 8px; cursor: pointer; }
+.cmd button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 .cmd button:hover { color: var(--ink); border-color: var(--hair-2); }
 #be code { font: 12px var(--mono); }
 #say { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); z-index: 50; transform: translateX(-50%); max-width: calc(100% - 32px); padding: 10px 14px; font-size: 13px; color: var(--paper); background: var(--ink); border-radius: 12px; box-shadow: var(--lift); }
@@ -650,6 +687,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/btc/app.js?cb=c5150232"></script>
+<script type="module" src="/btc/app.js?cb=bd23ac34"></script>
 </body>
 </html>

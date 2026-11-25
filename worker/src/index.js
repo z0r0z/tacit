@@ -666,7 +666,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify', '/metrics', '/metrics/event']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/community/beat', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify', '/metrics', '/metrics/event']);
 // Usage counts (worker/src/metrics.js): one instance per environment, writing to the same store as the rest.
 const _metricsOfEnv = new WeakMap();
 function metricsOf(env) { let m = _metricsOfEnv.get(env); if (!m) { m = makeMetrics({ kv: env.REGISTRY_KV }); _metricsOfEnv.set(env, m); } return m; }
@@ -4093,17 +4093,18 @@ async function handleProverBoard(req, env, url, cors) {
   // Community provers: anyone races Tacit's own workers for public jobs (prover-board.js), named by the address their points go to, a few
   // asks a minute from one place. A race is held by the place it was claimed from (`client`: a hash of the sender as the relay's queue counts
   // it, queueSender). PROVER_BOARD_COMMUNITY=0 closes it.
-  if (url.pathname === '/prover/community/claim' || url.pathname === '/prover/community/result') {
+  if (url.pathname === '/prover/community/claim' || url.pathname === '/prover/community/result' || url.pathname === '/prover/community/beat') {
     if (env.PROVER_BOARD_COMMUNITY === '0') return jsonResponse({ ok: false, error: 'community proving is closed' }, 404, nostore);
     if (req.method !== 'POST') return jsonResponse({ error: 'method' }, 405, nostore);
     const b = await body();
     if (!b || typeof b.miner !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(b.miner)) return jsonResponse({ ok: false, error: 'miner must be the 0x address the points go to' }, 400, nostore);
     const ip = req.headers.get('CF-Connecting-IP') || 'anon';
-    const claimPath = url.pathname === '/prover/community/claim';
-    const rl = await proveRateLimit(env, ip, claimPath ? 'board-community-claim' : 'board-community-result', claimPath ? 20 : 6, claimPath ? 3000 : 20000);
+    const claimPath = url.pathname === '/prover/community/claim', beatPath = url.pathname === '/prover/community/beat';
+    const rl = await proveRateLimit(env, ip, beatPath ? 'board-community-beat' : claimPath ? 'board-community-claim' : 'board-community-result', beatPath ? 12 : claimPath ? 20 : 6, claimPath ? 3000 : 20000);
     if (!rl.ok) return jsonResponse({ ok: false, code: 'rate', error: `too many asks, retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...nostore, 'Retry-After': String(rl.retryAfter) });
     const worker = { name: `c-${b.miner.toLowerCase()}`, classes: ['public'], community: true, client: clientOf(queueSender(ip) || ip, env) };
     try {
+      if (beatPath) return jsonResponse(await board.beat({ worker, jobId: b.jobId, progress: b.progress }), 200, nostore);
       if (claimPath) { const job = await board.claim({ worker, classes: ['public'], programs: Array.isArray(b.programs) ? b.programs.slice(0, 8).map(String) : null }); return jsonResponse(job ? { job } : {}, 200, nostore); }
       return jsonResponse(await board.result({ worker, jobId: b.jobId, publicValues: b.publicValues ?? null, proof: b.proof ?? null, error: b.error ?? null }), 200, nostore);
     } catch (e) { return jsonResponse({ ok: false, error: String(e.message || e) }, 400, nostore); }

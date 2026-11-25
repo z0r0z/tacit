@@ -3,7 +3,11 @@
 // Contributions go to the coordinator directly with the CLI; nothing is written through here. No dependencies.
 //
 //   COORDINATOR_URL=http://143.55.45.86:53874 PORT=10000 node ceremony-phase2/proxy/server.mjs
+//
+// With MIRROR_BUCKET (and MIRROR_ENDPOINT, MIRROR_KEY, MIRROR_SECRET) set, it also copies each accepted file and the
+// transcript to that bucket (mirror.mjs); GET /api/mirror lists what is copied, with IPFS CIDs where the store gives them.
 import { createServer } from 'node:http';
+import { startMirror } from './mirror.mjs';
 
 const UPSTREAM = String(process.env.COORDINATOR_URL || '').replace(/\/$/, '');
 const PORT = Number(process.env.PORT || 10000);
@@ -11,10 +15,20 @@ const ORIGINS = String(process.env.ALLOWED_ORIGINS || 'https://tacit.finance,htt
 const TTL_MS = Number(process.env.CACHE_MS || 10_000);
 if (!/^https?:\/\//.test(UPSTREAM)) { console.error('COORDINATOR_URL is required'); process.exit(1); }
 
-const cache = new Map();                       // path -> { at, status, body }
-async function upstream(path) {
+const mirror = process.env.MIRROR_BUCKET
+  ? startMirror({ upstream: UPSTREAM, bucket: process.env.MIRROR_BUCKET, endpoint: process.env.MIRROR_ENDPOINT || 'https://s3.filebase.com',
+      key: process.env.MIRROR_KEY, secret: process.env.MIRROR_SECRET })
+  : null;
+
+const cache = new Map();                      // path -> { at, status, body }
+const inflight = new Map();                   // path -> the one fetch under way, shared by every request meanwhile
+function upstream(path) {
   const hit = cache.get(path);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit;
+  if (hit && Date.now() - hit.at < TTL_MS) return Promise.resolve(hit);
+  if (!inflight.has(path)) inflight.set(path, fetchUpstream(path, hit).finally(() => inflight.delete(path)));
+  return inflight.get(path);
+}
+async function fetchUpstream(path, hit) {
   try {
     const r = await fetch(UPSTREAM + path, { signal: AbortSignal.timeout(8000) });
     const body = await r.text();
@@ -34,8 +48,12 @@ createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors, 'Access-Control-Allow-Methods': 'GET', 'Access-Control-Max-Age': '600' }); return res.end(); }
   const path = (req.url || '').split('?')[0];
   if (req.method === 'GET' && path === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"ok":true}'); }
+  if (req.method === 'GET' && path === '/api/mirror') {
+    res.writeHead(mirror ? 200 : 404, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30', ...cors });
+    return res.end(JSON.stringify(mirror ? { bucket: process.env.MIRROR_BUCKET, files: mirror.status() } : { error: 'no mirror' }));
+  }
   if (req.method !== 'GET' || !['/api/head', '/api/transcript'].includes(path)) { res.writeHead(404, { 'Content-Type': 'application/json', ...cors }); return res.end('{"error":"not found"}'); }
   const v = await upstream(path);
-  res.writeHead(v.status, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=10', ...(v.stale ? { 'X-Stale': '1' } : {}), ...cors });
+  res.writeHead(v.status, { 'Content-Type': 'application/json', 'Cache-Control': v.status === 200 ? 'public, max-age=10' : 'no-store', ...(v.stale ? { 'X-Stale': '1' } : {}), ...cors });
   res.end(v.body);
 }).listen(PORT, () => console.log(`praxis ceremony proxy on ${PORT} -> ${UPSTREAM}`));

@@ -350,7 +350,8 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
       }
       const m = /^\/reverse\/swap\/([0-9a-f]{72})(\/offer|\/evm-offer)?$/.exec(path);
       if (m && isSwapId(m[1])) {
-        if (method === 'GET' && !m[2]) { const s = await swaps.get(m[1]); return s ? reply({ phase: s.phase, why: s.why || null }) : reply({ error: 'unknown swap' }, 404); }
+        // (the lock's txid once it is sent: the user's page shows the lock and its confirmation while it waits for the offer, which comes after the block)
+        if (method === 'GET' && !m[2]) { const s = await swaps.get(m[1]); return s ? reply({ phase: s.phase, why: s.why || null, lockTxid: s.phase !== 'built' && s.lock && /^[0-9a-f]{64}$/.test(String(s.lock.txid || '')) ? s.lock.txid : null }) : reply({ error: 'unknown swap' }, 404); }
         if (method === 'GET' && m[2] === '/offer') { const o = await offers.get(m[1]); return o ? reply(o.offer) : reply({ error: 'no offer yet' }, 404); }
         if (method === 'POST' && m[2] === '/evm-offer') return await keepEvmOffer(m[1], body);
       }
@@ -387,6 +388,11 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
         }
         if (next.lastError && next.lastError !== rec.lastError) log({ level: 'warn', msg: 'reverse swap step failed', id: next.id, phase: next.phase, error: next.lastError });
         const every = alertSecs, k = next.id + '|' + next.phase, t = now();
+        // (the Ethereum nodes have not agreed on this swap for ten minutes: it waits and is read again; said every quarter hour while it lasts)
+        if (next.nodesSince != null && t - next.nodesSince >= 600 && t - (lastAlert.get(next.id + '|nodes') ?? -Infinity) >= 900) {
+          lastAlert.set(next.id + '|nodes', t);
+          alert({ level: 'alert', msg: 'the Ethereum nodes have not agreed on a reverse swap for a while: it waits and is read again', id: next.id, phase: next.phase, since: next.nodesSince, error: next.lastError || null });
+        }
         if ((next.phase === 'claiming' || next.phase === 'claimed') && t - (next.updated || next.created) > every && t - (lastAlert.get(k) ?? -Infinity) >= every) {
           lastAlert.set(k, t);
           alert({ level: 'alert', msg: 'a reverse swap has waited long in ' + next.phase, id: next.id, error: next.lastError || null });

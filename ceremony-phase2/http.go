@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -96,10 +98,36 @@ func (c *Coordinator) Handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(4 * time.Hour))
+		// The slot holder's downloads are never limited and count as its progress; everyone else shares a few
+		// connections (the mirror serves every accepted file too).
+		tok := token(r)
+		holder := tok != "" && c.isSlotHolder(tok)
+		if !holder {
+			release, ok := c.files.acquire(ipKey(c.clientIP(r)), c.filesPerIP(), c.filesTotal())
+			if !ok {
+				w.Header().Set("Retry-After", "60")
+				writeJSON(w, 429, map[string]string{"error": "too many downloads at once; try again in a minute, or use the mirror"})
+				return
+			}
+			defer release()
+		}
+		c.mu.Lock()
+		isHead := n == fmt.Sprintf("phase2-%d", c.state.HeadIndex)
+		c.mu.Unlock()
+		if holder && isHead {
+			cw := &countingWriter{ResponseWriter: w, flush: func(k int64) { c.headServed(tok, k) }}
+			defer cw.done()
+			w = cw
+		}
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Hour))
 		http.ServeFile(w, r, filepath.Join(c.Dir, n))
 	})
 	mux.HandleFunc("POST /api/join", func(w http.ResponseWriter, r *http.Request) {
+		// a JSON body only: a cross-site form or text/plain post (which a browser sends without asking) cannot join
+		if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
+			writeJSON(w, 415, map[string]string{"error": "send the body as application/json"})
+			return
+		}
 		var body struct{ Name, Handle string }
 		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "a name of 1 to 64 printable characters"})
@@ -163,8 +191,8 @@ func (c *Coordinator) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.endUpload(t)
 	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(until.Add(time.Minute))
-	_ = rc.SetWriteDeadline(until.Add(20 * time.Minute)) // the check after the upload takes a minute or two
+	_ = rc.SetReadDeadline(until)
+	_ = rc.SetWriteDeadline(until.Add(verifyGrace + 5*time.Minute)) // the check after the upload waits its turn and takes a minute or two
 	f, err := os.CreateTemp(c.Dir, "upload-*")
 	if err != nil {
 		c.logf("upload: %v", err)
@@ -188,14 +216,72 @@ func (c *Coordinator) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "the upload did not complete"})
 		return
 	}
+	c.bodyDone(t)
 	rcpt, err := c.accept(name, t.Name, t.Handle, t)
 	if err != nil {
 		c.logf("upload: %s (%s) refused: %v", short(t.Token), t.Name, err)
+		if r, ok := err.(*refusal); ok && r.Code == 400 {
+			c.refusedUpload(t)
+		}
 		writeErr(w, err)
 		return
 	}
 	writeJSON(w, 200, rcpt)
 }
+
+// fileLimiter bounds concurrent file downloads per client address and in all.
+type fileLimiter struct {
+	mu    sync.Mutex
+	byKey map[string]int
+	total int
+}
+
+func (l *fileLimiter) acquire(key string, perKey, total int) (func(), bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.byKey == nil {
+		l.byKey = map[string]int{}
+	}
+	if l.total >= total || l.byKey[key] >= perKey {
+		return nil, false
+	}
+	l.total++
+	l.byKey[key]++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			l.mu.Lock()
+			l.total--
+			if l.byKey[key]--; l.byKey[key] <= 0 {
+				delete(l.byKey, key)
+			}
+			l.mu.Unlock()
+		})
+	}, true
+}
+
+// countingWriter reports the bytes written, in steps of 16 MiB and at the end.
+type countingWriter struct {
+	http.ResponseWriter
+	pending int64
+	flush   func(int64)
+}
+
+func (w *countingWriter) Write(b []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(b)
+	if w.pending += int64(n); w.pending >= 16<<20 {
+		w.flush(w.pending)
+		w.pending = 0
+	}
+	return n, err
+}
+func (w *countingWriter) done() {
+	if w.pending > 0 {
+		w.flush(w.pending)
+		w.pending = 0
+	}
+}
+func (w *countingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 type loggedWriter struct {
 	http.ResponseWriter
@@ -220,8 +306,8 @@ func (c *Coordinator) logRequests(h http.Handler) http.Handler {
 		start := time.Now()
 		lw := &loggedWriter{ResponseWriter: w}
 		h.ServeHTTP(lw, r)
-		if r.URL.Path == "/api/slot" && lw.code == 200 {
-			return // polls every few seconds; the queue's own lines say what changed
+		if r.URL.Path == "/api/slot" && lw.code < 500 {
+			return // polls every few seconds, and stale tokens; the queue's own lines say what changed
 		}
 		c.logf("http: %s %s %d %dB %s %s", r.Method, r.URL.Path, lw.code, lw.bytes, time.Since(start).Round(time.Millisecond), c.clientIP(r))
 	})
@@ -267,6 +353,21 @@ func (c *Coordinator) AdminHandler() http.Handler {
 			return
 		}
 		writeJSON(w, 200, map[string]string{"removed": who})
+	})
+	mux.HandleFunc("POST /admin/ban", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Prefix string `json:"prefix"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "prefix"})
+			return
+		}
+		n, err := c.Ban(body.Prefix)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"banned": body.Prefix, "dropped": n})
 	})
 	mux.HandleFunc("POST /admin/close", func(w http.ResponseWriter, r *http.Request) {
 		if err := c.Close(); err != nil {

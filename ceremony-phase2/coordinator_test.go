@@ -54,6 +54,9 @@ func call(t *testing.T, srv *httptest.Server, method, path, tok string, body io.
 	if length >= 0 {
 		req.ContentLength = length
 	}
+	if method == "POST" && body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
@@ -206,6 +209,7 @@ func TestUploadAfterSlotEndsRefused(t *testing.T) {
 	clk := withClock(c)
 	c.SlotCap = time.Hour
 	c.PerIP = -1
+	c.Heartbeat = 24 * time.Hour // the clock jumps; polls are not what this tests
 	srv := httptest.NewServer(c.Handler())
 	defer srv.Close()
 	tok := joinHTTP(t, srv, "alice")
@@ -217,11 +221,11 @@ func TestUploadAfterSlotEndsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(out)
-	// the slot ends while the upload is being checked: refused, the head stays
-	c.beforeCommit = func() { clk.add(time.Hour + time.Second) }
+	// the slot's cap passes while a fully received upload is checked: the check finishes past the grace: refused
+	c.beforeCommit = func() { clk.add(time.Hour + verifyGrace + time.Second) }
 	r := call(t, srv, "PUT", "/api/upload", tok, bytes.NewReader(data), int64(len(data)))
 	if r.Code != 409 || c.State().HeadIndex != 17 {
-		t.Fatalf("an upload that finishes after the slot ended is refused: %d %v (head %d)", r.Code, r.Body, c.State().HeadIndex)
+		t.Fatalf("a check that runs past the cap and its grace is refused: %d %v (head %d)", r.Code, r.Body, c.State().HeadIndex)
 	}
 	// an upload that starts after the slot ended is refused at once
 	c.beforeCommit = nil
@@ -233,6 +237,15 @@ func TestUploadAfterSlotEndsRefused(t *testing.T) {
 	}
 	if left := uploadsLeft(t, c.Dir); len(left) != 0 || c.State().HeadIndex != 17 {
 		t.Fatalf("left %v, head %d", left, c.State().HeadIndex)
+	}
+	// an upload that arrived in time is not lost because its check crosses the cap
+	tok3 := joinHTTP(t, srv, "carol")
+	call(t, srv, "POST", "/api/claim", tok3, nil, -1)
+	c.headServed(tok3, c.headSize)
+	clk.add(time.Hour - time.Minute)
+	c.beforeCommit = func() { clk.add(5 * time.Minute) }
+	if r := call(t, srv, "PUT", "/api/upload", tok3, bytes.NewReader(data), int64(len(data))); r.Code != 200 || c.State().HeadIndex != 18 {
+		t.Fatalf("a check that crosses the cap still commits: %d %v", r.Code, r.Body)
 	}
 }
 
@@ -275,19 +288,213 @@ func TestQueuePlacesNeedPolls(t *testing.T) {
 	if st.State != "claim" || st.Ahead != 0 {
 		t.Fatalf("the next place gets the slot: %+v", st)
 	}
-	// dave claims; polls keep the claimed slot until its cap
+	// dave claims but only polls: polls alone do not keep a claimed slot
 	if _, err := c.Claim(d); err != nil {
 		t.Fatal(err)
 	}
-	for el := time.Duration(0); el < 2*time.Hour-time.Minute; el += 30 * time.Second {
+	for el := time.Duration(0); el < 10*time.Minute; el += 30 * time.Second {
 		clk.add(30 * time.Second)
 		if _, err := c.Poll(d); err != nil {
-			t.Fatalf("a polling slot is kept (%s in): %v", el, err)
+			t.Fatalf("a fresh slot is kept while its download may start (%s in): %v", el, err)
 		}
 	}
-	clk.add(2 * time.Minute)
+	clk.add(time.Minute)
 	if _, err := c.Poll(d); err == nil {
-		t.Fatal("a slot past its cap is dropped")
+		t.Fatal("a slot whose download never started is dropped")
+	}
+}
+
+// A claimed slot is kept while it makes progress: the download starts, completes, and the upload starts in time.
+func TestSlotNeedsProgress(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	clk := withClock(c)
+	c.PerIP = -1
+	pollFor := func(tok string, d time.Duration) error {
+		for el := time.Duration(0); el < d; el += 30 * time.Second {
+			clk.add(30 * time.Second)
+			if _, err := c.Poll(tok); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	// a slow download that never completes is dropped at DownloadBy
+	a, _, _ := c.Join("alice", "", "192.0.2.1")
+	c.Claim(a)
+	clk.add(30 * time.Second)
+	c.headServed(a, 1)
+	if err := pollFor(a, 73*time.Minute); err != nil {
+		t.Fatalf("a slot whose download is running is kept: %v", err)
+	}
+	if err := pollFor(a, 2*time.Minute); err == nil {
+		t.Fatal("a slot whose download is not complete by DownloadBy is dropped")
+	}
+	// a slot that downloaded but never uploads is dropped at UploadStart
+	b, _, _ := c.Join("bob", "", "192.0.2.2")
+	c.Claim(b)
+	c.headServed(b, c.headSize)
+	if err := pollFor(b, 104*time.Minute); err != nil {
+		t.Fatalf("a downloaded slot is kept while its upload may start: %v", err)
+	}
+	if err := pollFor(b, 2*time.Minute); err == nil {
+		t.Fatal("a slot whose upload did not start by UploadStart is dropped")
+	}
+	// a slot that started uploading is kept up to the cap
+	d, _, _ := c.Join("dave", "", "192.0.2.3")
+	c.Claim(d)
+	c.headServed(d, c.headSize)
+	c.mu.Lock()
+	c.queue[0].uploadStarted = true
+	c.mu.Unlock()
+	if err := pollFor(d, 119*time.Minute); err != nil {
+		t.Fatalf("a slot that started its upload is kept to the cap: %v", err)
+	}
+	if err := pollFor(d, 2*time.Minute); err == nil {
+		t.Fatal("and dropped past it")
+	}
+}
+
+// Only the slot holder's download of the head counts, and others share a few download connections.
+func TestHeadDownloadCountsAndLimits(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	c.PerIP = -1
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	tok := joinHTTP(t, srv, "alice")
+	call(t, srv, "POST", "/api/claim", tok, nil, -1)
+	get := func(tok string) int {
+		req, _ := http.NewRequest("GET", srv.URL+"/f/phase2-17", nil)
+		if tok != "" {
+			req.Header.Set(TokenHeader, tok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if get(tok) != 200 {
+		t.Fatal("the slot holder downloads the head")
+	}
+	c.mu.Lock()
+	served := c.queue[0].served
+	c.mu.Unlock()
+	if served != c.headSize {
+		t.Fatalf("its download counts as progress: %d of %d", served, c.headSize)
+	}
+	if get("") != 200 {
+		t.Fatal("anyone may download a file")
+	}
+	// two at once per address, then 429; the slot holder is never limited
+	r1, _ := c.files.acquire(ipKey("127.0.0.1"), c.filesPerIP(), c.filesTotal())
+	r2, _ := c.files.acquire(ipKey("127.0.0.1"), c.filesPerIP(), c.filesTotal())
+	if get("") != 429 {
+		t.Fatal("a third download at once from one address is refused")
+	}
+	if get(tok) != 200 {
+		t.Fatal("the slot holder is not limited")
+	}
+	r1()
+	r2()
+	if get("") != 200 {
+		t.Fatal("downloads free up")
+	}
+}
+
+// A join must be a JSON request, so a web page cannot make its visitors join (a browser sends a cross-site text/plain
+// or form post without asking).
+func TestJoinNeedsJSON(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	for _, ct := range []string{"", "text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x"} {
+		req, _ := http.NewRequest("POST", srv.URL+"/api/join", strings.NewReader(`{"name":"mallory"}`))
+		if ct != "" {
+			req.Header.Set("Content-Type", ct)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 415 {
+			t.Fatalf("a join sent as %q: %d", ct, resp.StatusCode)
+		}
+	}
+	if len(c.Queue()) != 0 {
+		t.Fatal("nobody joined")
+	}
+}
+
+func TestBanAndIPv6Grouping(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	if _, _, err := c.Join("a", "", "2001:db8:1:1::1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.Join("b", "", "2001:db8:1:ffff::2"); err == nil {
+		t.Fatal("one place per IPv6 /48")
+	}
+	if _, _, err := c.Join("c", "", "198.51.100.7"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := c.Ban("198.51.100.0/24"); err != nil || n != 1 {
+		t.Fatalf("ban drops the prefix's places: %d %v", n, err)
+	}
+	if _, _, err := c.Join("d", "", "198.51.100.9"); err == nil {
+		t.Fatal("a banned prefix cannot join")
+	}
+	c2, err := Open(c.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c2.Join("e", "", "198.51.100.10"); err == nil {
+		t.Fatal("bans survive a restart")
+	}
+}
+
+// Uploads refused as contributions end the slot after MaxRefused, so one slot cannot make the coordinator check
+// file after file.
+func TestRefusedUploadsEndTheSlot(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	tok := joinHTTP(t, srv, "mallory")
+	call(t, srv, "POST", "/api/claim", tok, nil, -1)
+	junk, _ := os.ReadFile(c.path(17)) // the head itself: right size, does not verify as a contribution on itself
+	for i := 0; i < 2; i++ {
+		if r := call(t, srv, "PUT", "/api/upload", tok, bytes.NewReader(junk), int64(len(junk))); r.Code != 400 {
+			t.Fatalf("upload %d: %d %v", i, r.Code, r.Body)
+		}
+	}
+	if r := call(t, srv, "GET", "/api/slot", tok, nil, -1); r.Code != 404 {
+		t.Fatalf("after two refused uploads the slot is given up: %d", r.Code)
+	}
+}
+
+// A malformed evaluations file cannot make seal allocate beyond its size.
+func TestEvalsLengthsBoundedByFile(t *testing.T) {
+	var b bytes.Buffer
+	binary.Write(&b, binary.BigEndian, uint32(1<<30)) // 1G points claimed in 4 bytes
+	if _, err := ReadPhase2Evaluations(bytes.NewReader(b.Bytes()), int64(b.Len())); err == nil {
+		t.Fatal("a length beyond the file is refused before allocating")
+	}
+	f := newFixture(t)
+	var w bytes.Buffer
+	if err := WritePhase2Evaluations(&f.evals, &w); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadPhase2Evaluations(bytes.NewReader(w.Bytes()), int64(w.Len())); err != nil {
+		t.Fatalf("a real evaluations file reads: %v", err)
+	}
+	if _, err := ReadPhase2Evaluations(bytes.NewReader(append(w.Bytes(), 0)), int64(w.Len()+1)); err == nil {
+		t.Fatal("trailing bytes are refused")
 	}
 }
 
@@ -314,7 +521,8 @@ func TestLeaveAndOperatorKick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
 	go func() { _, _, err := cl.Contribute(ctx); done <- err }()
-	waitFor(t, func() bool { return len(c.Queue()) == 3 })
+	// stop it once it holds its place (its token stored), as a person pressing Ctrl-C while it waits would
+	waitFor(t, func() bool { cl.mu.Lock(); defer cl.mu.Unlock(); return cl.token != "" && len(c.Queue()) == 3 })
 	cancel()
 	<-done
 	cl.Cleanup()

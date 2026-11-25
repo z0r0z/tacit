@@ -391,7 +391,7 @@ render.wallet = () => {
   if (WAL.mode === 'add') {
     mount(f, html`
       <div class="kv"><span>Address</span><b class="mono">${viewAddr(a.address, 10)}</b><button class="link" type="button" data-copy="${a.address}">copy</button></div>
-      <p class="note">Send ETH to it from any wallet or exchange. On Ethereum it pays for everything here; on <span class="nw">${chainMarks([8453, 4663])},</span> for the private pool there.${S.wallet ? ' Or add some from your wallet here; that links the two on chain.' : html` Or <button class="link" type="button" id="ac-connect">connect a wallet</button> to add from it.`}</p>
+      <p class="note">Send ETH to it from any wallet or exchange. On Ethereum it pays for everything here.${S.wallet ? ' Or add some from your wallet here; that links the two on chain.' : html` Or <button class="link" type="button" id="ac-connect">connect a wallet</button> to add from it.`}</p>
       ${S.wallet ? html`${amountField()}<button class="btn" type="button" id="ac-go">Add from wallet</button>` : ''}`);
     const cn = $('#ac-connect');
     if (cn) cn.onclick = () => busy(cn, async () => { try { await connect(); setPayer('tacit'); } catch (e) { sayErr(status, e); } });
@@ -1333,7 +1333,7 @@ function privacyView(c, amount, to, self) {
 }
 function renderDevice(el) {
   if (DEV.tok) return renderTokenPool(el);
-  if (!needKey(el, html`Keep ETH private on ${chainMarks([1, 8453, 4663])}, proved in your browser.`)) return;
+  if (!needKey(el, html`Keep ETH private on ${chainMarks([1])}, proved in your browser.`)) return;
   const c = DEV.chain, W = DEV.W && DEV.key === S.key.pubHex + c.chainId ? DEV.W : null;
   const last = DEV.bal == null ? devBal(c.chainId, S.key.pubHex) : null;
   mount(el, html`
@@ -1565,7 +1565,7 @@ function renderDevice(el) {
         <p class="note">For private sends within this pool, from another Tacit user’s device. Nothing on chain links a payment to it.</p></div>
       <div class="blk"><div class="kv"><span>Deposit address</span><b class="mono">${viewAddr(W.receiveBox, 8)}</b><button class="link" type="button" data-copy="${W.receiveBox}">copy</button></div>
         <p class="note">Send ETH here from any wallet or exchange, choosing ${chainTag(c.chainId)} as the network. It moves into your private balance within minutes, less at most 0.25%.${min ? html` The relay takes it in from ${fmt(min, 18, 4)} ETH, a floor that moves with network fees${c.chainId === 1 ? '; for less, pick Base' : ''}. Less waits there for more, or you sweep it in yourself.` : ''}</p>
-        <p class="note">Send only ETH, and only on ${chainMarks([1, 8453, 4663])}: anything else can’t be collected.</p>
+        <p class="note">Send only ETH, and only on ${chainMarks([1])}: anything else can’t be collected.</p>
         <p class="note">No ETH yet? Buy it with a card or bank transfer at ${RAMPS.map(([n, u], i) => html`${i ? (i < RAMPS.length - 1 ? ', ' : ' or ') : ''}<a href="${u}" target="_blank" rel="noopener noreferrer">${n}</a>`)} and give them this address. They may ask for ID.</p></div>
       <div id="d-wait"></div>
       <p class="note">To ask for an amount, <a href="/pay/eth/#receive&chain=${c.chainId}">get paid by link or QR</a> in tacit pay: each link has a deposit address of its own.</p>` : html`<p class="note">Reading your addresses…</p>`);
@@ -1586,7 +1586,7 @@ function renderDevice(el) {
     }).catch(() => {});
   }
 }
-const devPools = () => [...DEVICE_CHAINS.map((x) => [String(x.chainId), chainTab(x.chainId, x.name)]), ...TOKEN_POOLS.map((p) => [p.slug, p.name])];
+const devPools = () => [...DEVICE_CHAINS.filter((x) => x.chainId === 1 || x.chainId === DEV.chain.chainId || (S.key && (devBal(x.chainId, S.key.pubHex) ?? 0n) > 0n)).map((x) => [String(x.chainId), chainTab(x.chainId, x.name)]), ...TOKEN_POOLS.map((p) => [p.slug, p.name])];
 function pickPool(id) {
   const p = TOKEN_POOLS.find((x) => x.slug === id), was = DEV.tok;
   if (p) DEV.tok = p; else setDeviceChain(DEVICE_CHAINS.find((x) => String(x.chainId) === id));

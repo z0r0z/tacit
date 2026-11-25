@@ -8,7 +8,10 @@
 //   add.pending(pubHex)                -> the kept deposit, or null
 //   add.resume({ key, onStep })        -> { landed } | null       finishes a kept deposit (null: there was none, or nothing was sent)
 //
-// onStep(k, d): 'wallet' (finding the wallet), 'quote', 'prepare', 'confirm' ({ wei, tip, from }), 'sent' (hash), 'proving' (hash), 'landed'.
+//   add.warm()                         reads ahead what a deposit needs (before the key is open)
+//
+// onStep(k, d): 'wallet' (finding the wallet), 'quote', 'prepare', 'confirm' ({ wei, tip, from }), 'sent' (hash), 'mined' ({ hash, units }: the deposit is in a block,
+// so its note will land), 'proving' (hash), 'landed'.
 // Errors carry `html` (a sentence the lane shows as it is) when there is a way forward worth a link, `short` when the wallet holds too little, `userStopped`
 // when the wallet was declined, and `kept` when a deposit was sent and is still being finished.
 import { rpc, fmtUnits, short, esc, E10 } from '/trade/util.js?cb=9c8b4133';
@@ -109,8 +112,13 @@ export function makeAddEth({ getUx, pick = null }) {
         rec.hash = hash; write(key.pubHex, rec);
         return hash;
       },
-      // a deposit can sit for a while when Ethereum is busy: the wait is long, and the page says it is still waiting (the lane's own timer)
-      receipt: (hash) => w.receipt(hash, { timeoutMs: 30 * 60e3 }),
+      // a deposit can sit for a while when Ethereum is busy: the wait is long, and the page says it is still waiting (the lane's own timer). Mined, it is
+      // said at once ('mined'): the ETH has left the wallet for good and lands as a note of the key's, so a swap can be started on it while the relay finishes it
+      receipt: async (hash) => {
+        const rc = await w.receipt(hash, { timeoutMs: 30 * 60e3 });
+        if (rc && rc.status === '0x1') { try { onStep('mined', { hash: rc.transactionHash || hash, units: wei / E10 }); } catch { /* the deposit goes on */ } }
+        return rc;
+      },
     };
     try {
       await M.wrapEth({ priv: () => Uint8Array.from(key.priv), wei, tip: q.tip, to: q.to, from, wallet: guarded, ux: t, say: (k, d) => { if (k !== 'confirm') onStep(k, d); } });
@@ -154,5 +162,8 @@ export function makeAddEth({ getUx, pick = null }) {
     return { landed: true };
   }
 
-  return { start, resume, pending: (pub) => read(pub), relayWords: async (e) => (await load()).relayWords(e) };
+  // What a deposit reads first, read before it is asked for: the modules, and the pool's record of ETH deposits (which the next deposit index is picked from)
+  const warm = () => load().then(() => getUx()).then((t) => t.warmWrapLogs?.({ ticker: 'cETH' })).catch(() => {});
+
+  return { start, resume, warm, pending: (pub) => read(pub), relayWords: async (e) => (await load()).relayWords(e) };
 }

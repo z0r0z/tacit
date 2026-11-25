@@ -44,10 +44,11 @@ export function tabKeyWatch({ onIdle = null, busy = null } = {}) {
   for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart']) addEventListener(ev, bump, { passive: true, capture: true });
   const check = () => {
     const now = Date.now();
-    if (now - seen < IDLE) return;
     let working = false;
     try { working = !!busy?.(); } catch { }
-    if (working) { seen = now; return; }
+    // (while it runs, the tab's saved key is kept fresh too: a page opened from this one in the tab, once the action is done, finds the key still open)
+    if (working) { seen = now; touch(); return; }
+    if (now - seen < IDLE) return;
     seen = now;
     tabKeyClear();
     try { onIdle?.(IDLE_WHY); } catch { }

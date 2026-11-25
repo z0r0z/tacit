@@ -93,6 +93,9 @@ struct Job {
     #[serde(rename = "cycleLimit")]
     cycle_limit: Option<f64>,
     deadline: Option<f64>,
+    // A community turn's check-in interval (the board renews the lease on each check-in); absent from an older API.
+    #[serde(rename = "beatMs")]
+    beat_ms: Option<u64>,
     label: Option<String>,
     // 'confidential' (absent from an older API), 'eth-state' or 'btc-state'.
     program: Option<String>,
@@ -253,6 +256,7 @@ fn main() {
     } else {
         (format!("{base}/prover/claim"), format!("{base}/prover/result"))
     };
+    let beat_url = format!("{base}/prover/community/beat");
     let auth = format!("Bearer {token}");
     let sk = worker_key();
     let my_pub = sk.public_key().to_encoded_point(true).as_bytes().to_vec();
@@ -472,6 +476,26 @@ fn main() {
         let is_btc = job.program.as_deref() == Some("btc-state");
         job_limit.store(if is_btc { btc_limit } else { default_limit }, std::sync::atomic::Ordering::Relaxed);
         job_since.store(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(1).max(1), std::sync::atomic::Ordering::Relaxed);
+        // A community turn is a renewable lease: while the proof runs, a thread checks in every beatMs with a count that rises each time, so the board
+        // keeps the turn however long this batch takes and hands it on only if the check-ins stop (a dead machine) or at its hard cap. The proof call
+        // reports no shard count, so the count is the check-ins made: it shows the process is alive, and the board refuses one that does not rise.
+        let beating = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        if let (Some(m), Some(ms)) = (community.clone(), job.beat_ms.filter(|ms| *ms >= 1000)) {
+            let (beating, agent, url, auth, job_id, name) = (beating.clone(), agent.clone(), beat_url.clone(), auth.clone(), job.job_id.clone(), name.clone());
+            std::thread::spawn(move || {
+                let mut n: u64 = 0;
+                loop {
+                    let until = Instant::now() + Duration::from_millis(ms);
+                    while Instant::now() < until { if !beating.load(std::sync::atomic::Ordering::Relaxed) { return; } std::thread::sleep(Duration::from_millis(500)); }
+                    if !beating.load(std::sync::atomic::Ordering::Relaxed) { return; }
+                    n += 1;
+                    match agent.post(&url).set("Authorization", &auth).send_json(serde_json::json!({ "jobId": job_id, "progress": n, "miner": m })) {
+                        Ok(r) => { let reply = r.into_string().unwrap_or_default(); if reply.contains("\"ok\":false") { println!("[{name}] check-in {n} refused: {}", reply.chars().take(200).collect::<String>()); } }
+                        Err(e) => println!("[{name}] check-in {n} not delivered: {e}"),
+                    }
+                }
+            });
+        }
         let hold = helpdesk::hold();   // the review model gives the GPU back before the proof starts
         // The job: its input decoded, proved within its cycle limit → (public values, the proof as the board takes it: the hex of the
         // bytes settle() takes for the pool's guest, the base64 of the saved compressed proof for the Ethereum-state guest).
@@ -498,6 +522,7 @@ fn main() {
             Ok((proof.public_values.as_slice().to_vec(), format!("0x{}", hex::encode(proof.bytes()))))
         })();
         job_since.store(0, std::sync::atomic::Ordering::Relaxed);
+        beating.store(false, std::sync::atomic::Ordering::Relaxed);
         drop(hold);
         board_last = Instant::now();
         last_proof = Instant::now();

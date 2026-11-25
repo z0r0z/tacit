@@ -306,6 +306,12 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
             alert({ level: 'alert', msg: 'a pool lock was spent and the claim that spent it cannot be read: the Bitcoin lock must be taken before its refund opens', id: next.id, lockNu: next.lock && next.lock.lockNu, lockTxid: next.lockTxid, refundOpensAtHeight: next.lockHeight != null ? next.lockHeight + next.csvBlocks - 1 : null });
           }
         } else unreadSince.delete(next.id);
+        // The Ethereum nodes have not agreed on this swap for ten minutes (too few answer, or they differ): it waits and is read again, and nothing ends on one
+        // node's word. Said again every quarter hour while it lasts: the nodes the provider reads (agreeRpcs) may need looking at.
+        if (next.nodesSince != null && now() - next.nodesSince >= 600 && now() - (lastAlert.get(next.id + '|nodes') ?? -Infinity) >= 900) {
+          lastAlert.set(next.id + '|nodes', now());
+          alert({ level: 'alert', msg: 'the Ethereum nodes have not agreed on a swap for a while: it waits and is read again', id: next.id, phase: next.phase, since: next.nodesSince, error: next.lastError || null });
+        }
         if (next.lastError && next.lastError !== rec.lastError) log({ level: 'warn', msg: 'swap step failed', id: next.id, phase: next.phase, error: next.lastError });
         if (next.phase === 'taking' || next.phase === 'refunding') {
           const every = config.alertSecs ?? 3600, key = next.id + '|' + next.phase, t = now();

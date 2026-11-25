@@ -13,16 +13,16 @@
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=46aad23b';
-import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, TRACE_NODES } from '/fastbridge-evm.js?cb=15d2988a';
-import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=a0280321';
+import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=4560aa10';
+import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=514bfcc8';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=9003c49b';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=129356b4';
-import { makeLocalStore } from '/fastbridge-client.js?cb=09156465';
-import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=778082b5';
+import { makeLocalStore } from '/fastbridge-client.js?cb=8b4b5fae';
+import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=3964e071';
 import { makeRateFeed, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
-import { discoverProviders } from '/fast/discover.js?cb=cf4a0fcc';
+import { discoverProviders } from '/fast/discover.js?cb=4a1bb265';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=138ce410';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=fcbadcf1';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();
@@ -45,7 +45,7 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   // the lock goes out for the next block or two and not under 2 sat/vB (see fastbridge-btc.js minFeeRate)
   const btc = makeEsploraBtcChain({ bases, prims, builder, fetchImpl, feeTarget: '1', minFeeRate: 2 });
   const seed = hmac(sha256, priv, enc.encode('tacit-fastbridge-user-pair-seed'));
-  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: ETH_ASSET, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)) }) });   // (the nodes the page's CSP reaches)
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: ETH_ASSET, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)) }), quorum: makeNodeQuorum({ fetchImpl }) });   // (the nodes the page's CSP reaches)
   // an ETH-for-Bitcoin swap is found again from the key by its pool lock's memo (pair.recover)
   evm.findOwnLocks = makeOwnLockFinder({ ux, hmacSha256, walletPriv: priv });
 

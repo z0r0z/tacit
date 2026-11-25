@@ -403,7 +403,7 @@ test('points: each proof the relay takes from a community machine counts for its
 });
 
 test('points config: env sets the points and a count a day, 0 points pays nothing, no count or 0 is no count, nonsense keeps the default', () => {
-  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3, drawPct: 0, drawNew: 15, drawSeats: 3, drawFreshMs: 6000, communityFast: 1, turnLate: 1, communityViewMs: 1000 });
+  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3, drawPct: 0, drawNew: 15, drawSeats: 3, drawFreshMs: 6000, communityFast: 1, turnLate: 1, turnHardCapMs: 6 * 3600_000, communityViewMs: 1000 });
   assert.deepEqual(proverBoardConfig({}),{ pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10', POINTS_BOARD_BTC_PER_PROOF: '800' }), { pointsPerProof: 50, proofsPerMinerDay: 10, ...btc(800) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0', POINTS_BOARD_BTC_PER_PROOF: '0' }), { pointsPerProof: 0, proofsPerMinerDay: Infinity, ...btc(0) });
@@ -1496,3 +1496,43 @@ test('a worker that cannot take the urgent job (it is in a class the worker does
   assert.equal(j.label, 'wrap', 'the private worker takes the private job though a swap waits in a class it does not serve');
 });
 
+
+test('community: a Bitcoin batch turn is renewed by check-ins that show progress, and goes on when they stop or at the hard cap', async () => {
+  t = 40_000_000;
+  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, turnHardCapMs: 5 * 3600_000 } });
+  const a = gpu('a1'), c = gpu('c3');
+  const ask = (w) => b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });
+  assert.equal(await ask(a), null); assert.equal(await ask(c), null);
+  const j = await b.post({ class: 'public', program: 'btc-state', stdin: Buffer.from('slow batch').toString('base64'), cycleLimit: 1e11, gasLimit: 1e11, deadline: now() / 1000 + 12 * 3600 });
+  const turn = await ask(a);
+  assert.equal(turn.jobId, j.jobId);
+  const lease = 2 * 3600_000;                       // a machine with no record has the batch's lease
+  assert.equal(turn.beatMs, lease / 3, 'the worker is told how often to check in');
+  // without check-ins the turn lapses at the lease, as before
+  t += lease - 1; assert.equal(await ask(c), null, 'still a\'s turn');
+  // each check-in that shows more starts the lease afresh
+  assert.equal((await b.beat({ worker: a, jobId: j.jobId, progress: 1 })).ok, true);
+  t += lease - 1; assert.equal(await ask(c), null, 'renewed: a keeps its turn past the first lease');
+  assert.equal((await b.beat({ worker: a, jobId: j.jobId, progress: 1 })).code, 'no_progress', 'a count that does not rise is refused');
+  assert.equal((await b.beat({ worker: c, jobId: j.jobId, progress: 1 })).code, 'not_your_turn');
+  assert.equal((await b.beat({ worker: gpu('a1', 'elsewhere'), jobId: j.jobId, progress: 2 })).code, 'other_place');
+  assert.equal((await b.beat({ worker: a, jobId: j.jobId, progress: -1 })).code, 'bad_progress');
+  assert.equal((await b.beat({ worker: a, jobId: j.jobId, progress: 2 })).ok, true);
+  // the hard cap: five hours from the turn's start, check-ins no longer renew
+  t = 40_000_000 + 5 * 3600_000 + 1;
+  assert.equal((await b.beat({ worker: a, jobId: j.jobId, progress: 3 })).code, 'hard_cap');
+  // and check-ins that stop hand the batch on once the last one's lease runs out
+  t += lease;
+  assert.equal((await ask(c)).jobId, j.jobId, 'c takes the turn');
+  assert.equal((await b.beat({ worker: a, jobId: j.jobId, progress: 4 })).code, 'not_your_turn', 'a no longer holds it');
+  assert.equal((await b.beat({ worker: c, jobId: j.jobId, progress: 1 })).ok, true, 'c\'s counter starts from nothing');
+});
+
+test('community: a job that is not a Bitcoin batch has no renewable turn', async () => {
+  t = 50_000_000;
+  const b = makeProverBoard({ storage: store(), now });
+  const pub = await b.post({ class: 'public', stdin, cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  const w = gpu('e5');
+  assert.equal((await b.claim({ worker: w, classes: ['public'] })).jobId, pub.jobId);
+  assert.equal((await b.beat({ worker: w, jobId: pub.jobId, progress: 1 })).code, 'no_beat');
+});
