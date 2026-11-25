@@ -204,7 +204,11 @@ impl<'a> Boundary<'a> {
         c_secp.copy_from_slice(&bytes[..33]);
         let mut c_bjj = [0u8; 32];
         c_bjj.copy_from_slice(&bytes[33..65]);
-        Some(Self { c_secp, c_bjj, proof: &bytes[65..] })
+        Some(Self {
+            c_secp,
+            c_bjj,
+            proof: &bytes[65..],
+        })
     }
 }
 
@@ -322,7 +326,17 @@ pub fn parse_spend(payload: &[u8]) -> Option<SpendBody<'_>> {
         return None; // trailing bytes: the payload is not what it claims to be
     }
 
-    Some(SpendBody { asset, h_anchor, bind, nullifiers, outputs, exit, want, proof, body })
+    Some(SpendBody {
+        asset,
+        h_anchor,
+        bind,
+        nullifiers,
+        outputs,
+        exit,
+        want,
+        proof,
+        body,
+    })
 }
 
 // ───────────────────────────── exits ─────────────────────────────
@@ -385,7 +399,9 @@ pub fn read_exit(
     boundary_ok: BoundaryCheck<'_>,
 ) -> Option<ExitAnchor> {
     let txid = cxfer_core::bitcoin::compute_txid(&w.tx)?;
-    if cxfer_core::bitcoin::verify_merkle_path(&txid, &w.merkle_siblings, w.merkle_index) != w.confirmed_block_root {
+    if cxfer_core::bitcoin::verify_merkle_path(&txid, &w.merkle_siblings, w.merkle_index)
+        != w.confirmed_block_root
+    {
         return None;
     }
     cxfer_core::bitcoin::verify_tx_witness_committed(
@@ -417,7 +433,12 @@ pub fn read_exit(
     // `commitment_hash` the reflection stores for a transparent note.
     let commitment = commitment_hash_compressed(&exit.boundary.c_secp)?;
 
-    Some(ExitAnchor { outpoint: outpoint_key(&txid, exit.exit_vout), commitment, asset: body.asset, value: w.value })
+    Some(ExitAnchor {
+        outpoint: outpoint_key(&txid, exit.exit_vout),
+        commitment,
+        asset: body.asset,
+        value: w.value,
+    })
 }
 
 /// Admit an anchor and debit the ledger. The whole "the fold accepts pool exits" rule.
@@ -437,7 +458,11 @@ pub enum Lineage {
     Full { hops: u32, steps: u32 },
     /// Present from an admissible anchor down to the burn; `from` is that anchor's outpoint and `distance` the
     /// transfers between it and the burned note.
-    Anchored { hops: u32, from: [u8; 32], distance: u32 },
+    Anchored {
+        hops: u32,
+        from: [u8; 32],
+        distance: u32,
+    },
     /// No admissible presentation: too long, and no anchor inside reach.
     Refused { hops: u32, cap: u32 },
 }
@@ -454,18 +479,31 @@ pub fn lineage(hops: u32, anchor: Option<([u8; 32], u32)>) -> Lineage {
         return Lineage::Full { hops, steps: hops };
     }
     match anchor {
-        Some((from, d)) if d < ANCHOR_MAX_HOPS => Lineage::Anchored { hops, from, distance: d },
-        _ => Lineage::Refused { hops, cap: ANCHOR_MAX_HOPS },
+        Some((from, d)) if d < ANCHOR_MAX_HOPS => Lineage::Anchored {
+            hops,
+            from,
+            distance: d,
+        },
+        _ => Lineage::Refused {
+            hops,
+            cap: ANCHOR_MAX_HOPS,
+        },
     }
 }
 
 /// The valid-leaf set the provenance DAG should be given for one burn: the leaves it already had, plus every
 /// admitted anchor. This is the entire wiring change — `valid_leaves` grows and no acceptance rule is added, so
 /// a blob that presents no anchor folds byte-for-byte as it does today.
-pub fn valid_leaves(base: &[([u8; 32], [u8; 32])], anchors: &[ExitAnchor]) -> Vec<([u8; 32], [u8; 32])> {
+pub fn valid_leaves(
+    base: &[([u8; 32], [u8; 32])],
+    anchors: &[ExitAnchor],
+) -> Vec<([u8; 32], [u8; 32])> {
     let mut out = base.to_vec();
     for a in anchors {
-        if !out.iter().any(|(o, c)| *o == a.outpoint && *c == a.commitment) {
+        if !out
+            .iter()
+            .any(|(o, c)| *o == a.outpoint && *c == a.commitment)
+        {
             out.push((a.outpoint, a.commitment));
         }
     }
@@ -484,11 +522,19 @@ fn read_varint(data: &[u8], pos: usize) -> Option<(usize, usize)> {
     let b = *data.get(pos)?;
     match b {
         0..=0xfc => Some((b as usize, 1)),
-        0xfd => Some((u16::from_le_bytes(data.get(pos + 1..pos + 3)?.try_into().ok()?) as usize, 3)),
-        0xfe => Some((u32::from_le_bytes(data.get(pos + 1..pos + 5)?.try_into().ok()?) as usize, 5)),
-        _ => usize::try_from(u64::from_le_bytes(data.get(pos + 1..pos + 9)?.try_into().ok()?))
-            .ok()
-            .map(|v| (v, 9)),
+        0xfd => Some((
+            u16::from_le_bytes(data.get(pos + 1..pos + 3)?.try_into().ok()?) as usize,
+            3,
+        )),
+        0xfe => Some((
+            u32::from_le_bytes(data.get(pos + 1..pos + 5)?.try_into().ok()?) as usize,
+            5,
+        )),
+        _ => usize::try_from(u64::from_le_bytes(
+            data.get(pos + 1..pos + 9)?.try_into().ok()?,
+        ))
+        .ok()
+        .map(|v| (v, 9)),
     }
 }
 
@@ -538,7 +584,12 @@ fn witness_item(tx: &[u8], vin: usize, index: usize) -> Option<Vec<u8>> {
 /// after the magic. Mirrors `decodeEnvelopeScript` in `worker-relay/src/lib/btc-pool-chain.js`, including its
 /// rejection of trailing bytes, a missing `OP_ENDIF`, or a short magic.
 fn decode_envelope_script(script: &[u8]) -> Option<Vec<u8>> {
-    if script.len() < 36 || script[0] != 0x20 || script[33] != 0xac || script[34] != 0x00 || script[35] != 0x63 {
+    if script.len() < 36
+        || script[0] != 0x20
+        || script[33] != 0xac
+        || script[34] != 0x00
+        || script[35] != 0x63
+    {
         return None;
     }
     let mut p = 36usize;

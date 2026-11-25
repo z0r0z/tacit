@@ -53,7 +53,10 @@ fn push_varint(out: &mut Vec<u8>, v: usize) {
 /// The coinbase of a one-transaction block: a BIP141 commitment output over `tx`'s real witness, plus the
 /// reserved-value witness item. Deterministic, so a test can rebuild it to read its txid.
 fn coinbase_for(tx: &[u8]) -> Vec<u8> {
-    let witness_root = cxfer_core::bitcoin::compute_merkle_root(&[[0u8; 32], cxfer_core::bitcoin::double_sha256(tx)]);
+    let witness_root = cxfer_core::bitcoin::compute_merkle_root(&[
+        [0u8; 32],
+        cxfer_core::bitcoin::double_sha256(tx),
+    ]);
     let mut pre = [0u8; 64];
     pre[..32].copy_from_slice(&witness_root);
     pre[32..].copy_from_slice(&RESERVED);
@@ -224,10 +227,25 @@ fn exit_fixture(value: u64, blind: [u8; 32], h_anchor: u32, exit_vout: u32) -> F
     let dest_spk = p2tr_script(&[0x44u8; 32]);
     let dest_spk_hash = cxfer_core::bitcoin::sha256_once(&dest_spk);
     let boundary = boundary_bytes(&c_secp, &[0x66u8; 32]);
-    let body = spend_with_exit(&ASSET, h_anchor, &[[0xA1u8; 32], [0xA2u8; 32]], exit_vout, &c_secp, &dest_spk_hash, &boundary);
-    let tx = segwit_tx(&[vec![0xFFu8; 32], envelope_script(&body)], &[(0u64, dest_spk.clone())]);
+    let body = spend_with_exit(
+        &ASSET,
+        h_anchor,
+        &[[0xA1u8; 32], [0xA2u8; 32]],
+        exit_vout,
+        &c_secp,
+        &dest_spk_hash,
+        &boundary,
+    );
+    let tx = segwit_tx(
+        &[vec![0xFFu8; 32], envelope_script(&body)],
+        &[(0u64, dest_spk.clone())],
+    );
     let w = witness_for(&tx, [0x99u8; 32], value, blind);
-    Fixture { w, commitment: commitment_hash(&cx, &cy), dest_spk }
+    Fixture {
+        w,
+        commitment: commitment_hash(&cx, &cy),
+        dest_spk,
+    }
 }
 
 // ───────────────────────────── the ledger ─────────────────────────────
@@ -235,7 +253,12 @@ fn exit_fixture(value: u64, blind: [u8; 32], h_anchor: u32, exit_vout: u32) -> F
 #[test]
 fn ledger_refuses_unfunded_and_never_partially_books() {
     let mut l = BackingLedger::default();
-    let a = ExitAnchor { outpoint: [1u8; 32], commitment: [2u8; 32], asset: ASSET, value: 100 };
+    let a = ExitAnchor {
+        outpoint: [1u8; 32],
+        commitment: [2u8; 32],
+        asset: ASSET,
+        value: 100,
+    };
     assert_eq!(admit_exit(&mut l, &a), None, "nothing funded yet");
     assert_eq!((l.funded, l.exited), (0, 0), "a refused exit books nothing");
 
@@ -256,7 +279,11 @@ fn ledger_cannot_be_drained_past_its_funding() {
         assert_eq!(l.debit(&[i; 32], 100), Some(()));
     }
     assert_eq!(l.available(), 0);
-    assert_eq!(l.debit(&[0xFF; 32], 1), None, "an eleventh exit is refused, not clamped");
+    assert_eq!(
+        l.debit(&[0xFF; 32], 1),
+        None,
+        "an eleventh exit is refused, not clamped"
+    );
     assert_eq!(l.exited, 1000, "the refused one debited nothing");
 }
 
@@ -266,25 +293,53 @@ fn the_same_exit_cannot_back_two_debits() {
     // second exit, so the outpoint set is what makes the transition idempotent.
     let mut l = BackingLedger::default();
     l.fund(&[0x01; 32], 1000);
-    let a = ExitAnchor { outpoint: [0x11; 32], commitment: [0x22; 32], asset: ASSET, value: 400 };
+    let a = ExitAnchor {
+        outpoint: [0x11; 32],
+        commitment: [0x22; 32],
+        asset: ASSET,
+        value: 400,
+    };
     assert_eq!(admit_exit(&mut l, &a), Some(()));
-    assert_eq!(admit_exit(&mut l, &a), None, "the same exit twice is refused");
+    assert_eq!(
+        admit_exit(&mut l, &a),
+        None,
+        "the same exit twice is refused"
+    );
     assert_eq!(l.exited, 400, "and debited nothing the second time");
     assert_eq!(l.exited_at.len(), 1);
 
     // A different exit at a different outpoint still books.
-    let b = ExitAnchor { outpoint: [0x33; 32], commitment: [0x44; 32], asset: ASSET, value: 400 };
+    let b = ExitAnchor {
+        outpoint: [0x33; 32],
+        commitment: [0x44; 32],
+        asset: ASSET,
+        value: 400,
+    };
     assert_eq!(admit_exit(&mut l, &b), Some(()));
     assert_eq!((l.funded, l.exited, l.available()), (1000, 800, 200));
 }
 
 #[test]
 fn ledger_fund_saturates_and_value_zero_is_never_an_anchor() {
-    let mut l = BackingLedger { funded: u128::MAX - 1, exited: 0, shielded: BTreeSet::new(), exited_at: BTreeSet::new() };
+    let mut l = BackingLedger {
+        funded: u128::MAX - 1,
+        exited: 0,
+        shielded: BTreeSet::new(),
+        exited_at: BTreeSet::new(),
+    };
     l.fund(&[0x09; 32], 10);
     assert_eq!(l.funded, u128::MAX, "saturates rather than wrapping");
-    let zero = ExitAnchor { outpoint: [3u8; 32], commitment: [4u8; 32], asset: ASSET, value: 0 };
-    assert_eq!(admit_exit(&mut l, &zero), None, "a zero-value exit backs nothing");
+    let zero = ExitAnchor {
+        outpoint: [3u8; 32],
+        commitment: [4u8; 32],
+        asset: ASSET,
+        value: 0,
+    };
+    assert_eq!(
+        admit_exit(&mut l, &zero),
+        None,
+        "a zero-value exit backs nothing"
+    );
 }
 
 // ───────────────────────────── boundaries ─────────────────────────────
@@ -297,12 +352,25 @@ fn credit_shield_requires_a_matching_boundary() {
     let mut l = BackingLedger::default();
 
     let carrier = [0x77u8; 32];
-    assert_eq!(credit_shield(&mut l, &carrier, &boundary, 0, &blind, &|_, _, _| true), None, "a shield that moved nothing");
-    assert_eq!(credit_shield(&mut l, &carrier, &boundary, 500, &blind, &|_, _, _| false), None, "a boundary that does not open");
+    assert_eq!(
+        credit_shield(&mut l, &carrier, &boundary, 0, &blind, &|_, _, _| true),
+        None,
+        "a shield that moved nothing"
+    );
+    assert_eq!(
+        credit_shield(&mut l, &carrier, &boundary, 500, &blind, &|_, _, _| false),
+        None,
+        "a boundary that does not open"
+    );
     assert_eq!(l.funded, 0, "neither refusal funded anything");
 
-    let ok = |b: &Boundary<'_>, v: u64, bl: &[u8; 32]| b.c_bjj == [0x03u8; 32] && v == 500 && bl == &blind;
-    assert_eq!(credit_shield(&mut l, &carrier, &boundary, 500, &blind, &ok), Some(()));
+    let ok = |b: &Boundary<'_>, v: u64, bl: &[u8; 32]| {
+        b.c_bjj == [0x03u8; 32] && v == 500 && bl == &blind
+    };
+    assert_eq!(
+        credit_shield(&mut l, &carrier, &boundary, 500, &blind, &ok),
+        Some(())
+    );
     assert_eq!(l.funded, 500);
     assert_eq!(
         credit_shield(&mut l, &carrier, &boundary, 500, &blind, &ok),
@@ -331,7 +399,15 @@ fn spend_parse_reads_the_exit_where_the_layout_puts_it() {
     let blind = [0x01u8; 32];
     let c_secp = c_secp_of(7, &blind);
     let boundary = boundary_bytes(&c_secp, &[0x66u8; 32]);
-    let payload = spend_with_exit(&ASSET, 910_000, &[[0xB1u8; 32], [0xB2u8; 32]], 3, &c_secp, &[0x12u8; 32], &boundary);
+    let payload = spend_with_exit(
+        &ASSET,
+        910_000,
+        &[[0xB1u8; 32], [0xB2u8; 32]],
+        3,
+        &c_secp,
+        &[0x12u8; 32],
+        &boundary,
+    );
 
     let body = parse_spend(&payload).expect("a canonical spend parses");
     assert_eq!(body.asset, ASSET);
@@ -355,7 +431,15 @@ fn spend_parse_refuses_every_non_canonical_shape() {
     let blind = [0x01u8; 32];
     let c_secp = c_secp_of(7, &blind);
     let boundary = boundary_bytes(&c_secp, &[0x66u8; 32]);
-    let good = spend_with_exit(&ASSET, 1, &[[0xB1u8; 32]], 0, &c_secp, &[0x12u8; 32], &boundary);
+    let good = spend_with_exit(
+        &ASSET,
+        1,
+        &[[0xB1u8; 32]],
+        0,
+        &c_secp,
+        &[0x12u8; 32],
+        &boundary,
+    );
     assert!(parse_spend(&good).is_some(), "control");
 
     // Wrong opcode.
@@ -365,7 +449,10 @@ fn spend_parse_refuses_every_non_canonical_shape() {
 
     // Every truncation: a payload cut anywhere is refused, never read as a shorter valid one.
     for n in 0..good.len() {
-        assert!(parse_spend(&good[..n]).is_none(), "truncation at {n} must be refused");
+        assert!(
+            parse_spend(&good[..n]).is_none(),
+            "truncation at {n} must be refused"
+        );
     }
 
     // Trailing bytes after the declared proof.
@@ -379,7 +466,15 @@ fn spend_parse_refuses_every_non_canonical_shape() {
     zero_nf[1 + 32 + 4 + BIND_LEN + 2..1 + 32 + 4 + BIND_LEN + 33].fill(0);
     assert!(parse_spend(&zero_nf).is_none(), "a zero nullifier");
 
-    let two = spend_with_exit(&ASSET, 1, &[[0xC1u8; 32], [0xC1u8; 32]], 0, &c_secp, &[0x12u8; 32], &boundary);
+    let two = spend_with_exit(
+        &ASSET,
+        1,
+        &[[0xC1u8; 32], [0xC1u8; 32]],
+        0,
+        &c_secp,
+        &[0x12u8; 32],
+        &boundary,
+    );
     assert!(parse_spend(&two).is_none(), "a repeated nullifier");
 
     // n_in = 0 and n_in = 3.
@@ -395,7 +490,10 @@ fn spend_parse_refuses_every_non_canonical_shape() {
 
     // A spend that creates nothing at all: n_out = 0 and has_exit = 0.
     let nothing = spend_without_exit(&ASSET, &[0xB1u8; 32]);
-    assert!(parse_spend(&nothing).is_none(), "a spend with no outputs and no exit");
+    assert!(
+        parse_spend(&nothing).is_none(),
+        "a spend with no outputs and no exit"
+    );
 }
 
 // ───────────────────────────── exits, end to end ─────────────────────────────
@@ -407,22 +505,38 @@ fn read_exit_authenticates_a_real_carrier_and_books_it() {
     let f = exit_fixture(value, blind, 910_000, 1);
 
     let pool_ok = |_: &SpendBody<'_>, _: &[u8; 32]| true;
-    let opens = |b: &Boundary<'_>, v: u64, bl: &[u8; 32]| v == value && bl == &blind && b.c_bjj == [0x66u8; 32];
+    let opens = |b: &Boundary<'_>, v: u64, bl: &[u8; 32]| {
+        v == value && bl == &blind && b.c_bjj == [0x66u8; 32]
+    };
 
     let anchor = read_exit(&f.w, &ASSET, &pool_ok, &opens).expect("a real carrier authenticates");
     assert_eq!(anchor.value, value);
     assert_eq!(anchor.asset, ASSET);
-    assert_eq!(anchor.commitment, f.commitment, "the DAG keys on the boundary's commitment");
-    assert_eq!(anchor.outpoint, cxfer_core::outpoint_key(&cxfer_core::bitcoin::compute_txid(&f.w.tx).unwrap(), 1));
+    assert_eq!(
+        anchor.commitment, f.commitment,
+        "the DAG keys on the boundary's commitment"
+    );
+    assert_eq!(
+        anchor.outpoint,
+        cxfer_core::outpoint_key(&cxfer_core::bitcoin::compute_txid(&f.w.tx).unwrap(), 1)
+    );
 
     let mut l = BackingLedger::default();
-    assert_eq!(admit_exit(&mut l, &anchor), None, "reading is not backing: the ledger must hold the value");
+    assert_eq!(
+        admit_exit(&mut l, &anchor),
+        None,
+        "reading is not backing: the ledger must hold the value"
+    );
     l.fund(&[0x05; 32], value - 1);
     assert_eq!(admit_exit(&mut l, &anchor), None, "one sat short is short");
     l.fund(&[0x06; 32], 1);
     assert_eq!(admit_exit(&mut l, &anchor), Some(()));
     assert_eq!(l.available(), 0);
-    assert_eq!(admit_exit(&mut l, &anchor), None, "and re-reading it debits nothing further");
+    assert_eq!(
+        admit_exit(&mut l, &anchor),
+        None,
+        "and re-reading it debits nothing further"
+    );
 }
 
 #[test]
@@ -432,10 +546,19 @@ fn read_exit_refuses_a_wrong_asset_or_a_seam_that_says_no() {
     let f = exit_fixture(value, blind, 1, 0);
     let yes_pool = |_: &SpendBody<'_>, _: &[u8; 32]| true;
     let yes_opens = |_: &Boundary<'_>, _: u64, _: &[u8; 32]| true;
-    assert!(read_exit(&f.w, &ASSET, &yes_pool, &yes_opens).is_some(), "control");
+    assert!(
+        read_exit(&f.w, &ASSET, &yes_pool, &yes_opens).is_some(),
+        "control"
+    );
 
-    assert!(read_exit(&f.w, &ASSET, &|_, _| false, &yes_opens).is_none(), "the pool proof seam said no");
-    assert!(read_exit(&f.w, &ASSET, &yes_pool, &|_, _, _| false).is_none(), "the boundary seam said no");
+    assert!(
+        read_exit(&f.w, &ASSET, &|_, _| false, &yes_opens).is_none(),
+        "the pool proof seam said no"
+    );
+    assert!(
+        read_exit(&f.w, &ASSET, &yes_pool, &|_, _, _| false).is_none(),
+        "the boundary seam said no"
+    );
     assert!(
         read_exit(&f.w, &[0x01u8; 32], &yes_pool, &yes_opens).is_none(),
         "another asset's spend cannot back this fold"
@@ -447,7 +570,10 @@ fn read_exit_refuses_a_spend_without_an_exit() {
     let blind = [0x22u8; 32];
     let dest_spk = p2tr_script(&[0x44u8; 32]);
     let payload = spend_without_exit(&ASSET, &[0xB1u8; 32]);
-    let tx = segwit_tx(&[vec![0u8; 0], envelope_script(&payload)], &[(0u64, dest_spk)]);
+    let tx = segwit_tx(
+        &[vec![0u8; 0], envelope_script(&payload)],
+        &[(0u64, dest_spk)],
+    );
     let w = witness_for(&tx, [0x99u8; 32], 100, blind);
     let yes_pool = |_: &SpendBody<'_>, _: &[u8; 32]| true;
     let yes_opens = |_: &Boundary<'_>, _: u64, _: &[u8; 32]| true;
@@ -464,14 +590,28 @@ fn read_exit_refuses_a_tampered_carrier() {
     let f = exit_fixture(value, blind, 1, 0);
     let yes_pool = |_: &SpendBody<'_>, _: &[u8; 32]| true;
     let yes_opens = |_: &Boundary<'_>, _: u64, _: &[u8; 32]| true;
-    assert!(read_exit(&f.w, &ASSET, &yes_pool, &yes_opens).is_some(), "control");
+    assert!(
+        read_exit(&f.w, &ASSET, &yes_pool, &yes_opens).is_some(),
+        "control"
+    );
 
     // Swap the witness for a different envelope. The txid is unchanged — that is the attack premise — so only
     // the BIP141 commitment catches it. This is the check that keeps a forged exit out of the fold.
     let c_secp = c_secp_of(value, &blind);
     let boundary = boundary_bytes(&c_secp, &[0x66u8; 32]);
-    let forged_body = spend_with_exit(&ASSET, 2, &[[0xC1u8; 32]], 0, &c_secp, &[0x11u8; 32], &boundary);
-    let forged = segwit_tx(&[vec![0u8; 0], envelope_script(&forged_body)], &[(0u64, f.dest_spk.clone())]);
+    let forged_body = spend_with_exit(
+        &ASSET,
+        2,
+        &[[0xC1u8; 32]],
+        0,
+        &c_secp,
+        &[0x11u8; 32],
+        &boundary,
+    );
+    let forged = segwit_tx(
+        &[vec![0u8; 0], envelope_script(&forged_body)],
+        &[(0u64, f.dest_spk.clone())],
+    );
     assert_eq!(
         cxfer_core::bitcoin::compute_txid(&forged),
         cxfer_core::bitcoin::compute_txid(&f.w.tx),
@@ -479,12 +619,18 @@ fn read_exit_refuses_a_tampered_carrier() {
     );
     let mut w = f.w.clone();
     w.tx = forged;
-    assert!(read_exit(&w, &ASSET, &yes_pool, &yes_opens).is_none(), "a swapped witness breaks the commitment");
+    assert!(
+        read_exit(&w, &ASSET, &yes_pool, &yes_opens).is_none(),
+        "a swapped witness breaks the commitment"
+    );
 
     // A block the transaction is not in.
     let mut w2 = f.w.clone();
     w2.confirmed_block_root = [0x77u8; 32];
-    assert!(read_exit(&w2, &ASSET, &yes_pool, &yes_opens).is_none(), "inclusion in the block is checked");
+    assert!(
+        read_exit(&w2, &ASSET, &yes_pool, &yes_opens).is_none(),
+        "inclusion in the block is checked"
+    );
 
     // An opening that is not the committed one: the value is not the prover's to choose.
     let mut w3 = f.w.clone();
@@ -520,7 +666,10 @@ fn read_exit_refuses_a_tampered_carrier() {
     // A null is not an anchor.
     let mut w4 = f.w.clone();
     w4.value = 0;
-    assert!(read_exit(&w4, &ASSET, &yes_pool, &yes_opens).is_none(), "a zero-value exit is refused outright");
+    assert!(
+        read_exit(&w4, &ASSET, &yes_pool, &yes_opens).is_none(),
+        "a zero-value exit is refused outright"
+    );
 }
 
 // ───────────────────────────── lineages ─────────────────────────────
@@ -528,46 +677,94 @@ fn read_exit_refuses_a_tampered_carrier() {
 #[test]
 fn lineage_presents_short_histories_whole() {
     assert_eq!(lineage(0, None), Lineage::Full { hops: 0, steps: 0 });
-    assert_eq!(lineage(255, None), Lineage::Full { hops: 255, steps: 255 });
+    assert_eq!(
+        lineage(255, None),
+        Lineage::Full {
+            hops: 255,
+            steps: 255
+        }
+    );
     assert_eq!(
         lineage(255, Some(([1u8; 32], 10))),
-        Lineage::Full { hops: 255, steps: 255 },
+        Lineage::Full {
+            hops: 255,
+            steps: 255
+        },
         "an anchor is unnecessary inside the cap"
     );
 }
 
 #[test]
 fn lineage_re_anchors_past_the_cap() {
-    assert_eq!(lineage(256, Some(([9u8; 32], 0))), Lineage::Anchored { hops: 256, from: [9u8; 32], distance: 0 });
+    assert_eq!(
+        lineage(256, Some(([9u8; 32], 0))),
+        Lineage::Anchored {
+            hops: 256,
+            from: [9u8; 32],
+            distance: 0
+        }
+    );
     assert_eq!(
         lineage(10_000, Some(([9u8; 32], 255))),
-        Lineage::Anchored { hops: 10_000, from: [9u8; 32], distance: 255 }
+        Lineage::Anchored {
+            hops: 10_000,
+            from: [9u8; 32],
+            distance: 255
+        }
     );
 }
 
 #[test]
 fn lineage_refuses_an_out_of_reach_anchor() {
-    assert_eq!(lineage(256, None), Lineage::Refused { hops: 256, cap: 256 });
+    assert_eq!(
+        lineage(256, None),
+        Lineage::Refused {
+            hops: 256,
+            cap: 256
+        }
+    );
     assert_eq!(
         lineage(700, Some(([9u8; 32], 256))),
-        Lineage::Refused { hops: 700, cap: 256 },
+        Lineage::Refused {
+            hops: 700,
+            cap: 256
+        },
         "the anchor is itself beyond the cap"
     );
-    assert_eq!(lineage(700, Some(([9u8; 32], 1000))), Lineage::Refused { hops: 700, cap: 256 });
+    assert_eq!(
+        lineage(700, Some(([9u8; 32], 1000))),
+        Lineage::Refused {
+            hops: 700,
+            cap: 256
+        }
+    );
 }
 
 #[test]
 fn valid_leaves_adds_each_anchor_once() {
     let base = [([0x01u8; 32], [0x02u8; 32])];
-    let a = ExitAnchor { outpoint: [0x03u8; 32], commitment: [0x04u8; 32], asset: ASSET, value: 5 };
+    let a = ExitAnchor {
+        outpoint: [0x03u8; 32],
+        commitment: [0x04u8; 32],
+        asset: ASSET,
+        value: 5,
+    };
     let out = valid_leaves(&base, &[a, a]);
     assert_eq!(out.len(), 2, "the same anchor twice is one leaf");
-    assert_eq!(out[0], base[0], "the leaves it already had come first, unchanged");
+    assert_eq!(
+        out[0], base[0],
+        "the leaves it already had come first, unchanged"
+    );
     assert_eq!(out[1], (a.outpoint, a.commitment));
 
     // An existing leaf with the same outpoint but a different commitment is not silently replaced: the base set
     // wins, so a caller cannot re-point a leaf the DAG already resolved.
-    let clash = ExitAnchor { outpoint: [0x01u8; 32], commitment: [0x99u8; 32], asset: ASSET, value: 5 };
+    let clash = ExitAnchor {
+        outpoint: [0x01u8; 32],
+        commitment: [0x99u8; 32],
+        asset: ASSET,
+        value: 5,
+    };
     assert_eq!(valid_leaves(&base, &[clash]).len(), 2);
 }
 
@@ -579,25 +776,48 @@ fn witness_reading_is_panic_free_on_every_truncation() {
     let c_secp = c_secp_of(7, &blind);
     let dest_spk = p2tr_script(&[0x44u8; 32]);
     let boundary = boundary_bytes(&c_secp, &[0x66u8; 32]);
-    let payload = spend_with_exit(&ASSET, 1, &[[0xB1u8; 32]], 0, &c_secp, &cxfer_core::bitcoin::sha256_once(&dest_spk), &boundary);
-    let tx = segwit_tx(&[vec![0u8; 0], envelope_script(&payload)], &[(0u64, dest_spk)]);
+    let payload = spend_with_exit(
+        &ASSET,
+        1,
+        &[[0xB1u8; 32]],
+        0,
+        &c_secp,
+        &cxfer_core::bitcoin::sha256_once(&dest_spk),
+        &boundary,
+    );
+    let tx = segwit_tx(
+        &[vec![0u8; 0], envelope_script(&payload)],
+        &[(0u64, dest_spk)],
+    );
     for n in 0..=tx.len() {
         let _ = envelope_of_input(&tx[..n], 0); // any panic, out-of-bounds or overflow fails the test
     }
     assert!(decode_envelope_script(b"not an envelope").is_none());
-    assert!(envelope_of_input(&tx, 9).is_none(), "an input index past the end");
+    assert!(
+        envelope_of_input(&tx, 9).is_none(),
+        "an input index past the end"
+    );
 
     let mut trailing = envelope_script(&payload);
     trailing.push(0x00);
-    assert!(decode_envelope_script(&trailing).is_none(), "trailing bytes after OP_ENDIF are rejected");
+    assert!(
+        decode_envelope_script(&trailing).is_none(),
+        "trailing bytes after OP_ENDIF are rejected"
+    );
 
     let mut no_endif = envelope_script(&payload);
     no_endif.pop();
-    assert!(decode_envelope_script(&no_endif).is_none(), "a missing OP_ENDIF is rejected");
+    assert!(
+        decode_envelope_script(&no_endif).is_none(),
+        "a missing OP_ENDIF is rejected"
+    );
 
     let mut wrong_magic = envelope_script(&payload);
     wrong_magic[40] = 0x00; // first byte of "TACIT"
-    assert!(decode_envelope_script(&wrong_magic).is_none(), "a foreign envelope is not read as a Tacit one");
+    assert!(
+        decode_envelope_script(&wrong_magic).is_none(),
+        "a foreign envelope is not read as a Tacit one"
+    );
 }
 
 #[test]
@@ -606,7 +826,9 @@ fn spend_parse_is_panic_free_on_a_hostile_corpus() {
     // prover-supplied stdin bytes, so a malformed payload must be refused with None, never a panic.
     let mut st: u64 = 0xD1B54A32D192ED03;
     let mut next = || {
-        st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        st = st
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         st
     };
     for _ in 0..4000 {

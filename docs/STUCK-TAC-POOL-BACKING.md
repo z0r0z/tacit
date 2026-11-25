@@ -90,7 +90,8 @@ only when
 - the boundary opens to exactly `shielded` under `blinding` — i.e. `depC = v·H + r·G` for the claimed `v`.
 
 A shield that moved nothing (`shielded == 0`) or whose boundary does not open is refused and credits
-nothing. This is the only place `funded` moves, so the ledger can never be funded by a figment.
+nothing, and a carrier txid already in `shielded` is refused so a re-fold cannot mint backing. This is the
+only place `funded` moves, so the ledger can never be funded by a figment.
 
 ### 2.2 An exit is admissible iff the ledger covers it, and admitting it debits exactly that much
 
@@ -256,7 +257,7 @@ Nothing here is a new acceptance rule. The DAG still resolves leaves the same wa
 unchanged, and a node that does not fold pool envelopes produces the same digests it does today — the
 ledger is additive state, which is what makes the change reviewable.
 
-## 7. What the 17 tests cover
+## 7. What the 18 tests cover
 
 All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, no pool).
 
@@ -265,9 +266,8 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 | `ledger_refuses_unfunded_and_never_partially_books` | an uncovered exit books nothing, then books once covered |
 | `ledger_cannot_be_drained_past_its_funding` | the 11th exit is refused, not clamped |
 | `the_same_exit_cannot_back_two_debits` | re-folding the same exit books nothing the second time |
-| `credit_shield_requires_a_matching_boundary` (2nd half) | re-folding the same shield mints nothing |
 | `ledger_fund_saturates_and_value_zero_is_never_an_anchor` | `u128` saturation; a zero-value exit is not an anchor |
-| `credit_shield_requires_a_matching_boundary` | a shield that moved nothing, or whose boundary does not open, credits nothing |
+| `credit_shield_requires_a_matching_boundary` | a shield that moved nothing, or whose boundary does not open, credits nothing — and re-folding it mints nothing |
 | `boundary_parse_rejects_every_wrong_length` | 824 and 826 bytes are refused |
 | `spend_parse_reads_the_exit_where_the_layout_puts_it` | §3 offset arithmetic, field by field |
 | `spend_parse_refuses_every_non_canonical_shape` | wrong opcode, every truncation, trailing bytes, zero/duplicate nullifier, `n_in = 0`, `has_exit = 2`, a spend that creates nothing |
