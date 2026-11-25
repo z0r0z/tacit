@@ -449,6 +449,7 @@ test('a bridge that did not go through says what went wrong, that the Bitcoin is
   // a lock this page lost and found again from the key did not fail: it is on its way back
   const found = at(HOUR, { why: 'found from the key', recovered: true });
   assert.equal(found.title, 'Returning to Bitcoin'); assert.ok(!/provider/.test(found.detail.split('Your TAC is safe')[0]));
+  assert.match(found.detail, /found again from your key, not from a record in this browser, so it can only return your BTC/, 'a swap found only from the key says it cannot be finished');
   // the last failed read of the provider is not shown while the lock waits for its timelock, and is once it is due, when the app is sending it
   assert.equal(at(HOUR, { lastError: 'the provider did not answer' }).error, null);
   assert.equal(at(24 * HOUR, { lastError: 'broadcast refused' }).error, 'broadcast refused');

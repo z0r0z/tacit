@@ -25,13 +25,13 @@
 import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=69f3f0fb';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=afa31578';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=af825924';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
 // A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
 // one too near its end asks for a new one first
 const RENEW_SECS = 150, START_SECS = 125;
-const MARKET_MODULE = '/swap/atomic-market.js?cb=8ce2e31b';
+const MARKET_MODULE = '/swap/atomic-market.js?cb=4c67b811';
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
 // the most providers one BTC-for-ETH swap is split among (fastbridge-pair.js splitLegs)
@@ -536,7 +536,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       const back = r.state === 'working' && r.refundAt && !sure ? `If it stops, your ${COINS[pk].sym} returns ${untilText(r.refundAt, now())} at the latest.` : '';
       // when the page must be open again: b2e, to claim the ETH by the pool deadline (else the BTC returns, later); e2b, once its ETH is locked, to take the BTC in time
       const locked = r.dir === 'e2b' && (r.steps || []).some((s) => s.key === 'match' && s.state !== 'todo'), by = r.state === 'working' && r.backBy ? clockText(r.backBy, now()) : '';
-      const stay = r.state !== 'working' ? '' : !by ? 'Keep this page open.'
+      const stay = r.state !== 'working' ? '' : !by ? (r.dir === 'b2e' ? 'Keep this page open until your BTC has its confirmation, about 10 minutes. If you close it, reopen this page in this browser and it continues; on another browser or device it can only return your BTC, after about a day.' : 'Keep this page open.')
         : r.dir === 'b2e' ? `Keep this page open. If you close it, come back by ${by} to receive your ETH; otherwise your BTC returns after about a day.`
           : locked ? `Keep this page open. If you close it, come back by ${by} to receive your BTC, or the ETH you sent can be lost.` : 'Keep this page open.';
       const steps = (r.steps || []).map((s) => `<li class="${esc(s.state)}" data-step="${esc(s.key)}"><i aria-hidden="true"></i>${esc(s.title)}</li>`).join('');

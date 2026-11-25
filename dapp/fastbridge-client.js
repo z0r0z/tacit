@@ -380,7 +380,7 @@ export function describe(rec, clock = null) {
     const found = /found from the key/.test(rec.why || '') || !!rec.recovered, opens = opensAt(rec);
     waitingOnTimelock = opens != null && opens - now > 0;
     title = found ? 'Returning to Bitcoin' : 'Did not go through';
-    detail = [found ? '' : plainWhy(rec.why), returnLine(opens, now)].filter(Boolean).join(' ');
+    detail = [found ? '' : plainWhy(rec.why), returnLine(opens, now), found && waitingOnTimelock ? 'This swap was found again from your key, not from a record in this browser, so it can only return your BTC, not finish the swap.' : ''].filter(Boolean).join(' ');
   }
   // (a swap that has waited ten minutes or more on Ethereum nodes that do not agree says so)
   if (!ended && rec.nodesSince != null && now - rec.nodesSince >= 600) detail = [detail, 'The Ethereum nodes this page reads have not agreed on this swap for a while, so it is read again until two of them do. Nothing is decided on one node’s word, and a refund still goes out at its time.'].filter(Boolean).join(' ');
