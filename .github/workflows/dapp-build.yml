@@ -17,12 +17,6 @@ on:
       - '.github/workflows/dapp-build.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'dapp/**'
-      - 'build/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/dapp-build.yml'
   workflow_dispatch:
 
 concurrency:
