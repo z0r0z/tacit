@@ -408,6 +408,8 @@ func (c *Coordinator) slotOverL(t *ticket, now time.Time) string {
 	case t.uploadStarted || t.uploading:
 	case t.served == 0 && in > c.downloadStart():
 		return fmt.Sprintf("the head's download did not start within %s", c.downloadStart())
+	case t.served < c.headSize/4 && in > downloadFloorAfter:
+		return fmt.Sprintf("less than a quarter of the head was downloaded in %s", downloadFloorAfter)
 	case t.served < c.headSize && in > c.downloadBy():
 		return fmt.Sprintf("the head's download was not complete within %s", c.downloadBy())
 	case in > c.uploadStart():

@@ -30,6 +30,10 @@ var (
 	floorBytes  int64 = 64 << 20
 )
 
+// downloadFloorAfter: a slot that has not downloaded a quarter of the head this long after its claim cannot finish in time at that pace, and a
+// download throttled to a trickle to hold the slot does not keep it for the whole download window.
+var downloadFloorAfter = 10 * time.Minute
+
 // paceWindow: how long a chunked upload runs before its pace is judged (see cannotFinishL).
 var paceWindow = 15 * time.Minute
 

@@ -326,12 +326,33 @@ func TestSlotNeedsProgress(t *testing.T) {
 	a, _, _ := c.Join("alice", "", "192.0.2.1")
 	c.Claim(a)
 	clk.add(30 * time.Second)
-	c.headServed(a, 1)
+	c.headServed(a, c.headSize/3) // a download at a fair pace that never completes
 	if err := pollFor(a, 73*time.Minute); err != nil {
 		t.Fatalf("a slot whose download is running is kept: %v", err)
 	}
 	if err := pollFor(a, 2*time.Minute); err == nil {
 		t.Fatal("a slot whose download is not complete by DownloadBy is dropped")
+	}
+	// a download that is a trickle is dropped at the floor, one that runs at a fair pace is not
+	{
+		slow, _, _ := c.Join("slowpoke", "", "192.0.2.7")
+		c.Claim(slow)
+		clk.add(30 * time.Second)
+		c.headServed(slow, 1) // a byte, then nothing worth the name
+		if err := pollFor(slow, downloadFloorAfter-time.Minute); err != nil {
+			t.Fatalf("a slot is not judged before the floor: %v", err)
+		}
+		if err := pollFor(slow, 2*time.Minute); err == nil {
+			t.Fatal("a slot that has downloaded almost nothing in ten minutes is dropped")
+		}
+		fair, _, _ := c.Join("fair", "", "192.0.2.8")
+		c.Claim(fair)
+		clk.add(30 * time.Second)
+		c.headServed(fair, c.headSize/3)
+		if err := pollFor(fair, downloadFloorAfter+5*time.Minute); err != nil {
+			t.Fatalf("a download at a fair pace is kept: %v", err)
+		}
+		c.Leave(fair)
 	}
 	// a slot that downloaded but never uploads is dropped at UploadStart
 	b, _, _ := c.Join("bob", "", "192.0.2.2")
