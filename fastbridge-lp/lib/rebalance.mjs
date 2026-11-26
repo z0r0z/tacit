@@ -202,7 +202,7 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       if (now() < nextAt) return { did: 'wait' };
       const mkt = await rateNow();
       const inv = await inventory();
-      if (!inv || inv.sats == null || inv.ethWei == null || !(mkt > 0)) { nextAt = now() + cfg.everySecs; return { did: 'unread' }; }
+      if (!inv || inv.sats == null || inv.ethWei == null || !(mkt > 0)) { nextAt = now() + cfg.everySecs; last = { at: now(), plan: `unread: ${!(mkt > 0) ? 'no market price' : 'holdings not read'}` }; return { did: 'unread' }; }
       const plan = planRebalance({ ethWei: inv.ethWei, sats: inv.sats, ethPerBtc: mkt, cfg, movedTodayWei: BigInt(st.moved) });
       last = { at: now(), ethBps: plan && plan.ethBps != null ? plan.ethBps : null, plan: plan && plan.dir ? plan.dir : plan && plan.skip ? `skip: ${plan.skip}` : 'in band' };
       nextAt = now() + cfg.everySecs;

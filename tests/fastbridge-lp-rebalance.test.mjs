@@ -116,6 +116,13 @@ function world({ mode = 'on', publicWei = ETH(0.1), inv = { ethWei: ETH(8), sats
   return w;
 }
 
+test('a look that cannot read the market says so in info, and sends nothing', async () => {
+  const w = world({ publicWei: ETH(1) });
+  const r = makeRebalancer({ cfg: cfg({ FB_LP_REBALANCE: 'on' }), rate: async () => ({ num: 1n, den: 2n }), inventory: async () => ({ ethWei: ETH(8), sats: 5e6 }), ethBalance: async () => ETH(1), ethNonce: async () => 1, ethReceipt: async () => null, sendEth: async () => { throw new Error('no'); }, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02), load: async () => null, save: async () => {}, now: () => w.clock });
+  assert.equal((await r.step()).did, 'unread');
+  assert.match(r.info().last.plan, /no market price/);
+});
+
 test('off sends nothing, a dry run says what it would do and sends nothing', async () => {
   const off = world({ mode: 'off' });
   assert.equal((await off.r.step()).did, 'off');

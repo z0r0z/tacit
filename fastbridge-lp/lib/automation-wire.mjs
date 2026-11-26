@@ -127,7 +127,7 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
       const UNITW = 10n ** 10n, rpc = (m, p) => ux.rpc(m, p);
       const satsAll = async () => { let t = 0n; for (const b of [btc, rside.btc]) if (b && typeof b.satsUtxos === 'function') t += (await b.satsUtxos()).reduce((x, c) => x + BigInt(c.value), 0n); return t; };
       const publicWei = async () => BigInt(await rpc('eth_getBalance', [address, 'latest']));
-      const ethPerBtc = () => { const r = Number(rateFeed && rateFeed.rate()); return r > 0 ? (r < 1 ? 1 / r : r) : null; };
+      const ethPerBtc = () => { const c = rateFeed && rateFeed.current(); return c && Number(c.ethPerBtc) > 0 ? Number(c.ethPerBtc) : null; };   // (feed.rate() is a { num, den } ratio, not a price)
       rebalancer = makeRebalancer({
         cfg: rc, rate: async () => ethPerBtc(), quiet, gate: poolTurn, turn,
         inventory: async () => {
