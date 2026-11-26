@@ -160,6 +160,26 @@ func TestFloorReader(t *testing.T) {
 	}
 }
 
+// A single-request upload that is moving but would end past the slot is cut once its pace is known; one that will finish in time is not.
+func TestFloorReaderPace(t *testing.T) {
+	oldW, oldB, oldP := floorWindow, floorBytes, paceWindow
+	floorWindow, floorBytes, paceWindow = time.Hour, 1, 40*time.Millisecond
+	defer func() { floorWindow, floorBytes, paceWindow = oldW, oldB, oldP }()
+	buf := make([]byte, 1)
+	slow := &floorReader{r: bytes.NewReader(make([]byte, 1000)), t0: time.Now(), size: 1000, limit: time.Now().Add(150 * time.Millisecond)}
+	slow.Read(make([]byte, 10))
+	time.Sleep(60 * time.Millisecond)
+	if _, err := slow.Read(buf); err != errTooSlow {
+		t.Fatalf("a body that would end far past the limit is cut: %v", err)
+	}
+	ok := &floorReader{r: bytes.NewReader(make([]byte, 1000)), t0: time.Now(), size: 1000, limit: time.Now().Add(time.Second)}
+	ok.Read(make([]byte, 500))
+	time.Sleep(60 * time.Millisecond)
+	if _, err := ok.Read(buf); err != nil {
+		t.Fatalf("a body that will end in time is not: %v", err)
+	}
+}
+
 // Parts no claimed place owns are removed at start-up; the holder's are kept.
 func TestStartupRemovesStrayParts(t *testing.T) {
 	f := newFixture(t)

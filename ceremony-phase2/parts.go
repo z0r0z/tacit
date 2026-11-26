@@ -44,6 +44,10 @@ type floorReader struct {
 	r  io.Reader
 	t0 time.Time
 	n  int64
+	// size and limit: when set, a body that at its pace so far would end after limit is cut too, once it has run paceWindow (a single-request
+	// upload that is moving, but too slowly to finish inside the slot, gives the line back instead of holding it to the cap)
+	size  int64
+	limit time.Time
 }
 
 func (f *floorReader) Read(b []byte) (int, error) {
@@ -51,6 +55,13 @@ func (f *floorReader) Read(b []byte) (int, error) {
 	f.n += int64(n)
 	if err == nil && f.n < floorBytes && time.Since(f.t0) > floorWindow {
 		return n, errTooSlow
+	}
+	if err == nil && !f.limit.IsZero() && f.size > 0 && f.n > 0 && f.n < f.size {
+		if el := time.Since(f.t0); el >= paceWindow {
+			if f.t0.Add(time.Duration(float64(el) * float64(f.size) / float64(f.n))).After(f.limit) {
+				return n, errTooSlow
+			}
+		}
 	}
 	return n, err
 }
