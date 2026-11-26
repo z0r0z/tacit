@@ -36,7 +36,7 @@ export function makeCounter(call) {
     async extend({ quoteId, txid, lock = null, offer = null }) { return answered(await call('POST', '/extend', { quoteId, txid, ...(lock ? { lock } : {}), ...(offer ? { offer } : {}) }), 'the reservation was not extended'); },
     async getEvmOffer(swapIdHex) {
       const r = await call('GET', `/swap/${swapIdHex}/offer`);
-      if (r.status === 404) return null;
+      if (r.status === 404 || (r.status === 200 && r.body && r.body.offer === null)) return null;
       if (r.status !== 200 || !r.body) throw fail(r, 'the pool lock\'s offer could not be read');
       return r.body;
     },

@@ -6,14 +6,15 @@ import { pace } from './rpc-pace.js';
 // gets `timeoutMs` to answer before the next is tried, so one that stops responding cannot stall every read behind it,
 // and the next call starts after it even when none of the others answered either, so a retry does not wait on it again.
 // `rpc.node` is the URL that answered last.
-// A node that fails to answer at all (a 429 or 5xx, a CORS block that hides one, a refused connection) is rested for a minute for every reader of the page and not asked
-// again while another node can be (a node asked again is another line of console errors and more load on a node that is already limiting us). A timeout or a node's own
-// error is not a rest: it may be this call. When every node is resting they are all asked, as before.
-const RESTED = new Map(), REST_MS = 60_000;
+// A node that fails to answer at all (a 429 or 5xx, a CORS block that hides one, a refused connection) is rested for every reader of it and not asked again while another
+// node can be: a minute the first time, twice as long for each failure in a row, at most ten minutes, and an answer clears the count (a good node that blinked once is
+// back in a minute: the log scans that need it cannot be left to nodes that read a few hundred blocks). A timeout or a node's own error is not a rest: it may be this
+// call. When every node is resting they are all asked, as before.
+const RESTED = new Map(), STRIKES = new Map(), REST_BASE = 60e3, REST_MAX = 600e3;
 export const restedUntil = (url) => RESTED.get(url) || 0;
-export const forgetRests = () => RESTED.clear();
+export const forgetRests = () => { RESTED.clear(); STRIKES.clear(); };
 const down = (e) => e?.name === 'TypeError' || /^http (429|5\d\d)$/.test(e?.message || '');
-const rest = (url, e) => { if (down(e)) RESTED.set(url, Date.now() + REST_MS); };
+const rest = (url, e) => { if (!down(e)) return; const n = (STRIKES.get(url) || 0) + 1; STRIKES.set(url, n); RESTED.set(url, Date.now() + Math.min(REST_MAX, REST_BASE * 2 ** (n - 1))); };
 export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { timeoutMs = 25_000 } = {}) {
   const list = Array.isArray(urls) ? urls : [urls];
   let id = 0, first = 0, head = list[0];
@@ -36,7 +37,7 @@ export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { t
         if (j.error) throw Object.assign(new Error(j.error.message || 'rpc error'), { rpc: j.error });
         if (j.result === undefined) throw new Error(`rpc: no result (HTTP ${r.status})`);
         if (found && j.result == null) { none = true; continue; }
-        first = at; single.node = url;
+        first = at; single.node = url; STRIKES.delete(url);
         return j.result;
       } catch (e) {
         if (e.rpc && /revert/i.test(e.message) && (method === 'eth_call' || method === 'eth_estimateGas')) throw e;
@@ -77,7 +78,7 @@ export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { t
           return !x ? new Error('no answer') : x.error ? Object.assign(new Error(x.error.message || 'rpc error'), { rpc: x.error }) : x.result;
         });
         if (calls.length && out.every((x) => x instanceof Error)) throw out[0];
-        first = at; single.node = url;
+        first = at; single.node = url; STRIKES.delete(url);
         return out;
       } catch (e) { if (timedOut(e)) first = (at + 1) % list.length; rest(url, e); all.push(e); }
     }

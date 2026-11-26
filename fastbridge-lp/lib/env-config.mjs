@@ -13,6 +13,7 @@
 //   FB_LP_LINEAGE_LONG_FEE_BPS, FB_LP_LINEAGE_LONG_FLAT_FEE           added to the base fee for TAC over the bridge proof's history bound
 //   FB_LP_LINEAGE_POOL_EXIT_FEE_BPS, FB_LP_LINEAGE_POOL_EXIT_FLAT_FEE added to the base fee for TAC the proof cannot follow
 //   FB_LP_LINEAGE_LONG_CAP, FB_LP_LINEAGE_POOL_EXIT_CAP, FB_LP_LINEAGE_TOTAL_CAP   optional caps in base units on reserved, in-flight and unrecovered stuck face value
+//   FB_LP_RECOVERED_SWAPS  swap ids whose stuck TAC has been recovered, comma separated; those completed swaps stop counting against the caps
 //   FB_LP_DYNAMIC_FEE    on or off (off when unset): the flat part of the fee of a pair provider follows its own network cost (lib/flatfee.mjs); FB_LP_FLAT_FEE and
 //                        FB_LP_REVERSE_FLAT_FEE are then what it falls back to when it cannot read its costs
 //   FB_LP_FEE_SUBSIDY    0 to 1 (0.5 when unset): the share of the cost the flat part covers (1 is the whole cost); FB_LP_FEE_SUBSIDY_UNTIL (unix seconds or
@@ -57,6 +58,11 @@ export function applyEnv(C, env = process.env) {
     const cap = (envName, key) => { if (has(envName)) { lf.caps = { ...(lf.caps || {}), [key]: uint(envName, String(env[envName]).trim()) }; } };
     cap('FB_LP_LINEAGE_LONG_CAP', 'long'); cap('FB_LP_LINEAGE_POOL_EXIT_CAP', 'poolExit'); cap('FB_LP_LINEAGE_TOTAL_CAP', 'total');
     out.quote.lineageFees = lf;
+  }
+  if (has('FB_LP_RECOVERED_SWAPS')) {
+    const ids = String(env.FB_LP_RECOVERED_SWAPS).split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+    if (!ids.length || ids.some((x) => !/^[0-9a-f]{72}$/.test(x))) throw new Error('FB_LP_RECOVERED_SWAPS must be comma-separated 72-hex swap ids');
+    out.recoveredSwaps = ids;
   }
   if (has('FB_LP_MAILBOX_POLL_SECS')) { const n = Number(env.FB_LP_MAILBOX_POLL_SECS); if (!Number.isFinite(n) || n < 1 || n > 30) throw new Error(`FB_LP_MAILBOX_POLL_SECS must be 1 to 30 (got "${env.FB_LP_MAILBOX_POLL_SECS}")`); out.mailboxPollSecs = n; }
   if (has('FB_LP_BTC_BASES')) {

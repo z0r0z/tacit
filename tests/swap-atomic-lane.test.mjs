@@ -97,7 +97,7 @@ const FAKE = `
       S.recs = [{ id, dir: q.dir, state: 'working', title: q.dir === 'b2e' ? 'Waiting for Bitcoin' : 'Waiting for the Bitcoin lock', detail: 'The lock needs a confirmation.', pay: q.pay, get: q.get, steps: steps(q.dir, 0, 'working'), etaSecs: 780, at: now(), refundAt: now() + 86400 }, ...S.recs];
       return { id };
     },
-    pump: async () => { calls.pump++; return S.recs; },
+    pump: async () => { calls.pump++; if (S.pumpMs) await new Promise((r) => setTimeout(r, S.pumpMs)); return S.recs; },
     records: async () => { calls.records++; return S.recs; },
     recover: async () => { calls.recover++; return 0; },
   };
@@ -291,9 +291,13 @@ console.log('a provider: the switch appears, and the lane opens');
   console.log('starting: once, with the quote shown');
   await type(page, '0.01');
   await page.waitForFunction(() => !document.querySelector('#a-go').disabled);
+  await atom(page, '(A.pumpMs = 2500, 0)');                        // (the pass that steps a started swap can take long: the swap is on the page all the while)
   await page.dblclick('#a-go');
   await page.waitForFunction(() => window.__atom.calls.start.length >= 1, null, { timeout: 5000 });
   await sleep(600);
+  await type(page, '1');                                            // a repaint while the pass runs
+  ok(/Waiting for Bitcoin/.test(await text(page, '#a-sent')), `a repaint between the start and the stepping pass keeps the started swap listed (${(await text(page, '#a-sent')).slice(0, 80)})`);
+  await page.fill('#a-amt', ''); await atom(page, '(A.pumpMs = 0, 0)'); await sleep(2500);
   const starts = await atom(page, 'A.calls.start.length'), same = await atom(page, 'A.calls.start[0] === A.calls.quotes.at(-1) || A.calls.quotes.includes(A.calls.start[0])');
   ok(starts === 1 && same, `two presses start one swap, with the very quote that was shown (starts ${starts})`);
   ok(/Waiting for Bitcoin/.test(await text(page, '#a-sent')) && /0\.01 BTC → about 0\.304 ETH/.test(await text(page, '#a-sent')) && (await page.inputValue('#a-amt')) === '', 'the swap is listed with what it pays and gets, and the form is cleared');

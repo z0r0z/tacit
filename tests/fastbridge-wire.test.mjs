@@ -632,7 +632,7 @@ test('discovering providers on a board: one that sells the other way too is list
 });
 
 test('the explorers the page reads: the two main ones first, then two mirrors, all allowed by the pages that read them', async () => {
-  assert.deepEqual(EXPLORERS, ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api', 'https://mempool.ninja/api', 'https://btcscan.org/api']);
+  assert.deepEqual(EXPLORERS, ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.bitaroo.net/api', 'https://mempool.ninja/api', 'https://btcscan.org/api', 'https://mempool.emzy.de/api']);   // emzy last: it refuses connections from some networks
   const { readFileSync } = await import('node:fs');
   for (const page of ['dapp/index.html', 'dapp/fast/index.html', 'dapp/btc/index.html']) {
     const csp = (readFileSync(new URL(`../${page}`, import.meta.url), 'utf8').match(/connect-src[^;"]*/g) || []).join(' ');

@@ -64,7 +64,7 @@ export const PAIR_POLICY = {
 // page says when a block is slow). Each is a few times what the step takes when it goes well.
 export const WATCH = {
   b2e: { built: 300, offering: 600, offered: 900, claiming: 600 },
-  e2b: { accepted: 600, locking: 600, locked: 300, offered: 1200, taking: 2400, refunding: 900 },
+  e2b: { accepted: 600, locking: 120, locked: 300, offered: 1200, taking: 2400, refunding: 900 },
 };
 // The confirmations the user wants on a provider's lock of sats before it locks pool ETH against it: more for a larger amount
 export const confsForSats = (value) => { const v = BigInt(value); return v >= 100_000_000n ? 6 : v >= 10_000_000n ? 3 : v >= 1_000_000n ? 2 : 1; };
@@ -153,6 +153,8 @@ const join = (...xs) => xs.filter(Boolean).join(' ');
 
 export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000), tip = null) {
   if (rec.checking) return checking('b2e', rec, rec.providerName || null);
+  // (a lock found again from the key says nothing of the provider sending ETH until an offer was seen: fastbridge-bl.js 'offered')
+  if (rec.claimFromKey && rec.phase === 'offered' && !rec.offerSeen) return { ...checking('b2e', rec, rec.providerName || null), title: 'Checking your swap…', detail: 'Found again from your key. The provider has not shown an offer for it yet. If none comes, your BTC returns to your Bitcoin address.', checking: false };
   const [at, title, detail0, eta] = FWD_SAYS[rec.phase] || [0, rec.phase, '', null];
   const detail = rec.phase === 'broadcast' ? join(detail0, slowBlockLine(tip, now(), SAFE_FWD)) : detail0;
   const state = FWD_DONE.has(rec.phase) ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' ? 'stopped' : 'working';
@@ -178,6 +180,13 @@ const revLeft = (rec, eta, nowSecs) => {
   return after + Math.max(60, own - since);
 };
 const waitWords = (need) => (need > 1 ? `${need} Bitcoin confirmations` : 'one Bitcoin confirmation');
+// What the ETH lock is waiting on, in words: never the bare 'sending' while nothing has gone out (a lock job is only sent once its note is ready and the pool read)
+function lockingWords(rec, detail) {
+  if (rec.lock && rec.lock.jobId) return detail;
+  if (/exact size/i.test(String(rec.why || ''))) return 'Cutting a note of the exact size for your ETH. Nothing has been sent yet.';
+  if (rec.lastError || Number(rec.buildFailures || 0) > 0) return 'Reading the pool did not go through, so it is being tried again. Nothing has been sent yet. Your ETH is in your private balance.';
+  return 'Getting your private ETH ready to send. Nothing has been sent yet.';
+}
 export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip = null) {
   if (rec.checking) return checking('e2b', rec, rec.providerName || null);
   let [at, title, detail, eta] = REV_SAYS[rec.phase] || [0, rec.phase, '', null];
@@ -186,7 +195,8 @@ export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip 
     const need = confsForSats(rec.offer.btc.value), confs = Number(rec.lockConfs) || 0;
     title = 'Provider sent BTC';
     detail = join(`Waiting for ${waitWords(need)}${confs > 0 ? ` (${confs} so far)` : ''}. A block takes about 10 min, sometimes more. Your ETH goes in after that${rec.pre ? ' and is made ready meanwhile' : ''}.`, slowBlockLine(tip, now(), SAFE_REV));
-  } else if (rec.phase === 'taking') detail = join(detail, slowBlockLine(tip, now(), SAFE_TAKE));
+  } else if (rec.phase === 'locking') detail = lockingWords(rec, detail);
+  else if (rec.phase === 'taking') detail = join(detail, slowBlockLine(tip, now(), SAFE_TAKE));
   // (a swap found again from the key whose provider has not yet taken its pool offer is said as being told, not as waiting for a claim: tellRecovered)
   else if (rec.phase === 'offered' && rec.recovered && !rec.toldBy) {
     [at, title] = [1, 'Telling the provider'];
@@ -807,7 +817,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       forcedAt.set(rec.id, now());
       try { if (evm.forget) evm.forget(); await kick(); } catch { /* the next pass */ }
     }
-    return still > budget + (policy.slowSayAfterSecs ?? 300) ? `Taking longer than usual. ${safeWords(dir, rec)}` : null;
+    return still > budget + (rec.phase === 'locking' ? 60 : (policy.slowSayAfterSecs ?? 300)) ? `Taking longer than usual. ${safeWords(dir, rec)}` : null;
   }
   // 'Check again': every swap under way (or only `id`) is read afresh now, and the records come back
   async function checkAgain(id = null) {

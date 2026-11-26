@@ -225,8 +225,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const health = { ok: true, lastTick: 0, lastError: null };
   const reported = new Set(), lastAlert = new Map(), unreadSince = new Map();
 
-  let chain = Promise.resolve();
+  let chain = Promise.resolve(), offerChain = Promise.resolve();
   const exclusive = (fn) => { const run = chain.then(fn, fn); chain = run.catch(() => {}); return run; };
+  const offerExclusive = (fn) => { const run = offerChain.then(fn, fn); offerChain = run.catch(() => {}); return run; };
 
   const inv = { at: -Infinity, held: null, p: null };
   function readInventory(maxAge = refreshSecs) {
@@ -473,7 +474,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           try { await exclusive(async () => { await capacity(BigInt(q.evmAmount)); pending.set(sid, { amount: BigInt(q.evmAmount), until: now() + hold.reserveSecs }); held = true; }); } catch (e) { if (e.status) return { ok: false, retry: !!e.retry, why: e.message }; throw e; }
         }
       }
-      const r = await el.receive({ quoteId: body.quoteId, offer: body.offer, early });
+      // With caps, offers are judged one at a time: the first accepted record must be visible before the next cap check.
+      const receive = () => el.receive({ quoteId: body.quoteId, offer: body.offer, early });
+      const r = await (lineageFees && lineageFees.caps ? offerExclusive(receive) : receive());
       const res = q ? reservations.get(q.id) : null;
       if (r.ok && res && res.swapId === sid && reservations.delete(q.id)) await keep(q.id);
       if (r.ok) stale();
@@ -504,7 +507,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (method === 'GET' && path === '/health') return reply({ ok: health.ok, lastTick: health.lastTick, error: health.lastError }, health.ok ? 200 : 503);
       if (method === 'GET' && path === '/info') {
         const q = config.quote, a = await availableAmount();
-        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(quoter.flat()), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false, ...(q.lineageFees ? { lineagePricing: lineageInfo(q.lineageFees) } : {}) });
+        const li = q.lineageFees ? lineageInfo(q.lineageFees) : null;
+        if (li && li.caps) { try { const e = await lineageExposure(); li.exposure = { long: String(e.long), poolExit: String(e.poolExit), total: String(e.long + e.poolExit) }; } catch { /* terms still answer if exposure cannot be read */ } }
+        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(quoter.flat()), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false, ...(li ? { lineagePricing: li } : {}) });
       }
       if (method === 'POST' && path === '/quote') {
         if (!body || !amountOk(body.amount)) return reply({ error: 'amount must be a whole number' }, 400);
@@ -658,9 +663,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (method === 'GET' && m) {
         if (m[2]) {
           const rec = await swaps.get(m[1]);
-          if (rec && (rec.phase === 'locked' || rec.phase === 'offered') && !(await lockStands(rec))) return reply({ error: 'no offer yet' }, 404);
+          if (rec && (rec.phase === 'locked' || rec.phase === 'offered') && !(await lockStands(rec))) return reply({ offer: null });
           const o = await offerOf(m[1]);
-          return o ? reply(o) : reply({ error: 'no offer yet' }, 404);
+          return o ? reply(o) : reply({ offer: null });
         }
         const rec = await swaps.get(m[1]);
         return rec ? reply({ phase: rec.phase, why: rec.why || null }) : reply({ error: 'unknown swap' }, 404);

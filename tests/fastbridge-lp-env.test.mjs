@@ -25,6 +25,8 @@ test('each knob sets its own field and no other', () => {
   assert.equal(applyEnv(BASE, { FB_LP_MAILBOX_POLL_SECS: '1' }).mailboxPollSecs, 1); assert.equal(applyEnv(BASE, { FB_LP_MAILBOX_POLL_SECS: '2.5' }).mailboxPollSecs, 2.5);
   assert.equal('mailboxPollSecs' in applyEnv(BASE, {}), false, 'unset leaves the daemon\'s own default (3 s)');
   assert.equal(applyEnv(BASE, { FB_LP_NAME: 'x'.repeat(80) }).name.length, 40, 'a name is kept to what the ad takes');
+  assert.deepEqual(applyEnv(BASE, { FB_LP_RECOVERED_SWAPS: ' ' + 'ab'.repeat(36) + ' ,' + 'cd'.repeat(36) }).recoveredSwaps, ['ab'.repeat(36), 'cd'.repeat(36)]);
+  assert.throws(() => applyEnv(BASE, { FB_LP_RECOVERED_SWAPS: 'xyz' }), /FB_LP_RECOVERED_SWAPS/);
 });
 
 test('the switch: a most below the least is taken as it is (the provider then quotes nothing and finishes its open swaps)', () => {

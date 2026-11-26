@@ -148,7 +148,7 @@ test('a reader that sticks to the node that answered last starts again at the ow
   try {
     await rpc('eth_getBalance', [who, 'latest']);
     hit.length = 0; await rpc('eth_getBalance', [who, 'latest']);
-    assert.equal(hit[0], 'rpc.mevblocker.io', 'it sticks to the node that answered last');
+    assert.equal(hit[0], 'tacit-node-gw.onrender.com', 'it sticks to the node that answered last');
     await m.enableOwnNode({ call: async (method) => (method === 'eth_chainId' ? '0x1' : '0x3e8'), head: async () => 1000 });
     hit.length = 0; await rpc('eth_getBalance', [who, 'latest']);
     assert.equal(hit[0], '127.0.0.1:8545', 'with the own node new at the head of the list it starts there');
@@ -156,6 +156,6 @@ test('a reader that sticks to the node that answered last starts again at the ow
     assert.deepEqual(hit, ['127.0.0.1:8545'], 'and stays there while it answers');
     m.disableOwnNode();
     hit.length = 0; await rpc('eth_getBalance', [who, 'latest']);
-    assert.equal(hit[0], 'ethereum-rpc.publicnode.com', 'with it gone it starts at the head of the public list again');
+    assert.equal(hit[0], 'tacit-node-gw.onrender.com', 'with it gone it starts at the head of the list again, past the node that failed (rested for the page)');
   } finally { clean(m); }
 });

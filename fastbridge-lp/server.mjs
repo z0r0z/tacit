@@ -154,6 +154,7 @@ const confs = (C.policy.confs || [['0', 1]]).map(([from, n]) => [BigInt(from), n
 const tacUnits = (t) => { const [whole, frac = ''] = String(t).split('.'); return BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8)); };
 const config = {
   claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
+  ...(Array.isArray(C.recoveredSwaps) ? { recoveredSwaps: C.recoveredSwaps } : {}),
   lowFree: (PAIR ? C.lowFreeEth : C.lowFreeTac) != null ? tacUnits(PAIR ? C.lowFreeEth : C.lowFreeTac) : null,    // what is left to lend, an amount with up to 8 places (TAC, or ETH for a pair provider)
   lowEth: C.lowEth != null ? tacUnits(C.lowEth) * 10n ** 10n : null,        // an ETH amount ("0.002") in wei: the units helper reads up to 8 places
   quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(lineageFees ? { lineageFees } : {}), ...(PAIR ? { rate: () => quoteRate() } : {}), ...(flat ? { flatFee: () => flat.fwd() } : {}) },

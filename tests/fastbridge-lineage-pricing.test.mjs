@@ -139,6 +139,9 @@ test('lineage caps reject intake over the configured class exposure', async () =
   assert.equal(first.status, 200);
   const held = await call(s.base, 'POST', '/reserve', { quoteId: first.body.id });
   assert.equal(held.status, 200, JSON.stringify(held.body));
+  const exposed = await call(s.base, 'GET', '/info');
+  assert.equal(exposed.body.lineagePricing.exposure.poolExit, '6000');
+  assert.equal(exposed.body.lineagePricing.exposure.total, '6000');
   const second = await call(s.base, 'POST', '/quote', { amount: '5000', lineage: 'pool-exit' });
   assert.equal(second.status, 400);
   assert.match(second.body.error, /cap/);

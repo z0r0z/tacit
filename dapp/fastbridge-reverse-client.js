@@ -58,14 +58,14 @@ export function makeReverseCounter(call) {
     async start({ quoteId }) { return answered(await call('POST', '/reverse/start', { quoteId }), 'the provider did not answer the start'); },
     async getOffer(swapId) {
       const r = await call('GET', `/reverse/swap/${swapId}/offer`);
-      if (r.status === 404) return null;
+      if (r.status === 404 || (r.status === 200 && r.body && r.body.offer === null)) return null;      // (no offer yet: `{ offer: null }`, or a 404 from a provider that answers so)
       if (r.status !== 200 || !r.body) throw fail(r, 'the provider\'s lock offer could not be read');
       return r.body;
     },
     // the lock offer as soon as the lock is sent (a provider that does not give it early answers 404, and the offer is read once the lock is confirmed)
     async getEarlyOffer(swapId) {
       const r = await call('GET', `/reverse/swap/${swapId}/early-offer`);
-      if (r.status !== 200 || !r.body || typeof r.body !== 'object') return null;
+      if (r.status !== 200 || !r.body || typeof r.body !== 'object' || r.body.offer === null) return null;
       return r.body;
     },
     async postEvmOffer(swapId, evmOffer) { return answered(await call('POST', `/reverse/swap/${swapId}/evm-offer`, { evmOffer }), 'the pool offer was not answered'); },
@@ -148,7 +148,7 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
   async function pruneOld() {
     if (pruned || !quoteStore.del) return;
     pruned = true;
-    try { for (const q of await quoteStore.list()) if (q && q.id && !q.swapId && !q.startedAt && Number(q.validUntil) + 3600 < now()) await quoteStore.del(q.id); } catch { /* the next visit prunes */ }
+    try { for (const q of await quoteStore.list()) if (q && q.id && !q.started && !q.swapId && !q.startedAt && Number(q.validUntil) + 3600 < now()) await quoteStore.del(q.id); } catch { /* the next visit prunes */ }
   }
   const quotes = { get: async (id) => { const r = await recOf(id); return r ? { ...r, validUntil: r.startedAt ? Math.max(r.validUntil, r.startedAt + policy.startGraceSecs) : r.validUntil } : null; } };
   const el = makeEthereumLocker({
@@ -201,7 +201,10 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
     if (!(await coversWith(evm, BigInt(rec.evmAmount), coming))) throw new Error('your private TAC does not cover that amount');
     const a = await lp.start({ quoteId: rec.id });
     if (!a || a.ok === false) throw Object.assign(new Error(`the provider cannot lock that amount${a && a.why ? `: ${a.why}` : ''}`), { retry: !!(a && a.retry) });
-    await quoteStore.put({ ...rec, swapId: a.swapId, startedAt: now() });
+    // (`started` is what the prune and a full storage's clearing go by: a record with it is never removed but by its own end. The provider is locking BTC by now, so a record that
+    // cannot be written is not lost silently: it is kept for this visit and said)
+    const started = { ...rec, swapId: a.swapId, startedAt: now(), started: true };
+    try { await quoteStore.put(started); } catch (e) { console.error('tacit: the swap was started but its record could not be saved; keeping it for this visit', e); pending.set(started.id, started); return { swapId: a.swapId }; }
     pending.delete(rec.id);
     return { swapId: a.swapId };
   }

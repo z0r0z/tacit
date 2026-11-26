@@ -33,7 +33,7 @@ Compatibility is by optional fields only:
 
 - `POST /quote` accepts optional `lineage: "clean" | "long" | "pool-exit"` and optional `inputs: [{ "txid", "vout" }]`. Old clients do not send them; old providers ignore them.
 - An exact-input quote carries those inputs in the quote and is stored rather than compressed into the sealed quote-id format. The lock must spend exactly those note inputs; adding, removing or replacing an input makes the provider refuse the offer before the pool lock is built.
-- Quotes with class pricing include `lineage`, and `/info` includes a `lineagePricing` schedule with `exactInputs: true` and any caps. Signed ads keep the same schema; because they cannot name per-class fees, the ad's ordinary fee terms are posted as the conservative maximum the schedule can charge.
+- Quotes with class pricing include `lineage`, and `/info` includes a `lineagePricing` schedule with `exactInputs: true`, any caps, and the currently counted exposure. Signed ads keep the same schema; because they cannot name per-class fees, the ad's ordinary fee terms are posted as the conservative maximum the schedule can charge.
 - A request without a hint is priced as `defaultClass`, which should remain `pool-exit` for a safe default.
 - The fast page estimates which notes each kind of provider would be given and sends both the class and the exact outpoints as a hint to a provider that takes any TAC or publishes class pricing. A read failure sends no class hint rather than stopping the quote. Split bridges do not yet send per-note hints and therefore use the conservative default.
 
@@ -46,7 +46,7 @@ still refused outright, while long inputs can be priced rather than treated as a
 Caps count stuck face value in active reservations, in-flight swaps, and completed swaps not yet recovered. Refunded, rejected,
 aborted and lost swaps do not count because the provider did not keep the note. Since this entry does not implement a recovery
 loop, the operator marks a completed swap as recovered by adding its swap id to top-level `recoveredSwaps` in the config and
-restarting; until then a completed stuck note conservatively remains exposure. This is crude but cannot silently undercount.
+restarting (or with comma-separated `FB_LP_RECOVERED_SWAPS`); until then a completed stuck note conservatively remains exposure. This is crude but cannot silently undercount.
 
 ## Numbers
 
