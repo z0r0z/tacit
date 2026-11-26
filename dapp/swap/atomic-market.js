@@ -9,7 +9,9 @@
 //   estimate(m, dir, amount) -> { get, provider } | null       what the best provider would give for `amount`, before its own quote
 
 import { discoverProviders } from '/fast/discover.js?cb=08d71bf9';
-import { makeRateFeed, chainlinkEthBtc, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
+import { makeRateFeed, chainlinkEthBtc, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=3bc6995c';
+import { ETH_NODES, walletNode, connectedInjected, batchSize } from '/eth-nodes.js';
+import { bodyType } from '/rpc-body.js';
 import { SATS_ASSET_ID, ETH_ASSET_ID } from '/swap/atomic-probe.js?cb=c6d5d8e2';
 import { OWN_PROVIDERS } from '/fastbridge-board.js';
 
@@ -29,13 +31,25 @@ const totalOf = (ss) => {
   return { min: on.reduce((a, s) => (s.min < a ? s.min : a), on[0].min), max: on.reduce((a, s) => (s.max > a ? s.max : a), 0n), now: on.reduce((a, s) => { const t = takeable(s); return t >= s.min && t > a ? t : a; }, 0n) };
 };
 
+// The market price's nodes are the page's one list (eth-nodes.js: its own node when it is on, then the public ones), and the connected wallet's node after the first few on
+// mainnet. A node that refuses is rested by the quorum itself (fastbridge-rate.js chainlinkQuorum).
+export const priceNodes = () => {
+  const l = [...ETH_NODES];
+  try { const w = connectedInjected(); if (w) l.splice(3, 0, walletNode(() => connectedInjected())); } catch { /* no wallet node */ }
+  return l;
+};
+export const priceSource = ({ fetchImpl, now, nodes = priceNodes } = {}) => chainlinkQuorum({ nodes, fetchImpl, bodyOf: bodyType, batchOf: (u) => batchSize(u) > 1, ...(now ? { now } : {}) });
+const LAST = 'tacit-market-last-v1', LAST_MAX_SECS = 600;
+const lastGet = (nowS) => { try { const m = JSON.parse(localStorage.getItem(LAST)); return m && m.ethPerBtc > 0 && nowS - m.at <= LAST_MAX_SECS ? m : null; } catch { return null; } };
+const lastPut = (m) => { try { localStorage.setItem(LAST, JSON.stringify(m)); } catch { /* kept this visit only */ } };
+
 let feed = null;
 // (the market is read as the pair client reads it: the aggregator at one block from nodes of separate operators, two or more agreeing; `call` reads it through one
 // caller's eth_call instead)
-export async function readMarket({ fetchImpl = (...a) => fetch(...a), lists = null, call = null, now, nodes = PRICE_NODES } = {}) {
+export async function readMarket({ fetchImpl = (...a) => fetch(...a), lists = null, call = null, now, nodes = null } = {}) {
   feed ||= call
     ? makeRateFeed({ sources: [chainlinkEthBtc({ call, ...(now ? { now } : {}) })], minSources: 1, maxAgeSecs: 600, ...(now ? { now } : {}) })
-    : makeRateFeed({ sources: chainlinkNodes({ nodes, fetchImpl, ...(now ? { now } : {}) }), minSources: 2, maxSpreadBps: 1, unanimous: true, maxAgeSecs: 600, ...(now ? { now } : {}) });
+    : makeRateFeed({ sources: [priceSource({ fetchImpl, now, ...(nodes ? { nodes: typeof nodes === 'function' ? nodes : () => nodes } : {}) })], counted: true, minSources: 2, maxSpreadBps: 1, unanimous: true, maxAgeSecs: 600, ...(now ? { now } : {}) });
   const l = lists || (await loadLists(fetchImpl));
   const [found, rate] = await Promise.all([
     discoverProviders({ ...l, fetchImpl, assets: { btcAsset: SATS_ASSET_ID, evmAsset: ETH_ASSET_ID }, ...(now ? { now } : {}) }).catch(() => []),
@@ -44,7 +58,11 @@ export async function readMarket({ fetchImpl = (...a) => fetch(...a), lists = nu
   // (ETH for Bitcoin is shown only for a provider the site names, as the pair client asks only those: fastbridge-pair.js namedProvider)
   const named = (p) => p.http === true || p.pinned === true || !!OWN_PROVIDERS[String((p.ref && p.ref.claimPub) || p.id || '').replace(/^0x/, '').toLowerCase()];
   const providers = found.map((p) => ({ id: p.id, name: p.name || 'Provider', b2e: side(p.terms), e2b: named(p) ? side(p.reverse) : null }));
-  return { rate, providers, totals: { b2e: totalOf(providers.map((p) => p.b2e)), e2b: totalOf(providers.map((p) => p.e2b)) }, at: Math.floor(Date.now() / 1000) };
+  // the last good reading of an earlier visit stands for ten minutes when the nodes give none now, and says so (rateAt)
+  const nowS = Math.floor(Date.now() / 1000);
+  let rateOut = rate, rateAt = null;
+  if (rate) lastPut({ ethPerBtc: rate, at: nowS }); else { const m = lastGet(nowS); if (m) { rateOut = m.ethPerBtc; rateAt = m.at; } }
+  return { rate: rateOut, ...(rateAt ? { rateAt } : {}), providers, totals: { b2e: totalOf(providers.map((p) => p.b2e)), e2b: totalOf(providers.map((p) => p.e2b)) }, at: Math.floor(Date.now() / 1000) };
 }
 
 // what is left of `amount` after a side's fee (its share and its flat part, both in the paying side's units)

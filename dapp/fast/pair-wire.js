@@ -19,7 +19,9 @@ import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=4c2ccb36';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
 import { makeLocalStore } from '/fastbridge-client.js?cb=00d4b6bc';
 import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=fcdca510';
-import { makeRateFeed, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
+import { makeRateFeed, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=3bc6995c';
+import { ETH_NODES, batchSize } from '/eth-nodes.js';
+import { bodyType } from '/rpc-body.js';
 import { discoverProviders } from '/fast/discover.js?cb=08d71bf9';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
 import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=691b5fc3';
@@ -37,7 +39,7 @@ export async function loadLists(fetchImpl = (...a) => fetch(...a)) {
   } catch { return { providers: [], boards: [] }; }
 }
 
-export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, lists = null, storage = globalThis.localStorage, discover: discoverO = null, feed: feedO = null, priceNodes = PRICE_NODES, log = () => {}, presigBase = 'https://api.tacit.finance' }) {
+export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, lists = null, storage = globalThis.localStorage, discover: discoverO = null, feed: feedO = null, priceNodes = null, log = () => {}, presigBase = 'https://api.tacit.finance' }) {
   const { prims } = makeBtcWallet({ priv, hrp, fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
   // the lock spends the wallet's own coins: tacit.js and this must name the same address
   if (T && prims.wallet.address() !== T.wallet.address()) throw new Error('The Bitcoin address of this key is not the one the wallet reads. Nothing was done.');
@@ -56,7 +58,7 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   // the page's own reading of the market: Chainlink's ETH / BTC aggregator (it updates on a half-percent move or once a day, which is why a quote is only blocked a good deal
   // under it; none of the exchanges' tickers is on the page's CSP), read at one block from nodes of separate operators, and taken only when two or more answer and all that
   // answer agree. The pair client then refuses a reading that rests on fewer than two.
-  const feed = feedO || makeRateFeed({ sources: chainlinkNodes({ nodes: priceNodes, fetchImpl, ...(now ? { now } : {}) }), minSources: 2, maxSpreadBps: 1, unanimous: true, maxAgeSecs: 600, ...(now ? { now } : {}) });
+  const feed = feedO || makeRateFeed({ sources: [chainlinkQuorum({ nodes: priceNodes ? () => priceNodes : () => ETH_NODES, fetchImpl, bodyOf: bodyType, batchOf: (u) => batchSize(u) > 1, ...(now ? { now } : {}) })], counted: true, minSources: 2, maxSpreadBps: 1, unanimous: true, maxAgeSecs: 600, ...(now ? { now } : {}) });
 
   const prefix = `tacit-fastbridge-pair-v1:mainnet:${pubHex}:`;
   // the page's own storage is copied to IndexedDB as it is written, and what was lost is put back (fast/pair-keep.js): a swap of ETH for BTC is not found again from the key

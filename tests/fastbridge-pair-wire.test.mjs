@@ -15,6 +15,7 @@ import { tacit as T, fetched } from './lib/btc-sim.mjs';
 import { secp, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
 import { signAd } from '../dapp/fastbridge-board.js';
 import { gatewayOf } from '../dapp/fastbridge-mailbox.js';
+import { forgetQuorum } from '../dapp/fastbridge-rate.js';
 
 const { discoverProviders, TAC_PAIR } = await import('../dapp/fast/discover.js');
 const { openPair, loadLists } = await import('../dapp/fast/pair-wire.js');
@@ -168,7 +169,7 @@ test('the lists are the ones the fast page names, and a file that cannot be read
 
 let passed = 0;
 for (const [name, fn] of tests) {
-  try { await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }
+  try { forgetQuorum(); await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }
 }
 if (fetched.length) { console.log('network reads attempted:', [...new Set(fetched)]); process.exitCode = 1; }
 console.log(`\n${passed}/${tests.length} pair wiring checks passed`);

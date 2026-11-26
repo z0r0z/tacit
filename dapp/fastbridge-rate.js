@@ -66,6 +66,91 @@ export function chainlinkNodes({ nodes, fetchImpl = (...a) => fetch(...a), timeo
   return nodes.map((u) => chainlinkEthBtc({ address, ...(maxAgeSecs ? { maxAgeSecs } : {}), ...(now ? { now } : {}), call: async (to, data) => post(u, 'eth_call', [{ to, data }, await block()]) }));
 }
 
+// The same aggregator read by a quorum of nodes, as ONE source that says how many nodes stood behind its answer (`{ ethPerBtc, n }`, which a feed made `counted`
+// takes as n sources). `nodes` is a list or a function giving the current list: URLs, or `{ id, usable?, send(method, params) }` for a reader that is not a URL (the
+// connected wallet). A node that gives no answer for any reason (429, a CORS block that hides one, a timeout, a 5xx, bad JSON, a node error) is out of the read and
+// rested for `restMs` with a strike, and is not asked again until then, so a node that refuses is not hammered and the console not filled with its failures. That is
+// never "says something else": only a node that gives a good price different from the others is a disagreement, and it blocks the read (a node answering with another
+// value at the same block, as before). Up to `fan` healthy nodes are asked at once and the read ends as soon as `need` agree (after a short `graceMs` for answers
+// already on the way); the rest of the list is asked only if too few answered. The block is pinned once for the node set (the lowest of the first `need` heights,
+// less `behind`), and each node then answers decimals and the round in ONE batched POST where `batchOf(url)` says it takes batches. A reading is kept `keepMs`
+// and shared by every reader of the page (the live line, the quote, the lane), and a read already under way is the one they all wait on.
+// `bodyOf(url)` is the POST body's type (a plain one avoids the CORS preflight).
+const rested = new Map();                       // node -> { until, n }, kept for the page so every reader of it shares what a node did
+export const restedNodes = rested;
+const shared = new Map();                       // address -> { at, p }
+const decimalsOf = new Map();                   // address -> decimals once read (fixed for an aggregator)
+export function chainlinkQuorum({ nodes, fetchImpl = (...a) => fetch(...a), timeoutMs = 3500, behind = 2, address = CHAINLINK_ETH_BTC, maxAgeSecs, now, nowMs = () => Date.now(), need = 2, fan = 6, restMs = 60000, graceMs = 250, keepMs = 15000, bodyOf = () => 'application/json', batchOf = () => false, log = () => {} }) {
+  const key = (n) => (typeof n === 'string' ? n : n.id);
+  const rest = (n, why) => { const k = key(n), r = rested.get(k); rested.set(k, { until: nowMs() + restMs, n: ((r && r.n) || 0) + 1 }); log({ level: 'warn', msg: 'a price node gave no answer and is rested', node: k, error: String((why && why.message) || why).slice(0, 80) }); };
+  const healthy = (n) => { const r = rested.get(key(n)); return !r || r.until <= nowMs(); };
+  const timed = (p, ms) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error('timeout')), ms); })]).finally(() => clearTimeout(t)); };
+  const word = (r) => { if (typeof r !== 'string' || !/^0x[0-9a-fA-F]*$/.test(r)) throw new Error('rpc: no result'); return r; };
+  // calls: [{ method, params }] -> results in order (one POST when `batch`, else one each)
+  const send = (n, calls, batch) => timed((async () => {
+    if (typeof n !== 'string') { if (n.usable && calls.some((c) => !n.usable(c.method, c.params))) throw new Error('not usable'); return Promise.all(calls.map((c) => n.send(c.method, c.params).then(word))); }
+    const one = async (body) => {
+      const r = await fetchImpl(n, { method: 'POST', headers: { 'content-type': bodyOf(n) }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+      if (r.status === 429 || r.status >= 500) throw new Error(`http ${r.status}`);
+      return r.json();
+    };
+    if (batch) {
+      const j = await one(calls.map((c, i) => ({ jsonrpc: '2.0', id: i + 1, method: c.method, params: c.params })));
+      if (!Array.isArray(j)) throw new Error('rpc: no batch');
+      return calls.map((_, i) => { const x = j.find((y) => y && y.id === i + 1); if (!x || x.error) throw new Error('rpc: no result'); return word(x.result); });
+    }
+    return Promise.all(calls.map(async (c) => { const j = await one({ jsonrpc: '2.0', id: 1, method: c.method, params: c.params }); if (!j || j.error) throw new Error('rpc: no result'); return word(j.result); }));
+  })(), timeoutMs + 500);
+  const read = async () => {
+    const list = (typeof nodes === 'function' ? nodes() : nodes).filter(healthy);
+    if (list.length < need) throw new Error('chainlink: too few nodes to ask');
+    const answers = [], heights = []; let block = null;
+    const known = decimalsOf.get(address);
+    const run = async (n) => {
+      try {
+        if (!block) {
+          heights.push(Number(BigInt((await send(n, [{ method: 'eth_blockNumber', params: [] }], false))[0])));
+          if (!block && heights.length >= need) block = '0x' + (Math.min(...heights) - behind).toString(16);
+        }
+        // (a node that gave a height first waits for the block the others give)
+        for (let i = 0; !block && i < 40; i++) await new Promise((r) => setTimeout(r, 100));
+        if (!block) throw new Error('no block');
+        const at = (data) => ({ method: 'eth_call', params: [{ to: address, data }, block] });
+        const rs = await send(n, known == null ? [at('0x313ce567'), at('0xfeaf968c')] : [at('0xfeaf968c')], batchOf(n));
+        const dec = known == null ? rs[0] : null;
+        answers.push(await chainlinkEthBtc({ address, ...(maxAgeSecs ? { maxAgeSecs } : {}), ...(now ? { now } : {}), call: async (to, data) => (data === '0x313ce567' ? (dec || '0x' + BigInt(known).toString(16).padStart(64, '0')) : rs[rs.length - 1]) })());
+        if (known == null) decimalsOf.set(address, Number(BigInt(dec)));
+      } catch (e) { rest(n, e); }
+    };
+    const agree = () => { const g = new Map(); for (const v of answers) g.set(v, (g.get(v) || 0) + 1); let best = 0, val = null; for (const [v, c] of g) if (c > best) { best = c; val = v; } return { best, val, kinds: g.size }; };
+    const asked = []; let next = 0;
+    const ask = (k) => { while (k-- > 0 && next < list.length) asked.push(run(list[next++])); };
+    ask(fan);
+    for (;;) {
+      await new Promise((r) => { const t = setInterval(() => { if (agree().best >= need) { clearInterval(t); r(); } }, 25); Promise.all(asked).then(() => { clearInterval(t); r(); }); });
+      const a = agree();
+      if (a.best >= need) { await new Promise((r) => setTimeout(r, graceMs)); break; }
+      if (a.kinds > 1 || next >= list.length) break;
+      ask(fan);
+    }
+    const a = agree();
+    if (a.kinds > 1) throw new Error('chainlink: the nodes disagree');
+    if (a.best < need) throw new Error('chainlink: too few nodes answered');
+    return { ethPerBtc: a.val, n: a.best };
+  };
+  return () => {
+    // (one reading per aggregator and set of nodes: a reader with other nodes is not handed this one's)
+    const id = address + '|' + (typeof nodes === 'function' ? nodes() : nodes).map(key).join(',');
+    const s = shared.get(id);
+    if (s && nowMs() - s.at < keepMs) return s.p;
+    const p = read();
+    shared.set(id, { at: nowMs(), p });
+    p.catch(() => { const c = shared.get(id); if (c && c.p === p) shared.delete(id); });
+    return p;
+  };
+}
+export const forgetQuorum = () => { shared.clear(); rested.clear(); decimalsOf.clear(); };
+
 const pos = (x) => { const v = Number(x); if (!(Number.isFinite(v) && v > 0)) throw new Error('not a price'); return v; };
 // Coinbase's ETH-BTC ticker (BTC per ETH) and Kraken's ETHXBT (the last trade): public, server-side
 export function coinbaseEthBtc({ fetchImpl = (...a) => fetch(...a), timeoutMs = 8000 }) {
@@ -91,23 +176,24 @@ const median = (xs) => { const s = [...xs].sort((a, b) => a - b), m = s.length >
 // `minSources` must answer and agree within `maxSpreadBps` (of the median) for a read to count: with more than two, a source off by more is dropped as an
 // outlier and the rest stand if there are still enough; with two that disagree there is no price. `maxAgeSecs` is how long a good read stands.
 // `unanimous`: every source that answers must agree (none is dropped as an outlier), as for one aggregator read from several nodes at one block.
-export function makeRateFeed({ sources, now = () => Math.floor(Date.now() / 1000), minSources = 2, maxSpreadBps = 100, maxAgeSecs = 180, unanimous = false, log = () => {} }) {
+export function makeRateFeed({ sources, now = () => Math.floor(Date.now() / 1000), minSources = 2, maxSpreadBps = 100, maxAgeSecs = 180, unanimous = false, counted = false, log = () => {} }) {
   // a feed that needs no source to answer would take no answer for a price: it needs at least one, and has one to ask
   if (!Array.isArray(sources) || !sources.length) throw new Error('rate: a feed needs a source');
-  if (!(Number.isInteger(minSources) && minSources >= 1 && minSources <= sources.length)) throw new Error('rate: minSources must be from 1 to the number of sources');
+  if (!(Number.isInteger(minSources) && minSources >= 1 && (counted || minSources <= sources.length))) throw new Error('rate: minSources must be from 1 to the number of sources');
   let last = null, reading = null;
   async function refresh() {
     if (reading) return reading;
     reading = (async () => {
-      const got = (await Promise.all(sources.map(async (s, i) => { try { return { i, v: pos(await s()) }; } catch (e) { log({ level: 'warn', msg: 'a price source gave nothing', source: i, error: String((e && e.message) || e).slice(0, 120) }); return null; } }))).filter(Boolean);
-      if (got.length < minSources) { log({ level: 'warn', msg: 'too few price sources answered', answered: got.length, need: minSources }); return last && now() - last.at <= maxAgeSecs ? last : null; }
+      const got = (await Promise.all(sources.map(async (s, i) => { try { const x = await s(); return counted && x && typeof x === 'object' ? { i, v: pos(x.ethPerBtc), n: x.n } : { i, v: pos(x), n: 1 }; } catch (e) { log({ level: 'warn', msg: 'a price source gave nothing', source: i, error: String((e && e.message) || e).slice(0, 120) }); return null; } }))).filter(Boolean);
+      const cnt = (xs) => xs.reduce((t, g) => t + g.n, 0);
+      if (cnt(got) < minSources) { log({ level: 'warn', msg: 'too few price sources answered', answered: cnt(got), need: minSources }); return last && now() - last.at <= maxAgeSecs ? last : null; }
       const m = median(got.map((g) => g.v)), within = got.filter((g) => Math.abs(g.v - m) * 10000 <= m * maxSpreadBps);
-      if (within.length < minSources || ((unanimous || got.length <= 2) && within.length < got.length)) {
+      if (cnt(within) < minSources || ((unanimous || got.length <= 2) && within.length < got.length)) {
         log({ level: 'warn', msg: 'the price sources disagree', values: got.map((g) => g.v) });
         last = null;                                  // a price that was good before the sources split is not kept: it may be the one that is wrong
         return null;
       }
-      last = { ethPerBtc: median(within.map((g) => g.v)), at: now(), n: within.length };
+      last = { ethPerBtc: median(within.map((g) => g.v)), at: now(), n: cnt(within) };
       return last;
     })().finally(() => { reading = null; });
     return reading;

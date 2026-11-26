@@ -2,7 +2,7 @@
 // The Chainlink read is decoded from a real answer of the ETH / BTC aggregator (0xAc55…4e99) taken from mainnet on 2026-11-23. No network.
 //   node tests/fastbridge-rate.test.mjs
 import assert from 'node:assert/strict';
-import { makeRateFeed, chainlinkEthBtc, coinbaseEthBtc, krakenEthBtc, ratioOf, ethPerBtcOf, RATE_DEN, CHAINLINK_ETH_BTC } from '../dapp/fastbridge-rate.js';
+import { makeRateFeed, chainlinkEthBtc, coinbaseEthBtc, krakenEthBtc, ratioOf, ethPerBtcOf, RATE_DEN, CHAINLINK_ETH_BTC, chainlinkQuorum, forgetQuorum, restedNodes } from '../dapp/fastbridge-rate.js';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -115,6 +115,75 @@ test('reads that are asked for together are one read', async () => {
   const f = makeRateFeed({ sources: [async () => { calls++; await new Promise((r) => setTimeout(r, 20)); return 35.6; }, src(35.6)] });
   await Promise.all([f.refresh(), f.refresh(), f.refresh()]);
   assert.equal(calls, 1);
+});
+
+// ── the node quorum (chainlinkQuorum) ──
+const NOW = UPDATED + 60;
+const hostsOf = (calls) => calls;
+// a stub network: each node is 'ok', '429', 'cors' (fetch throws), 'hang', or 'other' (a different price)
+const net = (modes, log = []) => async (url, init) => {
+  const mode = modes[url];
+  log.push(url);
+  if (mode === 'cors') throw new TypeError('Failed to fetch');
+  if (mode === 'hang') return new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(Object.assign(new Error('t'), { name: 'TimeoutError' }))));
+  if (mode === '429') return { status: 429, json: async () => ({}) };
+  const body = JSON.parse(init.body), one = (b) => {
+    if (b.method === 'eth_blockNumber') return { id: b.id, result: '0x100' };
+    const round = mode === 'other' ? REAL_ROUND.replace('2ad77e', '2ad77f') : REAL_ROUND;
+    return { id: b.id, result: b.params[0].data === '0x313ce567' ? REAL_DECIMALS : round };
+  };
+  return { status: 200, json: async () => (Array.isArray(body) ? body.map(one) : one(body)) };
+};
+const U = (n) => 'https://n' + n + '.example';
+const quorum = (modes, extra = {}) => { const log = []; const t = { v: 1000000 }; return { log, t, q: chainlinkQuorum({ nodes: Object.keys(modes), fetchImpl: net(modes, log), now: () => NOW, nowMs: () => t.v, timeoutMs: 300, graceMs: 20, ...extra }) }; };
+const fresh = () => forgetQuorum();
+test('quorum: a price from two healthy nodes while others 429, fail like CORS and hang', async () => {
+  fresh();
+  const { q } = quorum({ [U(1)]: '429', [U(2)]: 'cors', [U(3)]: 'hang', [U(4)]: 'ok', [U(5)]: 'ok' });
+  const r = await q();
+  assert.equal(r.n, 2); assert.ok(Math.abs(r.ethPerBtc - 1e8 / 2807678) < 1e-9);
+  await new Promise((r) => setTimeout(r, 900));       // (the node that hangs gives up within its own time, before the next test starts)
+  assert.equal(restedNodes.size, 3);
+});
+test('quorum: a node that failed is rested and not asked again within the rest, then asked after it', async () => {
+  fresh();
+  const modes = { [U(1)]: '429', [U(2)]: 'ok', [U(3)]: 'ok' };
+  const { q, log, t } = quorum(modes, { keepMs: 0 });
+  await q(); const asked1 = log.filter((u) => u === U(1)).length;
+  assert.ok(asked1 >= 1); assert.equal(restedNodes.get(U(1)).n, 1);
+  await q(); await q();
+  assert.equal(log.filter((u) => u === U(1)).length, asked1);
+  t.v += 61000; modes[U(1)] = 'ok'; await q();
+  assert.ok(log.filter((u) => u === U(1)).length > asked1);
+});
+test('quorum: a node that answers a different price at the same block blocks the read', async () => {
+  fresh();
+  const { q } = quorum({ [U(1)]: 'ok', [U(2)]: 'ok', [U(3)]: 'other' });
+  await assert.rejects(q(), /disagree/);
+});
+test('quorum: fewer than two answering is an error, and a good reading is shared and kept', async () => {
+  fresh();
+  const bad = quorum({ [U(1)]: 'ok', [U(2)]: '429', [U(3)]: 'cors' });
+  await assert.rejects(bad.q(), /too few/);
+  fresh();
+  const { q, log } = quorum({ [U(1)]: 'ok', [U(2)]: 'ok' });
+  const [a, b] = await Promise.all([q(), q()]); const n = log.length;
+  assert.deepEqual(a, b); await q(); assert.equal(log.length, n);
+});
+test('quorum: nodes that take batches get decimals and the round in one POST, once decimals are known only the round', async () => {
+  fresh();
+  const { q, log } = quorum({ [U(1)]: 'ok', [U(2)]: 'ok' }, { batchOf: () => true, keepMs: 0 });
+  await q(); const first = log.length; await q();
+  // first read: a height and one batch per node; the second: one height and one single-call batch per node
+  assert.equal(first, 4); assert.equal(log.length - first, 4);
+});
+test('a counted feed counts the quorum as its sources and keeps the last reading when too few answer', async () => {
+  fresh();
+  let ok = true; const t = { v: 5 };
+  const f = makeRateFeed({ sources: [async () => { if (!ok) throw new Error('none'); return { ethPerBtc: 35.6, n: 3 }; }], counted: true, minSources: 2, unanimous: true, maxAgeSecs: 600, now: () => t.v });
+  assert.equal((await f.refresh()).n, 3);
+  ok = false; t.v += 100; assert.equal((await f.refresh()).ethPerBtc, 35.6);
+  t.v += 1000; assert.equal(await f.refresh(), null);
 });
 
 let passed = 0;
