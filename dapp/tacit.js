@@ -2549,17 +2549,13 @@ async function getBtcUsdPrice() {
       return usd;
     };
     const _fetchChainlink = async () => {
-      const r = await _withTimeout('https://ethereum-rpc.publicnode.com', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: 1, method: 'eth_call',
-          params: [{ to: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', data: '0x50d25bcd' }, 'latest'],
-        }),
-      });
-      if (!r.ok) throw new Error('http ' + r.status);
-      const j = await r.json();
-      const hex = j && j.result;
+      // Use the same health-aware route as every other Ethereum read. A direct
+      // PublicNode call here caused a browser-only 403 on the portfolio page,
+      // even though the other price sources could still win the race.
+      const hex = await _ethRpcCall('eth_call', [
+        { to: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', data: '0x50d25bcd' },
+        'latest',
+      ]);
       if (typeof hex !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(hex)) throw new Error('bad shape');
       const usd = Number(BigInt(hex)) / 1e8;
       if (!Number.isFinite(usd) || usd <= 0) throw new Error('bad shape');
@@ -10603,7 +10599,6 @@ async function bridgeWithdrawETH({ provider, burnRecord, onProgress }) {
   _p('fetching relay proof headers');
   const confirmDepth = 6;
   const mempoolBase = currentNetworkName() === 'signet' ? 'https://mempool.space/signet/api' : 'https://mempool.space/api';
-  const ethRpc = gctx.chainId === 11155111 ? 'https://ethereum-sepolia-rpc.publicnode.com' : 'https://ethereum-rpc.publicnode.com';
   const relayAddr = await provider.request({ method: 'eth_call', params: [{ to: gctx.address, data: '0x' + bytesToHex(keccak_256(new TextEncoder().encode('HEADER_RELAY()'))).slice(0, 8) }, 'latest'] });
   const relayAddress = '0x' + relayAddr.slice(26);
   const tipHeightHex = await provider.request({ method: 'eth_call', params: [{ to: relayAddress, data: '0x' + bytesToHex(keccak_256(new TextEncoder().encode('tipHeight()'))).slice(0, 8) }, 'latest'] });
@@ -46777,7 +46772,7 @@ function _ensureWalletConnect() {
     const sheets = m.wcSheets(m.overlayHost());
     m.announceWalletConnect({
       projectId: m.WC_PROJECT_ID, chains: [1, 8453, 4663],
-      rpcMap: { 1: 'https://ethereum-rpc.publicnode.com', 8453: 'https://mainnet.base.org', 4663: 'https://rpc.mainnet.chain.robinhood.com' },
+      rpcMap: { 1: ETH_NODES[0], 8453: 'https://mainnet.base.org', 4663: 'https://rpc.mainnet.chain.robinhood.com' },
       metadata: { name: 'tacit', description: 'Confidential crosschain DeFi', url: location.origin, icons: [`${location.origin}/tac-logo.png`] },
       onPair: sheets.onPair, onAsk: sheets.onAsk,
     });
