@@ -405,6 +405,30 @@ await test('a name payment cannot fall back to a community minimum when the buil
   assert.deepEqual(problems, []);
   await ctx.close();
 });
+await test('a request link paid from a wallet is refused while the relay\'s minimum cannot be read, and goes once it can', async () => {
+  // the minimum is the built-in relay's floor for moving a payment in: below it the payment waits at the link's address for its payee to take in, from a
+  // wallet of theirs and at their cost, and the payer cannot take it back; so an unknown minimum sends nothing rather than guess it is 0
+  const own = 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', r = await rec(payee.v, N1);
+  let ownDown = true;
+  const { ctx, page, sent, told, problems } = await open({
+    keeper: QUOTE, quotes: (url) => (ownDown && url === `${own}/quote` ? { status: 503, body: { error: 'the built-in relay is down' } } : null),
+  });
+  await unlock(page);
+  await page.evaluate((h) => { location.hash = h; }, `pay=${payee.address}&n=${r.n}&ns=${r.ns}&amount=0.5&chain=ethereum`);
+  const press = async () => { await page.waitForSelector('#req-wallet:not([disabled])', { timeout: 30000 }); await page.click('#req-wallet'); };
+  await press();
+  await page.waitForFunction(() => /Could not read the relay’s minimum/.test(document.querySelector('#req')?.textContent || ''), null, { timeout: 30000 });
+  assert.equal(sent.length, 0, 'nothing was sent to the link\'s address');
+  assert.deepEqual(told.filter((b) => b.npk === N1.toString()), []);
+  ownDown = false;
+  await press();
+  await page.waitForFunction(() => /Paid 0\.5 ETH/.test(document.body.textContent || ''), null, { timeout: 30000 });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to.toLowerCase(), BOX1.toLowerCase(), 'plain ETH to the box the link names');
+  assert.equal(sent[0].value, '0x' + (5n * 10n ** 17n).toString(16));
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
 await test('a name with no deposit address cannot be paid from the wallet here, and the form says what to do', async () => {
   const names = { 'ross.wei': { ...ENTRY, box: null } };
   const { ctx, page, sent } = await open({ search: '?fixed=1', names, keeper: QUOTE });
