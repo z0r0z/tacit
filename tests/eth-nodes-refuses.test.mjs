@@ -231,9 +231,9 @@ await test('the log decoder reads a log back as it was written, in lower or uppe
   assert.doesNotThrow(() => dec.decodeLog({ topics: [dec.TOPIC0.NullifiersSpent], data: '0x' }));
 });
 
-await test('the nodes a browser gets 429s from (no CORS headers, a console line each) are last resorts, and a node that fails once is not asked again for the life of the page', async () => {
+await test('the nodes a browser gets 429s from (no CORS headers, a console line each) are last resorts, and a node that fails once is rested for a minute, longer when it keeps failing', async () => {
   const { lastResort } = await import('../dapp/eth-nodes.js');
-  const { jsonRpc, forgetRests } = await import('../dapp/json-rpc.js');
+  const { jsonRpc, forgetRests, restedUntil } = await import('../dapp/json-rpc.js');
   const BUIDLGUIDL = 'https://mainnet.rpc.buidlguidl.com';
   for (const u of [MEV, 'https://rpc.mevblocker.io/fast', BUIDLGUIDL]) assert.equal(lastResort(u), true);
   assert.equal(lastResort(PUBLIC), false);
@@ -245,9 +245,11 @@ await test('the nodes a browser gets 429s from (no CORS headers, a console line 
   try {
     const rpc = jsonRpc([PUBLIC, DRPC], f);
     await rpc('eth_blockNumber', []);
-    Date.now = () => real() + 3600e3;
     await rpc('eth_blockNumber', []); await rpc('eth_blockNumber', []);
-    assert.equal(asked.filter((u) => u === PUBLIC).length, 1, 'asked once, an hour later still not');
+    assert.equal(asked.filter((u) => u === PUBLIC).length, 1, 'asked once, and not again within its minute');
+    assert.ok(restedUntil(PUBLIC) > real() && restedUntil(PUBLIC) <= real() + 61e3, 'rested for about a minute');
+    Date.now = () => real() + 61e3;
+    assert.ok(restedUntil(PUBLIC) <= Date.now(), 'back in play after its minute (a good node that blinked is not out for the day)');
   } finally { Date.now = real; forgetRests(); }
 });
 
