@@ -234,7 +234,8 @@ code { font: inherit; font-size: .95em; padding: 0 .3em; background: var(--field
 header.top { position: relative; z-index: 30; container: top / inline-size; }
 /* one header on every page, so moving between a section's views (some are the front page, some pages of their own) moves nothing: the same height,
    and, where the sections are named, the same place for them whatever the page's label beside the mark */
-header.top { padding-top: 22px; padding-bottom: 8px; }
+header.top { padding-top: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--hair-2); }
+header.top .brand b { font-size: 30px; letter-spacing: -.055em; }
 @container top (min-width: 900px) { header.top .brand { min-width: 160px; } }
 header.top .top-r { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
 
@@ -250,7 +251,7 @@ header.top .sn > .sm { margin-left: auto; }
   transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 /* the look's own rules each sit under the rule they restyle, at the same weight */
-.sn > a, .sn summary { font: 400 14px/1 var(--sans, var(--mono)); }
+.sn > a, .sn summary { border-radius: 7px; font: 500 14px/1 var(--sans, var(--mono)); }
 .sn summary::-webkit-details-marker { display: none; }
 /* the menu is a <details>: a page's own rules for details and summary (a border, a "+", a margin) are not for it */
 header.top .sm { margin: 0; padding: 0; border: 0; font: inherit; }
@@ -260,10 +261,13 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 .sn svg.fill, .sf svg.fill { fill: currentColor; stroke: none; }
 .sn > a { display: none; }
 .sn > a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { color: var(--ink); background: var(--hair); }
+.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary {
+  color: var(--accent, var(--ink)); background: var(--wash, var(--hair));
+  box-shadow: inset 0 -2px currentColor;
+}
 @media (hover: hover) { .sn > a:hover, .sn summary:hover { color: var(--ink); background: var(--hair); } }
 .sn > a:active, .sn summary:active { transform: scale(.93); }
-.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--accent, var(--ink)); outline-offset: 2px; }
 @container top (min-width: 540px) { .sn > a { display: inline-flex; } }
 .sn > a[href="/rewards/"], .sn .sm > summary { position: relative; }
 .sn[data-owed] > a[href="/rewards/"]::after, .sn[data-owed] .sm > summary::after { content: ''; position: absolute; top: 8px; left: 26px; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--paper, transparent); }
@@ -295,7 +299,10 @@ header.top .chip {
   font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
-header.top .chip { background: var(--card, transparent); border-radius: 10px; font: 500 14px/1 var(--sans, var(--mono)); }
+header.top .chip { background: var(--card, transparent); border-radius: 7px; font: 500 14px/1 var(--sans, var(--mono)); }
+header.top #wallet, header.top #wallet-chip {
+  color: var(--ink); border-color: var(--ink); box-shadow: 0 2px var(--ink);
+}
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
 header.top .chip .dot.on { background: var(--ok); }
@@ -305,7 +312,7 @@ header.top .chip.act { background: transparent; }
 header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
 @media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
 header.top .chip:active { transform: scale(.97); }
-header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+header.top .chip:focus-visible { outline: 2px solid var(--accent, var(--ink)); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
 /* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
@@ -326,8 +333,8 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
     background: color-mix(in srgb, var(--paper, var(--bg, #fff)) 92%, transparent); border-top: 1px solid var(--hair); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
   .bn a { display: grid; justify-items: center; gap: 3px; min-height: 44px; padding: 5px 2px 3px; border-radius: 12px; color: var(--mute); font: 500 10.5px/1.1 var(--mono); text-decoration: none; -webkit-tap-highlight-color: transparent; }
   .bn a svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-  .bn a[aria-current="page"] { color: var(--ink); background: var(--hair); }
-  .bn a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+  .bn a[aria-current="page"] { color: var(--accent, var(--ink)); background: var(--wash, var(--hair)); box-shadow: inset 0 2px currentColor; }
+  .bn a:focus-visible { outline: 2px solid var(--accent, var(--ink)); outline-offset: -2px; }
   footer.sf { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
   #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
   /* what a page pins to the foot of the window stands on the bar (57 px: its padding and a 44 px row), not under it: the buy bar of cBTC, tETH and
@@ -387,17 +394,18 @@ html[data-sec="rewards/"] #find-h { display: none !important; }
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
   position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
-  width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
-  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px;
+  width: max-content; min-width: 230px; max-width: calc(100vw - 32px); padding: 8px;
+  max-height: 72vh; max-height: 72dvh; overflow-y: auto; overscroll-behavior: contain;
+  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-top: 3px solid var(--accent, var(--ink)); border-radius: 9px;
   box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 .sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
-.sm-p a { font: 400 14px/1 var(--sans, var(--mono)); }
+.sm-p a { border-radius: 5px; font: 500 14px/1 var(--sans, var(--mono)); }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
-.sm-p a[aria-current="page"] { background: var(--hair); }
-.sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+.sm-p a[aria-current="page"] { color: var(--accent, var(--ink)); background: var(--wash, var(--hair)); }
+.sm-p a:focus-visible { outline: 2px solid var(--accent, var(--ink)); outline-offset: -2px; }
 .sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
@@ -418,7 +426,8 @@ canvas.gx-field { position: fixed; top: 0; left: 0; z-index: -1; max-width: 100%
    places that have a mark of their own are that mark; in a narrow one every place is an icon that says its name on hover and to a screen reader (they narrow a little on a small
    phone before they would run off the page) */
 footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
-footer.sf { font: 400 13px/1.4 var(--sans, var(--mono)); }
+footer.sf { padding-top: 16px; border-top: 2px solid var(--ink); font: 400 13px/1.4 var(--sans, var(--mono)); }
+footer.sf > span { font: 500 11px/1.5 var(--mono); letter-spacing: .025em; }
 footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
 footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); text-decoration: none; transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
 footer.sf nav a:active { transform: scale(.92); }
@@ -442,18 +451,18 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 .sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
 @media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
 
-/* Graphite's palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
-   its head, so the one block recolours them all and a page's own styles are untouched. The values are the front page's (index.html keeps them with the rest of its
-   tokens). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and are left out: the SPX page, by
-   its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the build gives it. */
+/* Shared paper, ink and interaction colours. SPX and FACE supply their own palette. */
 :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-  --paper: #E6E6E4; --bg: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --ink: #17181B; --mute: #5C5D62;
-  --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24); --hair-strong: rgba(23,24,27,.24); --skel: rgba(23,24,27,.08);
+  --paper: #f6f5f0; --bg: var(--paper); --card: #fffefa; --field: #f1f1ed; --raise: #fff;
+  --ink: #181e2b; --mute: #515b6b; --faint: #606a79; --hair: #d9dcd9; --hair-2: #aeb6c0;
+  --hair-strong: var(--hair-2); --skel: #e3e5e3;
+  --accent: #2746c7; --on-accent: #fff; --wash: #edf0ff;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-    --paper: #131417; --bg: #131417; --card: #1A1B1F; --field: #15161A; --ink: #E4E4E1; --mute: #9A9BA1;
-    --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22); --hair-strong: rgba(228,228,225,.22); --skel: rgba(228,228,225,.07);
+    --paper: #111722; --card: #1a2232; --field: #202b3b; --raise: #2a3549;
+    --ink: #f0f2f8; --mute: #b9c4d3; --faint: #a5b1c2; --hair: #354157; --hair-2: #586780; --skel: #2e394d;
+    --accent: #a8baff; --on-accent: #111b39; --wash: #283451;
   }
 }
 
