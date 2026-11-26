@@ -21,12 +21,14 @@ the etch.
 a pool-membership leaf for exactly this reason, and this entry does not relax that — it supplies the missing
 backing instead.
 
-**What it assumes.** Two things now, worst first. (1) `verify_btc_pool_spend` is sound — the pool half of
-every exit is still the extension's proof, and the ledger inherits whatever that proof fails to say. It used
-to assume a third thing, that the caller's `boundary_ok` closure really verified the cross-curve sigma, the
-range proof and the opening; that assumption is gone, because `boundary_opens` now runs
-`btc-pool-zk-core::boundary::verify` and `cxfer_core::verify_pedersen_opening` in-crate, and
-`boundary_opens_verifies_a_real_prover_output_and_refuses_a_doctored_one` pins it against a vector the dapp prover itself produced. (2) The
+**What it assumes.** Three things, worst first. (1) `verify_btc_pool_spend` is sound — the pool half of
+every exit is still the extension's proof, and the ledger inherits whatever that proof fails to say. (2) The
+boundary seam is honest because the caller passes the right closure: `credit_shield` and `read_exit` take
+`boundary_ok` as an argument, and a caller who substitutes a permissive closure still credits and debits
+anything. `boundary_opens` is the in-crate check a caller must pass — it runs
+`btc-pool-zk-core::boundary::verify_bytes` and `cxfer_core::verify_pedersen_opening`, and
+`boundary_opens_verifies_a_real_prover_output_and_refuses_a_doctored_one` pins it against a vector the dapp
+prover itself produced — but nothing in the crate's types forces its use. (3) The
 wire layout is `DESIGN-btc-shielded-pool.md` §3 as read, not as parsed from a real mainnet transaction.
 
 **Numbers.** Out of 4,546 unspent notes, 230 (5.06%) are over the history limit, pool exits not counted.
@@ -90,14 +92,18 @@ Per asset, two monotone counters plus the two idempotence sets:
 
 ```rust
 pub struct BackingLedger {
-    pub funded: u128,                    // Σ of every shield's custody increase
-    pub exited: u128,                    // Σ of every admitted exit
-    pub shielded: BTreeSet<[u8; 32]>,    // shield carrier txids already credited
-    pub exited_at: BTreeSet<[u8; 32]>,   // exit outpoints already debited
+    funded: u128,                    // Σ of every shield's custody increase
+    exited: u128,                    // Σ of every admitted exit
+    shielded: BTreeSet<[u8; 32]>,    // sha256 of each credited shield body
+    exited_at: BTreeSet<[u8; 32]>,   // exit outpoints already debited
 }
 
 impl BackingLedger {
     pub fn available(&self) -> u128 { self.funded.saturating_sub(self.exited) }
+    pub fn funded(&self) -> u128 { self.funded }
+    pub fn exited(&self) -> u128 { self.exited }
+    pub fn shield_count(&self) -> usize { self.shielded.len() }
+    pub fn exit_count(&self) -> usize { self.exited_at.len() }
 }
 ```
 
@@ -112,17 +118,15 @@ The two sets are not optional bookkeeping. The counters alone cannot tell a **re
 backing) or debit the same exit twice (draining it) — the exact hole this design exists to close,
 reintroduced by the fix. Both transitions are therefore keyed and idempotent: a repeat books nothing.
 
-They are two sets, not one, because a shield names its carrier's **txid** and an exit names its own
-**outpoint**. A single namespace would let a txid collide with an unrelated outpoint and silently suppress
-a real event — an early draft did exactly that and three tests caught it. Both grow with history for the
-same reason the spent set and the burn set do, and ride the batch digest the same way.
+They are two sets, not one, because the shield key is derived from the shield body while an exit key is an
+outpoint. A single namespace would let the two collide and silently suppress a real event. Both grow with
+history for the same reason the spent set and the burn set do, and ride the batch digest the same way.
 
 ### 2.1 Value enters only through a proven shield
 
 ```rust
 pub fn credit_shield(
     ledger: &mut BackingLedger,
-    carrier: &[u8; 32],        // the shield transaction's txid
     asset: &[u8; 32],          // the asset this fold is accounting for
     body: &ShieldBody<'_>,     // parsed by `ShieldBody::parse`, the §3 layout
     shielded: u64,
@@ -142,10 +146,13 @@ only when
 - the boundary opens to exactly `shielded` under `blinding` — i.e. `depC = v·H + r·G` for the claimed `v`.
 
 A shield that moved nothing (`shielded == 0`) or whose boundary does not open is refused and credits
-nothing, and a carrier txid already in `shielded` is refused so a re-fold cannot mint backing. This is the
-only place `funded` moves: `fund` is private and `credit_shield` is its only caller, so no code path in
-this crate can credit the ledger without a shield. What that does **not** buy is a proof that the shield
-was real. `boundary_ok` is a closure the caller supplies — the curve math cannot run in this crate — so a
+nothing, and a shield body already credited is refused so a re-fold cannot mint backing. The key is
+`sha256` of the canonical parsed body, not a caller-supplied txid: a caller-supplied key let one verified
+shield body be credited again under a fresh value, which is a mint. This is the only place `funded` moves:
+`fund` is private, `credit_shield` is its only caller, and the counters and sets are private too, so no
+public path in this crate credits or debits out of band. What that does **not** buy is a proof that the
+shield was real. `boundary_ok` is a closure the caller supplies — this crate cannot resolve a shield's
+inputs to supply — so a
 caller that passes `|_, _, _| true` can credit any value it names. §10 states that as the central
 assumption; the honest reading of the code is "no unverified *path*", not "no unverified *claim*".
 
@@ -185,12 +192,12 @@ byte-for-byte as it does today.
 
 `read_exit` authenticates a `T_BTC_SPEND` carrying an exit all the way to a block's txid root. Every field
 it depends on is either read back out of the confirmed bytes or attested by the caller's header chain. The
-free witnesses the earlier drafts left open are closed: `exit_vout` must name an output the carrier has,
+Every field that would otherwise be free is bound: `exit_vout` must name an output the carrier has,
 `dest_spk_hash` must be that output's script hash, `bind` must be an outpoint the carrier spends, no other
 envelope in the carrier may already claim the same vout, and vin[0] must not carry a transparent Tacit op.
-`value` and `blinding` are still the caller's, but they are no longer unbound: `boundary_ok` is called with
-them and `boundary_opens` is the in-crate implementation, so a caller that wants the real check has it
-(§10, risk 1 is now about the pool proof alone).
+`value` and `blinding` are still the caller's, but they are checked against the commitment: `boundary_ok` is
+called with them, and `boundary_opens` is the in-crate implementation a caller passes to get the real check.
+Nothing forces its use, so §10 risk 1 stays open for both the pool proof and the boundary seam.
 
 ```rust
 pub fn read_exit(
@@ -382,8 +389,7 @@ Three edits in `burn_deposit.rs`, none of them crypto:
    `Lineage::Anchored` verdict to present from `from` instead of the etch. A `Lineage::Refused` verdict
    keeps today's behaviour: the burn is refused.
 
-This is not a change that leaves the fold untouched. Two claims in an earlier draft were wrong and are
-withdrawn here:
+This is not a change that leaves the fold untouched. Two claims that look tempting do not hold:
 
 - **"Nothing here is a new acceptance rule."** False. `read_exit` decides which confirmed transactions
   count as supply, and `lineage` decides which presentation shapes the parser accepts. Both are new rules,
@@ -400,7 +406,7 @@ What *is* additive is the state, not the digest: the ledger is a new field, and 
 already exist in the reflection. That is what makes the change reviewable — but reviewable is not
 digest-compatible.
 
-## 8. What the 26 tests cover
+## 8. What the 27 tests cover
 
 All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, no pool).
 
@@ -412,6 +418,7 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 | `ledger_fund_saturates_and_value_zero_is_never_an_anchor` | `u128` saturation; a zero-value exit is not an anchor |
 | `shield_parse_reads_the_layout_and_refuses_non_canonical_shapes` | §3 shield layout field by field; wrong opcode, `n_in`/`n_out` out of range, every truncation, trailing bytes |
 | `credit_shield_requires_a_matching_boundary` | a shield that moved nothing, of another asset, whose pool proof failed, or whose boundary does not open, credits nothing — and re-folding it mints nothing |
+| `credit_shield_dedups_on_the_shield_body_not_a_caller_key` | one verified shield body credits once whatever the caller passes, so a fresh key cannot re-mint; the ledger can only be credited through a shield |
 | `boundary_parse_rejects_every_wrong_length` | 824 and 826 bytes are refused |
 | `spend_parse_reads_the_exit_where_the_layout_puts_it` | §3 offset arithmetic, field by field |
 | `spend_parse_refuses_every_non_canonical_shape` | wrong opcode, every truncation, trailing bytes, zero/duplicate nullifier, `n_in = 0`, `has_exit = 2`, a spend that creates nothing |

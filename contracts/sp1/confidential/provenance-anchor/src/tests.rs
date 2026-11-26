@@ -237,7 +237,7 @@ fn exit_fixture(value: u64, blind: [u8; 32], h_anchor: u32, exit_vout: u32) -> F
         &boundary,
     );
     // The exit names vout `exit_vout`, so the carrier must HAVE that output and it must pay `dest_spk`:
-    // `read_exit` binds both now (a free `exit_vout` was the audit's finding). Outputs before it are
+    // `read_exit` binds both: a free `exit_vout` would let one exit fork into many anchors. Outputs before it are
     // strangers, so a vout that names the wrong index fails on the script hash rather than by accident.
     let mut outs: Vec<(u64, Vec<u8>)> = (0..exit_vout)
         .map(|i| (0u64, p2tr_script(&[0x50u8 + i as u8; 32])))
@@ -254,7 +254,7 @@ fn exit_fixture(value: u64, blind: [u8; 32], h_anchor: u32, exit_vout: u32) -> F
 
 /// Fund a ledger the way the crate allows: through `credit_shield`, with a shield whose boundary opens to the
 /// value. `fund` is private precisely so a test cannot mint backing out of nothing.
-fn fund_via_shield(l: &mut BackingLedger, carrier: &[u8; 32], asset: &[u8; 32], value: u64) {
+fn fund_via_shield(l: &mut BackingLedger, asset: &[u8; 32], value: u64) {
     let c_secp = c_secp_of(value, &[0x0Fu8; 32]);
     let boundary = boundary_bytes(&c_secp, &[0x0Eu8; 32]);
     let mut b = vec![T_BTC_SHIELD];
@@ -269,14 +269,13 @@ fn fund_via_shield(l: &mut BackingLedger, carrier: &[u8; 32], asset: &[u8; 32], 
     assert_eq!(
         credit_shield(
             l,
-            carrier,
             asset,
             &body,
             value,
             &[0x0Fu8; 32],
             &[0x42u8; 32],
             &|_, _| true,
-            &|_, _, _| true,
+            &|_, _, _| true
         ),
         Some(()),
         "the shield fixture must credit"
@@ -371,7 +370,7 @@ fn ledger_refuses_unfunded_and_never_partially_books() {
     assert_eq!(admit_exit(&mut l, &a, &ASSET), None, "nothing funded yet");
     assert_eq!((l.funded, l.exited), (0, 0), "a refused exit books nothing");
 
-    fund_via_shield(&mut l, &[0x01; 32], &ASSET, 70);
+    fund_via_shield(&mut l, &ASSET, 70);
     assert_eq!(
         admit_exit(&mut l, &a, &ASSET),
         None,
@@ -379,7 +378,7 @@ fn ledger_refuses_unfunded_and_never_partially_books() {
     );
     assert_eq!(l.exited, 0, "still nothing booked");
 
-    fund_via_shield(&mut l, &[0x02; 32], &ASSET, 30);
+    fund_via_shield(&mut l, &ASSET, 30);
     assert_eq!(
         admit_exit(&mut l, &a, &ASSET),
         Some(()),
@@ -391,7 +390,7 @@ fn ledger_refuses_unfunded_and_never_partially_books() {
 #[test]
 fn ledger_cannot_be_drained_past_its_funding() {
     let mut l = BackingLedger::default();
-    fund_via_shield(&mut l, &[0x01; 32], &ASSET, 1000);
+    fund_via_shield(&mut l, &ASSET, 1000);
     for i in 0..10u8 {
         assert_eq!(l.debit(&[i; 32], 100), Some(()));
     }
@@ -409,7 +408,7 @@ fn the_same_exit_cannot_back_two_debits() {
     // Re-folding a block must not spend the backing twice. The counters alone cannot tell a re-fold from a
     // second exit, so the outpoint set is what makes the transition idempotent.
     let mut l = BackingLedger::default();
-    fund_via_shield(&mut l, &[0x01; 32], &ASSET, 1000);
+    fund_via_shield(&mut l, &ASSET, 1000);
     let a = ExitAnchor {
         outpoint: [0x11; 32],
         commitment: [0x22; 32],
@@ -444,7 +443,7 @@ fn ledger_fund_saturates_and_value_zero_is_never_an_anchor() {
         shielded: BTreeSet::new(),
         exited_at: BTreeSet::new(),
     };
-    fund_via_shield(&mut l, &[0x09; 32], &ASSET, 10);
+    fund_via_shield(&mut l, &ASSET, 10);
     assert_eq!(l.funded, u128::MAX, "saturates rather than wrapping");
     let zero = ExitAnchor {
         outpoint: [3u8; 32],
@@ -533,14 +532,12 @@ fn credit_shield_requires_a_matching_boundary() {
     let root = [0x42u8; 32];
     let mut l = BackingLedger::default();
 
-    let carrier = [0x77u8; 32];
     let pool_yes: ShieldProofCheck<'_> = &|_: &ShieldBody<'_>, r: &[u8; 32]| r == &root;
     let pool_no: ShieldProofCheck<'_> = &|_: &ShieldBody<'_>, _: &[u8; 32]| false;
 
     assert_eq!(
         credit_shield(
             &mut l,
-            &carrier,
             &body.asset,
             &body,
             0,
@@ -555,7 +552,6 @@ fn credit_shield_requires_a_matching_boundary() {
     assert_eq!(
         credit_shield(
             &mut l,
-            &carrier,
             &body.asset,
             &body,
             500,
@@ -568,14 +564,13 @@ fn credit_shield_requires_a_matching_boundary() {
         "a boundary that does not open"
     );
     assert_eq!(
-        credit_shield(&mut l, &carrier, &body.asset, &body, 500, &blind, &root, pool_no, &|_, _, _| true),
+        credit_shield(&mut l, &body.asset, &body, 500, &blind, &root, pool_no, &|_, _, _| true),
         None,
         "a pool proof that did not verify: this is the only way value enters, so it has to be checked here"
     );
     assert_eq!(
         credit_shield(
             &mut l,
-            &carrier,
             &[0xff; 32],
             &body,
             500,
@@ -595,7 +590,6 @@ fn credit_shield_requires_a_matching_boundary() {
     assert_eq!(
         credit_shield(
             &mut l,
-            &carrier,
             &body.asset,
             &body,
             500,
@@ -610,7 +604,6 @@ fn credit_shield_requires_a_matching_boundary() {
     assert_eq!(
         credit_shield(
             &mut l,
-            &carrier,
             &body.asset,
             &body,
             500,
@@ -623,6 +616,61 @@ fn credit_shield_requires_a_matching_boundary() {
         "re-folding the same shield must not mint backing"
     );
     assert_eq!(l.funded, 500, "and credited nothing the second time");
+}
+
+/// A shield body credits once. The ledger's dedup key is `sha256` of the canonical parsed body, so a caller
+/// cannot re-mint by passing a fresh value in place of the carrier txid it used to supply.
+#[test]
+fn credit_shield_dedups_on_the_shield_body_not_a_caller_key() {
+    let asset = ASSET;
+    let c_secp = c_secp_of(500, &[0x0Fu8; 32]);
+    let boundary = boundary_bytes(&c_secp, &[0x0Eu8; 32]);
+    let mut b = vec![T_BTC_SHIELD];
+    b.extend_from_slice(&asset);
+    b.push(1);
+    b.push(1);
+    b.extend_from_slice(&[0x01; POOL_OUTPUT_LEN]);
+    b.extend_from_slice(&boundary);
+    b.extend_from_slice(&[0x09; KERNEL_SIG_LEN]);
+    b.extend_from_slice(&0u16.to_le_bytes());
+    let body = ShieldBody::parse(&b).expect("canonical shield");
+    let root = [0x42u8; 32];
+    let blind = [0x0Fu8; 32];
+
+    let mut l = BackingLedger::default();
+    assert_eq!(
+        credit_shield(
+            &mut l,
+            &asset,
+            &body,
+            500,
+            &blind,
+            &root,
+            &|_, _| true,
+            &|_, _, _| true
+        ),
+        Some(())
+    );
+    assert_eq!(l.funded(), 500);
+    assert_eq!(l.shield_count(), 1);
+
+    // Same shield body again: no caller-supplied key exists to vary, so it cannot credit twice.
+    assert_eq!(
+        credit_shield(
+            &mut l,
+            &asset,
+            &body,
+            500,
+            &blind,
+            &root,
+            &|_, _| true,
+            &|_, _, _| true
+        ),
+        None,
+        "the same shield body cannot credit twice"
+    );
+    assert_eq!(l.funded(), 500, "and credited nothing the second time");
+    assert_eq!(l.shield_count(), 1);
 }
 
 #[test]
@@ -772,13 +820,13 @@ fn read_exit_authenticates_a_real_carrier_and_books_it() {
         None,
         "reading is not backing: the ledger must hold the value"
     );
-    fund_via_shield(&mut l, &[0x05; 32], &ASSET, value - 1);
+    fund_via_shield(&mut l, &ASSET, value - 1);
     assert_eq!(
         admit_exit(&mut l, &anchor, &ASSET),
         None,
         "one sat short is short"
     );
-    fund_via_shield(&mut l, &[0x06; 32], &ASSET, 1);
+    fund_via_shield(&mut l, &ASSET, 1);
     assert_eq!(admit_exit(&mut l, &anchor, &ASSET), Some(()));
     assert_eq!(l.available(), 0);
     assert_eq!(
@@ -925,30 +973,18 @@ fn read_exit_refuses_a_tampered_carrier() {
 
 #[test]
 fn lineage_presents_short_histories_whole() {
-    assert_eq!(lineage(0, None), Lineage::Full { hops: 0, steps: 0 });
-    assert_eq!(
-        lineage(255, None),
-        Lineage::Full {
-            hops: 255,
-            steps: 255
-        }
-    );
+    assert_eq!(lineage(0, None), Lineage::Full { hops: 0 });
+    assert_eq!(lineage(255, None), Lineage::Full { hops: 255 });
     assert_eq!(
         lineage(255, Some(([1u8; 32], 10))),
-        Lineage::Full {
-            hops: 255,
-            steps: 255
-        },
+        Lineage::Full { hops: 255 },
         "an anchor is unnecessary inside the cap"
     );
     // 256 steps is INSIDE the cap: `burn_deposit.rs` refuses only `ncx > 256`, so a 256-hop blob parses
     // today and must keep parsing. Re-anchoring it would be a rule this entry added, not one it preserved.
     assert_eq!(
         lineage(256, None),
-        Lineage::Full {
-            hops: 256,
-            steps: 256
-        },
+        Lineage::Full { hops: 256 },
         "the cap is inclusive, matching ncx > 256"
     );
 }
@@ -1118,12 +1154,12 @@ fn spend_parse_is_panic_free_on_a_hostile_corpus() {
     }
 }
 
-// ─────────────────── regressions for the audit findings ───────────────────
+// ─────────────────── invariants on the ways value enters and leaves ───────────────────
 
-/// The audit's first finding: `fund` was `pub`, so a caller could credit the ledger from nothing and then
-/// back a real exit with a figment. It is private now, so that route does not compile. What the crate still
-/// cannot do — stated in §10 rather than hidden — is verify the boundary itself: `boundary_ok` is the
-/// caller's closure, so `credit_shield` is only as strong as that closure.
+/// No public path credits the ledger without a shield. `fund` is private and its only caller is
+/// `credit_shield`; the counters and dedup sets are private too, so a caller cannot add backing or forge an
+/// exit out of band. The seam that stays open is the boundary: `boundary_ok` is the caller's closure, so
+/// `credit_shield` is only as strong as the closure passed to it (§10 risk 1).
 #[test]
 fn no_path_credits_backing_without_a_shield() {
     let mut l = BackingLedger::default();
@@ -1144,7 +1180,6 @@ fn no_path_credits_backing_without_a_shield() {
     assert_eq!(
         credit_shield(
             &mut l,
-            &[0x42; 32],
             &ASSET,
             &body,
             0,
@@ -1160,7 +1195,6 @@ fn no_path_credits_backing_without_a_shield() {
     assert_eq!(
         credit_shield(
             &mut l,
-            &[0x42; 32],
             &[0xBB; 32],
             &body,
             1_000_000,
@@ -1176,7 +1210,6 @@ fn no_path_credits_backing_without_a_shield() {
     assert_eq!(
         credit_shield(
             &mut l,
-            &[0x42; 32],
             &ASSET,
             &body,
             1_000_000,
@@ -1193,7 +1226,6 @@ fn no_path_credits_backing_without_a_shield() {
     assert_eq!(
         credit_shield(
             &mut l,
-            &[0x42; 32],
             &ASSET,
             &body,
             1_000_000,
@@ -1208,7 +1240,6 @@ fn no_path_credits_backing_without_a_shield() {
     assert_eq!(
         credit_shield(
             &mut l,
-            &[0x42; 32],
             &ASSET,
             &body,
             1_000_000,
@@ -1224,15 +1255,15 @@ fn no_path_credits_backing_without_a_shield() {
     // lying `boundary_ok` does mint. Pinned here so the limitation is visible in the test suite.
     let mut lie = BackingLedger::default();
     assert_eq!(
-        credit_shield(&mut lie, &[0x43; 32], &ASSET, &body, 1, &[0x0Fu8; 32],
+        credit_shield(&mut lie, &ASSET, &body, 1, &[0x0Fu8; 32],
             &[0x42u8; 32], &|_, _| true, &|_, _, _| true),
         Some(()),
         "§10: the boundary check is the caller's, so a permissive closure credits the claimed value"
     );
 }
 
-/// The audit's second finding: `read_exit` accepted `exit_vout` naming an output the carrier does not have,
-/// and never compared `dest_spk_hash` to the script at that output. Both are bound now.
+/// `exit_vout` must name an output the carrier actually has, and `dest_spk_hash` must be that output's
+/// script hash. Without both, `exit_vout` is a free witness: one confirmed exit forks into unlimited anchors.
 #[test]
 fn read_exit_binds_vout_to_a_real_output_and_its_script() {
     let blind = [0x11u8; 32];
@@ -1282,12 +1313,11 @@ fn read_exit_binds_vout_to_a_real_output_and_its_script() {
     );
 }
 
-/// The audit's third finding: `admit_exit` ignored the anchor's asset, so a TAC exit could draw on backing a
-/// different asset's shield created.
+/// `admit_exit` refuses an anchor in another asset, so one asset's backing cannot pay another's exit.
 #[test]
 fn admit_exit_refuses_an_anchor_in_another_asset() {
     let mut l = BackingLedger::default();
-    fund_via_shield(&mut l, &[0x01; 32], &ASSET, 1000);
+    fund_via_shield(&mut l, &ASSET, 1000);
     let other = [0xBBu8; 32];
     assert_eq!(
         admit_exit(
@@ -1452,8 +1482,8 @@ fn read_exit_refuses_a_carrier_that_does_not_spend_the_bound_outpoint() {
     );
 }
 
-/// Two exits in one carrier naming the same `exit_vout` both used to pass `read_exit`; only the ledger's
-/// outpoint set caught them, and only after both were admitted. The worker refuses both with `claimed(vout)`.
+/// Two exits in one carrier naming the same `exit_vout` are both refused, matching the pool worker's
+/// `claimed(vout)` rule. The ledger's outpoint set alone would only catch it after both were admitted.
 #[test]
 fn read_exit_refuses_a_carrier_that_already_claims_the_same_vout() {
     let blind = [0x11u8; 32];

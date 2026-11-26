@@ -110,13 +110,16 @@ pub type ShieldProofCheck<'a> = &'a dyn Fn(&ShieldBody<'_>, &[u8; 32]) -> bool;
 /// run the curve math, this crate only consumes the answer.
 pub type BoundaryCheck<'a> = &'a dyn Fn(&Boundary<'_>, u64, &[u8; 32]) -> bool;
 
-/// The boundary verification this crate can now do itself, with no seam and no caller-supplied closure.
+/// Verify a boundary entirely in-crate: sigma, range proof and the opening, with no caller-supplied closure.
 ///
-/// Until this existed, `boundary_ok` was the whole trust surface: a caller that returned `true` unconditionally
-/// could mint backing out of a boundary that proves nothing. `btc-pool-zk-core::boundary::verify` already
-/// verifies the 169-byte cross-curve sigma and the 591-byte Bulletproofs+ range proof in this tree — it is the
-/// same code the pool's own indexer path uses — so the only thing that was ever missing here was the opening
-/// check against the transparent commitment, which `cxfer_core::verify_pedersen_opening` does.
+/// `btc-pool-zk-core::boundary::verify_bytes` checks the 169-byte cross-curve sigma and the 591-byte
+/// Bulletproofs+ range proof — the same code the pool's own indexer path runs — and
+/// `cxfer_core::verify_pedersen_opening` checks that `C_secp` opens to `value` under `blinding`.
+///
+/// This function is what a verifier should pass as the `boundary_ok` argument to [`credit_shield`] and
+/// [`read_exit`]; those two still take it as a closure, so a caller who substitutes a permissive closure can
+/// still fund the ledger. §10 risk 1 states that seam plainly. Anything reading this crate's guarantees should
+/// read them as "correct given a boundary check that calls this", not as "no seam".
 ///
 /// Refuses a zero value for the same reason the ledger does: a value-0 boundary crossing proves nothing about
 /// value and would let a prover pad the anchor set at no cost.
@@ -156,8 +159,8 @@ pub fn boundary_opens(boundary: &Boundary<'_>, value: u64, blinding: &[u8; 32]) 
 /// because one batch may legitimately sum more than 2^64 sats in witnesses.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BackingLedger {
-    pub funded: u128,
-    pub exited: u128,
+    funded: u128,
+    exited: u128,
     /// Shield carrier txids already credited, and exit outpoints already debited.
     ///
     /// Needed because the counters alone cannot tell a **re-folded** event from a **second** one. A resumed
@@ -166,8 +169,8 @@ pub struct BackingLedger {
     /// because a shield names its carrier's txid and an exit names its own outpoint; one namespace would let a
     /// txid collide with an unrelated outpoint and silently suppress a real event. Unbounded like the spent
     /// set and the burn set, which grow with history for the same reason, and committed the same way.
-    pub shielded: BTreeSet<[u8; 32]>,
-    pub exited_at: BTreeSet<[u8; 32]>,
+    shielded: BTreeSet<[u8; 32]>,
+    exited_at: BTreeSet<[u8; 32]>,
 }
 
 impl BackingLedger {
@@ -176,10 +179,31 @@ impl BackingLedger {
         self.funded.saturating_sub(self.exited)
     }
 
-    /// Credit a verified shield: the pool now holds `value` more. [`credit_shield`] is the checked form,
-    /// and it is the ONLY caller: `fund` is private precisely so no seam can mint backing without the
-    /// pool proof and the boundary opening. A test that needs backing builds it through
-    /// [`credit_shield`] with a settling seam, never by calling this.
+    /// Total value the pool has taken custody of, as this fold has credited it.
+    pub fn funded(&self) -> u128 {
+        self.funded
+    }
+
+    /// Total value already handed back out through admitted exits.
+    pub fn exited(&self) -> u128 {
+        self.exited
+    }
+
+    /// How many shields have been credited; the dedup set's size, exposed for reporting.
+    pub fn shield_count(&self) -> usize {
+        self.shielded.len()
+    }
+
+    /// How many exits have been booked; the dedup set's size, exposed for reporting.
+    pub fn exit_count(&self) -> usize {
+        self.exited_at.len()
+    }
+
+    /// Credit a verified shield: the pool now holds `value` more. [`credit_shield`] is the checked form and
+    /// the only caller: it runs the pool proof and the boundary opening before reaching here. The ledger's
+    /// counters and dedup sets are private, so a caller cannot add backing or forge an exit out of band —
+    /// the only ways in are [`credit_shield`] and [`admit_exit`]. Tests in this module can reach the fields
+    /// directly because they are a child module; that access is not part of the public surface.
     ///
     /// Idempotent by `carrier` (the shield transaction's txid) for the same reason `debit` is: re-folding a
     /// block must not mint backing. Returns `None` and credits nothing on a repeat.
@@ -213,17 +237,18 @@ impl BackingLedger {
 ///
 /// `shielded` is the total the caller read out of the boundary commitment (the sum of the transparent notes the
 /// pool took custody of). It refuses a shield that moved nothing, one whose boundary does not open to the
-/// claimed total, and one whose carrier pool proof did not verify at `pool_root`.
+/// claimed total, and one whose pool proof did not verify at `pool_root`. The ledger deduplicates on a hash of
+/// the canonical shield body, so re-folding the same shield credits it once no matter what a caller passes for
+/// its carrier.
 ///
-/// What that buys is narrower than "cannot be funded by a figment", and the difference is the seam: this crate
-/// cannot open a curve commitment, run a range proof, or resolve a shield's inputs to supply, so `shielded`,
-/// `pool_ok` and `boundary_ok` are the caller's. An honest caller can only fund the ledger through a shield
-/// whose pool proof verified and whose boundary opens; a caller who lies to both seams can fund it. Risk 1 in
-/// §10 of the design doc is that assumption, stated plainly. What this function does own is the shape: the
-/// asset, the carrier txid, the pool root, the length and the non-zero rule are all enforced here.
+/// What that buys is narrower than "cannot be funded by a figment", and the difference is the seam: resolving a
+/// shield's inputs to supply is the caller's job, and `shielded`, `pool_ok` and `boundary_ok` arrive from the
+/// caller, so a caller who lies to both closures can fund the ledger. §10 risk 1 of the design doc states that
+/// assumption plainly. [`boundary_opens`] is the in-crate check a caller should pass as `boundary_ok`. What this
+/// function does own is the shape: the asset, the pool root, the length, the non-zero rule and the one-credit-
+/// per-shield-body rule are all enforced here.
 pub fn credit_shield(
     ledger: &mut BackingLedger,
-    carrier: &[u8; 32],
     asset: &[u8; 32],
     body: &ShieldBody<'_>,
     shielded: u64,
@@ -238,7 +263,12 @@ pub fn credit_shield(
     if !pool_ok(body, pool_root) || !boundary_ok(&body.boundary, shielded, blinding) {
         return None;
     }
-    ledger.fund(carrier, shielded)
+    // The dedup key is the shield body itself, never a caller-supplied txid. A caller-supplied `carrier`
+    // was creditable under any fresh value, so one verified shield body could mint backing repeatedly
+    // (reported as the slop review's only high). Hashing the canonical body means one shield op is one
+    // credit, whatever the caller passes alongside it.
+    let carrier = cxfer_core::bitcoin::sha256_once(body.body);
+    ledger.fund(&carrier, shielded)
 }
 
 // ───────────────────────────── wire parsing ─────────────────────────────
@@ -699,7 +729,7 @@ pub fn admit_exit(ledger: &mut BackingLedger, anchor: &ExitAnchor, asset: &[u8; 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lineage {
     /// Present it all: it fits inside the cap.
-    Full { hops: u32, steps: u32 },
+    Full { hops: u32 },
     /// Present from an admissible anchor down to the burn; `from` is that anchor's outpoint and `distance` the
     /// transfers between it and the burned note.
     Anchored {
@@ -724,7 +754,7 @@ pub enum Lineage {
 /// the current system already carries.
 pub fn lineage(hops: u32, anchor: Option<([u8; 32], u32)>) -> Lineage {
     if hops <= ANCHOR_MAX_HOPS {
-        return Lineage::Full { hops, steps: hops };
+        return Lineage::Full { hops };
     }
     match anchor {
         Some((from, d)) if d <= ANCHOR_MAX_HOPS => Lineage::Anchored {
