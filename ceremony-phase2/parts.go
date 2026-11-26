@@ -30,6 +30,9 @@ var (
 	floorBytes  int64 = 64 << 20
 )
 
+// paceWindow: how long a chunked upload runs before its pace is judged (see cannotFinishL).
+var paceWindow = 15 * time.Minute
+
 var errTooSlow = errors.New("the upload is too slow to finish inside the slot")
 
 // floorReader fails a body that has moved less than floorBytes by floorWindow after it began.

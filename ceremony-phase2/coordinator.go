@@ -400,6 +400,8 @@ func (c *Coordinator) slotOverL(t *ticket, now time.Time) string {
 		return fmt.Sprintf("slot ran past %s", c.slotCap())
 	case t.uploadStarted && !t.uploading && !t.uploadFirst.IsZero() && now.Sub(t.uploadFirst) > floorWindow && t.partBytes < floorBytes:
 		return "the upload is too slow to finish inside the slot"
+	case c.cannotFinishL(t, now):
+		return "at its pace the upload cannot finish inside the slot"
 	case t.uploadStarted || t.uploading:
 	case t.served == 0 && in > c.downloadStart():
 		return fmt.Sprintf("the head's download did not start within %s", c.downloadStart())
@@ -409,6 +411,21 @@ func (c *Coordinator) slotOverL(t *ticket, now time.Time) string {
 		return fmt.Sprintf("the upload did not start within %s", c.uploadStart())
 	}
 	return ""
+}
+
+// cannotFinishL: a chunked upload that, at the pace it has kept so far, would end well past the slot's cap. It is judged only once it has run
+// long enough to have a pace (paceWindow), and only when the projected end is clearly past the cap (by an eighth of it), so a slow machine
+// that will make it is kept and one that never could does not hold the line for the whole slot.
+func (c *Coordinator) cannotFinishL(t *ticket, now time.Time) bool {
+	if t.uploadFirst.IsZero() || t.uploading || t.verifying || t.partBytes <= 0 || t.partBytes >= c.headSize {
+		return false
+	}
+	ran := now.Sub(t.uploadFirst)
+	if ran < paceWindow {
+		return false
+	}
+	end := t.uploadFirst.Add(time.Duration(float64(ran) * float64(c.headSize) / float64(t.partBytes)))
+	return end.After(t.Claimed.Add(c.slotCap() + c.slotCap()/8))
 }
 
 func (c *Coordinator) findL(tok string) (*ticket, int) {
