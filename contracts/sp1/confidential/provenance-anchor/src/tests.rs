@@ -841,6 +841,23 @@ fn read_shield_authenticates_the_carrier_before_crediting() {
     );
     assert_eq!(l2.available(), value as u128, "a re-fold does not mint");
 
+    // A shield of another asset cannot fund this fold, however well authenticated it is.
+    let mut l_wrong = BackingLedger::default();
+    let w_wrong = mk(&tx, 1, real_root);
+    assert_eq!(
+        read_shield(
+            &w_wrong,
+            &[0xFFu8; 32],
+            &mut l_wrong,
+            &blind,
+            &|_, _| true,
+            &|_, _, _| true
+        ),
+        None,
+        "a shield of another asset credits nothing"
+    );
+    assert_eq!(l_wrong.available(), 0);
+
     // A block root the merkle path does not reach is refused.
     let mut bad_root = BackingLedger::default();
     let w_bad = mk(&tx, 1, [0x77u8; 32]);
