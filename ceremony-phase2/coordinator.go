@@ -64,6 +64,9 @@ type Config struct {
 	// PerName: contributors (in the queue and already accepted) that may share a numbered name, "hd-1", "hd-2", ... (the same text before a
 	// trailing number); 0: no limit. One party running many numbered instances cannot take every slot. Names without a trailing number are not limited.
 	PerName int
+	// NoPool: the prover pool's lane is closed (a pool machine's join is refused and its unclaimed places are dropped at start-up), so
+	// every slot goes to a person while people are waiting.
+	NoPool bool
 	// A claimed slot must show progress, so a place cannot be held by polling alone: from the claim, the head's
 	// download must start within DownloadStart (10 min) and be complete within DownloadBy (75 min), and the upload must
 	// start within UploadStart (105 min). An offline contributor, who uploads without downloading, starts the upload
@@ -455,6 +458,30 @@ func netKey(ip string, bits4, bits6 int) string {
 	return p.String()
 }
 
+// TrimPool drops the unclaimed places in the pool lane when the lane is closed (NoPool).
+func (c *Coordinator) TrimPool() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.NoPool {
+		return 0
+	}
+	kept := make([]*ticket, 0, len(c.queue))
+	dropped := 0
+	for _, t := range c.queue {
+		if t.Lane == "pool" && t.Claimed.IsZero() {
+			dropped++
+			continue
+		}
+		kept = append(kept, t)
+	}
+	if dropped > 0 {
+		c.queue = kept
+		c.saveQueueL()
+		c.logf("queue: %d pool places were dropped (the pool lane is closed)", dropped)
+	}
+	return dropped
+}
+
 // numberedStem: the text before a trailing number in a name ("hd-12" and "hd 3" both give "hd"), and whether the name has one. Hex addresses used as
 // names and names with no trailing number are not stems.
 func numberedStem(name string) (string, bool) {
@@ -679,6 +706,9 @@ func (c *Coordinator) JoinLane(name, handle, ip, lane string) (string, Status, e
 	}
 	if lane != "" && lane != "pool" {
 		return "", Status{}, refuse(400, `lane is "" or "pool"`, nil)
+	}
+	if lane == "pool" && c.NoPool {
+		return "", Status{}, refuse(403, "the prover pool is not taking turns right now; people are waiting", nil)
 	}
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
