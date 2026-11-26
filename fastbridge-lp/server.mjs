@@ -152,6 +152,10 @@ const config = {
   lowFree: (PAIR ? C.lowFreeEth : C.lowFreeTac) != null ? tacUnits(PAIR ? C.lowFreeEth : C.lowFreeTac) : null,    // what is left to lend, an amount with up to 8 places (TAC, or ETH for a pair provider)
   lowEth: C.lowEth != null ? tacUnits(C.lowEth) * 10n ** 10n : null,        // an ETH amount ("0.002") in wei: the units helper reads up to 8 places
   quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(PAIR ? { rate: () => quoteRate() } : {}), ...(flat ? { flatFee: () => flat.fwd() } : {}) },
+  // stuck terms (dapp/fast/stuck-terms.js), when the config carries them: class quotes are priced at their fees and the schedule is advertised in /info.
+  // The daemon installs no lineage screen (it takes any TAC, as docs/FAST-BRIDGE.md says), so a lock under a plain quote is still taken whole; the terms
+  // price the classes for the clients that ask at a class, and the page provider is where the priced screen stands.
+  ...(C.stuck ? { stuck: C.stuck } : {}),
   policy: {
     minCsv: C.policy.minCsv ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, minClaimSecs: C.policy.minClaimSecs ?? 3600, claimSlackSecs: C.policy.claimSlackSecs ?? 7200,
     roundSecs: C.policy.roundSecs ?? 600, refundMarginSecs: C.policy.refundMarginSecs ?? 600, maxOfferAgeSecs: C.policy.maxOfferAgeSecs ?? 3600, holdAgeSecs: C.policy.holdAgeSecs,

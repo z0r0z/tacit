@@ -26,6 +26,14 @@
     "validSecs": 600,
     "rate": { "num": 1, "den": 1 }
   },
+  "stuck": {
+    "maxStuckShareBps": 2000,
+    "classes": {
+      "long": { "take": true, "neverBps": 1000, "costBps": 30, "flatCost": "100000000", "recoveryBps": 0 },
+      "pool-exit": { "take": true, "neverBps": 2000, "costBps": 30, "flatCost": "100000000", "recoveryBps": 0 },
+      "unprovable": { "take": false, "neverBps": 5000, "costBps": 30, "flatCost": "100000000", "recoveryBps": 0 }
+    }
+  },
   "policy": {
     "minCsv": 72,
     "evmWindowSecs": 14400,

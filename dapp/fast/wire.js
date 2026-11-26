@@ -11,6 +11,7 @@
 //
 //   T  tacit.js with the key's wallet open     withKey(fn)  a call under that key (tacit-session.js)     ux  the pool module (trade/poolux.js)
 
+import { pricedScreen } from '/fast/stuck-terms.js';
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=82196961';
@@ -539,14 +540,19 @@ export async function openProvider({ T, withKey, ux, priv, pubHex, boards = [], 
     return { pool: await evm.available(), address: btc.address, claimPub };
   }
   const screen = lineageScreen(vet);
-  const configOf = (s) => ({
-    claimPub, csvBlocks: 144, alertSecs: 3600, anyTac: s.anyTac !== false,
-    quote: { btcAsset: asset.btcAsset, evmAsset: asset.evmAsset, minAmount: s.minAmount, maxAmount: s.maxAmount, feeBps: s.feeBps, flatFee: s.flatFee, validSecs: 600 },
-    policy: {
-      minCsv: 72, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, roundSecs: 600, refundMarginSecs: 600, maxOfferAgeSecs: 3600,
-      minAmount: s.minAmount, maxAmount: s.maxAmount, minConfsFor: confs, ...(s.anyTac === false ? { screen } : {}),
-    },
-  });
+  const configOf = (s) => {
+    // Stuck terms (settings.stuck, dapp/fast/stuck-terms.js): the provider takes the classes it prices, at their fees, whichever way `anyTac`
+    // stands, so the priced screen stands in for the lineage one, and the terms ride the config to the quoter and the /info answer.
+    const stuck = s.stuck ? { ...s.stuck, base: { feeBps: s.feeBps, flatFee: s.flatFee } } : null;
+    return {
+      claimPub, csvBlocks: 144, alertSecs: 3600, anyTac: s.anyTac !== false, ...(stuck ? { stuck } : {}),
+      quote: { btcAsset: asset.btcAsset, evmAsset: asset.evmAsset, minAmount: s.minAmount, maxAmount: s.maxAmount, feeBps: s.feeBps, flatFee: s.flatFee, validSecs: 600 },
+      policy: {
+        minCsv: 72, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, roundSecs: 600, refundMarginSecs: 600, maxOfferAgeSecs: 3600,
+        minAmount: s.minAmount, maxAmount: s.maxAmount, minConfsFor: confs, ...(stuck ? { screen: pricedScreen(vet, stuck) } : (s.anyTac === false ? { screen } : {})),
+      },
+    };
+  };
   // Starts the swaps that are open on their way (the takes and the refunds are not to be left), and, when `accept` is set, answers
   // requests and posts the ad on every board. Settings: { feeBps, flatFee, minAmount, maxAmount } in base units, and `anyTac` (taken unless false: see `screen`).
   async function start({ settings = {}, accept = true } = {}) {
