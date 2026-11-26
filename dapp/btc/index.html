@@ -22,8 +22,8 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=3f8c5cc6">
-<link rel="modulepreload" href="/swap/atomic.js?cb=caf9904d">
+<link rel="modulepreload" href="/btc/app.js?cb=6dcc1bf2">
+<link rel="modulepreload" href="/swap/atomic.js?cb=c1f9c54c">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -58,7 +58,7 @@
 <link rel="modulepreload" href="/btc/payout.js?cb=3b028d52">
 <link rel="modulepreload" href="/evm-account.js">
 <!-- preload:end -->
-<link rel="stylesheet" href="/swap/card.css?cb=c6209d38">
+<link rel="stylesheet" href="/swap/card.css?cb=7716fe3d">
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2'); }
@@ -196,8 +196,7 @@ html .lane #atomic .q small { display: block; margin-top: 2px; color: var(--mute
 html .lane #atomic .q button.link, #mine .snt button.link.cx { padding: 0 2px; font: 500 12px var(--mono); color: var(--ink); text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; cursor: pointer; }
 /* a swap started with one press has five steps: one row where they fit, three and two where they do not, two a row on a phone */
 #mine .snt.atm .stp.s5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-@media (max-width: 640px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 420px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { #mine .snt.atm .stp.s5 { gap: 4px; } #mine .snt.atm .stp.s5 li { font-size: 10.5px; overflow-wrap: anywhere; } }
 /* a Bitcoin wallet that holds TAC is not sent from: the safe ways, each on a line of its own */
 html .lane #atomic .q .safe { display: block; margin-top: 6px; color: var(--ink); }
 html .lane #atomic .q code { overflow-wrap: anywhere; font: 12px var(--mono); }
@@ -793,6 +792,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/btc/app.js?cb=3f8c5cc6"></script>
+<script type="module" src="/btc/app.js?cb=6dcc1bf2"></script>
 </body>
 </html>

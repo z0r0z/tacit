@@ -2,7 +2,7 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=caf9904d';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=c1f9c54c';
 import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=c42a3f60';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
@@ -186,7 +186,7 @@ function mineSummary() {
   if (w.length) bits.push(`${w.length} in progress`);
   if (attn.size) bits.push(`${attn.size} need${attn.size === 1 ? 's' : ''} attention`);
   if (dn.length) bits.push(`${dn.length} done`);
-  setSum('mine-sum', bits.length ? bits.join(' · ') : lane.unlocked ? (lane.looking ? 'looking for your swaps…' : 'none yet') : 'open your wallet');
+  setSum('mine-sum', bits.length ? bits.join(' · ') : lane.unlocked ? (lane.looking ? 'looking for your swaps…' : 'none yet') : 'sign in');
 }
 function walletSummaries() {
   setSum('yb-sum', !$('yb-box').hidden ? $('yb-bal').textContent : 'address, balance, send');
@@ -211,7 +211,7 @@ const lane = makeAtomicLane({
   shield: makeAddEth({ getUx }), payout,
   onState: () => follow(lane.state()),
   onKey: () => paintChip(),
-  onRecs: (recs) => { titleFor(recs); for (const r of recs) recDir.set(r.id, r.dir); paintMine(recs); panel?.paint(); paintEth(); },
+  onRecs: (recs, shown) => { titleFor(recs); for (const r of recs) recDir.set(r.id, r.dir); paintMine(recs, shown); mineSummary(); panel?.paint(); paintEth(); },
   onBal: () => { panel?.paint(); paintEth(); },
   onOpen: () => { panel?.paint(); paintEth(); },
   // a finished swap's "Send BTC": the panel's send, the amount that arrived filled in
@@ -311,12 +311,12 @@ function paintEth() {
 $('ye-send').addEventListener('click', () => withdraw({}).catch(() => {}));
 
 // (the swaps of an earlier visit are looked for on the chains for a minute or two after the wallet opens: until that ends the list says so, never 'No swaps yet')
-function paintMine(recs) {
-  const open = lane.unlocked, look = lane.looking;
+function paintMine(recs, shown = recs) {
+  const open = lane.unlocked, look = lane.looking, any = shown.length > 0;
   $('mine-say').textContent = !open ? 'Sign in above to see your swaps.'
-    : look === 'failed' ? `Your ${recs.length ? 'other ' : ''}past swaps could not be looked for just now. Trying again.`
-      : look ? (recs.length ? 'Looking for more of your past swaps…' : 'Looking for your past swaps on Bitcoin and Ethereum. This can take a minute or two.')
-        : recs.length ? '' : 'No swaps yet. A swap you start shows here, with its steps.';
+    : look === 'failed' ? `Your ${any ? 'other ' : ''}past swaps could not be looked for just now. Trying again.`
+      : look ? (any ? 'Looking for more of your past swaps…' : 'Looking for your past swaps on Bitcoin and Ethereum. This can take a minute or two.')
+        : any ? '' : 'No swaps yet. A swap you start shows here, with its steps.';
   $('mine-keep').hidden = !open;
 }
 // a copy of the swaps as a file: a swap of ETH for BTC is found again from this copy or this browser's storage, not from the key alone
