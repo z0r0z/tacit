@@ -140,7 +140,17 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
   const asQuote = (r) => ({ ...r, btcValue: BigInt(r.btcValue), evmAmount: BigInt(r.evmAmount), fee: BigInt(r.evmAmount) - BigInt(r.btcValue) });
 
   // The machine looks its quote up by id; a quote that started a swap stays good for the swap (the lock it waits on takes longer than a quote lasts)
-  const quotes = { get: async (id) => { const r = await quoteStore.get(id); return r ? { ...r, validUntil: r.startedAt ? Math.max(r.validUntil, r.startedAt + policy.startGraceSecs) : r.validUntil } : null; } };
+  // A quote is kept in memory until the swap it is for is started: it is stateless for the provider (a sealed id), nothing needs it before the press, and a store written
+  // for every amount typed and every retry filled a browser's whole storage (2026-11-26). `start` writes it; what an earlier version left unused is pruned once.
+  const pending = new Map(), PENDING_MAX = 40;
+  const recOf = async (id) => pending.get(id) || quoteStore.get(id);
+  let pruned = false;
+  async function pruneOld() {
+    if (pruned || !quoteStore.del) return;
+    pruned = true;
+    try { for (const q of await quoteStore.list()) if (q && q.id && !q.swapId && !q.startedAt && Number(q.validUntil) + 3600 < now()) await quoteStore.del(q.id); } catch { /* the next visit prunes */ }
+  }
+  const quotes = { get: async (id) => { const r = await recOf(id); return r ? { ...r, validUntil: r.startedAt ? Math.max(r.validUntil, r.startedAt + policy.startGraceSecs) : r.validUntil } : null; } };
   const el = makeEthereumLocker({
     seed, now, store, quotes, btc, evm, admit, requireChecked: true, ...(takePresig ? { takePresig } : {}),
     counter: { publishEvmOffer: async (id, offer) => { const r = await lp.postEvmOffer(id, offer); if (r && r.ok === false) throw new Error(`the provider did not take the pool offer: ${r.why}`); } },
@@ -175,14 +185,16 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
     if (!(Number(r.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expires too soon to use');
     const takeSats = Number(r.takeSats ?? 0);
     if (!Number.isInteger(takeSats) || (takeSats !== 0 && (takeSats < 546 || takeSats > policy.maxTakeSats))) throw new Error('the quote\'s Bitcoin fee is out of range');
-    await quoteStore.put({ ...r, id: r.id, btcAsset: strip(r.btcAsset), evmAsset: strip(r.evmAsset), claimPub: claimPub(), takeSats });
+    pending.set(r.id, { ...r, id: r.id, btcAsset: strip(r.btcAsset), evmAsset: strip(r.evmAsset), claimPub: claimPub(), takeSats });
+    for (const [k, v] of pending) if (pending.size > PENDING_MAX || Number(v.validUntil) + 60 < now()) pending.delete(k); else break;
+    pruneOld();
     return { ...asQuote(r), fee, btcAsset: strip(r.btcAsset), evmAsset: strip(r.evmAsset), csvBlocks, takeSats, highFee };
   }
 
   // The user asks the provider to lock. The user's private TAC covers the amount first (a user who cannot lock would only tie up the provider's note), or will
   // once a deposit already mined lands (`coming`, in the pool's units: see coversWith)
   async function start({ quote: qt, coming = null }) {
-    const rec = await quoteStore.get(qt.id);
+    const rec = await recOf(qt.id);
     if (!rec) throw new Error('unknown quote');
     if (rec.swapId) return { swapId: rec.swapId };
     if (!(Number(rec.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expired');
@@ -190,6 +202,7 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
     const a = await lp.start({ quoteId: rec.id });
     if (!a || a.ok === false) throw Object.assign(new Error(`the provider cannot lock that amount${a && a.why ? `: ${a.why}` : ''}`), { retry: !!(a && a.retry) });
     await quoteStore.put({ ...rec, swapId: a.swapId, startedAt: now() });
+    pending.delete(rec.id);
     return { swapId: a.swapId };
   }
 

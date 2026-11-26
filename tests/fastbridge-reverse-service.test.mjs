@@ -15,6 +15,7 @@ import { bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { tacit, te, scalar, etchNote, fetched } from './lib/btc-sim.mjs';
 import { makeClock, makeBitcoinSim, makeEvmSim, makeEvmParty, partyKeys, pool, sha256, ASSET } from './lib/chain-sim.mjs';
 import { memStore, VALUE } from './lib/fastbridge-world.mjs';
+import { guardedStorage } from '../dapp/safe-storage.js';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -240,6 +241,40 @@ test('a read of its notes that fails is remembered for ten seconds, so a stream 
 });
 
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
+test('quotes are kept in memory until the swap starts: 500 quotes write nothing, the one that starts is kept, an old unused one is pruned and one a swap names is not', async () => {
+  const w = world();
+  const cp = claimPubOf(w), real = await w.lp.quote({ amount: SEND, claimPub: cp });
+  let puts = 0;
+  const qs = memStore(), put = qs.put; qs.del = async (id) => { qs.m.delete(id); }; qs.put = async (r) => { puts++; return put(r); };
+  await qs.put({ id: 'old-unused', validUntil: 10 }); await qs.put({ id: 'old-started', validUntil: 10, swapId: 'abc', startedAt: 5 }); puts = 0;
+  const c = makeReverseClient({ lp: { quote: async () => ({ ...real, id: 'q' + Math.random() }), start: async () => ({ ok: true, swapId: 's1' }) }, btc: w.uBtc, evm: { available: async () => SEND }, store: memStore(), quoteStore: qs, seed: w.uKeys.seed, now: w.clock.now });
+  let last; for (let i = 0; i < 500; i++) last = await c.quote(SEND);
+  assert.equal(puts, 0, 'no quote is written when it is given');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(await qs.get('old-unused'), null, 'an old unused quote is pruned');
+  assert.ok(await qs.get('old-started'), 'one a swap names stays');
+  await c.start({ quote: last });
+  assert.equal(puts, 1); assert.equal((await qs.get(last.id)).swapId, 's1');
+});
+
+test('a storage that is full never throws: the write is kept for the visit, only what can be made again is cleared, and a swap record is never touched', async () => {
+  const P = 'tacit-fastbridge-pair-v1:mainnet:pub:';
+  const data = new Map([['tacit-pair-market-v1', 'x'.repeat(50)], [P + 'p:swaps:s1', 'RECORD'], ['foreign', 'y'.repeat(100)], [P + 'p:quotes:q1', '{"id":"q1","validUntil":1}'], [P + 'p:quotes:q2', '{"id":"q2","swapId":"s1"}']]);
+  const cap = 330, used = () => [...data].reduce((n, [k, v]) => n + k.length + v.length, 0);
+  const full = { getItem: (k) => (data.has(k) ? data.get(k) : null), setItem: (k, v) => { if (used() - (data.has(k) ? k.length + data.get(k).length : 0) + k.length + String(v).length > cap) throw new Error('QuotaExceededError'); data.set(k, String(v)); }, removeItem: (k) => { data.delete(k); }, key: (i) => [...data.keys()][i] ?? null, get length() { return data.size; } };
+  const g = guardedStorage(full, { regenerable: ['tacit-pair-market-v1', (k, v) => k.startsWith(P) && k.includes(':quotes:') && !/"(swapId|startedAt)"/.test(v)] });
+  g.setItem('tacit-pair-market-v1', 'z'.repeat(120));
+  g.setItem('tacit-pair-provider-strikes-v1', 'k'.repeat(10));
+  assert.equal(data.get(P + 'p:swaps:s1'), 'RECORD', 'a swap record stays');
+  assert.equal(data.get('foreign'), 'y'.repeat(100), 'foreign data stays');
+  assert.ok(data.has(P + 'p:quotes:q2'), 'a quote a swap names stays');
+  assert.ok(!data.has(P + 'p:quotes:q1'), 'an unused quote went');
+  g.setItem('big', 'q'.repeat(10000));
+  assert.equal(g.getItem('big').length, 10000);
+  const dead = guardedStorage({ getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); }, get length() { throw new Error('blocked'); } });
+  dead.setItem('a', '1'); assert.equal(dead.getItem('a'), '1'); assert.equal(dead.length, 1);
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   if (ONLY && !ONLY.test(name)) continue;

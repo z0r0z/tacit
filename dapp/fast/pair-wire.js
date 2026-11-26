@@ -14,17 +14,18 @@ import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=82196961';
 import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=c56d5cfe';
-import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=0635460a';
+import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=1e46a17b';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=4c2ccb36';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
 import { makeLocalStore } from '/fastbridge-client.js?cb=00d4b6bc';
 import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=fcdca510';
 import { makeRateFeed, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=3bc6995c';
 import { ETH_NODES, batchSize } from '/eth-nodes.js';
+import { guardedStorage } from '/safe-storage.js';
 import { bodyType } from '/rpc-body.js';
 import { discoverProviders } from '/fast/discover.js?cb=08d71bf9';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=429b947b';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=156a3763';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();
@@ -62,8 +63,11 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
 
   const prefix = `tacit-fastbridge-pair-v1:mainnet:${pubHex}:`;
   // the page's own storage is copied to IndexedDB as it is written, and what was lost is put back (fast/pair-keep.js): a swap of ETH for BTC is not found again from the key
+  // (a full or blocked storage never stops a quote or a press: writes that fail are kept for this visit, after what can be made again is cleared; swap records are never cleared)
+  const wasLocal = !!storage && storage === globalThis.localStorage;
+  if (storage) storage = guardedStorage(storage, { regenerable: ['tacit-pair-market-v1', 'tacit-pair-provider-strikes-v1', 'tacit-market-last-v1', 'tacit-pool-rpc-', `${prefix}providers:`, (k, v) => k.startsWith(prefix) && k.includes(':quotes:') && !/"(swapId|startedAt)"/.test(v)] });
   const plainStorage = storage;
-  if (storage && storage === globalThis.localStorage) storage = await keptStorage(prefix, storage);
+  if (wasLocal) storage = await keptStorage(prefix, storage);
   const stores = { fwd: makeLocalStore(`${prefix}fwd:`, storage), index: makeLocalStore(`${prefix}providers:`, storage), swaps: (id) => makeLocalStore(`${prefix}${id}:swaps:`, storage), quotes: (id) => makeLocalStore(`${prefix}${id}:quotes:`, storage) };
   // (`timeoutMs`: how long a call waits for its answer, for a quote that is not waited on for longer than the quote's own wait)
   const reverseCallFor = (ref, o = {}) => (ref && ref.kind === 'mailbox'

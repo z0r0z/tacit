@@ -25,7 +25,7 @@
 import { esc, fmtUnits, parseUnits, plain, E10 } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=e5b9b386';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=cd3b8342';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=1c203d2b';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const NO_ANSWER = 'No answer just now. Nothing was sent. Try again soon.', RETRY_MS = [2000, 4000, 8000, 15000, 30000], RETRY_SHOWN = 3;
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
@@ -96,6 +96,7 @@ export const marketText = (bps) => {
 // Which part of a quote failed, in a few plain words, for the line after the third miss (the cause itself goes to the console: requote)
 export const whyOf = (e) => {
   const m = String((e && e.message) || e || ''), n = String((e && e.name) || '');
+  if (/setItem|getItem|QuotaExceeded|exceeded the quota|\bStorage\b/i.test(m + ' ' + n)) return '';       // (storage is a convenience: never the reason a quote failed)
   if (e && e.step) return String(e.step);
   if (/chainlink|price|market|aggregator/i.test(m)) return 'price: fewer than two Ethereum nodes answered';
   if (/fee estimate|explorer|esplora|mempool/i.test(m)) return 'fees: no Bitcoin explorer answered';
@@ -364,7 +365,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         // quote; only the third miss says so, with a button to try at once (the tries go on). A provider's own sentence is shown as it is.
         if (t === NO_ANSWER) {
           L.qTry = (L.qTry || 0) + 1; L.qRetry = true;
-          L.qErr = L.qTry >= RETRY_SHOWN ? `Can't reach the provider right now (${esc(whyOf(e))}). Retrying…` : '';
+          L.qErr = L.qTry >= RETRY_SHOWN ? `Can't reach the provider right now${whyOf(e) ? ` (${esc(whyOf(e))})` : ''}. Retrying…` : '';
           const wait = RETRY_MS[Math.min(L.qTry - 1, RETRY_MS.length - 1)];
           const again = () => { if (!L.open) return; if (document.hidden) { qTimer = setTimeout(again, wait); return; } run(); };
           clearTimeout(qTimer); qTimer = setTimeout(again, wait);
