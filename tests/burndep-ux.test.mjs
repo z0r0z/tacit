@@ -1603,13 +1603,19 @@ async function atRburnSigned() {
 }
 {
   const { ux, r, seen, world, commit, reveal } = await atRburnSigned();
+  seen.set(commit, 'present'); seen.set(reveal, 'absent');
+  world.chain.broadcastWithRetry = async () => { throw new Error('sendrawtransaction RPC error: bad-txns-inputs-missingorspent'); };
+  ok(await ux.cancelSigned(r.walletPub, r.id) === null && ux.list(r.walletPub).length === 0, 'a commit Bitcoin has whose reveal can never go (its TAC coin was spent elsewhere) is given up, not stuck');
+}
+{
+  const { ux, r, seen, world, commit, reveal } = await atRburnSigned();
   ok(r.stage === 'rburn-signed' && commit && reveal, 'sanity: a signed one-step burn with its two transaction ids');
   const refusal = async () => { try { await ux.cancelSigned(r.walletPub, r.id); return null; } catch (e) { return e.message; } };
   seen.set(commit, 'down'); seen.set(reveal, 'absent');
   ok(/could not be asked/.test(await refusal() || '') && ux.list(r.walletPub)[0]?.stage === 'rburn-signed', 'a chain that cannot be read keeps the bridge as it is');
   seen.set(commit, 'present');
   const send = world.chain.broadcastWithRetry;
-  world.chain.broadcastWithRetry = async () => { throw new Error('bad-txns-inputs-missingorspent'); };
+  world.chain.broadcastWithRetry = async () => { throw new Error('upstream timeout'); };
   ok(/first of its two.*refused the second/.test(await refusal() || '') && ux.list(r.walletPub)[0]?.stage === 'rburn-signed', 'a commit Bitcoin has, with a reveal it refuses, keeps the bridge and says why');
   world.chain.broadcastWithRetry = send;
   const sends = world.broadcasts.length;
