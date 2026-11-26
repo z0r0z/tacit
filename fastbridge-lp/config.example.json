@@ -24,7 +24,12 @@
     "feeBps": 30,
     "flatFee": "10000000",
     "validSecs": 600,
-    "rate": { "num": 1, "den": 1 }
+    "rate": { "num": 1, "den": 1 },
+    "lineageFees": {
+      "defaultClass": "pool-exit",
+      "long": { "feeBps": 100, "flatFee": "0" },
+      "poolExit": { "feeBps": 250, "flatFee": "0" }
+    }
   },
   "policy": {
     "minCsv": 72,

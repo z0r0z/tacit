@@ -8,6 +8,7 @@ import { makeEthereumLocker, confValue } from './fastbridge-el.js';
 import { isSats } from './adaptor-xswap.js';
 import { deriveLock } from './adaptor-btc-lock.js';
 import { secp, sha256, hmac, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
+import { lineageClassOf, lineageInfo, lineageTerms } from './fastbridge-lineage-pricing.js';
 
 const randomHex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.toString(16).padStart(2, '0')).join('');
 const te = new TextEncoder();
@@ -32,14 +33,15 @@ export function makeQuoter({ store, now, params, macKey = null }) {
     return { num: BigInt(r?.num ?? 1), den: BigInt(r?.den ?? 1) };
   };
 
-  function price(amount) {
+  function price(amount, lineage = null) {
     const a = BigInt(amount);
     if (a < min || a > max) throw Object.assign(new Error(`the amount must be between ${min} and ${max}`), { status: 400 });
     const { num, den } = rateNow();
-    const fee = (a * bps) / 10000n + flat;
+    const terms = p.lineageFees ? lineageTerms({ feeBps: bps, flatFee: flat }, p.lineageFees, lineageClassOf(lineage, p.lineageFees)) : { feeBps: bps, flatFee: flat, class: null };
+    const fee = (a * terms.feeBps) / 10000n + terms.flatFee;
     const out = ((a - fee) * num) / den;
     if (a <= fee || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
-    return { btcValue: a, evmAmount: out, fee };
+    return { btcValue: a, evmAmount: out, fee, lineage: terms.class };
   }
 
   const inLock = (takeSats) => p.takeInLock === true && Number(takeSats) > 0;
@@ -64,15 +66,18 @@ export function makeQuoter({ store, now, params, macKey = null }) {
       evmWindowSecs: p.evmWindowSecs, minConfs: p.minConfsFor(btcValue), takeSats: Number(takeSats), created: Number(created), validUntil: Number(validUntil),
     };
     if (inLock(q.takeSats)) q.takeInLock = true;
+    q.legVouts = 1;
     return q;
   }
 
-  async function quote(amount) {
-    const { btcValue, evmAmount } = price(amount);
+  async function quote(amount, { lineage = null } = {}) {
+    const priced = price(amount, lineage);
+    const { btcValue, evmAmount } = priced;
     const q = {
       id: randomHex(16), btcAsset: p.btcAsset, btcValue: String(btcValue), evmAsset: p.evmAsset, evmAmount: String(evmAmount),
       claimPub: p.claimPub, csvBlocks: p.csvBlocks, evmWindowSecs: p.evmWindowSecs, minConfs: p.minConfsFor(btcValue),
       takeSats: p.takeSats ? await p.takeSats() : 0, created: now(), validUntil: now() + (p.validSecs ?? 600),
+      ...(priced.lineage ? { lineage: priced.lineage } : {}),
     };
     // a provider that takes the fee of its take from a second output of the lock's own script says so; a page that does not know the word locks as it always did
     if (inLock(q.takeSats)) q.takeInLock = true;
@@ -99,7 +104,13 @@ export function makeQuoter({ store, now, params, macKey = null }) {
     const q = unseal(id);
     return q ? (await store.get(id)) || q : null;
   };
-  return { price, quote, get, maxAmountFor, sealed: (id) => !!unseal(id) };
+  // a quote priced for one class may pay no more than the class the lock really spends: anything less (a cleaner class,
+  // or a client that asked for the conservative default) stands, since the holder already accepted that price.
+  const allows = (q, lineage) => {
+    if (!p.lineageFees) return true;
+    try { return BigInt(q.evmAmount) <= price(q.btcValue, lineage).evmAmount; } catch { return false; }
+  };
+  return { price, quote, get, maxAmountFor, allows, sealed: (id) => !!unseal(id) };
 }
 
 const TERMINAL = new Set(['done', 'refunded', 'rejected', 'aborted', 'lost']);
@@ -165,7 +176,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     },
   };
   // (an early record waits for its confirmations no longer than an extended reservation holds the payout)
-  const el = makeEthereumLocker({ seed, now, store: swaps, quotes, btc, evm, counter, policy: { earlyConfirmWaitSecs: hold.extendSecs, ...config.policy } });
+  const policy = { earlyConfirmWaitSecs: hold.extendSecs, ...config.policy };
+  if (config.quote.lineageFees) policy.lineageQuote = ({ quote: q, class: cls }) => (quoter.allows(q, cls) ? null : `the note's history is ${cls}, which this quote was not priced for`);
+  const el = makeEthereumLocker({ seed, now, store: swaps, quotes, btc, evm, counter, policy });
   const health = { ok: true, lastTick: 0, lastError: null };
   const reported = new Set(), lastAlert = new Map(), unreadSince = new Map();
 
@@ -448,11 +461,11 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (method === 'GET' && path === '/health') return reply({ ok: health.ok, lastTick: health.lastTick, error: health.lastError }, health.ok ? 200 : 503);
       if (method === 'GET' && path === '/info') {
         const q = config.quote, a = await availableAmount();
-        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false });
+        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false, ...(q.lineageFees ? { lineagePricing: lineageInfo(q.lineageFees) } : {}) });
       }
       if (method === 'POST' && path === '/quote') {
         if (!body || !amountOk(body.amount)) return reply({ error: 'amount must be a whole number' }, 400);
-        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount).evmAmount); const made = await quoter.quote(body.amount); if (quotesHeld !== null && !quoter.sealed(made.id)) quotesHeld++; return made; }));
+        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount, body.lineage).evmAmount); const made = await quoter.quote(body.amount, { lineage: body.lineage }); if (quotesHeld !== null && !quoter.sealed(made.id)) quotesHeld++; return made; }));
       }
       if (method === 'POST' && path === '/reserve') {
         if (!body || !isId(body.quoteId)) return reply({ error: 'quoteId is required' }, 400);

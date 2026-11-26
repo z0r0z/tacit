@@ -49,6 +49,11 @@ test('terms and quote: the provider\'s numbers, the fee in base units, and a ref
   await assert.rejects(() => other('btcAsset', 'cd'.repeat(32)).terms(), /asset is not the one this page expects/);
   await assert.rejects(() => other('evmAsset', 'cd'.repeat(32)).quote(VALUE), /asset is not the one this page expects/);
   assert.equal((await clientFor(w, counterAt(s.base), { pins: {} }).terms()).claimPub, bytesToHex(w.lW.wallet.pub), 'with nothing pinned the provider\'s own terms stand');
+  const lp = fakeLp(w);
+  lp.info = async () => ({ claimPub: bytesToHex(w.lW.wallet.pub), btcAsset: bytesToHex(w.etch.asset), evmAsset: ASSET, minAmount: '1000', maxAmount: '1000000', feeBps: 30, flatFee: '200', csvBlocks: 144, evmWindowSecs: 14400, lineagePricing: { defaultClass: 'pool-exit', classes: { clean: { feeBps: 0, flatFee: '0' }, long: { feeBps: 100, flatFee: '7' }, 'pool-exit': { feeBps: 250, flatFee: '9' } } } });
+  const lt = await clientFor(w, lp).terms();
+  assert.deepEqual([lt.feeBps, lt.flatFee], [280, 209n], 'a class-blind reader uses the most the schedule can charge');
+  assert.equal(termsOf(await lp.info()).feeBps, 280);
 });
 
 test('a quote the page will not show: unreadable, for another amount, a payout above the amount, a fee over the limit, a timelock out of range, too little time', async () => {

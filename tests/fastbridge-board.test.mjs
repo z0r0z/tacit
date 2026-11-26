@@ -571,6 +571,9 @@ test('the ads: a provider posts its terms and what it can take now; a user reads
   const lying = { ads: async () => [{ ...board.ads()[0], maxAmount: '1' }, adOf(5, T0 + 60, { gateway: P.gateway }), { v: 1 }] };
   const some = await readProviders({ board: lying, now: c.now });
   assert.deepEqual(some.map(asNamed), ['p5'], 'only the ad that is signed by its own key stands (it names a gateway key that is not its own, which only costs its user a call that is not answered)');
+  info = { ...info, lineagePricing: { defaultClass: 'pool-exit', classes: { clean: { feeBps: 0, flatFee: '0' }, long: { feeBps: 100, flatFee: '7' }, 'pool-exit': { feeBps: 250, flatFee: '9' } } } };
+  const priced = await ads.publish();
+  assert.deepEqual([priced.feeBps, priced.flatFee], [275, '109'], 'a signed ad cannot name the classes, so its terms are the most the schedule can charge');
   info = null;
   assert.equal(await makeAdPublisher({ board, handle: async () => ({ status: 503, body: null }), claimPriv: P.p, claimPub: P.claimPub, keys: P.keys, now: c.now }).publish(), null);
   void ads;

@@ -150,10 +150,16 @@ export function makeEthereumLocker(ctx) {
     const lockedAt = tx.vout.findIndex((o, i) => i !== offer.btc.vout && strip(o.scriptpubkey) === lockSpk && o.value >= takeSats);
     if (takeSats > 0 && !paidDirect && lockedAt < 0) return reject('the lock does not pay the fee of the take');
     const note = sats ? null : await btc.resolveNote(offer.btc.txid, offer.btc.vout);
+    let lineageClass = null;
     if (policy.screen && !sats) {
       let s;
       try { s = await policy.screen(tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout }))); } catch { return reject('the history of the notes could not be read just now', true); }
-      if (s) return reject(s.why, s.retry === true);
+      if (s && s.why) return reject(s.why, s.retry === true);
+      if (s && s.class) lineageClass = s.class;
+    }
+    if (lineageClass && policy.lineageQuote) {
+      const why = await policy.lineageQuote({ quote, class: lineageClass, inputs: tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout })) });
+      if (why) return reject(why);
     }
     const chain = {
       spk: out.scriptpubkey, commitment: note ? hx(note.commitment) : '', validNote: !!note && strip(note.assetIdHex) === strip(offer.btc.asset), value: out.value,

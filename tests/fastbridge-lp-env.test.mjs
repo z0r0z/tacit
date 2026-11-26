@@ -38,6 +38,18 @@ test('a value that is set and is not valid stops the start, naming it', () => {
   }
 });
 
+
+test('the lineage pricing knobs: the class additions over the config, and a value that is not valid stops the start', () => {
+  const c = applyEnv(BASE, { FB_LP_LINEAGE_DEFAULT_CLASS: 'long', FB_LP_LINEAGE_LONG_FEE_BPS: '125', FB_LP_LINEAGE_LONG_FLAT_FEE: '7', FB_LP_LINEAGE_POOL_EXIT_FEE_BPS: '300', FB_LP_LINEAGE_POOL_EXIT_FLAT_FEE: '9' });
+  assert.deepEqual(c.quote.lineageFees, { defaultClass: 'long', long: { feeBps: 125, flatFee: '7' }, poolExit: { feeBps: 300, flatFee: '9' } });
+  const kept = applyEnv({ ...BASE, quote: { ...BASE.quote, lineageFees: { defaultClass: 'pool-exit', long: { feeBps: 100, flatFee: '0' }, poolExit: { feeBps: 250, flatFee: '0' } } } }, { FB_LP_LINEAGE_LONG_FEE_BPS: '150' });
+  assert.deepEqual(kept.quote.lineageFees, { defaultClass: 'pool-exit', long: { feeBps: 150, flatFee: '0' }, poolExit: { feeBps: 250, flatFee: '0' } }, 'a knob over a config keeps the config\'s other classes');
+  for (const [env, name] of [[{ FB_LP_LINEAGE_DEFAULT_CLASS: 'stuck' }, 'LINEAGE_DEFAULT_CLASS'], [{ FB_LP_LINEAGE_LONG_FEE_BPS: '9001' }, 'LINEAGE_LONG_FEE_BPS'], [{ FB_LP_LINEAGE_POOL_EXIT_FEE_BPS: '0.5' }, 'LINEAGE_POOL_EXIT_FEE_BPS'], [{ FB_LP_LINEAGE_LONG_FLAT_FEE: '-1' }, 'LINEAGE_LONG_FLAT_FEE']]) {
+    assert.throws(() => applyEnv(BASE, env), (e) => e.message.includes(name), JSON.stringify(env));
+  }
+  const before = JSON.stringify(BASE); applyEnv(BASE, { FB_LP_LINEAGE_LONG_FEE_BPS: '100' }); assert.equal(JSON.stringify(BASE), before, 'the config handed in is not changed');
+});
+
 test('the Bitcoin explorers can be set: https only, in the order given, a trailing slash dropped, and a bad value never echoes the (possibly keyed) URL', () => {
   const c = applyEnv({ ...BASE, btcBases: ['https://old.example/api'] }, { FB_LP_BTC_BASES: ' https://keyed.example/v1/KEY/api/ , https://mempool.space/api, ' });
   assert.deepEqual(c.btcBases, ['https://keyed.example/v1/KEY/api', 'https://mempool.space/api']);

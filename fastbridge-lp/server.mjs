@@ -14,14 +14,19 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { makeLineageClassScreen, normalizeLineageFees } from '../dapp/fastbridge-lineage-pricing.js';
 process.on('unhandledRejection', (e) => console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'error', msg: 'unhandled rejection', error: String((e && e.message) || e).slice(0, 200) })));
 
 const DRY = process.argv.includes('--dry-run');
 const cfgPath = resolve(process.env.FB_LP_CONFIG || 'fastbridge-lp/config.json');
 const { applyEnv } = await import('./lib/env-config.mjs');
 const pairLib = await import('./lib/pair.mjs');
-let C;
-try { C = applyEnv(JSON.parse(readFileSync(cfgPath, 'utf8'))); if (pairLib.isPair(C)) C = pairLib.pairConfig(C); } catch (e) { console.error(String((e && e.message) || e)); process.exit(1); }
+let C, lineageFees = null;
+try {
+  C = applyEnv(JSON.parse(readFileSync(cfgPath, 'utf8'))); if (pairLib.isPair(C)) C = pairLib.pairConfig(C);
+  if (pairLib.isPair(C) && C.quote && C.quote.lineageFees) throw new Error('quote.lineageFees is for a TAC provider, not a BTC-ETH pair provider');
+  lineageFees = normalizeLineageFees(C.quote && C.quote.lineageFees);
+} catch (e) { console.error(String((e && e.message) || e)); process.exit(1); }
 // BTC-ETH pair mode (lib/pair.mjs): a provider of Bitcoin for ETH and ETH for Bitcoin, priced from a feed of ETH per BTC, with a key of its own
 const PAIR = pairLib.isPair(C);
 const keyHex = String(process.env.FB_LP_KEY || '').trim().replace(/^0x/, '');
@@ -127,11 +132,13 @@ const config = {
   claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
   lowFree: (PAIR ? C.lowFreeEth : C.lowFreeTac) != null ? tacUnits(PAIR ? C.lowFreeEth : C.lowFreeTac) : null,    // what is left to lend, an amount with up to 8 places (TAC, or ETH for a pair provider)
   lowEth: C.lowEth != null ? tacUnits(C.lowEth) * 10n ** 10n : null,        // an ETH amount ("0.002") in wei: the units helper reads up to 8 places
-  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(PAIR ? { rate: () => quoteRate() } : {}) },
+  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(lineageFees ? { lineageFees } : {}), ...(PAIR ? { rate: () => quoteRate() } : {}) },
+  anyTac: C.anyTac !== false,
   policy: {
     minCsv: C.policy.minCsv ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, minClaimSecs: C.policy.minClaimSecs ?? 3600, claimSlackSecs: C.policy.claimSlackSecs ?? 7200,
     roundSecs: C.policy.roundSecs ?? 600, refundMarginSecs: C.policy.refundMarginSecs ?? 600, maxOfferAgeSecs: C.policy.maxOfferAgeSecs ?? 3600, holdAgeSecs: C.policy.holdAgeSecs,
     minAmount: C.quote.minAmount, maxAmount: C.quote.maxAmount,
+    ...((lineageFees || C.anyTac === false) ? { screen: makeLineageClassScreen((ns) => tacit.bridgeUx().lineage(ns), { refusePoolExit: C.anyTac === false }) } : {}),
     minConfsFor: (v) => confs.reduce((n, [from, c]) => (BigInt(v) >= from ? c : n), confs[0][1]),
   },
 };
