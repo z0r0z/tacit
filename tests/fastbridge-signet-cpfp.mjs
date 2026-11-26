@@ -58,13 +58,27 @@ if (!S.child) {
   } else anchor = findCpfpAnchor(parent, mainSpk);
   assert.ok(anchor, 'the parent has no spendable main-key sats output over dust');
   const feeRate = Math.max(2, Number(process.env.FB_CPFP_RATE || 5));
-  const fee = cpfpFee({ rate: feeRate, parent });
+  const vsizeOf = (tx) => Number.isFinite(Number(tx.vsize)) ? Number(tx.vsize) : Math.ceil(Number(tx.weight || 0) / 4);
+  const members = new Map();
+  const addPackageTx = async (tx) => {
+    if (!tx || members.has(tx.txid)) return;
+    members.set(tx.txid, tx);
+    for (const input of tx.vin || []) {
+      const prev = await esplora(`/tx/${input.txid}`).catch(() => null);
+      if (prev && !(prev.status && prev.status.confirmed)) await addPackageTx(prev);
+    }
+  };
+  await addPackageTx(parent);
+  const packageParent = {
+    vsize: [...members.values()].reduce((n, tx) => n + vsizeOf(tx), 0),
+    fee: [...members.values()].reduce((n, tx) => n + Number(tx.fee || 0), 0),
+  };
   const child = buildCpfpBump({
-    anchor, rate: feeRate, parent, mainSpkHex: mainSpk,
+    anchor, rate: feeRate, parent: packageParent, mainSpkHex: mainSpk,
     sign: (tx, i, value) => tacit.signP2wpkhInputWithKey(tx, i, value, priv, pub),
   });
   const hex = bytesToHex(tacit.serializeTx(child.tx)), txid = tacit.txid(child.tx);
-  S.child = { txid, hex, parentTxid, anchor, rate: feeRate, fee: child.fee, out: child.out, parentWeight: parent.weight, parentFee: parent.fee };
+  S.child = { txid, hex, parentTxid, anchor, rate: feeRate, fee: child.fee, out: child.out, parentWeight: parent.weight, parentFee: parent.fee, packageVsize: packageParent.vsize, packageFee: packageParent.fee, packageTxs: [...members.keys()] };
   keep();
   await esplora('/tx', hex);
   log('sent cpfp child', { txid, parentTxid, anchor: `${anchor.txid}:${anchor.vout}`, rate: feeRate, fee: child.fee });
