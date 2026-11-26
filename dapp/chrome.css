@@ -237,6 +237,59 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   }
 }
 
+/* The front page uses native dialogs. The trade pages open the same controls in an overlay. */
+:is(#sheet-wallet, #sheet-pick, #sheet-wc, #pass-dialog, .bsheet.top) {
+  --sheet-accent: var(--accent, var(--ink));
+  --sheet-wash: var(--wash, var(--field));
+  &.bsheet { align-items: safe center; }
+  & .bsheet-in, &:is(dialog) { border-radius: 14px; }
+  & :is(.sheet-head, .bsheet-head) {
+    gap: 8px; margin-bottom: 18px; padding-block: 13px; border-top: 3px solid var(--sheet-accent);
+    border-bottom: 1px solid var(--hair); border-radius: 13px 13px 0 0; background: var(--card);
+  }
+  & :is(.sheet-head, .bsheet-head) h2 {
+    font: 600 clamp(28px, 4vw, 35px)/1.08 var(--sans, sans-serif); letter-spacing: -.055em;
+  }
+  & .x { color: var(--ink); border: 1px solid var(--hair); border-radius: 7px; }
+  & .lede-s { margin-bottom: 18px; color: var(--mute); font: 400 15px/1.5 var(--sans, sans-serif); }
+  & .opt { min-height: 60px; padding: 10px 14px; background: var(--card); border-color: var(--hair); border-radius: 8px; }
+  & .opt-t { gap: 10px; font: 600 15px/1.35 var(--sans, sans-serif); }
+  & .opt-t > .tk { width: 24px; height: 24px; }
+  & .opt-m { padding-left: 34px; font: 400 13px/1.4 var(--sans, sans-serif); }
+  & .opt.main, & .opts > .opt:first-of-type, & .opt[aria-busy="true"] {
+    border-color: var(--sheet-accent); background: var(--sheet-wash);
+  }
+  & .opt:not(.mine, [aria-busy="true"]) .opt-t::after {
+    content: ""; width: 7px; height: 7px; margin-left: auto; margin-right: 3px; flex: none;
+    border: solid var(--sheet-accent); border-width: 1.5px 1.5px 0 0; transform: rotate(45deg);
+  }
+  & :is(.ways .way, .picker button, .amt.text, form.amt, .btn) { border-radius: 8px; }
+  & .picker button { color: var(--ink); background: var(--card); }
+  & .more-in { margin: 0; }
+  & .more-in > summary {
+    display: list-item; margin: 0; padding: 12px 2px; text-align: left; cursor: pointer;
+    color: var(--sheet-accent); font: 500 14px/1.4 var(--sans, sans-serif);
+  }
+  & .more-in .opt + .opt { margin-top: 6px; }
+  & .more { justify-content: start; gap: 4px 18px; }
+  & .more .link { min-height: 40px; color: var(--sheet-accent); }
+  & :is(.status.wait, .note.wait, .note.err, .status.err):not(:empty, [hidden]) {
+    margin-block: 10px; padding: 9px 12px; text-align: left; border-inline-start: 3px solid currentColor;
+  }
+  & :is(.status.wait, .note.wait) { color: var(--sheet-accent); background: var(--sheet-wash); }
+  & :is(button, a, summary, input, select):focus-visible { outline: 2px solid var(--sheet-accent); outline-offset: 2px; }
+  @media (hover: hover) {
+    & :is(.opt, .way, .picker button, .x):hover:enabled { border-color: var(--sheet-accent); background: var(--sheet-wash); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    &, & :is(.bsheet-in, .sheet-head, .bsheet-head), & .opt[aria-busy="true"] .opt-t::after { animation: none; }
+  }
+  @media (max-width: 640px) {
+    &.bsheet { align-items: safe end; }
+    & .bsheet-in, &:is(dialog) { border-radius: 14px 14px 0 0; }
+  }
+}
+
 /* Graphite's grotesk, for the header, the menu and the footer of every page that wears them (the front page names it in its own head as well, for its first paint), and a
    local face scaled to its width and line metrics that shows until it arrives; the same for Newsreader, the front page's serif. Measured against each font's own
    advances. */
