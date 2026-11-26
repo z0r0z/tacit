@@ -5,7 +5,7 @@
 // Two things a visitor can do with a wallet: send a settle the relay has proved and holds for a sender (#open, open.js), and pay for proofs by
 // sending PROVE, or ETH swapped to PROVE, to the prover account (#prove, prove.js). Only the visitor's own balances are read for those.
 import '/relay-route.js?cb=7a415964';
-import { makeConnect } from '/trade/connect.js?cb=41394526';
+import { makeConnect } from '/trade/connect.js?cb=514272b7';
 import { mountOpen } from '/relay/open.js?cb=c8324603';
 import { mountProve } from '/relay/prove.js?cb=824a9a4e';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';

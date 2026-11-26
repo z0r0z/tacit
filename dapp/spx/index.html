@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-p3MMp7ihJTKTiVyW7UkQwb/JP5cRDWzMDOosVjny6RA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-FXWFvxIHbrYlxjjgvP9wIe2qOt3VCiraF8hfORpe3wk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -48,7 +48,8 @@
 <link rel="modulepreload" href="/evm-wallet.js?cb=ed67f38d">
 <link rel="modulepreload" href="/identity-message.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
-<link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
+<link rel="modulepreload" href="/walletconnect.js?cb=4740866f">
+<link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/evm-account.js">
 <link rel="modulepreload" href="/evm-tx.js">
 <link rel="modulepreload" href="/tac-airdrop.js">
@@ -77,12 +78,11 @@
 <link rel="modulepreload" href="/activity.js?cb=f692784e">
 <link rel="modulepreload" href="/pool-hint.js?cb=a5413c70">
 <link rel="modulepreload" href="/own-node.js?cb=ed1de110">
-<link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/community-nodes.js">
 <link rel="modulepreload" href="/nodes-pin.js">
-<link rel="modulepreload" href="/swap/card.js?cb=7ea6ddb2">
+<link rel="modulepreload" href="/swap/card.js?cb=f4636f81">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
@@ -3061,7 +3061,7 @@ import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?c
 import { makeTacitAddress, poolKeysOf } from '/tacit-address.js';
 import { bip352TaggedHash } from '/bip352.js';
 import { makeEvmWallet, declinedWords, stillWaiting } from '/evm-wallet.js?cb=ed67f38d';
-import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=843803d6';
+import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=4740866f';
 import { makeEvmAccount } from '/evm-account.js';
 import { makeEvmTx } from '/evm-tx.js';
 import { makeTacAirdrop, makeRpcCall } from '/tac-airdrop.js';
@@ -5129,7 +5129,7 @@ const chainSaid = (m) => Object.assign(new Error(m), { said: true });
 const CHAIN_PROVE_S = globalThis.crossOriginIsolated ? 8 : 30;
 const chainProveSay = () => (globalThis.crossOriginIsolated ? 'a few seconds' : 'about half a minute');
 
-const TACIT_URL = '/tacit.js?cb=808b3e1e';
+const TACIT_URL = '/tacit.js?cb=258d3937';
 let T = null;
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; try { xtEngines(m); } catch { } } });
 const loadTacit = TS.load, tacitTurn = TS.turn, withKey = TS.withKey, dropTacitKey = TS.drop, tPriv = TS.tPriv;
@@ -5372,7 +5372,7 @@ window.addEventListener('tacit:evm-accounts', (e) => {
   walletMoved(a ? 'switched accounts' : 'locked');
 });
 const CHAIN_META = {
-  1: { chainName: 'Ethereum', rpcUrls: ['https://ethereum-rpc.publicnode.com'], blockExplorerUrls: ['https://etherscan.io'] },
+  1: { chainName: 'Ethereum', rpcUrls: ['https://eth.drpc.org'], blockExplorerUrls: ['https://etherscan.io'] },
   8453: { chainName: 'Base', rpcUrls: ['https://mainnet.base.org'], blockExplorerUrls: ['https://basescan.org'] },
   4663: { chainName: 'Robinhood Chain', rpcUrls: ['https://rpc.mainnet.chain.robinhood.com'], blockExplorerUrls: ['https://robinhoodchain.blockscout.com'] },
 };
@@ -11027,7 +11027,8 @@ async function loadPrecision() {
   if (who) calls.push({ to: f, data: SEL.staked + addrWord(who) }, { to: f, data: SEL.earned + addrWord(who) },
     { to: ADDR.tac, data: SEL.balanceOf + addrWord(who) }, { to: ADDR.tac, data: SEL.allowance + addrWord(who) + addrWord(f) },
     { to: p, data: SEL.balanceOf + addrWord(who) }, { to: p, data: SEL.allowance + addrWord(who) + addrWord(f) });
-  const holders = who ? [...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))] : [];
+  const holders = [...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))];      // (a key with no wallet paying is read at its own account)
+  const heldAt = calls.length;
   for (const token of [ADDR.tac, ADDR.tacbtc, ADDR.tacusd, ADDR.tacd, ADDR.tace]) for (const a of holders) calls.push({ to: token, data: SEL.balanceOf + addrWord(a) });
   const balAt = who ? calls.push({ to: ADDR.multicall, data: '4d2301cc' + addrWord(who) }) - 1 : -1, gp = who ? gasNow() : null;
   const blkAt = calls.push({ to: ADDR.multicall, data: SEL.blockNumber }) - 1;
@@ -11046,7 +11047,7 @@ async function loadPrecision() {
   if (my !== precisionSeq) return FARM.precision;
   if (S.address !== who) return loadPrecision();
   FARM.precision = x;
-  const held = (j) => (holders.every((_, i) => r[14 + j * holders.length + i]) ? holders.reduce((sum, _, i) => sum + w(14 + j * holders.length + i), 0n) : null);
+  const held = (j) => (holders.every((_, i) => r[heldAt + j * holders.length + i]) ? holders.reduce((sum, _, i) => sum + w(heldAt + j * holders.length + i), 0n) : null);
   if (holders.length && held(0) != null) Object.assign(TACB, { who: holders.join(), erc: held(0) }, TACB.who === holders.join() ? {} : { acct: null, at: 0 });
   if (holders.length && [1, 2, 3, 4].every((j) => held(j) != null)) Object.assign(PUBX, { who: holders.join(), tacbtc: held(1), tacusd: held(2), tacd: held(3), tace: held(4) });
   dashSoon();
@@ -17164,7 +17165,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=7ea6ddb2').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=f4636f81').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {
@@ -17794,7 +17795,7 @@ async function hxBtcMarket(addr) {
   const r = xtOf(addr), b = r && xtBridge(r);
   if (!b) return;
   try {
-    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=e5b9b386')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
+    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=1c98a946')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
     await BTC_MKT.get(b.hex).open();
   } catch (e) { toast(`The ${b.name} market on Bitcoin did not open: ${errText(e)}`, true); }
 }
@@ -17962,6 +17963,16 @@ const restoring = restoreWallet();
 restoring.then(() => tabKeyOpen(true), () => tabKeyOpen(true));
 Promise.race([restoring, new Promise((r) => setTimeout(() => r(false), 1500))]).then((restored) => { if (!restored && !S.key) refreshAll(); });
 evm.onElsewhere(restoreWallet);
+// a remembered wallet that announces itself after the page started (an extension still waking), or is unlocked later, is restored when it does
+let restoreBusy = false, restoreTries = 0;
+const restoreLate = () => {
+  if (S.wallet || restoreBusy || restoreTries >= 20) return;
+  restoreBusy = true; restoreTries++;
+  restoreWallet().then((restored) => { if (restored) tabKeyOpen(true); }, () => {}).finally(() => { restoreBusy = false; });
+};
+addEventListener('eip6963:announceProvider', () => setTimeout(restoreLate, 50));
+addEventListener('focus', restoreLate);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) restoreLate(); });
 let lastTick = Date.now();
 const tick = () => { lastTick = Date.now(); paintEarn(); if (!TACP.on) refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); brWaitTick(); bswTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (!TACP.on && lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if (shown(n) && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
 setInterval(() => { if (!document.hidden) tick(); }, 60e3);
