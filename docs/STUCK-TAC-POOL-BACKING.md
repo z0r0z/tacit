@@ -471,7 +471,7 @@ Stated the way the brief asks, worst first.
    unresolved outpoint is a dangling input the DAG already rejects. I believe the argument, but it is an
    argument, not a machine-checked proof, and the re-anchoring path is exercised only on synthetic
    lineages in this crate — not against the real DAG.
-5. **Scope.** 2 437 lines of Rust (888 `lib.rs`, 1 549 `tests.rs`) for a design entry is more than the
+5. **Scope.** 2 545 lines of Rust (892 `lib.rs`, 1 653 `tests.rs`) for a design entry is more than the
    brief needs. If a maintainer wants less surface to review, the survivable cut is the whole `Lineage`
    half (§5), leaving the ledger and the exit reader: that is the part that is specific to pool exits, and
    it stands alone.

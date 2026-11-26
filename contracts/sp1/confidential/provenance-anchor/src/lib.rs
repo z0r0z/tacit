@@ -139,7 +139,9 @@ pub fn boundary_opens(boundary: &Boundary<'_>, value: u64, blinding: &[u8; 32]) 
     // The transparent half: `C_secp` must open to exactly the value and blinding being claimed, so a valid
     // boundary cannot be reused for a different amount. Without this, `value` would be a free witness.
     match cxfer_core::decompress(&boundary.c_secp) {
-        Some(c) => cxfer_core::verify_pedersen_opening(&c, value, &cxfer_core::scalar_reduce_be(blinding)),
+        Some(c) => {
+            cxfer_core::verify_pedersen_opening(&c, value, &cxfer_core::scalar_reduce_be(blinding))
+        }
         None => false,
     }
 }
@@ -751,7 +753,9 @@ pub fn valid_leaves(
 ) -> Vec<([u8; 32], [u8; 32])> {
     let mut out = base.to_vec();
     for a in anchors {
-        let same_outpoint = out.iter().any(|(o, c)| *o == a.outpoint && *c == a.commitment);
+        let same_outpoint = out
+            .iter()
+            .any(|(o, c)| *o == a.outpoint && *c == a.commitment);
         let taken = out.iter().any(|(o, _)| *o == a.outpoint);
         if taken && !same_outpoint {
             continue; // the outpoint is already resolved to another commitment: refuse, do not fork

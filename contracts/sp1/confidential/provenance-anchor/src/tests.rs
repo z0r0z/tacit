@@ -283,7 +283,6 @@ fn fund_via_shield(l: &mut BackingLedger, carrier: &[u8; 32], asset: &[u8; 32], 
     );
 }
 
-
 /// A SegWit transaction with many inputs, each carrying its own witness stack. `segwit_tx` above is the
 /// one-input shape every fixture used; the three checks added for §10 risk 6 are all about the *carrier*, so
 /// they need a carrier that can hold more than one envelope.
@@ -373,11 +372,19 @@ fn ledger_refuses_unfunded_and_never_partially_books() {
     assert_eq!((l.funded, l.exited), (0, 0), "a refused exit books nothing");
 
     fund_via_shield(&mut l, &[0x01; 32], &ASSET, 70);
-    assert_eq!(admit_exit(&mut l, &a, &ASSET), None, "70 does not cover 100");
+    assert_eq!(
+        admit_exit(&mut l, &a, &ASSET),
+        None,
+        "70 does not cover 100"
+    );
     assert_eq!(l.exited, 0, "still nothing booked");
 
     fund_via_shield(&mut l, &[0x02; 32], &ASSET, 30);
-    assert_eq!(admit_exit(&mut l, &a, &ASSET), Some(()), "70 + 30 covers 100");
+    assert_eq!(
+        admit_exit(&mut l, &a, &ASSET),
+        Some(()),
+        "70 + 30 covers 100"
+    );
     assert_eq!((l.funded, l.exited, l.available()), (100, 100, 0));
 }
 
@@ -766,7 +773,11 @@ fn read_exit_authenticates_a_real_carrier_and_books_it() {
         "reading is not backing: the ledger must hold the value"
     );
     fund_via_shield(&mut l, &[0x05; 32], &ASSET, value - 1);
-    assert_eq!(admit_exit(&mut l, &anchor, &ASSET), None, "one sat short is short");
+    assert_eq!(
+        admit_exit(&mut l, &anchor, &ASSET),
+        None,
+        "one sat short is short"
+    );
     fund_via_shield(&mut l, &[0x06; 32], &ASSET, 1);
     assert_eq!(admit_exit(&mut l, &anchor, &ASSET), Some(()));
     assert_eq!(l.available(), 0);
@@ -1131,36 +1142,81 @@ fn no_path_credits_backing_without_a_shield() {
 
     // A shield that moved nothing is refused: no zero-value credit exists.
     assert_eq!(
-        credit_shield(&mut l, &[0x42; 32], &ASSET, &body, 0, &[0x0Fu8; 32], &[0x42u8; 32],
-            &|_, _| true, &yes),
+        credit_shield(
+            &mut l,
+            &[0x42; 32],
+            &ASSET,
+            &body,
+            0,
+            &[0x0Fu8; 32],
+            &[0x42u8; 32],
+            &|_, _| true,
+            &yes
+        ),
         None,
         "a zero-value shield funds nothing"
     );
     // A shield of another asset is refused.
     assert_eq!(
-        credit_shield(&mut l, &[0x42; 32], &[0xBB; 32], &body, 1_000_000, &[0x0Fu8; 32],
-            &[0x42u8; 32], &|_, _| true, &yes),
+        credit_shield(
+            &mut l,
+            &[0x42; 32],
+            &[0xBB; 32],
+            &body,
+            1_000_000,
+            &[0x0Fu8; 32],
+            &[0x42u8; 32],
+            &|_, _| true,
+            &yes
+        ),
         None,
         "another asset's shield cannot fund this fold"
     );
     // A shield whose pool proof fails is refused and books nothing.
     assert_eq!(
-        credit_shield(&mut l, &[0x42; 32], &ASSET, &body, 1_000_000, &[0x0Fu8; 32],
-            &[0x42u8; 32], &|_, _| false, &yes),
+        credit_shield(
+            &mut l,
+            &[0x42; 32],
+            &ASSET,
+            &body,
+            1_000_000,
+            &[0x0Fu8; 32],
+            &[0x42u8; 32],
+            &|_, _| false,
+            &yes
+        ),
         None
     );
     assert_eq!(l.available(), 0, "a refusal books nothing");
 
     // The honest shield is accepted, and only once: a re-fold cannot mint.
     assert_eq!(
-        credit_shield(&mut l, &[0x42; 32], &ASSET, &body, 1_000_000, &[0x0Fu8; 32],
-            &[0x42u8; 32], &|_, _| true, &yes),
+        credit_shield(
+            &mut l,
+            &[0x42; 32],
+            &ASSET,
+            &body,
+            1_000_000,
+            &[0x0Fu8; 32],
+            &[0x42u8; 32],
+            &|_, _| true,
+            &yes
+        ),
         Some(())
     );
     assert_eq!(l.available(), 1_000_000);
     assert_eq!(
-        credit_shield(&mut l, &[0x42; 32], &ASSET, &body, 1_000_000, &[0x0Fu8; 32],
-            &[0x42u8; 32], &|_, _| true, &yes),
+        credit_shield(
+            &mut l,
+            &[0x42; 32],
+            &ASSET,
+            &body,
+            1_000_000,
+            &[0x0Fu8; 32],
+            &[0x42u8; 32],
+            &|_, _| true,
+            &yes
+        ),
         None,
         "the same carrier cannot credit twice"
     );
@@ -1185,14 +1241,19 @@ fn read_exit_binds_vout_to_a_real_output_and_its_script() {
 
     // vout 2 exists and is the one paying the exit script: accepted.
     let good = exit_fixture(value, blind, h, 2);
-    let anchor = read_exit(&good.w, &ASSET, &|_, _| true, &|_, _, _| true).expect("real vout, right script");
+    let anchor =
+        read_exit(&good.w, &ASSET, &|_, _| true, &|_, _, _| true).expect("real vout, right script");
     assert_eq!(anchor.commitment, good.commitment);
 
     // Same carrier, but the body names vout 0 — a stranger's script. The old code debited against it.
     let mut wrong_index = exit_fixture(value, blind, h, 2);
     let c_secp = c_secp_of(value, &blind);
     let body = spend_with_exit(
-        &ASSET, h, &[[0xA1u8; 32], [0xA2u8; 32]], 0, &c_secp,
+        &ASSET,
+        h,
+        &[[0xA1u8; 32], [0xA2u8; 32]],
+        0,
+        &c_secp,
         &cxfer_core::bitcoin::sha256_once(&p2tr_script(&[0x44u8; 32])),
         &boundary_bytes(&c_secp, &[0x66u8; 32]),
     );
@@ -1352,7 +1413,14 @@ fn read_exit_refuses_a_carrier_that_does_not_spend_the_bound_outpoint() {
     bind_ok[..32].copy_from_slice(&spent.0);
     bind_ok[32..].copy_from_slice(&spent.1.to_le_bytes());
     let body = spend_full(
-        &ASSET, h, &bind_ok, &[[0xA1u8; 32]], Some(2), &dest_h, &boundary, None,
+        &ASSET,
+        h,
+        &bind_ok,
+        &[[0xA1u8; 32]],
+        Some(2),
+        &dest_h,
+        &boundary,
+        None,
     );
     let tx = segwit_tx(&[vec![0xFFu8; 32], envelope_script(&body)], &outs);
     let w = witness_for(&tx, [0x99u8; 32], value, blind);
@@ -1366,7 +1434,14 @@ fn read_exit_refuses_a_carrier_that_does_not_spend_the_bound_outpoint() {
     bind_bad[..32].copy_from_slice(&[0xCCu8; 32]);
     bind_bad[32..].copy_from_slice(&7u32.to_le_bytes());
     let body_bad = spend_full(
-        &ASSET, h, &bind_bad, &[[0xA1u8; 32]], Some(2), &dest_h, &boundary, None,
+        &ASSET,
+        h,
+        &bind_bad,
+        &[[0xA1u8; 32]],
+        Some(2),
+        &dest_h,
+        &boundary,
+        None,
     );
     let tx_bad = segwit_tx(&[vec![0xFFu8; 32], envelope_script(&body_bad)], &outs);
     let w_bad = witness_for(&tx_bad, [0x99u8; 32], value, blind);
@@ -1396,8 +1471,26 @@ fn read_exit_refuses_a_carrier_that_already_claims_the_same_vout() {
 
     // Two distinct spends (distinct nullifiers, so the pool relation is satisfied for both) that both name
     // vout 2 as their exit.
-    let a = spend_full(&ASSET, h, &[0u8; BIND_LEN], &[[0xA1u8; 32]], Some(2), &dest_h, &boundary, None);
-    let b = spend_full(&ASSET, h, &[0u8; BIND_LEN], &[[0xA2u8; 32]], Some(2), &dest_h, &boundary, None);
+    let a = spend_full(
+        &ASSET,
+        h,
+        &[0u8; BIND_LEN],
+        &[[0xA1u8; 32]],
+        Some(2),
+        &dest_h,
+        &boundary,
+        None,
+    );
+    let b = spend_full(
+        &ASSET,
+        h,
+        &[0u8; BIND_LEN],
+        &[[0xA2u8; 32]],
+        Some(2),
+        &dest_h,
+        &boundary,
+        None,
+    );
     let tx = segwit_tx_multi(
         &[
             ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], envelope_script(&a)]),
@@ -1415,7 +1508,16 @@ fn read_exit_refuses_a_carrier_that_already_claims_the_same_vout() {
 
     // The same two envelopes, but the second one's output is its own: both are readable, which is what stops
     // this from being a blanket refusal of multi-spend carriers.
-    let c = spend_full(&ASSET, h, &[0u8; BIND_LEN], &[[0xA2u8; 32]], Some(1), &dest_h, &boundary, None);
+    let c = spend_full(
+        &ASSET,
+        h,
+        &[0u8; BIND_LEN],
+        &[[0xA2u8; 32]],
+        Some(1),
+        &dest_h,
+        &boundary,
+        None,
+    );
     let tx2 = segwit_tx_multi(
         &[
             ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], envelope_script(&a)]),
@@ -1523,7 +1625,10 @@ fn boundary_opens_verifies_a_real_prover_output_and_refuses_a_doctored_one() {
         c_bjj: boundary.c_bjj,
         proof: &proof[..proof.len() - 1],
     };
-    assert!(!boundary_opens(&short, 12_345, &blinding), "a short proof is not a valid proof");
+    assert!(
+        !boundary_opens(&short, 12_345, &blinding),
+        "a short proof is not a valid proof"
+    );
 }
 
 fn hex_bytes(s: &str) -> Vec<u8> {
@@ -1546,4 +1651,3 @@ fn be32(v: u32) -> [u8; 32] {
     out[28..].copy_from_slice(&v.to_be_bytes());
     out
 }
-
