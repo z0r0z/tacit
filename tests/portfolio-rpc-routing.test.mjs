@@ -12,6 +12,7 @@ const chainlink = app.slice(chainlinkStart, chainlinkEnd);
 
 assert.match(chainlink, /_ethRpcCall\('eth_call'/, 'portfolio price fallback must use the shared RPC router');
 assert.doesNotMatch(chainlink, /ethereum-rpc\.publicnode\.com/, 'portfolio price fallback must not call PublicNode directly');
+assert.doesNotMatch(app, /ethereum-rpc\.publicnode\.com/, 'portfolio app bundle must not contain direct PublicNode routes');
 
 const index = readFileSync(join(ROOT, 'dapp/index.html'), 'utf8');
 assert.ok(index.includes("rpcUrls: ['https://eth.drpc.org']"), 'portfolio WalletConnect must use the healthy default RPC');

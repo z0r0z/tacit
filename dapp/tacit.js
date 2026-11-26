@@ -10599,7 +10599,6 @@ async function bridgeWithdrawETH({ provider, burnRecord, onProgress }) {
   _p('fetching relay proof headers');
   const confirmDepth = 6;
   const mempoolBase = currentNetworkName() === 'signet' ? 'https://mempool.space/signet/api' : 'https://mempool.space/api';
-  const ethRpc = gctx.chainId === 11155111 ? 'https://ethereum-sepolia-rpc.publicnode.com' : 'https://ethereum-rpc.publicnode.com';
   const relayAddr = await provider.request({ method: 'eth_call', params: [{ to: gctx.address, data: '0x' + bytesToHex(keccak_256(new TextEncoder().encode('HEADER_RELAY()'))).slice(0, 8) }, 'latest'] });
   const relayAddress = '0x' + relayAddr.slice(26);
   const tipHeightHex = await provider.request({ method: 'eth_call', params: [{ to: relayAddress, data: '0x' + bytesToHex(keccak_256(new TextEncoder().encode('tipHeight()'))).slice(0, 8) }, 'latest'] });
@@ -46773,7 +46772,7 @@ function _ensureWalletConnect() {
     const sheets = m.wcSheets(m.overlayHost());
     m.announceWalletConnect({
       projectId: m.WC_PROJECT_ID, chains: [1, 8453, 4663],
-      rpcMap: { 1: 'https://ethereum-rpc.publicnode.com', 8453: 'https://mainnet.base.org', 4663: 'https://rpc.mainnet.chain.robinhood.com' },
+      rpcMap: { 1: ETH_NODES[0], 8453: 'https://mainnet.base.org', 4663: 'https://rpc.mainnet.chain.robinhood.com' },
       metadata: { name: 'tacit', description: 'Confidential crosschain DeFi', url: location.origin, icons: [`${location.origin}/tac-logo.png`] },
       onPair: sheets.onPair, onAsk: sheets.onAsk,
     });
