@@ -690,6 +690,24 @@ test('the client address rule can be named: hops from the right, the proxies pas
   assert.equal(await plain.who({ 'true-client-ip': '203.0.113.5', 'x-forwarded-for': '203.0.113.5' }), '127.0.0.1', 'with no proxy named no header is read');
 });
 
+test('an answer the service cannot give is still one a page may read: it carries the CORS headers, and the failure is logged', async () => {
+  const lines = [];
+  const server = makeHttpServer({ handle: async () => { throw new TypeError('a read of state that is not there'); }, origins: ['https://tacit.finance'], kindOf: () => 'default', limits: { default: [100, 1] }, log: (o) => lines.push(o) });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  closers.push(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const named = await realFetch(base + '/info?x=1', { headers: { origin: 'https://tacit.finance' } });
+  assert.equal(named.status, 500);
+  assert.equal(named.headers.get('access-control-allow-origin'), 'https://tacit.finance', 'a browser reads the 500 as the answer it is, not as a blocked request');
+  assert.equal(named.headers.get('vary'), 'origin');
+  assert.deepEqual(await named.json(), { error: 'the service could not answer' });
+  const other = await realFetch(base + '/info', { headers: { origin: 'https://example.org' } });
+  assert.equal(other.status, 500);
+  assert.equal(other.headers.get('access-control-allow-origin'), null, 'an origin that is not named is not given it');
+  assert.equal(lines.length, 2);
+  assert.ok(lines[0].level === 'error' && lines[0].method === 'GET' && lines[0].path === '/info' && /not there/.test(lines[0].error), 'the failure is logged with its path and what threw, and not its query');
+});
+
 test('one client address may have only a few provider keys on the board at once, and gets them back as the ads run out', async () => {
   const c = clock(), board = makeBoard({ now: c.now }), handle = makeBoardHandler(board, { adKeysPerClient: 3, now: c.now });
   const put = (n, client) => handle({ method: 'PUT', path: '/ad', body: adOf(n, c.now()), client });

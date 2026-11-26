@@ -111,6 +111,25 @@ test('the provider claims and the user is gone: the watcher finishes the take to
   assert.equal(w.sent, 1, 'one broadcast');
 });
 
+test('the page comes back after the watcher took: the swap ends with what reached its address, not the provider\'s whole lock', async () => {
+  const w = world();
+  await w.start();
+  await w.run(claimLanded(w));
+  const before = await w.user();
+  w.userUp = false;                                                    // (the page is closed while the claim lands; its records are kept)
+  await w.watcher().pass();
+  w.btc.mine(1);
+  const spender = w.btc.spends.get(`${before.lockTxid}:${before.lockVout}`);
+  assert.ok(spender, 'the watcher took the lock');
+  w.userUp = true;
+  await w.run(async () => (await w.user())?.phase === 'done');
+  const user = await w.user();
+  assert.equal(user.takenBy, spender);
+  const paid = BigInt(user.lockValue - w.posted[0].fee);
+  assert.equal(user.takenGot, String(paid), 'the amount that reached the address is kept');
+  assert.equal(describeRev(user, w.clock.now).got, paid, 'and the card says that amount, the lock less the take\'s fee');
+});
+
 test('the same watcher state after a restart sends nothing twice and a finished take is left alone', async () => {
   const w = world();
   await w.start();

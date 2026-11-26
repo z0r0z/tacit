@@ -22,8 +22,8 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=6074311c">
-<link rel="modulepreload" href="/swap/atomic.js?cb=11fe2004">
+<link rel="modulepreload" href="/btc/app.js?cb=61b36fdb">
+<link rel="modulepreload" href="/swap/atomic.js?cb=3df4a147">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -33,10 +33,10 @@
 <link rel="modulepreload" href="/community-nodes.js">
 <link rel="modulepreload" href="/nodes-pin.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
-<link rel="modulepreload" href="/swap/atomic-market.js?cb=6de7b273">
-<link rel="modulepreload" href="/fast/discover.js?cb=f8f3075c">
+<link rel="modulepreload" href="/swap/atomic-market.js?cb=c7e4d123">
+<link rel="modulepreload" href="/fast/discover.js?cb=de0fd260">
 <link rel="modulepreload" href="/fastbridge-http.js">
-<link rel="modulepreload" href="/fastbridge-client.js?cb=c0a8aadb">
+<link rel="modulepreload" href="/fastbridge-client.js?cb=81a9bef3">
 <link rel="modulepreload" href="/fastbridge-bl.js">
 <link rel="modulepreload" href="/adaptor-xswap.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -51,7 +51,7 @@
 <link rel="modulepreload" href="/fastbridge-board.js">
 <link rel="modulepreload" href="/fastbridge-board-client.js?cb=b3c3ac03">
 <link rel="modulepreload" href="/fastbridge-rate.js?cb=b392f6cc">
-<link rel="modulepreload" href="/swap/atomic-probe.js?cb=6ea0fea3">
+<link rel="modulepreload" href="/swap/atomic-probe.js?cb=04cc2ad4">
 <link rel="modulepreload" href="/trade/poolux.js?cb=59d125e5">
 <link rel="modulepreload" href="/btc/add-eth.js?cb=d423798a">
 <link rel="modulepreload" href="/btc/panel.js?cb=4e01aedd">
@@ -59,7 +59,7 @@
 <link rel="modulepreload" href="/btc/payout.js?cb=3b028d52">
 <link rel="modulepreload" href="/evm-account.js">
 <!-- preload:end -->
-<link rel="stylesheet" href="/swap/card.css?cb=c6209d38">
+<link rel="stylesheet" href="/swap/card.css?cb=7716fe3d">
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2'); }
@@ -197,8 +197,7 @@ html .lane #atomic .q small { display: block; margin-top: 2px; color: var(--mute
 html .lane #atomic .q button.link, #mine .snt button.link.cx { padding: 0 2px; font: 500 12px var(--mono); color: var(--ink); text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; cursor: pointer; }
 /* a swap started with one press has five steps: one row where they fit, three and two where they do not, two a row on a phone */
 #mine .snt.atm .stp.s5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-@media (max-width: 640px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 420px) { #mine .snt.atm .stp.s5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { #mine .snt.atm .stp.s5 { gap: 4px; } #mine .snt.atm .stp.s5 li { font-size: 10.5px; overflow-wrap: anywhere; } }
 /* a Bitcoin wallet that holds TAC is not sent from: the safe ways, each on a line of its own */
 html .lane #atomic .q .safe { display: block; margin-top: 6px; color: var(--ink); }
 html .lane #atomic .q code { overflow-wrap: anywhere; font: 12px var(--mono); }
@@ -590,7 +589,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=44fcdc1d" defer></script>
+<script src="/chrome.js?cb=4c9196f2" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -656,7 +655,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <section class="hero" aria-labelledby="h">
       <div class="mk" aria-hidden="true"><svg class="tk"><use href="#tk-btc"/></svg><span class="wire"><i></i></span><svg class="tk"><use href="#tk-eth"/></svg></div>
       <h1 id="h">BTC <em>⇄</em> ETH</h1>
-      <p class="sub">Swap Bitcoin and ETH directly. Your ETH arrives private.</p>
+      <p class="sub">Swap Bitcoin and ETH directly. Your ETH arrives private. <a href="/docs/btc/">How it works</a></p>
       <p class="live num" id="live" role="status"></p>
       <noscript><p>This page needs JavaScript.</p></noscript>
     </section>
@@ -696,7 +695,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <details class="sec dd" id="be" data-dd><summary><h2 id="be-h">Run a provider</h2><span class="sum" id="be-sum">one command</span><i class="chev" aria-hidden="true"></i></summary><div class="dd-b">
       <p>Anyone can provide. A provider is a small process with its own key: it quotes from the market price plus its fee, and each swap locks both sides, so it never holds anyone’s funds.</p>
       <p>Tacit runs one provider itself and puts what it earns back into its capacity. More providers add room to each swap and keep the prices close: each sets its own terms, and pages ask those with the lowest fees first.</p>
-      <p style="font-size:12.5px;color:var(--mute)">Running a node also helps: Ethereum and Bitcoin nodes are listed at <a href="/nodes/">/nodes/</a> and ranked by uptime and accuracy.</p>
+      <p style="font-size:12.5px;color:var(--mute)">How the swap works, and what you trust: <a href="/docs/btc/#provide">the docs</a>. Running a node also helps: Ethereum and Bitcoin nodes are listed at <a href="/nodes/">/nodes/</a> and ranked by uptime and accuracy.</p>
       <div class="box">
         <div>
           <h3>Three steps</h3>
@@ -794,6 +793,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/btc/app.js?cb=6074311c"></script>
+<script type="module" src="/btc/app.js?cb=61b36fdb"></script>
 </body>
 </html>

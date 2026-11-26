@@ -56,7 +56,7 @@ export async function agreedFeeRate({ bases, fetchImpl = (...a) => fetch(...a), 
       const r = await fetchImpl(String(b).replace(/\/$/, '') + '/fee-estimates', { signal: AbortSignal.timeout(timeoutMs) });
       if (!r.ok) return null;
       const f = await r.json(), v = Number(f[target] ?? f['6']);
-      return Number.isFinite(v) && v > 0 && v < 5000 ? v : null;
+      return Number.isFinite(v) && v > 0 && v < 5000 ? Math.max(1, v) : null;      // (a node's sub-1 estimate is the 1 sat/vB floor: 0.124 against 1 is not a disagreement)
     } catch { return null; }
   }))).filter((v) => v != null).sort((a, b) => a - b);
   const wait = (why) => Object.assign(new Error(why), { wait: true });

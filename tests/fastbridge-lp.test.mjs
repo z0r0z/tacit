@@ -118,7 +118,7 @@ test('malformed and unknown requests are answered with a reason and change nothi
       ? await realFetch(s.base + path, { method, headers: { 'content-type': 'application/json' }, body }).then(async (x) => ({ status: x.status, body: await x.json() }))
       : await call(s.base, method, path, body);
     assert.equal(r.status, status, `${method} ${path}`);
-    assert.match(r.body && Object.hasOwn(r.body, 'error') ? r.body.error : JSON.stringify(r.body), re, `${method} ${path}`);
+    assert.match(r.body.error ?? JSON.stringify(r.body), re, `${method} ${path}`);
   }
   // an offer the checks cannot read is an answer, not a server error
   for (const offer of [{}, { swapId: 'zz' }, { swapId: '0'.repeat(72) }, { swapId: '0'.repeat(72), btc: {}, evm: {} }]) {

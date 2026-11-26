@@ -482,7 +482,12 @@ export function makeEthereumLocker(ctx) {
             // another page or an earlier visit, which this record never saw. The swap is done.
             const tx = btc.fetchTx ? await btc.fetchTx(spent).catch(() => null) : null;
             const input = tx && (tx.vin || []).find((i) => i.txid === rec.lockTxid && Number(i.vout) === Number(rec.lockVout));
-            if (input && input.sequence != null && Number(input.sequence) !== Number(rec.csvBlocks)) return save(rec, { phase: 'done', takenBy: spent });
+            if (input && input.sequence != null && Number(input.sequence) !== Number(rec.csvBlocks)) {
+              // (what reached this key's address, for the page's words: the take's outputs to it, which is the lock less the fee the other page or the watcher paid)
+              let paid = 0n;
+              try { const own = hx(btc.prims.p2wpkhScript(btc.wallet.pub)); for (const o of tx.vout || []) if (strip(String(o.scriptpubkey || '')).toLowerCase() === own) paid += BigInt(o.value); } catch { paid = 0n; }
+              return save(rec, { phase: 'done', takenBy: spent, ...(paid > 0n ? { takenGot: String(paid) } : {}) });
+            }
             return save(rec, { phase: 'lost', why: 'the lock was spent by another transaction (its refund, once the timelock had run) before a take confirmed' });
           }
         }

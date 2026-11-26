@@ -1,0 +1,44 @@
+name: Dapp build integrity
+
+permissions:
+  contents: read
+
+# The static site publishes dapp/ directly. Keep its generated cache-bust
+# tokens, preload graph and CSP hashes checked on every dapp/build change so
+# a merge cannot publish an HTML document whose scripts the browser will block.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dapp/**'
+      - 'build/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/dapp-build.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: dapp-build-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Verify generated dapp fingerprints
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Install build dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify dapp build outputs
+        run: npm run build:verify

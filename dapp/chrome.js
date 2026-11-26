@@ -163,9 +163,9 @@
       ["bridge", "Bridge", "/#/chains/bridge", "TAC between Bitcoin and Ethereum, either way, with the steps, fee and time up front."],
       ["fast", "Fast bridge", "/fast/", "TAC from Bitcoin in minutes, paid out by a provider for a fee; or be a provider."],
       ["notes", "Notes", "/tac/?v=notes#bridge", "Your TAC notes on Bitcoin: merge, split, bridge them all; and everything getting ready or on the way."]]],
-    "borrow": ["Borrow", "Borrow dollars against your BTC or your TAC.", [
+    "borrow": ["Borrow", "Borrow without selling your BTC or TAC.", [
       ["btc", "Against BTC", "/vault/#btc", "Lock BTC (you keep the key), mint cBTC, borrow cUSD."],
-      ["tac", "Against TAC", "/vault/", "Put TAC in a vault, borrow TACD (dollars) or TACE (ether). No interest, one fee."]]],
+      ["tac", "Against TAC", "/vault/", "Keep your TAC, borrow TACD or TACE. No interest; one fee when you borrow."]]],
     "rewards": ["Rewards", "Your airdrop, your points and the leaderboard.", []]
   };
   // the More page's line for each page of the menu

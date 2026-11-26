@@ -474,6 +474,12 @@ const refresh = () => load().catch((e) => { console.warn('vault read:', e?.messa
 $('#pick').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (!b || S.busy || b.dataset.v === S.v) return; S.v = b.dataset.v; S.pre = S.t === 'borrow'; S.amt = ''; $('#amt').value = ''; say('', ''); keepInHash(); renderAll(); });
 $('#acts').addEventListener('click', (e) => { const b = e.target.closest('[data-t]'); if (!b || S.busy || b.dataset.t === S.t) return; S.t = b.dataset.t; S.pre = S.t === 'borrow'; S.amt = ''; $('#amt').value = ''; say('', ''); keepInHash(); renderTicket(); });
 $('#amt').addEventListener('input', (e) => { S.pre = false; S.amt = e.target.value; if ($('#status').dataset.kind === 'trade') say('', ''); renderTicket(); });
+// The mobile help bubble is useful below the form, but a fixed 52 px control over this dense ticket can cover
+// the amount field or its primary action. Hide only the closed launcher while the ticket is in view; opening
+// help or scrolling to the position/status brings the normal widget back.
+if ('IntersectionObserver' in window) new IntersectionObserver(([e]) => {
+  document.documentElement.classList.toggle('vault-ticket-in-view', !!e?.isIntersecting);
+}, { threshold: 0.12 }).observe($('#ticket'));
 $('#amt').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('#go').disabled) $('#go').click(); });
 $('#chips').addEventListener('click', (e) => { const b = e.target.closest('[data-pct]'); if (b && !S.busy) setAmount(Number(b.dataset.pct)); });
 $('#bal').addEventListener('click', () => { if (!S.busy) setAmount(100); });

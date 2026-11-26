@@ -33,7 +33,7 @@ const BAR = 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/c
 const MENU = 'Assets:/assets/ TAC:/tac/ Trade:/trade/tac/?src=menu Pay pool:/pay/ Bridges:/bridge/ Etch:/etch/ Shop:/shop/ Prove:/prove/ Tasks:/tasks/ FACE:/face/';
 const FOOTER = 'Whitepaper | Build | Security | Source | Pool contract | Stats | DefiLlama | Listed on ETHBeat | @tacitfi on X | Tacit Discord community';
 // page → the section or menu entry marked as the page you are on (none for a page neither lists)
-const PAGES = { '/': null, '/tac/': 'TAC', '/chain/': 'TAC', '/vault/': 'Borrow', '/bridge/': 'Bridges', '/pay/': 'Pay pool', '/shop/': 'Shop', '/build/': null, '/docs/chain/': null, '/weld/stats/': null };
+const PAGES = { '/': null, '/tac/': 'TAC', '/chain/': 'TAC', '/vault/': 'Borrow', '/bridge/': 'Bridges', '/pay/': 'Pay pool', '/shop/': 'Shop', '/build/': null, '/docs/chain/': null, '/docs/btc/': null, '/weld/stats/': null };
 const VIEWS = { desktop: { width: 1280, height: 800 }, 'phone 390': { width: 390, height: 800 }, 'phone 360': { width: 360, height: 800 }, 'phone 320': { width: 320, height: 700 } };
 
 const browser = await chromium.launch();

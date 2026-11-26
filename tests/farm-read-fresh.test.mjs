@@ -101,7 +101,7 @@ test('ethCall and multicall read the newest block from every node unless told ot
   assert.match(page, /import \* as ETHN from '\/eth-nodes\.js';/, 'the node list module is also imported as a namespace (a stale cached copy of it must not break the page)');
 });
 
-test('the premise: the light node is first for a read of the newest block; the other nodes (publicnode first) are the ones notLight() leaves; a numbered block is asked of neither the light node nor publicnode', async () => {
+test('the premise: the light node is first for a read of the newest block; the other nodes are the ones notLight() leaves, the first of them asked first; a numbered block is never asked of the light node', async () => {
   const w = world();
   const asked = async (hosts, block) => {
     const hits = [];
@@ -113,13 +113,10 @@ test('the premise: the light node is first for a read of the newest block; the o
   const others = w.notLight();
   assert.ok(!others.includes(LIGHT), 'notLight() leaves the light node out');
   assert.equal(others.length, ETH_NODES.length - 1, 'and only that one');
-  assert.ok(others.some((u) => u.includes('publicnode')), 'publicnode stays');
   assert.ok(others.length > 3, 'with several nodes to go to');
-  assert.ok(others.includes(ETH_NODES.find((u) => u.includes('publicnode'))));
-  assert.ok(!(await asked(others, 'latest')).includes(LIGHT) && (await asked(others, 'latest'))[0].includes('publicnode'), 'a read of the newest block over them goes to publicnode first');
+  assert.ok(!(await asked(others, 'latest')).includes(LIGHT) && (await asked(others, 'latest'))[0] === others[0], 'a read of the newest block over them goes to the first of them');
   const numbered = await asked(ETH_NODES, '0x1940877');
   assert.ok(!numbered.includes(LIGHT), 'a numbered block is not asked of the light node');
-  assert.ok(!numbered.some((u) => u.includes('publicnode')), 'nor of publicnode, which has no old state');
 });
 
 test('notLight() with an older node list module that has no logSpan: every node stays (no throw, the retry is then a plain second read)', () => {

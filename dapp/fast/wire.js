@@ -15,9 +15,9 @@ import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=82196961';
 import * as EN from '/eth-nodes.js';   // (a namespace: eth-nodes.js has no cache token)
-import { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=c56d5cfe';
+import { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=de77400c';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=c0a8aadb';
+import { makeFastBridgeMarket, makeFastBridgeClient, makeLocalStore } from '/fastbridge-client.js?cb=81a9bef3';
 import { makeLpService } from '/fastbridge-provider.js?cb=86303797';
 import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=da2bd2bf';
 import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=ab82771e';
@@ -27,10 +27,10 @@ import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=63153972';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=f8f3075c';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=de0fd260';
 import { classifyVerdicts } from '/fastbridge-lineage-pricing.js';
 import { splitAmount, assignNotes } from '/fast/sweep.js?cb=713466b3';
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=f8f3075c';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=de0fd260';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 // four explorers, tried in turn: one busy or rate-limited explorer does not stop a swap (every page that uses this allows all four)
@@ -171,7 +171,9 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
   const asset = { btcAsset: TAC_ASSET, evmAsset: TAC_ASSET, ...pins };
   const { prims, btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-user-seed', wallet, ask });
   const store = makeLocalStore(`tacit-fastbridge-v1:mainnet:${pubHex}:`);
-  const market = makeFastBridgeMarket({ btc, evm, store, seed, pins: asset, counterFor: counterOf, ...(now ? { now } : {}) });
+  // a note the regular bridge holds (a bridge of its own in progress on it) is not one a fast bridge takes, and the other way round
+  const taken = (txid, vout) => { try { return !!T.bridgeUx().isReserved(txid, vout); } catch { return false; } };
+  const market = makeFastBridgeMarket({ btc, evm, store, seed, pins: asset, counterFor: counterOf, makeClient: (a) => makeFastBridgeClient({ ...a, taken }), ...(now ? { now } : {}) });
   const notes = () => withKey((t) => notesOf(t, asset.btcAsset));
   const balance = async () => (await notes()).reduce((s, n) => s + n.amount, 0n);
   const fastFirst = async (all, quotes) => untrackedFirst(all, await withKey((t) => t.bridgeUx().noteTracking(all)).catch(() => null),
