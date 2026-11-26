@@ -590,9 +590,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (method === 'GET' && m) {
         if (m[2]) {
           const rec = await swaps.get(m[1]);
-          if (rec && (rec.phase === 'locked' || rec.phase === 'offered') && !(await lockStands(rec))) return reply({ error: 'no offer yet' }, 404);
+          if (rec && (rec.phase === 'locked' || rec.phase === 'offered') && !(await lockStands(rec))) return reply({ offer: null });
           const o = await offerOf(m[1]);
-          return o ? reply(o) : reply({ error: 'no offer yet' }, 404);
+          return o ? reply(o) : reply({ offer: null });
         }
         const rec = await swaps.get(m[1]);
         return rec ? reply({ phase: rec.phase, why: rec.why || null }) : reply({ error: 'unknown swap' }, 404);

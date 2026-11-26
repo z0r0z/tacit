@@ -25,7 +25,7 @@
 import { esc, fmtUnits, parseUnits, plain, E10 } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=e5b9b386';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=1a1cf9e0';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=63b86663';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const NO_ANSWER = 'No answer just now. Nothing was sent. Try again soon.', RETRY_MS = [2000, 4000, 8000, 15000, 30000], RETRY_SHOWN = 3;
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
@@ -61,6 +61,8 @@ export function addUnits(amount, available) { const a = BigInt(amount), have = a
 
 const tidy = (s) => s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 export const fmt = (v) => tidy(fmtUnits(v, DEC, DEC));
+// A small amount of a fee, readable: under 0.001 BTC in sats, under 0.001 ETH to six places (a 7-decimal figure cannot be read at a glance)
+export const smallAmt = (v, sym) => { const n = BigInt(v); return n > 0n && n < 100000n ? (sym === 'BTC' ? `\u2248 ${n.toLocaleString('en-US')} sats` : `${tidy(fmtUnits(n, DEC, 6))} ${sym}`) : `${fmt(n)} ${sym}`; };
 const nowSecs = () => Math.floor(Date.now() / 1000);
 
 // About how long a swap takes, in words: a Bitcoin block or two, then the pool's settle.
@@ -518,7 +520,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const mk = marketText(q.vsMarketBps), c = cost(q), e2b = L.dir === 'e2b', out = COINS[e2b ? 'btc' : 'eth'].sym, feeSats = Number(e2b ? q.takeFeeSats : q.networkFeeSats);
     const rows0 = [
       ['Market rate', q.market ? (L.dir === 'b2e' ? rateText(q.market) : `1 ETH = ${tidy((1 / q.market).toFixed(6))} BTC`) : 'not available', q.market ? '' : 'warn'],
-      ...(mk ? [q.vsMarketBps <= -5 && !q.blocked ? ['Fee', `${fmt(c.fee)} ${out} \u00b7 ${(-q.vsMarketBps / 100).toFixed(2)}%`, ''] : ['You get', mk, q.blocked ? 'err' : '']] : []),
+      ...(mk ? [q.vsMarketBps <= -5 && !q.blocked ? ['Fee', `${smallAmt(c.fee, out)} \u00b7 ${(-q.vsMarketBps / 100).toFixed(2)}%`, ''] : ['You get', mk, q.blocked ? 'err' : '']] : []),
       ...(feeSats > 0 ? [['Bitcoin network fee', `≈ ${feeSats.toLocaleString('en-US')} sats${q.split ? ' for all parts' : e2b ? ', taken from your BTC' : ''}`, '']] : []),
       ['You receive', `${fmt(c.get)} ${out}`, c.allInBps > ALL_IN_WARN_BPS ? 'warn' : '', 'total'],
       ...(c.effective ? [['Effective rate', c.effective, '', 'sub']] : []),
@@ -732,6 +734,11 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     try { await D.signIn(); } catch (e) { if (!e?.unlockCancelled) say(esc(plainError(e)), 'err'); return; }
     L.unlocked = D.unlocked; if (!L.sticky) say(''); paint(); await begin();
   }
+  // a started swap is never dropped by a pass that did not list it: it leaves the page only by finishing or by being dismissed
+  function keepStarted(recs, id) {
+    const mine = L.recs.find((x) => x.id === id);
+    L.recs = !mine || recs.some((x) => x.id === id) ? recs : [mine, ...recs];
+  }
   async function swap() {
     const q = L.q; if (!q || q.blocked || L.busy) return;
     if (q.renewed) return;
@@ -742,12 +749,16 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       const r = await p.start(q);
       if (g !== gen) return;
       const to = payToNow();
+      // listed at once, before the pass that steps it: that pass can take long, and a paint meanwhile must show the swap
+      const listed = await p.records().catch(() => null);
+      if (g !== gen) return;
+      if (Array.isArray(listed)) L.recs = listed;
       L.amt = ''; $('a-amt').value = ''; L.q = null; L.qErr = '';
-      say('');
+      say(''); paintRecs();
       payChosen(r.id, to);
       const recs = await (recovering ? Promise.reject() : p.pump()).catch(async () => p.records().catch(() => L.recs));
       if (g !== gen) return;
-      L.recs = recs;
+      keepStarted(recs, r.id);
       known.set(r.id, 'working');
       onState();
       follow(POLL_MS);
@@ -909,14 +920,19 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       try {
         const r = await p.start(q, C.dir === 'b2e' ? { coins: C.coins } : { coming: C.landed ? null : C.coming });
         if (g !== gen) return;
+        // the swap is listed before the press card is let go: the pass that steps it (below) can take a long while, and any paint in between must show the swap
+        const listed = await p.records().catch(() => null);
+        if (g !== gen) return;
+        if (Array.isArray(listed)) L.recs = listed;
         C.phase = 'started'; C.id = r.id; if (C.dir === 'e2b') chains.set(r.id, C); L.chain = null; clearTimeout(slowTimer);
         payChosen(r.id, C.payTo);
         L.amt = ''; $('a-amt').value = ''; L.q = null; L.qErr = ''; L.sticky = false;
-        say('');
+        say(''); paint();
         if (C.dir === 'e2b' && C.landed && pair) pair.prepare?.(C.amount)?.catch?.(() => {});
         const recs = await (recovering ? Promise.reject() : p.pump()).catch(async () => p.records().catch(() => L.recs));
         if (g !== gen) return;
-        L.recs = recs; known.set(r.id, 'working');
+        keepStarted(recs, r.id);
+        known.set(r.id, 'working');
         onState(); paint(); follow(POLL_MS);
         (recsHost || host).querySelector(`[data-rec="${CSS.escape(r.id)}"]`)?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
         return;

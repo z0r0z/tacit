@@ -269,7 +269,7 @@ test('the swap is kept: a new page over the same stores shows it, and a lock who
   assert.deepEqual(await fresh.records(), []);
   assert.equal(await fresh.recover(), 1);
   // the lock is the provider's to answer (it took no offer here): the swap is kept as waiting for its offer, and falls to the timelock refund when none comes
-  assert.equal((await fresh.records())[0].title, 'Provider is sending ETH');
+  assert.equal((await fresh.records())[0].title, 'Checking your swap…', 'no offer seen: never said as the provider sending ETH');
   w.btc.mine(143);
   for (let i = 0; i < 60 && (await fresh.records())[0].state !== 'returned'; i++) { await fresh.pump(); w.btc.mine(1); w.clock.advance(60); }
   assert.equal((await fresh.records())[0].state, 'returned');
@@ -786,7 +786,7 @@ test('record lost after the provider locked: the swap is found again from the ke
   await w.pair.start(await w.pair.quote({ dir: 'b2e', amount: SATS }));
   // the page is gone once the provider's offer for this swap is out (its lock is in the pool) and the user has not claimed
   const rec0 = async () => (await w.mems.get('fwd').list())[0];
-  const offerOut = async () => { const r = await rec0(); if (!r) return false; const a = await w.fwd.handle({ method: 'GET', path: '/swap/' + r.id + '/offer' }); return a.status === 200; };
+  const offerOut = async () => { const r = await rec0(); if (!r) return false; const a = await w.fwd.handle({ method: 'GET', path: '/swap/' + r.id + '/offer' }); return a.status === 200 && a.body.offer !== null; };
   for (let i = 0; i < 800 && !(await offerOut()); i++) { await stepWorld(w, []); w.clock.advance(30); if (i % 20 === 19) w.btc.mine(1, { advance: false }); await w.pair.pump(); }
   const rec = await rec0();
   assert.ok(await offerOut(), 'the provider locked and published its offer');
@@ -803,6 +803,34 @@ test('record lost after the provider locked: the swap is found again from the ke
   assert.ok(['claimed', 'done'].includes(end.phase), 'finished from the key: ' + end.phase + ' ' + (end.why || ''));
   assert.ok(end.claim && end.claim.op, 'the claim was built from the key and the published offer');
   assert.equal(end.evmAmount, String(end.evmOffer.amount));
+});
+
+test('a lock found again from the key whose provider never shows an offer: said neutrally, then returned, and the offer is asked for a few times, not every pass', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  await w.pair.start(await w.pair.quote({ dir: 'b2e', amount: SATS }));
+  const rec0 = async () => (await w.mems.get('fwd').list())[0];
+  for (let i = 0; i < 40 && !((await rec0()).lockConfs > 0 || (await w.btc.status((await rec0()).lock.txid)).confirmations > 0); i++) { w.btc.mine(1, { advance: false }); await w.pair.pump(); }
+  let looks = 0;
+  const { makeCounter } = await import('../dapp/fastbridge-http.js');
+  const lost = freshStores();
+  const fresh = w.makePair({ stores: lost, counterFor: () => makeCounter(async (method, path, body) => {
+    if (method === 'GET' && /^\/swap\/[0-9a-f]+\/offer$/.test(path)) { looks++; return { status: 200, body: { offer: null } }; }
+    const r = await w.fwd.handle({ method, path, body }); return { status: r.status, body: r.body };
+  }) });
+  assert.equal(await fresh.recover(), 1);
+  const titles = new Set();
+  for (let i = 0; i < 400; i++) {
+    const r = (await fresh.pump())[0];
+    titles.add(r.title);
+    assert.ok(!/sending ETH/i.test(r.title + r.detail), 'it never says the provider is sending ETH while no offer was seen');
+    if (r.title === 'Returning your BTC') break;
+    w.clock.advance(15);
+  }
+  assert.ok(titles.has('Checking your swap…'), 'neutral while it waits: ' + [...titles]);
+  assert.equal((await lost.fwd.list())[0].phase, 'refund-wait', 'with no offer after twenty minutes it goes to the refund');
+  assert.ok(looks >= 2 && looks <= 10, `the offer was asked for a few times, with a growing gap (${looks})`);
 });
 
 test('two swap ids give unrelated secrets (t, the lock blinding, the claim output blinding)', () => {

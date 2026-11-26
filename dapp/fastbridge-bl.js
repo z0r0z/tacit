@@ -330,7 +330,18 @@ export function makeBitcoinLocker(ctx) {
         return save(rec, { phase: 'offered', offeredAt: ctx.now(), offerWhy: null });
       }
       case 'offered': {
+        // A lock found again from the key: the provider is asked for its offer with a growing gap (a minute, doubling to a quarter hour), not at every pass, and with none
+        // seen after twenty minutes it is not coming: the swap goes to the refund. Until an offer is seen, the page says nothing of the provider sending anything.
+        const fromKey = !!rec.claimFromKey && !rec.offerSeen, looks = rec.offerLooks || 0;
+        if (fromKey && rec.offerLookAt && ctx.now() - rec.offerLookAt < Math.min(60 * 2 ** Math.min(looks, 4), 900)) return rec;
         const evmOffer = await counter.getEvmOffer(rec.id);
+        if (fromKey) {
+          if (!evmOffer) {
+            if (ctx.now() - rec.offeredAt > Math.min(policy.offerWaitSecs, 1200)) return save(rec, { phase: 'refund-wait', why: 'the provider sent no offer for it' });
+            return save(rec, { offerLookAt: ctx.now(), offerLooks: looks + 1 });
+          }
+          rec = await save(rec, { offerSeen: true });
+        }
         if (evmOffer && !/^[0-9a-f]{64}$/.test(strip(evmOffer.lockLeaf || ''))) return save(rec, { phase: 'refund-wait', why: 'offer: malformed lock leaf' });
         // An offer whose lock the pool does not show yet is waited for, not refused: the lock may still be landing.
         const position = evmOffer ? await evm.lockPosition(evmOffer.lockLeaf) : null;

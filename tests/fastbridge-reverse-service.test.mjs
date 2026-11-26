@@ -130,7 +130,7 @@ test('what the provider refuses, in words: a key that is not a key, an amount ou
   w.clock.advance(601);
   assert.equal((await post('/reverse/start', { quoteId: q.id })).body.why, 'quote expired');
   assert.equal((await w.call('GET', '/reverse/swap/' + 'ab'.repeat(36))).status, 404);
-  assert.equal((await w.call('GET', '/reverse/swap/' + 'ab'.repeat(36) + '/offer')).status, 404);
+  assert.equal((await w.call('GET', '/reverse/swap/' + 'ab'.repeat(36) + '/offer')).body.offer, null, 'an unknown or early id has no offer yet: 200 with offer null, not a 404 in the console');
   assert.equal((await w.call('GET', '/reverse/nothing')).status, 404);
 });
 

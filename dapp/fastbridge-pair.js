@@ -153,6 +153,8 @@ const join = (...xs) => xs.filter(Boolean).join(' ');
 
 export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000), tip = null) {
   if (rec.checking) return checking('b2e', rec, rec.providerName || null);
+  // (a lock found again from the key says nothing of the provider sending ETH until an offer was seen: fastbridge-bl.js 'offered')
+  if (rec.claimFromKey && rec.phase === 'offered' && !rec.offerSeen) return { ...checking('b2e', rec, rec.providerName || null), title: 'Checking your swap…', detail: 'Found again from your key. The provider has not shown an offer for it yet. If none comes, your BTC returns to your Bitcoin address.', checking: false };
   const [at, title, detail0, eta] = FWD_SAYS[rec.phase] || [0, rec.phase, '', null];
   const detail = rec.phase === 'broadcast' ? join(detail0, slowBlockLine(tip, now(), SAFE_FWD)) : detail0;
   const state = FWD_DONE.has(rec.phase) ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' ? 'stopped' : 'working';
