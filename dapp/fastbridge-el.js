@@ -275,7 +275,7 @@ export function makeEthereumLocker(ctx) {
       const tries = ((rec.presig && rec.presig.tries) || 0) + 1, retry = ctx.now() + Math.min(900, 30 * tries);
       try {
         const own = btc.prims.p2wpkhScript(btc.wallet.pub);
-        const rate = Math.max(2, Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5)));
+        const rate = Math.max(2, Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.2)));
         const fee = TP.takeFee({ dest: own, feeRate: rate, lockValue: rec.lockValue });
         if (!(rec.lockValue - fee >= TP.MIN_OUT)) return save(rec, { presig: { published: false, tries: 99, why: 'the lock is too small to pre-sign a take' } });
         const p = TP.makePresig({
@@ -463,7 +463,7 @@ export function makeEthereumLocker(ctx) {
         // (a take a block went by without is replaced only when the next block's rate has caught up with it: one that is still above it missed by chance)
         const missedBlock = async (t) => t.tip != null && ctx.now() - t.at >= (policy.takeMissMinSecs ?? 120) && (await tipNow()) >= t.tip + (policy.takeMissBlocks ?? 1) && Math.ceil(await btc.feeRate()) >= Number(t.feeRate || 0);
         if (satsTake && !rec.take) {
-          const feeRate = Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5));
+          const feeRate = Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.2));
           const pair = await buildSatsTake(feeRate);
           await save(rec, { take: takeRecord(pair, feeRate, 0, await tipNow()), takes: [pair.revealTxid] });
         }
@@ -487,7 +487,7 @@ export function makeEthereumLocker(ctx) {
           const sk = claimSecret({ dClaimer: btc.wallet.priv, t: BigInt(rec.t), lock });
           const sweepAt = (feeRate) => btc.tx.claimSats({ lockOut: { txid: rec.lockTxid, vout: rec.takeVout, value: rec.takeValue }, lock, sk, feeRate, maxFee: Math.floor(rec.takeValue * (policy.sweepMaxFeeShare ?? 0.5)) });
           if (!rec.sweep) {
-            const feeRate = Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5));
+            const feeRate = Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.2));
             let pair = null;
             try { pair = sweepAt(feeRate); } catch (err) { if (!/does not cover the fee|no spendable amount/.test(String((err && err.message) || err))) throw err; }
             if (!pair) return save(rec, { sweepSkipped: true });

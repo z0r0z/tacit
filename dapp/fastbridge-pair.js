@@ -560,7 +560,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     if (dir === 'e2b') {
       try {
         const feeFor = btc.prims && btc.prims.feeFor;
-        if (typeof feeFor === 'function') takeFeeSats = Number(feeFor(TAKE_VSIZE, Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5))));
+        if (typeof feeFor === 'function') takeFeeSats = Number(feeFor(TAKE_VSIZE, Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.2))));
       } catch { takeFeeSats = null; }
     }
     // a Bitcoin fee that is a large share of what is swapped: the lock's (b2e, of the sats paid) or the take's (e2b, of the sats received)

@@ -25,7 +25,7 @@
 import { esc, fmtUnits, parseUnits, plain, E10 } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=e5b9b386';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=d694802c';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=1a1cf9e0';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const NO_ANSWER = 'No answer just now. Nothing was sent. Try again soon.', RETRY_MS = [2000, 4000, 8000, 15000, 30000], RETRY_SHOWN = 3;
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
@@ -92,6 +92,18 @@ export const marketText = (bps) => {
   if (Math.abs(b) < 5) return 'at the market price';
   return `${(Math.abs(b) / 100).toFixed(Math.abs(b) < 995 ? 2 : 1)}% ${b < 0 ? 'less' : 'more'} than the market price`;
 };
+// What a quote costs against the market, from its own numbers: the fee (the market's worth less the quote's, in what is received), what arrives after the Bitcoin
+// network fee (taken from the BTC received, or paid on top of the BTC sent), and the whole gap to the market in basis points
+const ALL_IN_WARN_BPS = 500;
+export function cost(q) {
+  const e2b = q.dir === 'e2b', v = Number(q.vsMarketBps) / 10000, take = e2b ? Number(q.takeFeeSats) || 0 : 0, lock = e2b ? 0 : Number(q.networkFeeSats) || 0;
+  const get = e2b && q.get > BigInt(take) ? q.get - BigInt(take) : q.get;
+  if (!q.market || !Number.isFinite(v) || !(1 + v > 0)) return { get, fee: 0n, allInBps: 0, effective: null };
+  const mkt = Number(q.get) / (1 + v), fee = BigInt(Math.max(0, Math.round(mkt - Number(q.get))));
+  const worth = e2b ? mkt : (Number(q.pay) + lock) * q.market, allInBps = worth > 0 ? Math.round((1 - Number(get) / worth) * 10000) : 0;
+  const per = e2b ? Number(get) / Number(q.pay) : Number(get) / (Number(q.pay) + lock);
+  return { get, fee, allInBps, effective: per > 0 ? (e2b ? `1 ETH = ${tidy(per.toFixed(6))} BTC` : rateText(per)) : null };
+}
 // An error as the lane says it: what the engine wrote when that is a sentence, with a capital, else a plain line (never an exception's own words, nor a module's tag)
 // Which part of a quote failed, in a few plain words, for the line after the third miss (the cause itself goes to the console: requote)
 export const whyOf = (e) => {
@@ -471,7 +483,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (send <= 546n) return null;
     return { label: `Swap ${fmt(amount)} BTC → ETH`, act: 'bpress', fund: { sats: Number(send) } };
   }
-  const rows = (rs) => rs.map(([k, v, c]) => `<div><dt>${esc(k)}</dt><dd${c ? ` class="${c}"` : ''}>${esc(v)}</dd></div>`).join('');
+  const rows = (rs) => rs.map(([k, v, c, r]) => `<div${r ? ` class="${r}"` : ''}><dt>${esc(k)}</dt><dd${c ? ` class="${c}"` : ''}>${esc(v)}</dd></div>`).join('');
   // Before a quote: the market, what the providers take and hold, and who; the firm price comes once the wallet is open
   function preview() {
     const m = L.mk, t = termsFor(L.dir), [pk] = SIDES[L.dir], c = COINS[pk], amount = amountBase();
@@ -503,17 +515,17 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   function paintRcpt() {
     const rc = $('a-rcpt'), q = L.q;
     if (!q) { const pv = !pair ? preview() : null; rc.hidden = !pv; rc.innerHTML = pv ? rows(pv) : ''; return; }
-    const mk = marketText(q.vsMarketBps), rows0 = [
-      ['Price', L.dir === 'b2e' ? rateText(q.rate) : `1 ETH = ${tidy((1 / q.rate).toFixed(6))} BTC`, ''],
-      ['Market', q.market ? (L.dir === 'b2e' ? rateText(q.market) : `1 ETH = ${tidy((1 / q.market).toFixed(6))} BTC`) : 'not available', q.market ? '' : 'warn'],
-      ...(mk ? [q.vsMarketBps <= -5 && !q.blocked ? ['Fee included', `${(-q.vsMarketBps / 100).toFixed(2)}% against the market price`, q.vsMarketBps < -250 ? 'warn' : ''] : ['You get', mk, q.blocked ? 'err' : '']] : []),
-      // (what a quote costs against the market is the row above: the engine's feeBps is that, not a fee the provider named, so it is not called one here)
-      ...(q.split ? splitRows(q) : [['Provider', q.provider?.name || 'Provider', '']]),
-      ...(Number(q.networkFeeSats) > 0 ? [['Network fee', `≈ ${Number(q.networkFeeSats).toLocaleString('en-US')} sats${q.split ? ' for all parts' : ''}`, '']] : []),
-      ...(L.dir === 'e2b' && Number(q.takeFeeSats) > 0 ? [['Network fee', `≈ ${Number(q.takeFeeSats).toLocaleString('en-US')} sats, taken from your BTC`, '']] : []),
-      ['Time', etaSpan(q.etaSecs), ''],
-      ['Stay', 'Keep this page open until it says Done', ''],
-      ['If it stops', L.dir === 'b2e' ? 'BTC returns after about a day' : 'ETH returns after about 4 hours', ''],
+    const mk = marketText(q.vsMarketBps), c = cost(q), e2b = L.dir === 'e2b', out = COINS[e2b ? 'btc' : 'eth'].sym, feeSats = Number(e2b ? q.takeFeeSats : q.networkFeeSats);
+    const rows0 = [
+      ['Market rate', q.market ? (L.dir === 'b2e' ? rateText(q.market) : `1 ETH = ${tidy((1 / q.market).toFixed(6))} BTC`) : 'not available', q.market ? '' : 'warn'],
+      ...(mk ? [q.vsMarketBps <= -5 && !q.blocked ? ['Fee', `${fmt(c.fee)} ${out} \u00b7 ${(-q.vsMarketBps / 100).toFixed(2)}%`, ''] : ['You get', mk, q.blocked ? 'err' : '']] : []),
+      ...(feeSats > 0 ? [['Bitcoin network fee', `≈ ${feeSats.toLocaleString('en-US')} sats${q.split ? ' for all parts' : e2b ? ', taken from your BTC' : ''}`, '']] : []),
+      ['You receive', `${fmt(c.get)} ${out}`, c.allInBps > ALL_IN_WARN_BPS ? 'warn' : '', 'total'],
+      ...(c.effective ? [['Effective rate', c.effective, '', 'sub']] : []),
+      ['Time', etaSpan(q.etaSecs), '', 'sub'],
+      ...(q.split ? splitRows(q) : [['Provider', q.provider?.name || 'Provider', '', 'sub']]),
+      ['Stay', 'Keep this page open until it says Done', '', 'sub'],
+      ['If it stops', L.dir === 'b2e' ? 'BTC returns after about a day' : 'ETH returns after about 4 hours', '', 'sub'],
       ...(q.warnings || []).map((w) => ['Note', w, 'warn']),
     ];
     rc.hidden = false;
