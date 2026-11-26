@@ -63,14 +63,14 @@ const refused = { publicValues: publicValues({ lockNullifiers: [lockNu], adaptor
 const refundX = { publicValues: publicValues({ lockNullifiers: [lockNu], adaptorClaimS: [] }), proof: '0x' + 'ee'.repeat(32), memos: [] };
 
 // txs: [{ hash, to, input, traceCalls?, landed? }] (`landed`: how many of a relayer transaction's calls landed, for its receipt; all of them when not given)
-function makeEvm(txs, { relayStatus = null } = {}) {
-  let traced = 0;
+function makeEvm(txs, { relayStatus = null, blocks = null } = {}) {
+  let traced = 0, txReads = 0;
   const byHash = new Map(txs.map((x) => [x.hash, x]));
   const ux = {
     pool, lockScan,
     rpc: async (m, p) => {
       if (m === 'eth_getStorageAt') return '0x' + '00'.repeat(31) + '01';
-      if (m === 'eth_getTransactionByHash') { const x = byHash.get(p[0]); return x ? { input: x.input, to: x.to } : null; }
+      if (m === 'eth_getTransactionByHash') { txReads++; const x = byHash.get(p[0]); return x ? { input: x.input, to: x.to } : null; }
       if (m === 'eth_getTransactionReceipt') {
         const x = byHash.get(p[0]);
         if (!x) return null;
@@ -81,13 +81,13 @@ function makeEvm(txs, { relayStatus = null } = {}) {
       if (m === 'eth_getBlockByNumber') return { timestamp: '0x' + (1_700_000_000 + (p[0] === 'latest' ? 256 : parseInt(p[0], 16)) * 12).toString(16) };
       throw new Error('stub: ' + m);
     },
-    fetchEvents: async () => txs.map((x, i) => ({ type: 'NullifiersSpent', txHash: x.hash, blockNumber: 30 + i, logIndex: 1 })),
+    fetchEvents: async () => txs.map((x, i) => ({ type: 'NullifiersSpent', txHash: x.hash, blockNumber: blocks ? blocks[i] : 30 + i, logIndex: 1 })),
     identity: () => ({ pubHex: '0x00' }), chainBindingHex: () => '0x' + '00'.repeat(32),
     relay: { status: async () => ({ status: relayStatus }) },
   };
   const trace = async (h) => { traced++; const x = byHash.get(h); return x && x.traceCalls ? x.traceCalls : [{ to: x.to, input: x.input }]; };
   const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256: (k, m) => hmac(sha256, k, m), walletPriv: new Uint8Array(32).fill(7), seed: new Uint8Array(32).fill(9), asset: '0x' + 'f0'.repeat(32), poolAddress: POOL, trace });
-  return { evm, traced: () => traced };
+  return { evm, traced: () => traced, txReads: () => txReads };
 }
 
 // The same reads where the swap ends on what two nodes or more agree on (makeNodeQuorum). `views`: each node's chain, { spent, txs, count, down } ('a' is also the
@@ -364,6 +364,17 @@ expect('claim status: this side\'s claim landed through the relayer -> settled',
   expect('two nodes: this side\'s claim through a forwarder, two trace nodes alike -> done', (await blClaimed(all, { traceViews: [traced, traced] })) === 'done');
   expect('two nodes: this side\'s claim through a forwarder, one trace node -> no refund, waits', (await blClaimed(all, { traceViews: [traced, () => null] })) === 'claimed');
   expect('two nodes: this side\'s claim through a forwarder, trace nodes differ -> no refund, waits', (await blClaimed(all, { traceViews: [traced, () => [{ to: FORWARDER.toLowerCase(), input: fwdClaimTx.input }]] })) === 'claimed');
+}
+
+// the claim is looked for from the hour before the swap, not from the start of the shared window (which reaches back up to a hundred thousand blocks)
+{
+  const old1 = { ...strayTx, hash: '0x' + '31'.repeat(32) }, old2 = { ...strayTx, hash: '0x' + '32'.repeat(32) };
+  const near = makeEvm([old1, old2, claimTx], { blocks: [10, 12, 60] });
+  const zs = await near.evm.findClaim(lockNu, { sinceSecs: 1_700_004_200 });     // (the hour before this is block 50 of the stub chain)
+  expect('claim read: the window starts an hour before the swap, and the settles before it are not read', !!zs && zs.length === 1 && BigInt(zs[0]) === BigInt(zReal) && near.txReads() === 1, `reads=${near.txReads()}`);
+  const wide = makeEvm([old1, old2, claimTx], { blocks: [10, 12, 60] });
+  await wide.evm.findClaim(lockNu, { sinceSecs: 1_700_000_000 });
+  expect('claim read: a swap older than every one of them reads them all', wide.txReads() === 3, `reads=${wide.txReads()}`);
 }
 
 // the agreement itself: two or more answers, all alike, at one block under the nodes' heads

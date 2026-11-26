@@ -126,7 +126,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   // Windows that start at different times are cut at the same blocks (a multiple of WINDOW_STEP below the start), so the pool's events for them are one read that every
   // swap's scan takes from the cache instead of one read each (a few swaps' scans each fetched ~600k blocks of logs, overlapping, from a node that takes 45k at a time).
   const WINDOW_STEP = 100_000;
-  const windowFrom = async (secs) => Math.floor((await blockAtOrAfter(Math.max(0, secs - 3600))) / WINDOW_STEP) * WINDOW_STEP;
+  const windowStart = (secs) => blockAtOrAfter(Math.max(0, secs - 3600));
   const inputs = new Map();
   async function txOf(h) {
     // (a transaction a node does not have yet is not kept as one that is not there: only what was read is kept, and a miss is asked again next time)
@@ -293,7 +293,12 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const known = claims.get(key);
     if (known) { const j = judge(known); if (j !== undefined) return out(j, known.src); }
     const keep = (r, src) => { claims.set(key, { s: r.s, mixed: r.mixed, src }); cap(claims, 1024); };
-    const events = await ux.fetchEvents({ fromBlock: sinceSecs ? await windowFrom(sinceSecs) : undefined, toBlock: 'latest' });
+    // The events are read from the shared window's start (so every swap's scan takes the one cached read), but only those from the hour before this swap are walked: a claim
+    // cannot come before its lock, and the window can reach back two weeks, whose settles are hundreds of transactions to read again on every look (13,000 reads in 8 minutes,
+    // 2026-11-26).
+    const exact = sinceSecs ? await windowStart(sinceSecs) : 0;
+    const all = await ux.fetchEvents({ fromBlock: sinceSecs ? Math.floor(exact / WINDOW_STEP) * WINDOW_STEP : undefined, toBlock: 'latest' });
+    const events = exact ? all.filter((e) => e.blockNumber == null || Number(e.blockNumber) >= exact) : all;
     // The window's transactions are read a few at a time before they are walked in order: a swap found again from the key a day after its lock has a day of the pool's
     // settles to read, one request each, which one at a time took over a minute (2026-11-25). A read that fails here is made again in the walk, as before.
     const hashes = [...new Set(events.filter((e) => e.txHash && (e.type === 'LeavesInserted' || e.type === 'NullifiersSpent')).map((e) => e.txHash))];
