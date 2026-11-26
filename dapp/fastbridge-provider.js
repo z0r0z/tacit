@@ -66,7 +66,7 @@ export function makeQuoter({ store, now, params, macKey = null }) {
       evmWindowSecs: p.evmWindowSecs, minConfs: p.minConfsFor(btcValue), takeSats: Number(takeSats), created: Number(created), validUntil: Number(validUntil),
     };
     if (inLock(q.takeSats)) q.takeInLock = true;
-    q.legVouts = 1;
+    q.legVouts = 1;      // (as the quote given says)
     return q;
   }
 

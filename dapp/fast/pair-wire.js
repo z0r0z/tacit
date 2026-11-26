@@ -17,12 +17,12 @@ import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, makeNodeQuorum, TRA
 import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=cc29143a';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=da2bd2bf';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
-import { makeLocalStore } from '/fastbridge-client.js?cb=519a7879';
-import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=90494f7c';
+import { makeLocalStore } from '/fastbridge-client.js?cb=f3f78bdd';
+import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=1b8c2bfd';
 import { makeRateFeed, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
-import { discoverProviders } from '/fast/discover.js?cb=d110b8d6';
+import { discoverProviders } from '/fast/discover.js?cb=b4b5333e';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=0ea7b0ae';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=530ccd90';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();

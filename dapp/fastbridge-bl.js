@@ -340,13 +340,23 @@ export function makeBitcoinLocker(ctx) {
         }
         const chainNow = await evm.now(), nowSecs = Math.max(chainNow, Math.floor(Number(ctx.now())));   // (claimClock: the later of the two decides)
         const sec = secrets(rec), recipient = await evm.recipient(rec.id);
+        // A swap found again from the key knows the lock's sats but not the ETH quoted for it (that was only in the lost record, and in the provider's quote). The
+        // provider's offer is then taken only at no less than the market floor (ctx.recoverFloor, a share under the market price); with no floor to judge by it waits
+        // (the timelock still returns the BTC), and an offer under it ends in the refund. The amount it is taken at is kept.
+        let wantEvm = BigInt(rec.evmAmount);
+        if (rec.recovered && wantEvm === 0n) {
+          const floor = ctx.recoverFloor ? await ctx.recoverFloor(rec) : null;
+          if (floor == null) return rec;
+          if (BigInt(evmOffer.amount) < BigInt(floor)) return save(rec, { phase: 'refund-wait', why: 'offer: less ETH than the market price allows for these sats' });
+          wantEvm = BigInt(evmOffer.amount);
+        }
         const v = X.verifyEvmOffer(evmOffer, {
           mine: { T: sec.T, recipient: hx(recipient.xonly), rOut: sec.rOut },
-          expect: { evmAsset: rec.evmAsset, evmAmount: BigInt(rec.evmAmount) }, inLockSet: true, nowSecs, minClaimSecs: policy.minClaimSecs,
+          expect: { evmAsset: rec.evmAsset, evmAmount: wantEvm }, inLockSet: true, nowSecs, minClaimSecs: policy.minClaimSecs,
         });
         if (!v.ok) return save(rec, { phase: 'refund-wait', why: 'offer: ' + v.reasons.join('; ') });
         if (evmOffer.deadline - nowSecs > policy.maxEvmWindowSecs) return save(rec, { phase: 'refund-wait', why: 'offer: the deadline is further out than this side accepts' });
-        return save(rec, { phase: 'claiming', evmOffer, position, claimStartedAt: chainNow });
+        return save(rec, { phase: 'claiming', evmOffer, position, claimStartedAt: chainNow, evmAmount: String(wantEvm) });
       }
       case 'claiming': {
         // Held back near the deadline, a claim keeps t to this side. Once the lock is spent t is out already, so the claim is sent while any time is left.

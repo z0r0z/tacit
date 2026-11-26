@@ -353,10 +353,18 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   }
 
   // ── b2e: the user locks sats ──
+  // The least ETH a swap found again from the key may be finished at, for its sats: the market price less what a provider's quote may have been under it (the quote
+  // itself is not on Bitcoin). null when the market cannot be read well enough to judge by.
+  async function recoverFloor(rec) {
+    const market = await reference().catch(() => null);
+    if (!market || unusable(market)) return null;
+    const sats = Number(rec.amount), bps = policy.recoverMaxDiscountBps ?? 500;
+    return BigInt(Math.floor(sats * market.ethPerBtc * (10000 - bps) / 10000));
+  }
   const fwdBl = new Map();
   const blFor = (ref) => {
     const k = ref ? JSON.stringify([ref.kind, ref.claimPub || '', ref.gateway || ref.base || '']) : 'none';
-    if (!fwdBl.has(k)) fwdBl.set(k, makeBitcoinLocker({ seed, now, store: stores.fwd, btc, evm, policy, counter: ref ? counterFor(ref) : noCounter() }));
+    if (!fwdBl.has(k)) fwdBl.set(k, makeBitcoinLocker({ seed, now, store: stores.fwd, btc, evm, policy, counter: ref ? counterFor(ref) : noCounter(), recoverFloor }));
     return fwdBl.get(k);
   };
   const TERMINAL_COINS = new Set(['done', 'refunded', 'counter-took', 'aborted']);
@@ -892,12 +900,14 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
 
   async function recover() {
     const c = makeFastBridgeClient({ lp: noCounter(), btc, evm, store: stores.fwd, seed, pins: { btcAsset: SATS_ASSET, evmAsset: ETH }, policy, now });
-    const fwd = await c.recover();
+    const known = new Map();
+    for (const p of await discover().catch(() => [])) if (p.ref && p.ref.claimPub) known.set(strip(p.ref.claimPub), p.ref);
+    const fwd = await c.recover({ providerFor: (k) => known.get(strip(k)) || null });
     // (the client hands back its records in words: the record itself is read from the store). Every one is marked as being checked before the first is
     // stepped, so a page that lists the swaps while they are read never shows one as the client left it ('Returning your BTC') before its step has said otherwise.
     const found = [];
     for (const d of fwd) { const rec = await stores.fwd.get(d.id); if (rec) { const r = { ...rec, checking: true }; await stores.fwd.put(r); found.push(r); } }
-    for (const rec of found) await settle(rec, stores.fwd, (r) => blFor(null).step(r));
+    for (const rec of found) await settle(rec, stores.fwd, (r) => blFor(r.provider || null).step(r));
     return fwd.length + (await recoverBatches().catch(() => 0)) + (await recoverRev());
   }
   // A record found again from the key is stepped until the chains have said what became of it (a lock the provider took, a take made from another page,
