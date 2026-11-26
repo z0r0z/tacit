@@ -184,7 +184,7 @@ try {
     await page.click('#copy');
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Waiting for tacit-prover…', null, { timeout: 5000 }).catch(() => {});
     check((await text(page, '#title')) === 'Waiting for tacit-prover…', 'once copied, the page waits for the prover', await text(page, '#title'));
-    await page.waitForFunction(() => document.querySelector('#today').textContent.includes('4 proofs'));
+    await page.waitForFunction(() => document.querySelector('#today').textContent.includes('4 pool proofs'));
     check((await text(page, '#pays')).includes('0.2 TAC a proof'), 'what a proof pays is read from the services', await text(page, '#pays'));
     check((await text(page, '#paid')) === '6 TAC · Rewards' && (await page.getAttribute('#paid a', 'href')) === '/rewards/', 'what was paid, with the way to Rewards', await text(page, '#paid'));
     await page.waitForFunction(() => document.querySelectorAll('#chain .blk:not(.next):not(.xc)').length === 4);
@@ -198,8 +198,8 @@ try {
     check((await page.locator('#pool').count()) === 0, 'and not on a row of their own');
     check((await text(page, '#feed')).includes('+0.2 TAC') && (await text(page, '#feed')).includes('a deposit, proved in 9 min'), 'the feed says who proved what, how fast and what it won', await text(page, '#feed'));
     const mineRank = (await page.locator('#board li.me').innerText()).replace(/\s+/g, ' ');
-    check(mineRank.includes('4 proofs 0.8 TAC 9 min each'), 'today\'s provers with their TAC and their speed', mineRank);
-    check((await text(page, '#board-rate')) === '300 TAC a day, shared by points: 0.01 TAC a point so far', 'under them, how the day\'s TAC is shared and today\'s rate (the cap, the day being covered)', await text(page, '#board-rate'));
+    check(mineRank.includes('4 pool · 80 pts ≈ 0.8 TAC 9 min each'), 'today\'s contributors separate pool work from GPU work and show the points behind estimated TAC', mineRank);
+    check((await text(page, '#board-rate')) === 'Up to 300 TAC a day · 0.01 TAC a point so far · paid after the UTC day ends', 'under them, the daily maximum, provisional point rate and settlement time are explicit', await text(page, '#board-rate'));
     const cols = await page.evaluate(() => [...document.querySelectorAll('#feed li:not(.empty)')].map((li) => Math.round(li.children[1].getBoundingClientRect().right)));
     check(cols.length > 1 && new Set(cols).size === 1, 'the feed\'s TAC column lines up', JSON.stringify(cols));
     check(await page.evaluate(() => [...document.querySelectorAll('.who.gpu')].every((e) => getComputedStyle(e).marginTop === '0px')), 'the Tacit GPU name sits in line (no card style on it)');
@@ -229,8 +229,8 @@ try {
     check((await text(page, '#n-done')) === '433' && (await text(page, '#n-provers')) === '11', 'the headline counts are the last 24 hours, not since midnight UTC', `${await text(page, '#n-done')} ${await text(page, '#n-provers')}`);
     const kinds = await page.locator('#chain .blk:not(.next):not(.xc) .k').allInnerTexts();
     check(JSON.stringify(kinds) === JSON.stringify(['Private transfer', 'Deposit', 'Private transfer', 'Private transfer']), 'each block says what it did', JSON.stringify(kinds));
-    check((await text(page, '#today')) === '4 proofs · 0.8 TAC', 'the rig says what today earned', await text(page, '#today'));
-    check((await text(page, '#payout')).startsWith('after the day ends, in '), 'and when it is paid', await text(page, '#payout'));
+    check((await text(page, '#today')) === '4 pool proofs · 80 points · ≈ 0.8 TAC', 'the rig says which work earned today\'s points and estimated TAC', await text(page, '#today'));
+    check((await text(page, '#payout')).startsWith('estimate settles after the UTC day ends · in '), 'and says the figure is provisional and when it settles', await text(page, '#payout'));
     if (Date.now() % 86400000 >= 7200000) check((await text(page, '#pace')).includes('TAC a day ('), 'and the pace at today\'s rate', await text(page, '#pace'));
     else check(await page.locator('#pace-row').isHidden(), 'no pace in the day\'s first two hours');
     check((await page.locator('#chain .blk.gpu').count()) === 1 && (await page.locator('#chain .blk.gpu').innerText()).includes('Tacit GPU'), 'a block Tacit\'s GPU proved says so');
@@ -314,12 +314,12 @@ try {
     const { page, ctx, errors } = await open(browser, { v: null }, { busy: true });
     await page.fill('#addr', ADDR);
     await page.waitForFunction(() => document.querySelector('#board-rate').textContent.includes('a point'), null, { timeout: 8000 }).catch(() => {});
-    check((await text(page, '#board-rate')) === '300 TAC a day, shared by points: 0.005 TAC a point so far', 'a busy day: under the leaderboard, today\'s rate below the cap', await text(page, '#board-rate'));
+    check((await text(page, '#board-rate')) === 'Up to 300 TAC a day · 0.005 TAC a point so far · paid after the UTC day ends', 'a busy day: under the leaderboard, today\'s provisional rate is below the cap', await text(page, '#board-rate'));
     const busyRank = (await page.locator('#board li.me').innerText()).replace(/\s+/g, ' ');
-    check(busyRank.includes('5 proofs 0.9 TAC'), 'the leaderboard at today\'s rate, not the cap, with the board\'s work (a GPU\'s batches and blocks) counted beside the pool\'s', busyRank);
+    check(busyRank.includes('4 pool · 1 GPU · 180 pts ≈ 0.9 TAC'), 'the leaderboard at today\'s rate, with unlike pool and GPU work counted separately', busyRank);
     const firstRow = (await page.locator('#board li').first().innerText()).replace(/\s+/g, ' ');
-    check(firstRow.includes('2506 proofs') && firstRow.includes('299.1 TAC'), 'and ranked by what the day pays: the pool\'s 2,496 proofs and the board\'s 10 make one row', firstRow);
-    check((await text(page, '#today')) === '5 proofs · 0.9 TAC', 'and the address\'s own day counts its board work too', await text(page, '#today'));
+    check(firstRow.includes('2,496 pool · 10 GPU · 59,820 pts') && firstRow.includes('≈ 299.1 TAC'), 'and ranked by what the day pays while keeping the pool and board counts distinct', firstRow);
+    check((await text(page, '#today')) === '4 pool proofs · 1 GPU job · 180 points · ≈ 0.9 TAC', 'and the address\'s own day explains its pool work, GPU work, points and estimate', await text(page, '#today'));
     await page.waitForFunction(() => document.querySelector('#salt-day').textContent.includes('nothing more today'), null, { timeout: 8000 }).catch(() => {});
     check((await text(page, '#salt-day')) === 'Proofs have used today\'s TAC, so salts pay nothing more today. They pay again from 00:00 UTC. Proofs come first.', 'a day whose proofs used all its TAC says salts pay nothing more today', await text(page, '#salt-day'));
     await page.waitForFunction(() => !document.querySelector('#typ-row').hidden, null, { timeout: 8000 }).catch(() => {});

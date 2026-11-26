@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=1a0370af">
+<link rel="modulepreload" href="/prove/app.js?cb=8a9d36c4">
 <link rel="modulepreload" href="/relay-route.js?cb=7a415964">
 <link rel="modulepreload" href="/private-route.js?cb=b5c16019">
 <link rel="modulepreload" href="/evm-pool-relays.js">
@@ -32,7 +32,7 @@
 <link rel="modulepreload" href="/prove/tabmine.js?cb=ab8f8e8f">
 <link rel="modulepreload" href="/prove/saltcore.js?cb=4167306b">
 <link rel="modulepreload" href="/prove/review.js?cb=23bfbd4a">
-<link rel="modulepreload" href="/prove/chain.js?cb=e4dfccf1">
+<link rel="modulepreload" href="/prove/chain.js?cb=fb56a0bd">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -550,7 +550,7 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.45); backdrop-filter: blur(2px)
 #feed > li > :nth-child(n+2), #board > li > :nth-child(n+3) { text-align: right; }
 #board .rk { color: var(--mute); }
 #board .gap { grid-column: 1 / -1; display: block; height: 0; padding: 0; border-bottom: 1px dashed var(--hair-2); }
-@media (max-width: 480px) { #board { grid-template-columns: auto minmax(0, 1fr) auto auto; } #board .spd { display: none; } }
+@media (max-width: 480px) { #board { grid-template-columns: auto minmax(0, 1fr) auto auto; } #board .spd { display: none; } #board .work { max-width: 112px; white-space: normal; line-height: 1.25; } }
 .feed li:last-child { border-bottom: 0; }
 .feed li.new { animation: fresh 1.6s ease-out; }
 .feed li.me { box-shadow: inset 2px 0 0 var(--orange); padding-left: 10px; }
@@ -966,7 +966,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
             <div class="kv" id="saltpot-row" hidden><span>Salts, a day</span><b id="saltpot">—</b></div>
             <div class="kv" id="pot-row" hidden><span>Prover pot</span><b id="pot">—</b></div>
             <div class="kv" id="salt-row" hidden><span>Salts today</span><b id="salt">—</b></div>
-            <div class="kv" id="payout-row" hidden><span>Paid out</span><b id="payout">—</b></div>
+            <div class="kv" id="payout-row" hidden><span>Today's payout</span><b id="payout">—</b></div>
             <div class="kv" id="run-row" hidden><span>Since the node started</span><b id="run">0</b></div>
           </details>
         </div>
@@ -1001,9 +1001,10 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <div class="tape" id="tape" role="img" aria-label="The newest proofs along a line of time"><div class="tape-l" id="tape-l"></div><p class="tape-x"><span id="tape-a"></span><span id="tape-n"></span><span>now</span></p></div>
         <ol id="feed"><li class="empty">Nothing yet today.</li></ol>
         <p class="hint" id="feed-idle" hidden>Quiet right now. <a href="/">A private deposit</a> starts the next proof.</p>
-        <p class="eyebrow">Today's provers</p>
+        <p class="eyebrow">Today's contributors</p>
         <ol id="board"><li class="empty">Nobody yet. Be first.</li></ol>
         <p class="hint" id="board-rate" hidden></p>
+        <p class="hint">Pool proofs and GPU jobs are different work. Points—not the number of jobs—determine TAC.</p>
         <p class="hint" id="board-rule" hidden></p>
       </section>
       <section class="panel side" aria-labelledby="h-gpu" data-card="gpu">
@@ -1172,6 +1173,6 @@ node scripts/pay-relay.mjs --tunnel</code></pre><button class="btn ghost" id="pa
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=1a0370af"></script>
+<script type="module" src="/prove/app.js?cb=8a9d36c4"></script>
 </body>
 </html>
