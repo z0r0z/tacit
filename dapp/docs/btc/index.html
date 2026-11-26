@@ -73,17 +73,12 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .hero h1 em { font-style: italic; }
 .hero .sub { margin: 14px 0 0; color: var(--mute); font-size: 13.5px; max-width: 62ch; }
 
-/* two ways in: using it, and how it works */
-.ways { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 26px 0 0; }
-.way { display: grid; grid-template-rows: auto auto 1fr auto; gap: 10px; padding: 18px 20px; background: var(--card); border: 1px solid var(--hair-2); min-width: 0; }
-.way .k { margin: 0; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
-.way h2 { margin: 0; font: 400 32px/1 var(--serif); letter-spacing: -.015em; }
-.way h2 em { font-style: italic; }
-.way dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; font-size: 12.5px; align-content: start; }
-.way dt { color: var(--mute); }
-.way dd { margin: 0; overflow-wrap: anywhere; }
-.way .go { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; padding-top: 10px; border-top: 1px solid var(--hair); }
-@media (max-width: 760px) { .ways { grid-template-columns: minmax(0, 1fr); } }
+/* a docs page: a breadcrumb, a lead line, one callout */
+.crumbs { margin: 22px 0 0; font-size: 12px; color: var(--mute); }
+.crumbs a { color: inherit; }
+.hero .lead { margin: 16px 0 0; max-width: 62ch; font-size: 15px; line-height: 1.6; }
+.callout { margin: 20px 0 0; padding: 12px 16px; max-width: 72ch; background: var(--card); border: 1px solid var(--hair-2); border-left: 3px solid var(--ink); font-size: 13px; }
+.callout b { display: block; margin-bottom: 2px; font-size: 11px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 
 /* the page: contents beside one reading column */
 .doc { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 40px; margin-top: 40px; }
@@ -131,69 +126,6 @@ code { font: inherit; font-size: .95em; padding: 0 .3em; background: var(--field
 .tbl td.t { white-space: nowrap; }
 .tbl code { font-size: .92em; }
 
-/* the picture at the top: in from a wallet, private on the chain, out where you choose */
-.map { display: grid; grid-template-columns: minmax(0, 1fr) 128px minmax(0, 1.25fr) 128px minmax(0, 1fr); align-items: center; margin: 26px 0 0; padding: 22px; background: var(--card); border: 1px solid var(--hair-2); }
-.mp { display: grid; gap: 4px; justify-items: start; padding: 14px; background: var(--field); border: 1px solid var(--hair-2); min-width: 0; }
-.mp .tk { width: 24px; height: 24px; margin-bottom: 4px; }
-.mp b { font: 400 22px/1.1 var(--serif); }
-.mp > span { font-size: 12px; color: var(--mute); }
-.mc { padding: 16px; border-color: var(--ink); }
-.mc b { font-style: italic; }
-.pay { display: flex; align-items: center; gap: 8px; width: 100%; margin: 10px 0 0; font-size: 11px; color: var(--mute); }
-.pay > span { padding: 1px 8px; background: var(--card); border: 1px solid var(--hair-2); }
-.pay i { position: relative; flex: 1; height: 1px; background: var(--hair-2); }
-.pay i::after { content: ''; position: absolute; right: -1px; top: -4px; border-left: 7px solid var(--hair-2); border-top: 4.5px solid transparent; border-bottom: 4.5px solid transparent; }
-.pay em { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 0 5px; font-style: normal; letter-spacing: .08em; color: var(--ink); background: var(--field); animation: pay 3.2s ease-in-out infinite; }
-@keyframes pay { 0% { left: 18%; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { left: 78%; opacity: 0; } }
-.ma { display: grid; justify-items: center; gap: 6px; padding: 0 10px; text-align: center; min-width: 0; }
-.ma b { font: italic 400 19px/1 var(--serif); }
-.ma i { position: relative; display: block; width: 100%; height: 1px; background: var(--mute); }
-.ma i::after { content: ''; position: absolute; right: -1px; top: -4px; border-left: 7px solid var(--mute); border-top: 4.5px solid transparent; border-bottom: 4.5px solid transparent; }
-.ma i::before { content: ''; position: absolute; top: -2px; left: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--orange); opacity: 0; animation: mv 2.6s linear infinite; }
-.mc + .ma i::before { animation-delay: 1.3s; }
-@keyframes mv { 0% { left: 0; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { left: calc(100% - 12px); opacity: 0; } }
-.ma span { font-size: 11px; line-height: 1.4; color: var(--mute); }
-.mo { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
-.mo li { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: center; padding: 8px 12px; background: var(--field); border: 1px solid var(--hair-2); }
-.mo .tk { width: 22px; height: 22px; grid-row: span 2; }
-.mo b { font: 400 18px/1.1 var(--serif); }
-.mo span { font-size: 11px; color: var(--mute); }
-.map figcaption { grid-column: 1 / -1; margin: 18px 0 0; font-size: 12.5px; color: var(--mute); max-width: 72ch; }
-@media (max-width: 900px) {
-  .map { grid-template-columns: minmax(0, 1fr); padding: 16px; }
-  .ma { grid-template-columns: auto minmax(0, 1fr); justify-items: start; column-gap: 14px; row-gap: 2px; padding: 10px 0 10px 18px; text-align: left; }
-  .ma i { grid-row: 1 / 3; grid-column: 1; width: 1px; height: auto; min-height: 46px; align-self: stretch; }
-  .ma i::after { right: auto; left: -4px; top: auto; bottom: -1px; border-left: 4.5px solid transparent; border-right: 4.5px solid transparent; border-top: 7px solid var(--mute); border-bottom: 0; }
-  .ma i::before { left: -2px; top: 0; animation-name: mvv; }
-  .ma b, .ma span { grid-column: 2; }
-}
-@keyframes mvv { 0% { top: 0; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { top: calc(100% - 12px); opacity: 0; } }
-
-/* a payment's path: four stops, each arrow named for what it carries (top to bottom on a narrow screen) */
-.path { list-style: none; margin: 6px 0 18px; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 64px; }
-.path li { position: relative; display: grid; gap: 4px; align-content: start; justify-items: start; padding: 14px 14px 16px; background: var(--card); border: 1px solid var(--hair-2); min-width: 0; }
-.path li:last-child { border-color: var(--ink); }
-.path .ic { width: 24px; height: 24px; margin-bottom: 4px; fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.path .tk.ic { stroke: none; }
-.path b { font: 400 22px/1.1 var(--serif); }
-.path li > span:not(.to) { font-size: 12px; color: var(--mute); }
-.path .see { margin-top: 6px; padding: 1px 8px; font-size: 11px; color: var(--ink); background: var(--field); border: 1px solid var(--hair-2); }
-.path .to { position: absolute; left: 100%; top: 50%; width: 64px; transform: translateY(-50%); padding: 0 4px 12px; font-size: 11px; color: var(--mute); text-align: center; }
-.path .to::before { content: ''; position: absolute; left: 6px; right: 6px; bottom: 4px; height: 1px; background: var(--mute); }
-.path .to::after { content: ''; position: absolute; right: 5px; bottom: 0; border-left: 7px solid var(--mute); border-top: 4.5px solid transparent; border-bottom: 4.5px solid transparent; }
-.path .to i { position: absolute; left: 6px; bottom: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--orange); opacity: 0; animation: run 2.4s linear infinite; }
-.path li:nth-child(2) .to i { animation-delay: .8s; }
-.path li:nth-child(3) .to i { animation-delay: 1.6s; }
-@keyframes run { 0% { left: 6px; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { left: calc(100% - 18px); opacity: 0; } }
-@media (max-width: 1000px) {
-  .path { grid-template-columns: minmax(0, 1fr); gap: 44px; max-width: 520px; }
-  .path .to { left: 22px; top: 100%; width: auto; height: 44px; transform: none; padding: 0 0 0 16px; display: flex; align-items: center; text-align: left; }
-  .path .to::before { left: 0; right: auto; top: 4px; bottom: 6px; width: 1px; height: auto; }
-  .path .to::after { right: auto; left: -4px; bottom: 0; border-left: 4.5px solid transparent; border-right: 4.5px solid transparent; border-top: 7px solid var(--mute); border-bottom: 0; }
-  .path .to i { left: -2px; bottom: auto; top: 4px; animation-name: runv; }
-}
-@keyframes runv { 0% { top: 4px; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { top: calc(100% - 14px); opacity: 0; } }
-
 /* the drawings: hairline boxes, mono labels, one serif word, orange only for what was added */
 .fig { margin: 6px 0 20px; padding: 20px; max-width: 640px; background: var(--card); border: 1px solid var(--hair); }
 .fig svg.d { display: block; width: 100%; max-width: 460px; height: auto; margin: 0 auto; overflow: visible; }
@@ -231,8 +163,6 @@ code { font: inherit; font-size: .95em; padding: 0 .3em; background: var(--field
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .pay em { animation: none; }
-  .ma i::before, .path .to i { display: none; }
 }
 </style>
 <!-- chrome:head:begin inline -->
@@ -535,94 +465,57 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </header>
 
   <main>
-    <section class="hero" aria-labelledby="h">
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="/build/">Docs</a> <span aria-hidden="true">/</span> BTC ⇄ ETH</nav>
+    <header class="hero">
       <h1 id="h">BTC <em>⇄</em> ETH</h1>
-      <p class="sub">Swap Bitcoin for ETH, or ETH for Bitcoin, with a provider. No one holds your coins in between. Your ETH arrives as a private balance on Tacit. This is a pilot: the code is new, it has had no independent audit, and each swap is capped.</p>
-
-      <figure class="map" aria-labelledby="map-cap">
-        <div class="mp">
-          <svg class="tk" aria-hidden="true"><use href="#c-btc"/></svg>
-          <b>Your coins</b>
-          <span>Bitcoin, or private ETH</span>
-        </div>
-        <div class="ma"><b>Lock</b><i aria-hidden="true"></i><span>Each side locks its coin to one secret</span></div>
-        <div class="mp mc">
-          <svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>
-          <b>Atomic swap</b>
-          <span>Both locks open, or both refund. No one can take both.</span>
-          <p class="pay" aria-hidden="true"><span>you</span><i><em>•••</em></i><span>provider</span></p>
-        </div>
-        <div class="ma"><b>Claim</b><i aria-hidden="true"></i><span>Claiming one side shows how to open the other</span></div>
-        <ul class="mo">
-          <li><svg class="tk" aria-hidden="true"><use href="#c-eth"/></svg><b>ETH</b><span>private balance on Tacit</span></li>
-          <li><svg class="tk" aria-hidden="true"><use href="#c-btc"/></svg><b>Bitcoin</b><span>your bc1q… address</span></li>
-        </ul>
-        <figcaption id="map-cap">You and a provider each lock a coin. One secret opens both locks. If anyone stops, both refund.</figcaption>
-      </figure>
-
-      <div class="ways">
-        <section class="way" aria-labelledby="w-use">
-          <p class="k">At a glance</p>
-          <h2 id="w-use">Use <em>it</em></h2>
-          <dl>
-            <dt>Swap</dt><dd>BTC for private ETH, or private ETH for BTC</dd>
-            <dt>Time</dt><dd>BTC to ETH about 15–20 min, ETH to BTC about 20–30 min</dd>
-            <dt>Cost</dt><dd>0.20% plus a flat part and the Bitcoin network fee, shown before you press</dd>
-            <dt>Where</dt><dd><a href="/btc/">tacit.finance/btc</a></dd>
-          </dl>
-          <div class="go"><a href="#steps">Swap in three steps</a><a href="#wrong">If something goes wrong</a></div>
-        </section>
-        <section class="way" aria-labelledby="w-how">
-          <p class="k">For builders</p>
-          <h2 id="w-how">Under <em>the hood</em></h2>
-          <dl>
-            <dt>Swap</dt><dd>An adaptor-signature swap between a Bitcoin Taproot lock and a pool lock</dd>
-            <dt>Pool</dt><dd>Tacit’s confidential pool on Ethereum</dd>
-            <dt>Contract</dt><dd>0x000000000Ed1eabD231Be41d93b719056F7febFC</dd>
-          </dl>
-          <div class="go"><a href="#hood">Under the hood</a><a href="https://github.com/src-company/tacit/blob/main/docs/FAST-BRIDGE.md" target="_blank" rel="noopener noreferrer">Full spec ↗</a></div>
-        </section>
-      </div>
-    </section>
+      <p class="lead">Swap Bitcoin for ETH, or ETH for Bitcoin, directly with a provider. Each side locks its coin and one secret opens both locks, so no one holds your funds in between. Your ETH arrives as a private balance on Tacit.</p>
+      <div class="callout"><b>Pilot</b>The code is new and has had no independent audit. Each swap is capped. Do not move more than you can afford to have delayed.</div>
+    </header>
 
     <div class="doc">
       <nav class="toc" aria-label="On this page">
-        <p>Use it</p>
+        <p>Guide</p>
         <ol>
-          <li><a href="#steps">Swap in three steps</a></li>
+          <li><a href="#overview">Overview</a></li>
+          <li><a href="#quickstart">Quickstart</a></li>
+          <li><a href="#concepts">Concepts</a></li>
           <li><a href="#fees">Fees and limits</a></li>
-          <li><a href="#wrong">If something goes wrong</a></li>
-          <li><a href="#safe">Is it safe?</a></li>
+          <li><a href="#recovery">If something goes wrong</a></li>
+          <li><a href="#security">Security</a></li>
         </ol>
-        <p>Under the hood</p>
+        <p>Technical</p>
         <ol>
-          <li><a href="#hood">The mechanism</a></li>
-          <li><a href="#paths">Both directions</a></li>
+          <li><a href="#how">How it works</a></li>
+          <li><a href="#paths">The two directions</a></li>
           <li><a href="#secrets">Secrets and recovery</a></li>
           <li><a href="#price">The price check</a></li>
         </ol>
-        <p>More</p>
+        <p>Reference</p>
         <ol>
           <li><a href="#provide">Run a provider</a></li>
-          <li><a href="#build">Build on it</a></li>
-          <li><a href="#faq">Questions</a></li>
-          <li><a href="#words">Words used here</a></li>
+          <li><a href="#integrate">Integrate</a></li>
+          <li><a href="#faq">FAQ</a></li>
+          <li><a href="#glossary">Glossary</a></li>
         </ol>
       </nav>
 
       <article>
 
-<section class="part" id="steps">
-  <p class="kick">Use it</p>
-  <h2>Swap in <em>three steps</em></h2>
+<section class="part" id="overview">
+  <h2>Overview</h2>
+  <p>You swap with a provider: a program that takes the other side of your swap and earns a fee. You press Swap in your browser, and your browser does the signing and the checking. Your coins stay locked for the length of the swap and come back on their own if anything stops.</p>
+  <dl class="gl">
+    <dt>Swap</dt><dd>BTC for private ETH, or private ETH for BTC.</dd>
+    <dt>Time</dt><dd>BTC to ETH about 15–20 min. ETH to BTC about 20–30 min.</dd>
+    <dt>Cost</dt><dd>0.20% plus a flat part and the Bitcoin network fee, shown before you press.</dd>
+    <dt>Where</dt><dd><a href="/btc/">tacit.finance/btc</a></dd>
+  </dl>
+</section>
+
+<section class="part" id="quickstart">
+  <h2>Quickstart</h2>
   <p>Go to <a href="/btc/">tacit.finance/btc</a> and sign in with your Ethereum wallet or a passkey. That opens your Tacit key, which holds your Bitcoin address and your private ETH. The same sign-in opens the same key on any device.</p>
   <p>Pick a direction and an amount. The page shows a quote before you press: the rate, the fee, what you receive and the provider. It stands for about five minutes.</p>
-  <dl class="gl">
-    <dt>Provider</dt><dd>The process that takes the other side of your swap and earns a fee.</dd>
-    <dt>Lock</dt><dd>A coin set aside so that only this swap, or a refund after a timeout, can move it.</dd>
-    <dt>Claim, refund</dt><dd>Claim takes the lock meant for you. Refund takes back your own lock after the timeout.</dd>
-    <dt>Private balance</dt><dd>Your ETH inside Tacit’s pool, where amounts and owners are hidden.</dd>
-  </dl>
 
   <h3>Bitcoin to ETH</h3>
   <ol class="steps">
@@ -638,12 +531,23 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <li><b>Done in about 20–30 minutes.</b> The BTC is at your Tacit Bitcoin address (bc1q…), less the fee of the take. Send it on to any wallet or exchange.</li>
   </ol>
 
-  <p><b>Keep the page open until it says Done.</b> Your browser does the signing. If you close it, see <a href="#wrong">If something goes wrong</a>.</p>
+  <p><b>Keep the page open until it says Done.</b> Your browser does the signing. If you close it, see <a href="#recovery">If something goes wrong</a>.</p>
+</section>
+
+<section class="part" id="concepts">
+  <h2>Concepts</h2>
+  <p>A few words carry the whole swap.</p>
+  <dl class="gl">
+    <dt>Provider</dt><dd>The program that takes the other side of your swap and earns a fee. It never holds your funds: each swap locks both sides.</dd>
+    <dt>Lock</dt><dd>A coin set aside so that only this swap, or a refund after a timeout, can move it.</dd>
+    <dt>Claim and refund</dt><dd>A claim takes the lock meant for you. A refund takes back your own lock after the timeout. Claiming one lock shows the secret that opens the other.</dd>
+    <dt>Your Tacit key</dt><dd>Signing in opens one key. It holds your Bitcoin address (bc1q…), where swapped BTC arrives, and your private ETH balance. The same sign-in opens the same key on any device.</dd>
+    <dt>Private balance</dt><dd>Your ETH inside Tacit’s pool, where amounts and owners are hidden. Send it to any Ethereum address when you want to use it.</dd>
+  </dl>
 </section>
 
 <section class="part" id="fees">
-  <p class="kick">Use it</p>
-  <h2>Fees <em>and limits</em></h2>
+  <h2>Fees and limits</h2>
   <ul>
     <li><b>Limits.</b> BTC to ETH: 0.00025 BTC to 0.01 BTC. ETH to BTC: from 0.008 ETH, up to the BTC the providers hold at that moment. A larger BTC to ETH swap may be split across up to four providers.</li>
     <li><b>Provider fee.</b> 0.20% of the amount at the provider Tacit runs, plus a flat part: 400 sats (BTC to ETH) or 0.0001 ETH (ETH to BTC). Other providers set their own.</li>
@@ -654,9 +558,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <p>The fixed parts weigh most on small swaps. At Tacit’s provider, without the lean, a BTC to ETH swap of 0.00025 BTC costs about 3.8% in all, 0.001 BTC about 1.1%, and 0.01 BTC about 0.3%.</p>
 </section>
 
-<section class="part" id="wrong">
-  <p class="kick">Use it</p>
-  <h2>If something <em>goes wrong</em></h2>
+<section class="part" id="recovery">
+  <h2>If something goes wrong</h2>
   <p><b>Closing a tab never gives anyone your funds.</b> Every lock refunds on its own clock. The worst case is that your coins come back after a timeout.</p>
   <ul>
     <li><b>You closed the page.</b> Reopen it in the same browser and it carries on. On another device, sign in again: the page finds the swap from your key while the provider still serves its offer.</li>
@@ -668,9 +571,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </ul>
 </section>
 
-<section class="part" id="safe">
-  <p class="kick">Use it</p>
-  <h2>Is it <em>safe?</em></h2>
+<section class="part" id="security">
+  <h2>Security</h2>
   <ul>
     <li><b>It is a pilot.</b> The code is new and has had no independent audit. Swaps are capped. Do not move more than you can afford to have delayed.</li>
     <li><b>Your browser checks both.</b> It verifies the provider’s offer before it reveals anything, and compares each quote with Chainlink’s ETH/BTC price.</li>
@@ -680,9 +582,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </ul>
 </section>
 
-<section class="part" id="hood">
-  <p class="kick">Under the hood</p>
-  <h2>The <em>mechanism</em></h2>
+<section class="part" id="how">
+  <h2>How it works</h2>
   <p>You do not need this part to swap. It is here so you can check the claims above.</p>
 
   <h3>The swap</h3>
@@ -702,8 +603,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 </section>
 
 <section class="part" id="paths">
-  <p class="kick">Under the hood</p>
-  <h2>Both <em>directions</em></h2>
+  <h2>The two directions</h2>
   <p>The side that locks Bitcoin first is the one that holds <code>t</code>. The other side locks only after that lock confirms. The holder of <code>t</code> claims first on Ethereum, which shows <code>t</code>, and the other side uses it on Bitcoin.</p>
 
   <h3>Bitcoin to ETH</h3>
@@ -776,8 +676,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 </section>
 
 <section class="part" id="secrets">
-  <p class="kick">Under the hood</p>
-  <h2>Secrets <em>and recovery</em></h2>
+  <h2>Secrets and recovery</h2>
   <p>The secret, the note blindings and a sealed hint in the Bitcoin lock are all derived from your Tacit key and the lock’s outpoint. A swap can therefore be found again from your key and the chains alone. That is how another device, or a browser with cleared storage, picks one up.</p>
 
   <h3>The take watcher</h3>
@@ -786,14 +685,12 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 </section>
 
 <section class="part" id="price">
-  <p class="kick">Under the hood</p>
-  <h2>The price <em>check</em></h2>
+  <h2>The price check</h2>
   <p>A provider quotes the market rate plus its fee. The page does not take that on trust. It reads Chainlink’s ETH/BTC price from at least two Ethereum nodes, asked at the same block, and uses it only while they agree and the reading is fresh. It warns on a quote 2.5% under that price and blocks one more than 3% under. If it cannot read the market, it blocks the quote.</p>
 </section>
 
 <section class="part" id="provide">
-  <p class="kick">More</p>
-  <h2>Run <em>a provider</em></h2>
+  <h2>Run a provider</h2>
   <p>A provider is a small process with its own key. It quotes the market price plus its fee. Each swap locks both sides, so it never holds anyone’s funds. You need a key (setup shows it once, so copy it offline), ETH shielded into the pool, optionally BTC at its own Bitcoin address, and a machine that stays on with Node 22 or Docker.</p>
   <div class="code"><pre><code>git clone https://github.com/src-company/tacit &amp;&amp; cd tacit
 (cd worker-relay &amp;&amp; npm ci --omit=dev --ignore-scripts) &amp;&amp; (cd worker &amp;&amp; npm ci --omit=dev --ignore-scripts)
@@ -805,9 +702,8 @@ node fastbridge-lp/setup.mjs</code></pre></div>
   </div>
 </section>
 
-<section class="part" id="build">
-  <p class="kick">More</p>
-  <h2>Build <em>on it</em></h2>
+<section class="part" id="integrate">
+  <h2>Integrate</h2>
   <p>Providers answer over HTTP and through a board. Pages sign and prove on the user’s device.</p>
   <div class="code"><pre><code>curl https://tacit-fast-board.onrender.com/ads   <span class="c"># providers' signed ads</span>
 curl https://api.tacit.finance/take-presig        <span class="c"># signed-ahead takes, for a watcher</span></code></pre></div>
@@ -825,21 +721,19 @@ curl https://api.tacit.finance/take-presig        <span class="c"># signed-ahead
 </section>
 
 <section class="part" id="faq">
-  <p class="kick">More</p>
-  <h2>Questions</h2>
+  <h2>FAQ</h2>
   <h3>Is my ETH wrapped?</h3>
   <p>No. It is ETH in the pool, as private notes. You can send it to any Ethereum address.</p>
   <h3>Can I get stuck?</h3>
-  <p>Your coins can be late, not lost. See <a href="#wrong">If something goes wrong</a>.</p>
+  <p>Your coins can be late, not lost. See <a href="#recovery">If something goes wrong</a>.</p>
   <h3>Why does a small swap cost so much?</h3>
   <p>The network fee and the flat part are fixed, so near the minimum they are a large share.</p>
   <h3>Can I swap without a Bitcoin wallet?</h3>
   <p>For ETH to BTC you need only ETH. For BTC to ETH you need BTC at your Tacit Bitcoin address, from any wallet or exchange.</p>
 </section>
 
-<section class="part" id="words">
-  <p class="kick">More</p>
-  <h2>Words <em>used here</em></h2>
+<section class="part" id="glossary">
+  <h2>Glossary</h2>
   <dl class="gl">
     <dt>Atomic swap</dt><dd>A swap in which both sides complete or both refund.</dd>
     <dt>Adaptor signature</dt><dd>A signature made incomplete on purpose. A secret <code>t</code> completes it, and the completed signature shows <code>t</code>.</dd>
