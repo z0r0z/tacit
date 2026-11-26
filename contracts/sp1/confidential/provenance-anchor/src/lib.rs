@@ -234,6 +234,36 @@ impl BackingLedger {
     }
 }
 
+/// Prove a carrier transaction into a block, as every reader must: the merkle path must reach the attested
+/// block root, and the witness must be the one the coinbase commitment binds (BIP141). Returns the txid the
+/// rest of the reader keys on. One function, so the shield and the exit reader cannot drift apart on the
+/// authentication both depend on.
+fn authenticate_carrier(
+    tx: &[u8],
+    merkle_index: u32,
+    merkle_siblings: &[[u8; 32]],
+    confirmed_block_root: &[u8; 32],
+    wtxid_siblings: &[[u8; 32]],
+    coinbase: &[u8],
+    coinbase_txid_siblings: &[[u8; 32]],
+) -> Option<[u8; 32]> {
+    let txid = cxfer_core::bitcoin::compute_txid(tx)?;
+    if cxfer_core::bitcoin::verify_merkle_path(&txid, merkle_siblings, merkle_index)
+        != *confirmed_block_root
+    {
+        return None;
+    }
+    cxfer_core::bitcoin::verify_tx_witness_committed(
+        tx,
+        merkle_index,
+        wtxid_siblings,
+        coinbase,
+        coinbase_txid_siblings,
+        confirmed_block_root,
+    )?;
+    Some(txid)
+}
+
 /// Read a shield out of a confirmed transaction, the way [`read_exit`] reads an exit.
 ///
 /// `credit_shield` used to take a `ShieldBody` parsed from caller bytes, with no carrier, no inclusion proof
@@ -252,19 +282,14 @@ pub fn read_shield(
     pool_ok: ShieldProofCheck<'_>,
     boundary_ok: BoundaryCheck<'_>,
 ) -> Option<u64> {
-    let txid = cxfer_core::bitcoin::compute_txid(&w.tx)?;
-    if cxfer_core::bitcoin::verify_merkle_path(&txid, &w.merkle_siblings, w.merkle_index)
-        != w.confirmed_block_root
-    {
-        return None;
-    }
-    cxfer_core::bitcoin::verify_tx_witness_committed(
+    authenticate_carrier(
         &w.tx,
         w.merkle_index,
+        &w.merkle_siblings,
+        &w.confirmed_block_root,
         &w.wtxid_siblings,
         &w.coinbase,
         &w.coinbase_txid_siblings,
-        &w.confirmed_block_root,
     )?;
 
     // The pool reads a shield only from vin[0] — every other input is a note it resolves
@@ -752,19 +777,14 @@ pub fn read_exit(
     pool_ok: PoolProofCheck<'_>,
     boundary_ok: BoundaryCheck<'_>,
 ) -> Option<ExitAnchor> {
-    let txid = cxfer_core::bitcoin::compute_txid(&w.tx)?;
-    if cxfer_core::bitcoin::verify_merkle_path(&txid, &w.merkle_siblings, w.merkle_index)
-        != w.confirmed_block_root
-    {
-        return None;
-    }
-    cxfer_core::bitcoin::verify_tx_witness_committed(
+    let txid = authenticate_carrier(
         &w.tx,
         w.merkle_index,
+        &w.merkle_siblings,
+        &w.confirmed_block_root,
         &w.wtxid_siblings,
         &w.coinbase,
         &w.coinbase_txid_siblings,
-        &w.confirmed_block_root,
     )?;
 
     let payload = envelope_of_input(&w.tx, w.vin)?;
