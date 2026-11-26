@@ -2549,17 +2549,13 @@ async function getBtcUsdPrice() {
       return usd;
     };
     const _fetchChainlink = async () => {
-      const r = await _withTimeout('https://ethereum-rpc.publicnode.com', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: 1, method: 'eth_call',
-          params: [{ to: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', data: '0x50d25bcd' }, 'latest'],
-        }),
-      });
-      if (!r.ok) throw new Error('http ' + r.status);
-      const j = await r.json();
-      const hex = j && j.result;
+      // Use the same health-aware route as every other Ethereum read. A direct
+      // PublicNode call here caused a browser-only 403 on the portfolio page,
+      // even though the other price sources could still win the race.
+      const hex = await _ethRpcCall('eth_call', [
+        { to: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', data: '0x50d25bcd' },
+        'latest',
+      ]);
       if (typeof hex !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(hex)) throw new Error('bad shape');
       const usd = Number(BigInt(hex)) / 1e8;
       if (!Number.isFinite(usd) || usd <= 0) throw new Error('bad shape');
