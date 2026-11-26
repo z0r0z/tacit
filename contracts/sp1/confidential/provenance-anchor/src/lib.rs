@@ -97,6 +97,9 @@ pub const SPEND_MAX_OUT: usize = 3;
 pub const SHIELD_MAX_IN: usize = 8;
 /// §3's `kernel_sig` length on a shield.
 pub const KERNEL_SIG_LEN: usize = 64;
+/// The pool's `ANCHOR_WINDOW`: a spend's `h_anchor` must sit within this many blocks below the block it
+/// confirmed in. `worker/src/btc-shielded-pool.js` refuses a spend outside it.
+pub const ANCHOR_WINDOW: u32 = 144;
 
 /// What a caller must prove about an exit's pool half: that the spend verified at `h_anchor` against
 /// `pool_root` and is the spend this body describes. The fold injects its witness verification the same way,
@@ -513,6 +516,12 @@ pub struct ExitWitness {
     pub merkle_index: u32,
     pub merkle_siblings: Vec<[u8; 32]>,
     pub confirmed_block_root: [u8; 32],
+    /// The height of the block whose txid root is `confirmed_block_root`.
+    ///
+    /// The pool accepts a spend only when `h_anchor` sits inside `[height - 144, height - 1]`
+    /// (`ANCHOR_WINDOW` in `worker/src/btc-shielded-pool.js`), so an exit proven against a stale root is
+    /// never read. Without the height this crate cannot tell, and would anchor exits the pool rejects.
+    pub confirmed_block_height: u32,
     /// The pool note-tree root the spend was proven against (`h_anchor`), as the indexer committed it at that
     /// height.
     pub pool_root: [u8; 32],
@@ -559,6 +568,28 @@ fn carrier_spends_bind(tx: &[u8], bind: &[u8; BIND_LEN]) -> bool {
     match cxfer_core::bitcoin::extract_inputs(tx) {
         Some(inputs) => inputs.iter().any(|(t, v)| *t == txid && *v == vout),
         None => false, // unparseable inputs: fail closed, the carrier is not authenticated
+    }
+}
+
+/// Whether the carrier actually pays the output a spend's `want` names, mirroring the three checks
+/// `acceptSpend` runs on one: the vout exists, it pays at least `want.value`, and its scriptPubKey hashes to
+/// `want.spkHash`. A want is authenticated in the same envelope as the exit, so an unsatisfied one means the
+/// pool refused the whole spend.
+fn want_holds(tx: &[u8], want: &[u8; WANT_LEN]) -> bool {
+    let vout = u32::from_le_bytes([want[0], want[1], want[2], want[3]]);
+    let value = u64::from_le_bytes(match want[4..12].try_into() {
+        Ok(v) => v,
+        Err(_) => return false,
+    });
+    let spk_hash: [u8; 32] = match want[12..].try_into() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    match cxfer_core::bitcoin::parse_tx_output(tx, vout) {
+        Some((out_value, spk)) => {
+            out_value >= value && cxfer_core::bitcoin::sha256_once(&spk) == spk_hash
+        }
+        None => false, // the want names an output the carrier does not have
     }
 }
 
@@ -663,11 +694,28 @@ pub fn read_exit(
     if w.value == 0 {
         return None; // a zero-value exit backs nothing and would let a prover pad the anchor set
     }
+    // The pool reads a spend only when its anchor is inside the 144-block window ending at the block the
+    // carrier confirmed in. Outside it the proof is stale and the pool rejects the spend whole, so an exit
+    // riding one never lands — anchoring it would count the same note twice.
+    if body.h_anchor < w.confirmed_block_height.saturating_sub(ANCHOR_WINDOW)
+        || body.h_anchor > w.confirmed_block_height.saturating_sub(1)
+    {
+        return None;
+    }
     if !pool_ok(&body, &w.pool_root) {
         return None;
     }
 
     let exit = body.exit?;
+    // A spend with an invalid want is rejected whole by the live pool — `want vout is not an output of the
+    // carrier`, `want output pays less than the want value`, `want scriptPubKey does not match spk_hash` — so
+    // the exit riding it never lands. Reading the exit anyway would let one pool note be anchored twice: once
+    // here, once through the spend the pool actually accepted.
+    if let Some(want) = body.want {
+        if !want_holds(&w.tx, &want) {
+            return None;
+        }
+    }
     // An exit and a want naming the same output would give one UTXO two claims. The ledger catches the
     // exit-versus-exit case (`exited_at` is keyed on the outpoint), but not this one, and the live pool
     // refuses it explicitly: `want and exit name the same output`. Wants themselves are outside this crate —
@@ -802,7 +850,51 @@ pub fn valid_leaves(
 /// The payload a Tacit envelope rides on input `vin`: its second witness item, which is where every Tacit op's
 /// envelope sits (`worker-relay/src/lib/btc-pool-chain.js` reads the same slot). Total and non-panicking.
 fn envelope_of_input(tx: &[u8], vin: usize) -> Option<Vec<u8>> {
+    // The worker's `inputEnvelope` requires at least three witness items — `[sig, leaf_script,
+    // control_block]` — and reads the leaf script at index 1. A two-item stack is a Taproot script-path
+    // spend under an unknown leaf version, which consensus accepts but the pool never reads; reading its
+    // control block as an envelope would let an exit be anchored in a spend the pool ignores.
+    if witness_item_count(tx, vin)? < 3 {
+        return None;
+    }
     decode_envelope_script(&witness_item(tx, vin, 1)?)
+}
+
+/// How many items the witness stack of `vin` holds, or None when the transaction cannot be parsed.
+fn witness_item_count(tx: &[u8], vin: usize) -> Option<usize> {
+    if tx.len() < 6 || tx[4] != 0x00 || tx[5] != 0x01 {
+        return None; // legacy serialization: there is no witness section to read
+    }
+    let mut pos = 6usize;
+    let (inputs, vl) = read_varint(tx, pos)?;
+    if inputs == 0 || vin >= inputs {
+        return None;
+    }
+    pos = pos.checked_add(vl)?;
+    for _ in 0..inputs {
+        pos = pos.checked_add(36)?;
+        let (slen, vl) = read_varint(tx, pos)?;
+        pos = pos.checked_add(vl)?.checked_add(slen)?.checked_add(4)?;
+    }
+    let (outputs, vl) = read_varint(tx, pos)?;
+    pos = pos.checked_add(vl)?;
+    for _ in 0..outputs {
+        pos = pos.checked_add(8)?;
+        let (slen, vl) = read_varint(tx, pos)?;
+        pos = pos.checked_add(vl)?.checked_add(slen)?;
+    }
+    for i in 0..inputs {
+        let (items, vl) = read_varint(tx, pos)?;
+        pos = pos.checked_add(vl)?;
+        if i == vin {
+            return Some(items);
+        }
+        for _ in 0..items {
+            let (len, vl) = read_varint(tx, pos)?;
+            pos = pos.checked_add(vl)?.checked_add(len)?;
+        }
+    }
+    None
 }
 
 fn read_varint(data: &[u8], pos: usize) -> Option<(usize, usize)> {

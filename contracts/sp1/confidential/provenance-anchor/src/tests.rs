@@ -15,6 +15,13 @@ const RESERVED: [u8; 32] = [0x07u8; 32];
 
 /// A SegWit transaction: version ‖ marker ‖ flag ‖ 1 input ‖ outputs ‖ 1 witness stack ‖ locktime. The envelope
 /// rides witness item 1, the slot `worker-relay/src/lib/btc-pool-chain.js` reads.
+/// The witness stack the pool actually reads: `[sig, leaf_script, control_block]`. `inputEnvelope` requires at
+/// least three items and reads index 1, so a shorter stack is a spend the pool never sees and `read_exit` must
+/// refuse it.
+fn env_stack(payload: &[u8]) -> Vec<Vec<u8>> {
+    vec![vec![0xFFu8; 32], envelope_script(payload), vec![0x20u8; 33]]
+}
+
 fn segwit_tx(witness_items: &[Vec<u8>], outputs: &[(u64, Vec<u8>)]) -> Vec<u8> {
     let mut t = vec![0x02u8, 0, 0, 0, 0x00, 0x01, 0x01];
     t.extend_from_slice(&[0x11u8; 32]); // prevout txid
@@ -79,6 +86,20 @@ fn coinbase_for(tx: &[u8]) -> Vec<u8> {
     cb
 }
 
+/// The `h_anchor` a carrier's spend envelope proves against, read out of the transaction the same way
+/// `read_exit` reads it. `None` when the carrier holds no parseable `T_BTC_SPEND`.
+fn h_anchor_of(tx: &[u8]) -> Option<u32> {
+    let inputs = cxfer_core::bitcoin::extract_inputs(tx)?;
+    for vin in 0..inputs.len() {
+        if let Some(p) = envelope_of_input(tx, vin) {
+            if let Some(b) = parse_spend(&p) {
+                return Some(b.h_anchor);
+            }
+        }
+    }
+    None
+}
+
 /// A witness for `tx` as the second transaction of a two-leaf block, every path derived from the bytes.
 fn witness_for(tx: &[u8], pool_root: [u8; 32], value: u64, blinding: [u8; 32]) -> ExitWitness {
     let cb = coinbase_for(tx);
@@ -96,6 +117,9 @@ fn witness_for(tx: &[u8], pool_root: [u8; 32], value: u64, blinding: [u8; 32]) -
         merkle_index: 1,
         merkle_siblings: vec![cb_txid],
         confirmed_block_root: root,
+        // The block height is derived from the spend's own `h_anchor` so every fixture sits inside the
+        // pool's 144-block window: the carrier confirms one block after the anchor it proves against.
+        confirmed_block_height: h_anchor_of(tx).map(|h| h + 1).unwrap_or(800_001),
         pool_root,
         value,
         blinding,
@@ -197,6 +221,42 @@ fn spend_with_exit(
     b
 }
 
+/// A `T_BTC_SPEND` carrying both an exit and a want, for the check that an unsatisfied want makes the pool
+/// reject the whole spend — and with it the exit.
+fn spend_with_exit_and_want(
+    asset: &[u8; 32],
+    h_anchor: u32,
+    nf: &[[u8; 32]],
+    exit_vout: u32,
+    dest_spk_hash: &[u8; 32],
+    boundary: &[u8],
+    want: &[u8],
+) -> Vec<u8> {
+    assert_eq!(boundary.len(), BOUNDARY_LEN);
+    assert_eq!(want.len(), WANT_LEN);
+    let mut exit = Vec::with_capacity(EXIT_LEN);
+    exit.extend_from_slice(&exit_vout.to_le_bytes());
+    exit.extend_from_slice(dest_spk_hash);
+    exit.extend_from_slice(boundary);
+
+    let mut b = vec![T_BTC_SPEND];
+    b.extend_from_slice(asset);
+    b.extend_from_slice(&h_anchor.to_le_bytes());
+    b.extend_from_slice(&[0u8; BIND_LEN]);
+    b.push(nf.len() as u8);
+    for n in nf {
+        b.extend_from_slice(n);
+    }
+    b.push(0); // n_out = 0
+    b.push(1); // has_exit
+    b.extend_from_slice(&exit);
+    b.push(1); // has_want
+    b.extend_from_slice(want);
+    b.extend_from_slice(&64u16.to_le_bytes());
+    b.extend_from_slice(&[0x77u8; 64]);
+    b
+}
+
 /// A payload that burns its inputs and creates nothing: no exit, so nothing to anchor.
 fn spend_without_exit(asset: &[u8; 32], nf: &[u8; 32]) -> Vec<u8> {
     let mut b = vec![T_BTC_SPEND];
@@ -243,7 +303,7 @@ fn exit_fixture(value: u64, blind: [u8; 32], h_anchor: u32, exit_vout: u32) -> F
         .map(|i| (0u64, p2tr_script(&[0x50u8 + i as u8; 32])))
         .collect();
     outs.push((0u64, dest_spk.clone()));
-    let tx = segwit_tx(&[vec![0xFFu8; 32], envelope_script(&body)], &outs);
+    let tx = segwit_tx(&env_stack(&body), &outs);
     let w = witness_for(&tx, [0x99u8; 32], value, blind);
     Fixture {
         w,
@@ -673,6 +733,87 @@ fn credit_shield_dedups_on_the_shield_body_not_a_caller_key() {
     assert_eq!(l.shield_count(), 1);
 }
 
+/// The three checks that make `read_exit` agree with the pool's `acceptSpend`: the witness shape it reads, an
+/// unsatisfied `want`, and the `h_anchor` window. Each is a way to anchor an exit riding a spend the live pool
+/// rejects, which would count one pool note twice.
+#[test]
+fn read_exit_refuses_a_spend_the_live_pool_would_reject() {
+    let value = 900u64;
+    let blind = [0x11u8; 32];
+    let h = 800_000u32;
+    let pool_ok = |_: &SpendBody<'_>, _: &[u8; 32]| true;
+    let opens = |_: &Boundary<'_>, _: u64, _: &[u8; 32]| true;
+
+    // Baseline: the honest fixture reads.
+    let f = exit_fixture(value, blind, h, 1);
+    assert!(read_exit(&f.w, &ASSET, &pool_ok, &opens).is_some());
+
+    // 1. A two-item witness stack is a Taproot script-path spend under an unknown leaf version. Consensus
+    //    accepts it, `inputEnvelope` never reads it, so read_exit must not either.
+    let body = spend_with_exit(
+        &ASSET,
+        h,
+        &[[0xA1u8; 32]],
+        1,
+        &c_secp_of(value, &blind),
+        &cxfer_core::bitcoin::sha256_once(&p2tr_script(&[0x44u8; 32])),
+        &boundary_bytes(&c_secp_of(value, &blind), &[0x66u8; 32]),
+    );
+    let outs = vec![
+        (0u64, p2tr_script(&[0x50u8; 32])),
+        (0u64, p2tr_script(&[0x44u8; 32])),
+    ];
+    let tx_two = segwit_tx(&[vec![0xFFu8; 32], envelope_script(&body)], &outs);
+    let w_two = witness_for(&tx_two, [0x99u8; 32], value, blind);
+    assert_eq!(
+        read_exit(&w_two, &ASSET, &pool_ok, &opens),
+        None,
+        "a two-item witness stack is not a shape the pool reads"
+    );
+
+    // 2. A `want` the carrier does not satisfy makes the pool reject the whole spend, so the exit riding it
+    //    never lands. Here the want names a vout the carrier does not have.
+    let mut want = Vec::new();
+    want.extend_from_slice(&7u32.to_le_bytes()); // vout that does not exist
+    want.extend_from_slice(&1u64.to_le_bytes());
+    want.extend_from_slice(&[0x5Au8; 32]);
+    let body_want = spend_with_exit_and_want(
+        &ASSET,
+        h,
+        &[[0xA1u8; 32]],
+        1,
+        &cxfer_core::bitcoin::sha256_once(&p2tr_script(&[0x44u8; 32])),
+        &boundary_bytes(&c_secp_of(value, &blind), &[0x66u8; 32]),
+        &want,
+    );
+    let tx_want = segwit_tx(&env_stack(&body_want), &outs);
+    let w_want = witness_for(&tx_want, [0x99u8; 32], value, blind);
+    assert_eq!(
+        read_exit(&w_want, &ASSET, &pool_ok, &opens),
+        None,
+        "an unsatisfied want is a spend the pool rejects whole"
+    );
+
+    // 3. An `h_anchor` outside the 144-block window below the confirming block is a stale proof: the pool
+    //    rejects the spend, so the exit is not supply.
+    let stale = exit_fixture(value, blind, h, 1);
+    let mut w_stale = stale.w.clone();
+    w_stale.confirmed_block_height = h + ANCHOR_WINDOW + 1;
+    assert_eq!(
+        read_exit(&w_stale, &ASSET, &pool_ok, &opens),
+        None,
+        "an h_anchor more than 144 blocks below the confirming block is refused"
+    );
+    // And one exactly at the near edge of the window still reads.
+    let mut w_edge = stale.w.clone();
+    w_edge.confirmed_block_height = h + ANCHOR_WINDOW;
+    assert!(read_exit(&w_edge, &ASSET, &pool_ok, &opens).is_some());
+    // As does an anchor one block below the confirming block, the ordinary case.
+    let mut w_fresh = stale.w.clone();
+    w_fresh.confirmed_block_height = h + 1;
+    assert!(read_exit(&w_fresh, &ASSET, &pool_ok, &opens).is_some());
+}
+
 #[test]
 fn boundary_parse_rejects_every_wrong_length() {
     assert!(Boundary::parse(&[]).is_none());
@@ -867,10 +1008,7 @@ fn read_exit_refuses_a_spend_without_an_exit() {
     let blind = [0x22u8; 32];
     let dest_spk = p2tr_script(&[0x44u8; 32]);
     let payload = spend_without_exit(&ASSET, &[0xB1u8; 32]);
-    let tx = segwit_tx(
-        &[vec![0u8; 0], envelope_script(&payload)],
-        &[(0u64, dest_spk)],
-    );
+    let tx = segwit_tx(&env_stack(&payload), &[(0u64, dest_spk)]);
     let w = witness_for(&tx, [0x99u8; 32], 100, blind);
     let yes_pool = |_: &SpendBody<'_>, _: &[u8; 32]| true;
     let yes_opens = |_: &Boundary<'_>, _: u64, _: &[u8; 32]| true;
@@ -905,10 +1043,7 @@ fn read_exit_refuses_a_tampered_carrier() {
         &[0x11u8; 32],
         &boundary,
     );
-    let forged = segwit_tx(
-        &[vec![0u8; 0], envelope_script(&forged_body)],
-        &[(0u64, f.dest_spk.clone())],
-    );
+    let forged = segwit_tx(&env_stack(&forged_body), &[(0u64, f.dest_spk.clone())]);
     assert_eq!(
         cxfer_core::bitcoin::compute_txid(&forged),
         cxfer_core::bitcoin::compute_txid(&f.w.tx),
@@ -1091,10 +1226,7 @@ fn witness_reading_is_panic_free_on_every_truncation() {
         &cxfer_core::bitcoin::sha256_once(&dest_spk),
         &boundary,
     );
-    let tx = segwit_tx(
-        &[vec![0u8; 0], envelope_script(&payload)],
-        &[(0u64, dest_spk)],
-    );
+    let tx = segwit_tx(&env_stack(&payload), &[(0u64, dest_spk)]);
     for n in 0..=tx.len() {
         let _ = envelope_of_input(&tx[..n], 0); // any panic, out-of-bounds or overflow fails the test
     }
@@ -1289,7 +1421,7 @@ fn read_exit_binds_vout_to_a_real_output_and_its_script() {
         &boundary_bytes(&c_secp, &[0x66u8; 32]),
     );
     let tx = segwit_tx(
-        &[vec![0xFFu8; 32], envelope_script(&body)],
+        &env_stack(&body),
         &[
             (0u64, p2tr_script(&[0x50u8; 32])),
             (0u64, p2tr_script(&[0x51u8; 32])),
@@ -1389,8 +1521,16 @@ fn read_exit_refuses_a_carrier_whose_vin0_holds_a_transparent_op() {
     ];
     let tx = segwit_tx_multi(
         &[
-            ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], transparent]),
-            ([0x12u8; 32], 1, vec![vec![0xFFu8; 32], exit_body.clone()]),
+            (
+                [0x11u8; 32],
+                0,
+                vec![vec![0xFFu8; 32], transparent, vec![0x20u8; 33]],
+            ),
+            (
+                [0x12u8; 32],
+                1,
+                vec![vec![0xFFu8; 32], exit_body.clone(), vec![0x20u8; 33]],
+            ),
         ],
         &outs,
     );
@@ -1406,8 +1546,16 @@ fn read_exit_refuses_a_carrier_whose_vin0_holds_a_transparent_op() {
     let pool0 = envelope_script(&spend_without_exit(&ASSET, &[0xA9u8; 32]));
     let tx2 = segwit_tx_multi(
         &[
-            ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], pool0]),
-            ([0x12u8; 32], 1, vec![vec![0xFFu8; 32], exit_body.clone()]),
+            (
+                [0x11u8; 32],
+                0,
+                vec![vec![0xFFu8; 32], pool0, vec![0x20u8; 33]],
+            ),
+            (
+                [0x12u8; 32],
+                1,
+                vec![vec![0xFFu8; 32], exit_body.clone(), vec![0x20u8; 33]],
+            ),
         ],
         &outs,
     );
@@ -1452,7 +1600,7 @@ fn read_exit_refuses_a_carrier_that_does_not_spend_the_bound_outpoint() {
         &boundary,
         None,
     );
-    let tx = segwit_tx(&[vec![0xFFu8; 32], envelope_script(&body)], &outs);
+    let tx = segwit_tx(&env_stack(&body), &outs);
     let w = witness_for(&tx, [0x99u8; 32], value, blind);
     assert!(
         read_exit(&w, &ASSET, &|_, _| true, &|_, _, _| true).is_some(),
@@ -1473,7 +1621,7 @@ fn read_exit_refuses_a_carrier_that_does_not_spend_the_bound_outpoint() {
         &boundary,
         None,
     );
-    let tx_bad = segwit_tx(&[vec![0xFFu8; 32], envelope_script(&body_bad)], &outs);
+    let tx_bad = segwit_tx(&env_stack(&body_bad), &outs);
     let w_bad = witness_for(&tx_bad, [0x99u8; 32], value, blind);
     assert_eq!(
         read_exit(&w_bad, &ASSET, &|_, _| true, &|_, _, _| true),
@@ -1523,8 +1671,8 @@ fn read_exit_refuses_a_carrier_that_already_claims_the_same_vout() {
     );
     let tx = segwit_tx_multi(
         &[
-            ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], envelope_script(&a)]),
-            ([0x12u8; 32], 1, vec![vec![0xFFu8; 32], envelope_script(&b)]),
+            ([0x11u8; 32], 0, env_stack(&a)),
+            ([0x12u8; 32], 1, env_stack(&b)),
         ],
         &outs,
     );
@@ -1550,8 +1698,8 @@ fn read_exit_refuses_a_carrier_that_already_claims_the_same_vout() {
     );
     let tx2 = segwit_tx_multi(
         &[
-            ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], envelope_script(&a)]),
-            ([0x12u8; 32], 1, vec![vec![0xFFu8; 32], envelope_script(&c)]),
+            ([0x11u8; 32], 0, env_stack(&a)),
+            ([0x12u8; 32], 1, env_stack(&c)),
         ],
         &outs,
     );
@@ -1564,8 +1712,8 @@ fn read_exit_refuses_a_carrier_that_already_claims_the_same_vout() {
     outs_ok[1] = (0u64, dest_spk.clone());
     let tx3 = segwit_tx_multi(
         &[
-            ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], envelope_script(&a)]),
-            ([0x12u8; 32], 1, vec![vec![0xFFu8; 32], envelope_script(&c)]),
+            ([0x11u8; 32], 0, env_stack(&a)),
+            ([0x12u8; 32], 1, env_stack(&c)),
         ],
         &outs_ok,
     );

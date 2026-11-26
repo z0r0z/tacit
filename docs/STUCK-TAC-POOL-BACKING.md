@@ -191,10 +191,15 @@ byte-for-byte as it does today.
 ## 3. Reading an exit out of a confirmed transaction
 
 `read_exit` authenticates a `T_BTC_SPEND` carrying an exit all the way to a block's txid root. Every field
-it depends on is either read back out of the confirmed bytes or attested by the caller's header chain. The
-Every field that would otherwise be free is bound: `exit_vout` must name an output the carrier has,
+it depends on is either read back out of the confirmed bytes or attested by the caller's header chain. Every
+field that would otherwise be free is bound: `exit_vout` must name an output the carrier has,
 `dest_spk_hash` must be that output's script hash, `bind` must be an outpoint the carrier spends, no other
 envelope in the carrier may already claim the same vout, and vin[0] must not carry a transparent Tacit op.
+The spend itself must also be one the live pool would accept: the witness stack must be the three-item shape
+`inputEnvelope` reads, an unsatisfied `want` rejects the whole spend, and `h_anchor` must sit inside the
+144-block `ANCHOR_WINDOW` below the confirming block (`ExitWitness::confirmed_block_height`). Without those
+three, `read_exit` would anchor an exit riding a spend the pool rejects or never reads — counting one pool
+note twice.
 `value` and `blinding` are still the caller's, but they are checked against the commitment: `boundary_ok` is
 called with them, and `boundary_opens` is the in-crate implementation a caller passes to get the real check.
 Nothing forces its use, so §10 risk 1 stays open for both the pool proof and the boundary seam.
@@ -406,7 +411,7 @@ What *is* additive is the state, not the digest: the ledger is a new field, and 
 already exist in the reflection. That is what makes the change reviewable — but reviewable is not
 digest-compatible.
 
-## 8. What the 27 tests cover
+## 8. What the 28 tests cover
 
 All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, no pool).
 
@@ -437,6 +442,7 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 | `boundary_opens_verifies_a_real_prover_output_and_refuses_a_doctored_one` | the JS prover's own 825-byte boundary, pinned: accepted for its value and blinding, refused for a different value, a different blinding, a zero value, one flipped byte in the range proof, one flipped byte in the sigma, and a one-byte-short proof |
 | `read_exit_refuses_a_carrier_whose_vin0_holds_a_transparent_op` | `ctx.vin0TacitOp`: a transparent `0x39` in vin[0] refuses the exit; a pool op in vin[0] does not |
 | `read_exit_refuses_a_carrier_that_does_not_spend_the_bound_outpoint` | `s.bind`: a bind the carrier spends is accepted, a bind it does not spend is refused |
+| `read_exit_refuses_a_spend_the_live_pool_would_reject` | the witness must carry the pool's three-item stack, an unsatisfied `want` rejects the whole spend, and `h_anchor` must sit inside the 144-block window below the confirming block — each a way to anchor an exit riding a spend the pool never read |
 | `read_exit_refuses_a_carrier_that_already_claims_the_same_vout` | `claimed(vout)`: two exits naming one vout are both refused, two exits on two outputs both read |
 | `spend_parse_is_panic_free_on_a_hostile_corpus` | 4 000 pseudo-random payloads, runaway `n_in` |
 
