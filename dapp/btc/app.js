@@ -2,12 +2,12 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=164bd713';
-import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=7b38b2d4';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=06a131b6';
+import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=373a3165';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
-import { makeAddEth } from '/btc/add-eth.js?cb=9b37def0';
+import { makeAddEth } from '/btc/add-eth.js?cb=d423798a';
 import { mountSendPanel } from '/btc/panel.js?cb=4e01aedd';
 import { makePayout } from '/btc/payout.js?cb=3b028d52';
 

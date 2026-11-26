@@ -32,7 +32,7 @@ const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_M
 // A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
 // one too near its end asks for a new one first
 const RENEW_SECS = 150, START_SECS = 125;
-const MARKET_MODULE = '/swap/atomic-market.js?cb=7b38b2d4';
+const MARKET_MODULE = '/swap/atomic-market.js?cb=373a3165';
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
 // the most providers one BTC-for-ETH swap is split among (fastbridge-pair.js splitLegs)
@@ -93,6 +93,16 @@ export const marketText = (bps) => {
   return `${(Math.abs(b) / 100).toFixed(Math.abs(b) < 995 ? 2 : 1)}% ${b < 0 ? 'less' : 'more'} than the market price`;
 };
 // An error as the lane says it: what the engine wrote when that is a sentence, with a capital, else a plain line (never an exception's own words, nor a module's tag)
+// Which part of a quote failed, in a few plain words, for the line after the third miss (the cause itself goes to the console: requote)
+export const whyOf = (e) => {
+  const m = String((e && e.message) || e || ''), n = String((e && e.name) || '');
+  if (e && e.step) return String(e.step);
+  if (/chainlink|price|market|aggregator/i.test(m)) return 'price: fewer than two Ethereum nodes answered';
+  if (/fee estimate|explorer|esplora|mempool/i.test(m)) return 'fees: no Bitcoin explorer answered';
+  if (/wallet|MetaMask|user rejected|eth_requestAccounts|eth_accounts/i.test(m)) return 'wallet: its node did not answer';
+  if (/\bHTTP\b|429|timed out|timeout|abort|provider|Failed to fetch|NetworkError|\b5\d\d\b/i.test(m + ' ' + n)) return 'provider: no answer, or it was busy';
+  return `internal: ${m.replace(/\s+/g, ' ').slice(0, 60) || n || 'unknown'}`;
+};
 export const plainError = (e) => {
   let t = String((e && e.message) || e || '').trim();
   if (/^fastbridge: the pool notes hold \d+, short of \d+/.test(t)) t = 'your private ETH does not cover that amount';
@@ -258,7 +268,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         // a side the explorers or nodes did not answer for is said as such (the lane's refresh reads it again), not left as 'reading'
         L.unread = { btc: !b || b.sats == null, eth: !b || b.eth == null };
         // the connected Ethereum wallet's own ETH (public), so an ETH swap shows what one press can add from it
-        if (shield?.balance && L.dir === 'e2b') { const w = await shield.balance().catch(() => null); if (g !== gen) return; L.pub = w ? BigInt(w.wei) / E10 : null; }
+        if (shield?.balance && L.dir === 'e2b') { const w = await Promise.race([Promise.resolve().then(() => shield.balance()).catch(() => null), new Promise((r) => setTimeout(() => r(null), 8000))]); if (g !== gen) return; L.pub = w ? BigInt(w.wei) / E10 : null; }
         try { onBal({ ...L.bal }); } catch { /* a page's hook does not stop the lane */ }
         paint();
       }
@@ -348,12 +358,13 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       } catch (e) {
         if (my !== seq) return;
         const t = plainError(e);
+        try { console.warn('[swap] quote failed:', e && e.name, e && e.message, e); } catch { /* no console */ }
         L.q = null;
         // a miss of something the quote reads (a node, a fee estimate, the provider, the price feed) is tried again by itself, the button saying it is getting a
         // quote; only the third miss says so, with a button to try at once (the tries go on). A provider's own sentence is shown as it is.
         if (t === NO_ANSWER) {
           L.qTry = (L.qTry || 0) + 1; L.qRetry = true;
-          L.qErr = L.qTry >= RETRY_SHOWN ? "Can't reach the provider right now. Retrying…" : '';
+          L.qErr = L.qTry >= RETRY_SHOWN ? `Can't reach the provider right now (${esc(whyOf(e))}). Retrying…` : '';
           const wait = RETRY_MS[Math.min(L.qTry - 1, RETRY_MS.length - 1)];
           const again = () => { if (!L.open) return; if (document.hidden) { qTimer = setTimeout(again, wait); return; } run(); };
           clearTimeout(qTimer); qTimer = setTimeout(again, wait);

@@ -70,7 +70,10 @@ export function makeAddEth({ getUx, pick = null }) {
   // What the deposit asks of the wallet, checked before the wallet is asked: the ETH, the relay's tip and the network fee, against what the account holds.
   // What the connected Ethereum wallet holds publicly, in wei: read only when the page's wallet is connected (or this browser connected one before, which
   // reconnects without asking). null when there is none or the read failed.
-  async function balance() {
+  // (a wallet that never answers, or rejects, leaves the balance unknown after BALANCE_MS: it never holds up the lane or a quote)
+  const BALANCE_MS = 6000;
+  const balance = () => { let t; return Promise.race([balanceNow().catch(() => null), new Promise((r) => { t = setTimeout(() => r(null), BALANCE_MS); })]).finally(() => clearTimeout(t)); };
+  async function balanceNow() {
     try {
       const M = await load();
       wallet ||= M.makeWallet({ rpc });

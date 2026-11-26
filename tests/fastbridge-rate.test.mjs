@@ -177,6 +177,17 @@ test('quorum: nodes that take batches get decimals and the round in one POST, on
   // first read: a height and one batch per node; the second: one height and one single-call batch per node
   assert.equal(first, 4); assert.equal(log.length - first, 4);
 });
+test('a reader that is not a URL (a wallet) that hangs, rejects, throws at once or returns garbage is no answer: the price still comes from the other nodes', async () => {
+  fresh();
+  const mk = (id, send) => ({ id, send });
+  const nodes = [mk('w-hang', () => new Promise(() => {})), mk('w-reject', () => Promise.reject(new Error('User rejected'))), mk('w-throw', () => { throw new Error('boom'); }), mk('w-garbage', async () => ({ not: 'hex' })), U(1), U(2)];
+  const log = [];
+  const q = chainlinkQuorum({ nodes, fetchImpl: net({ [U(1)]: 'ok', [U(2)]: 'ok' }, log), now: () => NOW, timeoutMs: 300, graceMs: 20 });
+  const r = await q();
+  assert.equal(r.n, 2);
+  await new Promise((r2) => setTimeout(r2, 900));
+  assert.ok(['w-hang', 'w-reject', 'w-throw', 'w-garbage'].every((k) => restedNodes.has(k)), 'each is rested');
+});
 test('request budget: a market read over six nodes (one 429, one CORS) is at most 14 POSTs in all, and a second reader of the same page makes none', async () => {
   fresh();
   const modes = { [U(1)]: 'ok', [U(2)]: 'ok', [U(3)]: 'ok', [U(4)]: 'ok', [U(5)]: '429', [U(6)]: 'cors' };

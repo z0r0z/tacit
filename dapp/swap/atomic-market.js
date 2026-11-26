@@ -10,7 +10,7 @@
 
 import { discoverProviders } from '/fast/discover.js?cb=08d71bf9';
 import { makeRateFeed, chainlinkEthBtc, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=3bc6995c';
-import { ETH_NODES, walletNode, connectedInjected, batchSize } from '/eth-nodes.js';
+import { ETH_NODES, batchSize } from '/eth-nodes.js';
 import { bodyType } from '/rpc-body.js';
 import { SATS_ASSET_ID, ETH_ASSET_ID } from '/swap/atomic-probe.js?cb=c6d5d8e2';
 import { OWN_PROVIDERS } from '/fastbridge-board.js';
@@ -34,9 +34,9 @@ const totalOf = (ss) => {
 // The market price's nodes are the page's one list (eth-nodes.js: its own node when it is on, then the public ones), and the connected wallet's node after the first few on
 // mainnet. A node that refuses is rested by the quorum itself (fastbridge-rate.js chainlinkQuorum).
 export const priceNodes = () => {
-  const l = [...ETH_NODES];
-  try { const w = connectedInjected(); if (w) l.splice(3, 0, walletNode(() => connectedInjected())); } catch { /* no wallet node */ }
-  return l;
+  // (the connected wallet is not one of them: its own node can be slow, limited, refuse a read at an older block or never answer, and the price needs none of that
+  // from it: the page's own list and node are enough)
+  return [...ETH_NODES];
 };
 export const priceSource = ({ fetchImpl, now, nodes = priceNodes } = {}) => chainlinkQuorum({ nodes, fetchImpl, bodyOf: bodyType, batchOf: (u) => batchSize(u) > 1, ...(now ? { now } : {}) });
 const LAST = 'tacit-market-last-v1', LAST_MAX_SECS = 600;
