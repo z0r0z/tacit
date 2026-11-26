@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -60,6 +61,9 @@ type Config struct {
 	// PerNet24 and PerNet16: places one network may hold at once, an IPv4 /24 or /16 (an IPv6 /40 or /32); 0: no limit. One person with many
 	// addresses in one network, or one party filling the queue from a block, cannot crowd everyone else out.
 	PerNet24, PerNet16 int
+	// PerName: contributors (in the queue and already accepted) that may share a numbered name, "hd-1", "hd-2", ... (the same text before a
+	// trailing number); 0: no limit. One party running many numbered instances cannot take every slot. Names without a trailing number are not limited.
+	PerName int
 	// A claimed slot must show progress, so a place cannot be held by polling alone: from the claim, the head's
 	// download must start within DownloadStart (10 min) and be complete within DownloadBy (75 min), and the upload must
 	// start within UploadStart (105 min). An offline contributor, who uploads without downloading, starts the upload
@@ -451,6 +455,60 @@ func netKey(ip string, bits4, bits6 int) string {
 	return p.String()
 }
 
+// numberedStem: the text before a trailing number in a name ("hd-12" and "hd 3" both give "hd"), and whether the name has one. Hex addresses used as
+// names and names with no trailing number are not stems.
+func numberedStem(name string) (string, bool) {
+	s := strings.ToLower(strings.TrimSpace(name))
+	if strings.HasPrefix(s, "0x") {
+		return "", false
+	}
+	i := len(s)
+	for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
+		i--
+	}
+	if i == len(s) || len(s)-i > 3 { // no trailing number, or too long a number to be an instance counter
+		return "", false
+	}
+	stem := strings.TrimRight(s[:i], " -_.#:")
+	if len(stem) < 2 {
+		return "", false
+	}
+	return stem, true
+}
+
+// TrimNames drops the unclaimed places beyond PerName from one numbered name (counting contributions already accepted), keeping the earliest.
+func (c *Coordinator) TrimNames() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.PerName <= 0 {
+		return 0
+	}
+	count := map[string]int{}
+	for _, r := range c.state.Receipts {
+		if s, ok := numberedStem(r.Name); ok {
+			count[s]++
+		}
+	}
+	kept := make([]*ticket, 0, len(c.queue))
+	dropped := 0
+	for _, t := range c.queue {
+		if s, ok := numberedStem(t.Name); ok {
+			if count[s] >= c.PerName && t.Claimed.IsZero() {
+				dropped++
+				continue
+			}
+			count[s]++
+		}
+		kept = append(kept, t)
+	}
+	if dropped > 0 {
+		c.queue = kept
+		c.saveQueueL()
+		c.logf("queue: %d places beyond the limit for numbered names were dropped", dropped)
+	}
+	return dropped
+}
+
 // TrimNetworks drops the places beyond PerNet24 and PerNet16 from one network, keeping the earliest in the queue and always a claimed slot.
 // For when the limits are turned on with a queue that one network's places already fill.
 func (c *Coordinator) TrimNetworks() int {
@@ -640,6 +698,22 @@ func (c *Coordinator) JoinLane(name, handle, ip, lane string) (string, Status, e
 	}
 	if len(c.queue) >= c.queueCap() {
 		return "", Status{}, refuse(429, "the queue is full; try again later", nil)
+	}
+	if stem, ok := numberedStem(name); ok && c.PerName > 0 {
+		n := 0
+		for _, t := range c.queue {
+			if s, ok := numberedStem(t.Name); ok && s == stem {
+				n++
+			}
+		}
+		for _, r := range c.state.Receipts {
+			if s, ok := numberedStem(r.Name); ok && s == stem {
+				n++
+			}
+		}
+		if n >= c.PerName {
+			return "", Status{}, refuse(429, "several contributors already share that numbered name; please use a name of your own", nil)
+		}
 	}
 	if c.PerNet24 > 0 || c.PerNet16 > 0 {
 		k24, k16, n24, n16 := netKey(ip, 24, 40), netKey(ip, 16, 32), 0, 0

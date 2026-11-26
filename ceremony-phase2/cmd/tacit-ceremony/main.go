@@ -319,6 +319,7 @@ func serve(args []string) error {
 	fs.IntVar(&cfg.PerIP, "per-ip", 1, "places one client address (an IPv6 /48) may hold; -1 for no limit")
 	fs.IntVar(&cfg.PerNet24, "per-24", 0, "places one network (an IPv4 /24, an IPv6 /40) may hold at once (0: no limit)")
 	fs.IntVar(&cfg.PerNet16, "per-16", 0, "places one larger network (an IPv4 /16, an IPv6 /32) may hold at once (0: no limit)")
+	fs.IntVar(&cfg.PerName, "per-name", 0, "contributors that may share a numbered name (hd-1, hd-2, ...), queued and accepted (0: no limit)")
 	fs.IntVar(&cfg.AcceptedPerIP, "accepted-per-ip", 3, "contributions accepted from one client address over the ceremony (0: no limit)")
 	fs.DurationVar(&cfg.DownloadStart, "download-start", 10*time.Minute, "from the claim, time for the head's download to start (or an offline upload)")
 	fs.DurationVar(&cfg.DownloadBy, "download-by", 75*time.Minute, "from the claim, time for the head's download to complete")
@@ -354,6 +355,7 @@ func serve(args []string) error {
 	}
 	c.Config = cfg
 	c.TrimNetworks()
+	c.TrimNames()
 	s := c.State()
 	fmt.Printf("serving %s on %s: head phase2-%d, coordinator key %s, admin on %s\n", s.Label, fs.Arg(1), s.HeadIndex, s.CoordPubKey, *adminAddr)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
