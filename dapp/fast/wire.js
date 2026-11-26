@@ -538,10 +538,10 @@ export async function openProvider({ T, withKey, ux, priv, pubHex, boards = [], 
   const screen = lineageScreen(vet);
   const configOf = (s) => ({
     claimPub, csvBlocks: 144, alertSecs: 3600, anyTac: s.anyTac !== false,
-    quote: { btcAsset: asset.btcAsset, evmAsset: asset.evmAsset, minAmount: s.minAmount, maxAmount: s.maxAmount, feeBps: s.feeBps, flatFee: s.flatFee, validSecs: 600 },
+    quote: { btcAsset: asset.btcAsset, evmAsset: asset.evmAsset, minAmount: s.minAmount, maxAmount: s.maxAmount, feeBps: s.feeBps, flatFee: s.flatFee, validSecs: 600, ...(s.riskPricing && s.anyTac !== false ? { riskPricing: s.riskPricing } : {}) },
     policy: {
       minCsv: 72, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, roundSecs: 600, refundMarginSecs: 600, maxOfferAgeSecs: 3600,
-      minAmount: s.minAmount, maxAmount: s.maxAmount, minConfsFor: confs, ...(s.anyTac === false ? { screen } : {}),
+      minAmount: s.minAmount, maxAmount: s.maxAmount, minConfsFor: confs, ...(s.anyTac === false ? { screen } : s.riskPricing ? { riskLineage: vet } : {}),
     },
   });
   // Starts the swaps that are open on their way (the takes and the refunds are not to be left), and, when `accept` is set, answers

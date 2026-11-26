@@ -394,3 +394,9 @@ node tests/fastbridge-fork.mjs          # the Ethereum side against the live poo
 The daemon takes any TAC the note validator accepts, a note made by an exit from the Bitcoin shielded pool included, and says so in its terms
 and ad (`anyTac: true`), so bridgers send it such notes. That TAC cannot be bridged home afterwards, only traded on Bitcoin. The daemon has no
 option to refuse it; a provider run from the page's "Provide liquidity" panel has one.
+
+### Optional TAC lineage pricing
+
+For fixed TAC/TAC providers, see [risk-aware quotes and admission](../docs/STUCK-TAC-RISK-PRICING.md)
+for the opt-in `quote.riskPricing` settings, class-aware quotes, compatibility,
+limits and the inventory example. Leave the option absent for existing behaviour.

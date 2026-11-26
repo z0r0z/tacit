@@ -155,6 +155,7 @@ const config = {
     minCsv: C.policy.minCsv ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, minClaimSecs: C.policy.minClaimSecs ?? 3600, claimSlackSecs: C.policy.claimSlackSecs ?? 7200,
     roundSecs: C.policy.roundSecs ?? 600, refundMarginSecs: C.policy.refundMarginSecs ?? 600, maxOfferAgeSecs: C.policy.maxOfferAgeSecs ?? 3600, holdAgeSecs: C.policy.holdAgeSecs,
     minAmount: C.quote.minAmount, maxAmount: C.quote.maxAmount,
+    ...(C.quote.riskPricing ? { riskLineage: (inputs) => tacit.bridgeUx().lineage(inputs) } : {}),
     minConfsFor: (v) => confs.reduce((n, [from, c]) => (BigInt(v) >= from ? c : n), confs[0][1]),
   },
 };

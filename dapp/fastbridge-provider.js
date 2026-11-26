@@ -3,6 +3,7 @@ export const TAKE_VB = 750;
 export const takeSatsAt = (feeRate) => 546 + Math.ceil(TAKE_VB * feeRate * 2);
 const FEE_WARM_MS = 30000;
 
+import { riskConfig, riskFee, riskBps, isTac, makeRiskScreen } from './fastbridge-risk.js';
 import { makeWatchdog } from './fastbridge-watch.js';
 import { makeEthereumLocker, confValue } from './fastbridge-el.js';
 import { isSats } from './adaptor-xswap.js';
@@ -23,10 +24,13 @@ const WIDTHS = [8, 8, 8, 16, 32];                                     // created
 // `macKey`: the key a quote's id is sealed with (makeLpService derives it from the seed); without one every quote is stored when it is given
 export function makeQuoter({ store, now, params, macKey = null }) {
   const p = params;
+  const risk = p.riskPricing == null ? null : riskConfig(p.riskPricing);
+  if (risk && (!isTac(p.btcAsset) || !isTac(p.evmAsset) || (p.rate != null && (typeof p.rate === 'function' || BigInt(p.rate.num ?? 1) !== 1n || BigInt(p.rate.den ?? 1) !== 1n)) || typeof p.flatFee === 'function')) throw new Error('risk pricing requires fixed TAC/TAC terms');
   const min = BigInt(p.minAmount), max = BigInt(p.maxAmount), bps = BigInt(p.feeBps ?? 0);
   // `rate` is { num, den } (what the provider's side pays for one unit of what it takes), or a function that gives that now (dapp/fastbridge-rate.js feed.rate):
   // a price that moves with the market. A function that has none (its sources are down or disagree) means no quote, and the page is told to ask again.
   // the flat part of the fee: a number, or a function that gives it now (a provider whose flat part follows its own costs); read per quote, so a quote given keeps what it was priced at
+  if (risk && (bps < 0n || bps + BigInt(riskBps(risk)) > BigInt(risk.maxTotalBps))) throw new Error('risk pricing exceeds configured ceiling');
   const flatNow = () => BigInt((typeof p.flatFee === 'function' ? p.flatFee() : p.flatFee) ?? 0);
   const rateNow = () => {
     const r = typeof p.rate === 'function' ? p.rate() : p.rate;
@@ -34,11 +38,11 @@ export function makeQuoter({ store, now, params, macKey = null }) {
     return { num: BigInt(r?.num ?? 1), den: BigInt(r?.den ?? 1) };
   };
 
-  function price(amount) {
+  function price(amount, riskClass) {
     const a = BigInt(amount);
     if (a < min || a > max) throw Object.assign(new Error(`the amount must be between ${min} and ${max}`), { status: 400 });
     const { num, den } = rateNow();
-    const fee = (a * bps) / 10000n + flatNow();
+    const fee = risk ? riskFee(a, bps, flatNow(), risk, riskClass) : (a * bps) / 10000n + flatNow();
     const out = ((a - fee) * num) / den;
     if (a <= fee || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
     return { btcValue: a, evmAmount: out, fee };
@@ -70,8 +74,8 @@ export function makeQuoter({ store, now, params, macKey = null }) {
     return q;
   }
 
-  async function quote(amount) {
-    const { btcValue, evmAmount } = price(amount);
+  async function quote(amount, riskClass) {
+    const { btcValue, evmAmount } = price(amount, riskClass);
     const q = {
       id: randomHex(16), btcAsset: p.btcAsset, btcValue: String(btcValue), evmAsset: p.evmAsset, evmAmount: String(evmAmount),
       claimPub: p.claimPub, csvBlocks: p.csvBlocks, evmWindowSecs: p.evmWindowSecs, minConfs: p.minConfsFor(btcValue),
@@ -90,7 +94,7 @@ export function makeQuoter({ store, now, params, macKey = null }) {
   }
   function maxAmountFor(outAvail) {
     const out = BigInt(outAvail);
-    const fits = (a) => { try { return price(a).evmAmount <= out; } catch { return false; } };
+    const fits = (a) => { try { return price(a, risk ? 'clean' : undefined).evmAmount <= out; } catch { return false; } };
     if (!fits(min)) return 0n;
     let lo = min, hi = max;
     while (lo < hi) { const mid = (lo + hi + 1n) / 2n; if (fits(mid)) lo = mid; else hi = mid - 1n; }
@@ -113,9 +117,13 @@ const cannotTake = () => Object.assign(new Error('the provider cannot take that 
 export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   // a lock of plain sats pays no coin to the provider for its take: the take's fee comes out of the lock itself (dapp/adaptor-btc-tx.js claimSats)
   const sats = isSats(config.quote.btcAsset);
+  const risk = config.quote.riskPricing == null ? null : riskConfig(config.quote.riskPricing);
+  if (risk && typeof config.policy.riskLineage !== 'function') throw new Error('risk pricing requires a lineage reader');
+  // Construct the screen from the same fee settings as the quoter, not a caller-supplied fee rule.
+  const riskScreen = risk ? makeRiskScreen(config.policy.riskLineage, risk, config.quote.feeBps ?? 0, config.quote.flatFee ?? 0) : null;
   const takeSats = btc.feeRate && !sats ? async () => takeSatsAt(await btc.feeRate()) : null;
   const seedBytes = seed instanceof Uint8Array ? seed : hexToBytes(String(seed).replace(/^0x/, ''));
-  const quoter = makeQuoter({ store: quoteStore, now, macKey: hmac(sha256, seedBytes, te.encode('tacit-fastbridge-quote-mac-v1')), params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats } });
+  const quoter = makeQuoter({ store: quoteStore, now, macKey: hmac(sha256, seedBytes, te.encode('tacit-fastbridge-quote-mac-v1')), params: { ...config.quote, ...(risk ? { riskPricing: risk } : {}), claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats } });
   // `perClient`: the reservations with no lock named yet that one client address holds at once (`perBoard` for the requests that come through a board,
   // which name no address); a new one past that lets go of the client's oldest, so a user who asks again is answered and one address holds a few at most
   const hold = { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 0.5, perClient: 2, perBoard: 4, ...(config.reserve || {}) };
@@ -168,7 +176,10 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     },
   };
   // (an early record waits for its confirmations no longer than an extended reservation holds the payout)
-  const el = makeEthereumLocker({ seed, now, store: swaps, quotes, btc, evm, counter, policy: { earlyConfirmWaitSecs: hold.extendSecs, ...config.policy } });
+  const el = makeEthereumLocker({ seed, now, store: swaps, quotes, btc, evm, counter, policy: { earlyConfirmWaitSecs: hold.extendSecs, ...config.policy, ...(riskScreen ? { screen: async (inputs, quote) => {
+    const refusal = await riskScreen(inputs, quote);
+    return refusal || (config.policy.screen ? await config.policy.screen(inputs, quote) : null);
+  } } : {}) } });
   const health = { ok: true, lastTick: 0, lastError: null };
   const reported = new Set(), lastAlert = new Map(), unreadSince = new Map();
 
@@ -451,11 +462,11 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (method === 'GET' && path === '/health') return reply({ ok: health.ok, lastTick: health.lastTick, error: health.lastError }, health.ok ? 200 : 503);
       if (method === 'GET' && path === '/info') {
         const q = config.quote, a = await availableAmount();
-        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(quoter.flat()), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false });
+        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: risk ? Number(q.feeBps ?? 0) + riskBps(risk) : q.feeBps, flatFee: String(quoter.flat() + (risk ? 1n : 0n)), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false, ...(risk ? { riskPricing: risk } : {}) });
       }
       if (method === 'POST' && path === '/quote') {
         if (!body || !amountOk(body.amount)) return reply({ error: 'amount must be a whole number' }, 400);
-        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount).evmAmount); const made = await quoter.quote(body.amount); if (quotesHeld !== null && !quoter.sealed(made.id)) quotesHeld++; return made; }));
+        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount, body.riskClass).evmAmount); const made = await quoter.quote(body.amount, body.riskClass); if (quotesHeld !== null && !quoter.sealed(made.id)) quotesHeld++; return made; }));
       }
       if (method === 'POST' && path === '/reserve') {
         if (!body || !isId(body.quoteId)) return reply({ error: 'quoteId is required' }, 400);
