@@ -1379,6 +1379,34 @@ await check('a displayed spend quote and its withdrawal both fall back to a comm
   assert.equal(String(s.bodies[K2][0].tx.fee), q.fee);
 });
 
+await check('a spend given the quote spendQuote drew goes through the relay that gave it, at its fee, where a fresh draw would take the other', async () => {
+  const fees = { fee1: '1200000000000', fee2: '1000000000000' };      // within a quarter of each other: both are drawn from
+  const s = twoRelays(84, fees);
+  await s.ready();
+  const q = await withRandom(0.999, () => s.w.spendQuote());
+  assert.equal(q.relay.url, K1, 'this draw took the dearer relay');
+  assert.equal(q.fee, fees.fee1);
+  const asked = s.count('/quote');
+  let h;
+  await withRandom(0.0, () => quickly(async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', quote: q }); }));
+  assert.match(h, /^0x[0-9a-f]{64}$/);
+  assert.deepEqual(sentTo(s), [K1 + '/relay'], 'sent through the relay whose fee was reckoned with, not the one this draw would take');
+  assert.equal(String(s.bodies[K1][0].tx.fee), q.fee, 'at that fee');
+  assert.equal(s.count('/quote'), asked, 'and no relay was asked again');
+
+  // a copy has lost its relay, and a quote over the most the caller allows is not taken: each spend is priced afresh
+  const c = twoRelays(85, fees);
+  await c.ready();
+  const cq = await withRandom(0.999, () => c.w.spendQuote());
+  await withRandom(0.0, () => quickly(async () => { await c.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', quote: { ...cq } }); }));
+  assert.deepEqual(sentTo(c), [K2 + '/relay'], 'the copy was priced again, and that draw took the cheaper');
+  const d = twoRelays(86, fees);
+  await d.ready();
+  const dq = await withRandom(0.999, () => d.w.spendQuote());
+  await assert.rejects(() => d.w.send({ to: d.w.address, amount: 10n ** 15n, via: 'relay', maxFee: BigInt(fees.fee2), quote: dq }), (e) => e.feeMoved === BigInt(fees.fee1));
+  assert.deepEqual(sentTo(d), [], 'nothing was sent above the fee the caller allows');
+});
+
 await check('two relays: the spend goes through the cheaper one, and the proof names that relay\'s address and fee', async () => {
   const s = twoRelays(61);
   await s.ready();
