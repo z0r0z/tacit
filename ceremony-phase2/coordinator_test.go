@@ -671,6 +671,63 @@ func TestPerNetworkLimitsAndTrim(t *testing.T) {
 	}
 }
 
+// Numbered names ("hd-1", "hd-2", ...) are limited to a few per pattern; other names are not, and turning the limit on trims a queue that one pattern fills.
+func TestNumberedNamesAreLimited(t *testing.T) {
+	for name, want := range map[string]string{"hd-12": "hd", "HD 3": "hd", "kalibata07": "kalibata", "agent_5": "agent", "team#9": "team"} {
+		if got, ok := numberedStem(name); !ok || got != want {
+			t.Fatalf("%q: stem %q %v, want %q", name, got, ok, want)
+		}
+	}
+	for _, name := range []string{"Anonymous", "a browser", "alice", "0x1234567890abcdef1234567890abcdef12345678", "x1", "1234", "user12345"} {
+		if s, ok := numberedStem(name); ok {
+			t.Fatalf("%q is not a numbered name, got stem %q", name, s)
+		}
+	}
+	f := newFixture(t)
+	c := f.chain(t)
+	c.PerIP = -1
+	c.PerName = 2
+	join := func(name, ip string) error { _, _, err := c.Join(name, "", ip); return err }
+	if join("hd-1", "192.0.2.1") != nil || join("hd-2", "198.51.100.1") != nil {
+		t.Fatal("two of a numbered name are fine")
+	}
+	if err := join("hd-3", "203.0.113.1"); err == nil {
+		t.Fatal("a third of the same numbered name is refused")
+	}
+	if join("Anonymous", "192.0.2.2") != nil || join("Anonymous", "192.0.2.3") != nil || join("a browser", "192.0.2.4") != nil || join("a browser", "192.0.2.5") != nil || join("a browser", "192.0.2.6") != nil {
+		t.Fatal("names without a trailing number are never limited")
+	}
+	if join("team-1", "192.0.2.7") != nil {
+		t.Fatal("another numbered name is its own pattern")
+	}
+	// the limit turned on after the queue filled with one pattern
+	g := newFixture(t)
+	d := g.chain(t)
+	d.PerIP = -1
+	var first string
+	for i := 1; i <= 6; i++ {
+		tok, _, err := d.Join(fmt.Sprintf("hd-%d", i), "", fmt.Sprintf("192.0.2.%d", 10+i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 1 {
+			first = tok
+		}
+	}
+	d.Join("alice", "", "198.51.100.50")
+	if _, err := d.Claim(first); err != nil {
+		t.Fatal(err)
+	}
+	d.PerName = 3
+	if n := d.TrimNames(); n != 3 {
+		t.Fatalf("places beyond the limit are dropped: %d", n)
+	}
+	q := d.Queue()
+	if len(q) != 4 || q[0].Name != "hd-1" || q[1].Name != "hd-2" || q[2].Name != "hd-3" || q[3].Name != "alice" {
+		t.Fatalf("the earliest of the pattern and the other name stay: %+v", q)
+	}
+}
+
 func TestOnePlacePerAddressAndQueueCap(t *testing.T) {
 	f := newFixture(t)
 	c := f.chain(t)
