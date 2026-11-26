@@ -34,6 +34,7 @@ async function relay({ accounts = [account], secret = newGatewayKey() } = {}) {
   const serve = (req, res) => {
     seen.push({ url: req.url, ip: req.socket?.remoteAddress ?? null, headers: req.headers });
     if (req.url.split('?')[0] === '/1/evm-pool/keeper/quote') return jsonTo(res, 200, { chainId: 1, relayer: account.address, fee: '777' });
+    if (req.url.split('?')[0] === '/1-tac/evm-pool/keeper/quote') return jsonTo(res, 200, { chainId: 1, relayer: account.address, fee: '888' });
     return jsonTo(res, 404, { error: 'not found' });
   };
   const take = makeServiceGateway({ secret, serve, json: jsonTo, accounts, ratePerMin: 100_000 });
@@ -100,6 +101,18 @@ await check('a sealed request to a relay in the registry is carried to its /seal
     assert.deepEqual(Object.keys(post.headers), ['content-type'], 'nothing of the caller\'s is passed on');
     assert.equal(f.sent.find((s) => s.method === 'GET').url, 'https://relay.example/sealed/key');
     assert.ok(r.seen.length >= 1 && r.seen.every((s) => !s.headers['x-forwarded-for'] && !s.headers.origin), 'the relay saw the forwarder, no header of the caller');
+  } finally { r.close(); f.close(); }
+});
+await check('a fixed token-pool path projected from the native registry entry is carried sealed to the same relay', async () => {
+  const r = await relay(), f = await forwarder({ entries: [entry], base: r.base });
+  const projected = { ...entry, url: 'https://relay.example/1-tac/evm-pool/keeper' };
+  try {
+    const route = makeCommunityRoute({ relays: [entry, projected], makeSealedFetch, forwarders: [f.url] });
+    const res = await route.fetch(`${projected.url}/quote`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { chainId: 1, relayer: account.address, fee: '888' });
+    assert.ok(r.seen.some((s) => s.url === new URL(`${projected.url}/quote`).pathname), 'the fixed pool ID survived the sealed route');
+    assert.equal(f.sent.find((s) => s.method === 'POST').url, 'https://relay.example/sealed', 'the registry still directs the request to the native entry\'s origin');
   } finally { r.close(); f.close(); }
 });
 await check('the relay is reached again with the key it already has: one key fetch for many requests, and a warm-up fetches it ahead', async () => {

@@ -16,12 +16,14 @@ import { extname, join, normalize } from 'node:path';
 import assert from 'node:assert/strict';
 import { keccak_256, secp, hexToBytes, bytesToHex, concatBytes } from '../dapp/vendor/tacit-deps.min.js';
 const { poseidon2, poseidon3, poseidon4, poseidon5, poseidon7 } = await import('../dapp/vendor/tacit-poseidon.min.js');
-const { makeEvmPoolZk } = await import('../dapp/evm-pool-zk.js');
-const { evmPoolKeys } = await import('../dapp/evm-pool-wallet.js');
+const { makeEvmPoolZk, poolAsset } = await import('../dapp/evm-pool-zk.js');
+const { evmPoolKeys, sealNote, openNote } = await import('../dapp/evm-pool-wallet.js');
 const { signBox } = await import('../dapp/fixed-pool-box.js');
 const { FIXED_POOLS } = await import('../dapp/fixed-pool-notes.js');
 const { receiveBoxAddress, RECEIVE_FEE_BPS, EVM_POOL_ROUTER } = await import('../dapp/evm-pool-gateway.js');
 const { encodeList } = await import('./helpers/relay-registry-list.mjs');
+const { newGatewayKey, gatewayKeys } = await import('../dapp/sealed-request.js');
+const { makeServiceGateway } = await import('../worker-relay/src/lib/evm-pool-keeper-sealed.js');
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -88,6 +90,13 @@ const POOL_SIZE = new Map([[10n ** 17n, [76863n, 6502n]], [10n ** 18n, [97860n, 
 // registry: the relay registry's list, when a test gives one (the page reads it through a node, like any chain data)
 const REGISTRY = '0x00000000000299f48fb844626ab96c6a20059a01';
 let REGISTRY_ENTRIES = null;
+const WAITING = new Map();
+// TOKEN_CHAIN: a token pool's history, when a test gives one (tokenChain below): its logs, the size the pool answers for each root, the head, receipts
+let TOKEN_CHAIN = null;
+const lcs = (x) => String(x).toLowerCase();
+const T_TRANSACT = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Transact(bytes32,bytes32,bytes32,bytes32,uint256,bytes32,address,int256,address,uint256,bytes,bytes)')));
+const ROOT_SIZE = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('rootSize(bytes32)')).slice(0, 4));
+const w64 = (x) => BigInt.asUintN(256, BigInt(x)).toString(16).padStart(64, '0');
 const rpcAnswer = (method, params = [], landed = new Set(), depositLogs = []) => {
   if (method === 'eth_call' && REGISTRY_ENTRIES && String(params[0]?.to).toLowerCase() === REGISTRY && String(params[0]?.data).startsWith('0xd4d25113')) {
     const start = Number(BigInt('0x' + params[0].data.slice(10 + 64, 10 + 128)));
@@ -97,12 +106,17 @@ const rpcAnswer = (method, params = [], landed = new Set(), depositLogs = []) =>
     // a note's deposit, as the pool logged it: [{ c, index, time }] by commitment (the pool's 1 ETH pool, 29,999,000)
     case 'eth_getLogs': {
       const q = params[0] || {}, a = parseInt(q.fromBlock, 16), b = parseInt(q.toBlock, 16), blk = 29_999_000;
+      if (TOKEN_CHAIN && [q.address].flat().some((x) => lcs(x) === lcs(TOKEN_CHAIN.pool))) {
+        const t0 = [q.topics?.[0] ?? []].flat().map(lcs);
+        return TOKEN_CHAIN.logs.filter((l) => (!t0.length || t0.includes(l.topics[0])) && Number(l.blockNumber) >= a && Number(l.blockNumber) <= b);
+      }
       return depositLogs.filter((d) => String(q.topics?.[1]).toLowerCase() === d.c && blk >= a && blk <= b).map((d) => ({
         address: q.address, topics: [q.topics[0], d.c], blockNumber: '0x' + blk.toString(16),
         data: '0x' + BigInt(d.index).toString(16).padStart(64, '0') + BigInt(d.time).toString(16).padStart(64, '0') }));
     }
     case 'eth_call': {
       const { to, data } = params[0] || {};
+      if (TOKEN_CHAIN && lcs(to) === lcs(TOKEN_CHAIN.pool) && String(data).startsWith(ROOT_SIZE)) return '0x' + w64(TOKEN_CHAIN.sizeOf.get(BigInt('0x' + data.slice(10, 74))) ?? 0);
       const den = POOL_DEN.get(String(to).toLowerCase());
       if (den == null) return '0x';
       if (data.slice(2, 10) === SELS.next) return '0x' + POOL_SIZE.get(den)[0].toString(16).padStart(64, '0');
@@ -112,14 +126,16 @@ const rpcAnswer = (method, params = [], landed = new Set(), depositLogs = []) =>
     }
     case 'eth_getCode': return POOL_DEN.has(String(params[0]).toLowerCase()) ? '0x6080' : '0x';
     case 'eth_chainId': return '0x1';
-    case 'eth_blockNumber': return '0x1c9c380';
+    case 'eth_blockNumber': return '0x' + (TOKEN_CHAIN?.tip ?? 0x1c9c380).toString(16);
     case 'eth_getBalance': {
+      const waiting = WAITING.get(String(params[0]).toLowerCase());
+      if (waiting != null) return waiting;
       const den = POOL_DEN.get(String(params[0]).toLowerCase());
       if (den != null) return '0x' + (den * POOL_SIZE.get(den)[1]).toString(16);
       return String(params[0]).toLowerCase() === ADDR.toLowerCase() ? '0x' + (100n * 10n ** 18n).toString(16) : '0x0';   // the test wallet holds 100 ETH
     }
     case 'eth_gasPrice': return GAS_PRICE;
-    case 'eth_getTransactionReceipt': return { status: '0x1', blockNumber: '0x1c9c380', logs: [] };
+    case 'eth_getTransactionReceipt': return TOKEN_CHAIN?.receipts.get(params[0]) ?? { status: '0x1', blockNumber: '0x1c9c380', logs: [] };
     case 'eth_getBlockByNumber': return { number: '0x1c9c380', timestamp: '0x6a000000', baseFeePerGas: '0x5f5e100', transactions: [] };
     default: return '0x';
   }
@@ -150,6 +166,12 @@ export function makeEvmPoolWallet(o) {
   w.notes = () => fake.map((v) => ({ v: BigInt(v) }));
   return w;
 }`;
+// stubProve: a token pool's wallet proves with a stand-in (the relay at the other end checks nothing of the proof), so a spend runs to its send
+const PROVE_WRAP = `
+export function makeEvmPoolWallet(o) {
+  if (!o.chain?.token) return __realMakeEvmPoolWallet(o);
+  return __realMakeEvmPoolWallet({ ...o, prove: async () => { globalThis.__proved = (globalThis.__proved || 0) + 1; return { proof: { pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['1', '2'] }, publicSignals: Array(11).fill('0') }; } });
+}`;
 // payWrap: the card module served with the parts that need a wallet's signatures and a prover replaced by recorders (the flags are set
 // on the page: __fakeRun makes the split's run place notes at once, __fakeExit makes a note withdrawal come back at once)
 const PAY_WRAP = `
@@ -175,11 +197,12 @@ export function attachWithdraw(env) {
 }`;
 const POOL1 = FIXED_POOLS[1][1].address;
 let GAS_PRICE = '0x0';
-async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, keeperCap = null, notes = null, payWrap = false, fixedNotes = null, depositLogs = [], registry = null, min = '1000000000000000000', gasPrice = '0x0' } = {}) {
-  REGISTRY_ENTRIES = registry; GAS_PRICE = gasPrice;
+// route: the private route on, its forwarders answered by route.carry (sealedRoute below); tabKey: a Tacit key this tab holds already, opened with no sign-in
+async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, keeperCap = null, quotes = null, notes = null, payWrap = false, fixedNotes = null, depositLogs = [], registry = null, min = '1000000000000000000', gasPrice = '0x0', route = null, stubProve = false, tabKey = null } = {}) {
+  REGISTRY_ENTRIES = registry; GAS_PRICE = gasPrice; WAITING.clear();
   const ctx = await browser.newContext({ viewport: { width: 560, height: 1100 } });
   const page = await ctx.newPage();
-  const problems = [], sent = [], told = [], landed = new Set();
+  const problems = [], sent = [], told = [], keeperCalls = [], landed = new Set();
   await page.exposeFunction('__send', async (tx) => { sent.push(tx); return '0x' + 'ab'.repeat(32); });
   await page.exposeFunction('__land', (c) => { landed.add(c); });
   await page.exposeFunction('__signTyped', (json) => { const n = BigInt(JSON.parse(json).message.nonce), h = (x) => BigInt(x).toString(16).padStart(64, '0'); return '0x' + h(0x1111n + n) + h(1n + n) + '1b'; });
@@ -191,22 +214,25 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
   if (fixedNotes) {
     await page.addInitScript(([k, v]) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }, [`tacit-fixed-notes:1:${ADDR.toLowerCase()}`, fixedNotes]);
   }
-  if (notes) {
-    await page.addInitScript((n) => { window.__fakeNotes = n; }, notes.map(String));
+  if (notes || stubProve) {
+    if (notes) await page.addInitScript((n) => { window.__fakeNotes = n; }, notes.map(String));
     const real = readFileSync(join(DAPP, 'evm-pool-wallet.js'), 'utf8').replace('export function makeEvmPoolWallet(', 'function __realMakeEvmPoolWallet(');
     assert.ok(real.includes('function __realMakeEvmPoolWallet('), 'the wallet module is wrapped');
-    await page.route(/\/evm-pool-wallet\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: real + WALLET_WRAP }));
+    await page.route(/\/evm-pool-wallet\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: real + (notes ? WALLET_WRAP : PROVE_WRAP) }));
   }
+  if (tabKey) await page.addInitScript((k) => { try { sessionStorage.setItem('tacit-tab-key-v1', JSON.stringify({ mode: 'key', priv: k, at: Date.now() })); } catch {} }, tabKey);
   if (names) {
     await page.addInitScript((n) => { window.__names = n; }, names);
     await page.route(/\/confidential-names\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: NAMES_STUB }));
   }
   // The private route has its own tests (tests/private-route*.test.mjs, worker-relay/tests/relay-community-route.test.mjs). The flows here are the form's, and this
   // stand-in answers a keeper's quote directly, so the page gets the route's module with the route off: its relay requests go straight to the stand-in.
-  const ROUTE_ON = 'export const available = () => !!(ROUTE.gateway && ROUTE.forwarders.length);';
+  // With `route` it stays on, sealed to the keepers service's gateway key that `route` holds the secret of, and with no Nostr carrier (nothing leaves the machine).
+  const ROUTE_ON = 'export const available = () => !!(ROUTE.gateway && ROUTE.forwarders.length);', ROUTE_KEY = /^  gateway: '[0-9a-f]{66}',/m, ROUTE_NOSTR = /^  nostr: \[[^\]]*\],/m;
   const routeSrc = readFileSync(join(DAPP, 'private-route.js'), 'utf8');
-  assert.ok(routeSrc.includes(ROUTE_ON), 'the route module still defines available() the way this stand-in expects');
-  await page.route(/\/private-route\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: routeSrc.replace(ROUTE_ON, 'export const available = () => false;') }));
+  assert.ok(routeSrc.includes(ROUTE_ON) && ROUTE_KEY.test(routeSrc) && ROUTE_NOSTR.test(routeSrc), 'the route module still defines available(), its gateway key and its Nostr relays the way this stand-in expects');
+  const routeServed = route ? routeSrc.replace(ROUTE_KEY, `  gateway: '${route.gateway}',`).replace(ROUTE_NOSTR, '  nostr: [],') : routeSrc.replace(ROUTE_ON, 'export const available = () => false;');
+  await page.route(/\/private-route\.js/, (r) => r.fulfill({ status: 200, contentType: 'text/javascript', body: routeServed }));
   page.on('pageerror', (e) => problems.push('pageerror ' + e.message));
   if (process.env.DEBUG_PAGE) page.on('console', (m) => console.log('   [page]', m.type(), m.text().slice(0, 300)));
   if (process.env.DEBUG_PAGE === '2') page.on('request', (r) => console.log('   [req]', r.method(), r.url().slice(0, 130), r.method() === 'POST' ? (r.postData() || '').slice(0, 90) : ''));
@@ -220,10 +246,16 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
   if (min != null) await page.addInitScript((m) => { try { localStorage.setItem('tacit-fixed-min:1', m); } catch {} }, min);   // the tests below were written for a 1 ETH smallest note; the ones for the default pass min: null
   await page.addInitScript(WALLET_SCRIPT, ADDR);
   await page.addInitScript(([c, f]) => { try { localStorage.setItem('tacit-pay-chain-v1', JSON.stringify(c)); if (f != null) localStorage.setItem('tacit-fixed-pools', f); } catch {} }, [chain, flagged]);
+  const carry = route?.carry;
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const req = route.request();
     const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+    const carried = carry ? await carry(req) : null;
+    if (carried) return route.fulfill({ status: carried.status, headers: { ...headers, 'content-type': carried.type }, body: carried.body });
+    if (/\/evm-pool\/keeper\//.test(req.url())) keeperCalls.push({ method: req.method(), url: req.url() });
+    const custom = quotes && /\/evm-pool\/keeper\/quote/.test(req.url()) ? await quotes(req.url(), req) : null;
+    if (custom) return route.fulfill({ status: custom.status || 200, headers, contentType: 'application/json', body: JSON.stringify(custom.body || custom) });
     if (keeper && keeperCap && /\/evm-pool\/keeper\/quote/.test(req.url()) && Number(new URL(req.url()).searchParams.get('gas')) > keeperCap) return route.fulfill({ status: 400, headers, contentType: 'application/json', body: JSON.stringify({ error: `gas above the ${keeperCap} cap` }) });
     if (keeper && /\/evm-pool\/keeper\/quote/.test(req.url())) return route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify(keeper) });
     if (keeper && req.method() === 'POST' && /\/evm-pool\/keeper\/receive/.test(req.url())) { told.push(req.postDataJSON()); return route.fulfill({ status: 200, headers, contentType: 'application/json', body: '{"ok":true}' }); }
@@ -235,7 +267,18 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
     return route.fulfill({ status: 404, headers, body: '{}' });
   });
   await page.goto(base + '/pay/eth/' + search);
-  return { ctx, page, problems, sent, told, landed };
+  return { ctx, page, problems, sent, told, keeperCalls, waiting: WAITING, landed };
+}
+
+// the ordinary quotes a relay was asked for (its base URL), and a sync forced through the balance's refresh, as a person would: pressed until a new one has
+// asked the built-in relay at `own` for its quote (a press while one runs is not taken), and waited for where the page shows it running. → the quotes it asked of `own`
+const quotesAt = (calls, base) => calls.filter((c) => c.url === `${base}/quote`).length;
+async function syncAgain(page, calls, own) {
+  const before = quotesAt(calls, own);
+  for (let i = 0; i < 120 && quotesAt(calls, own) === before; i++) { await page.click('#bal-re').catch(() => {}); await page.waitForTimeout(500); }
+  assert.ok(quotesAt(calls, own) > before, 'a sync ran');
+  await page.waitForFunction(() => { const b = document.querySelector('#bal-re'); return b && !b.disabled && !b.hasAttribute('aria-disabled'); }, null, { timeout: 60000 });
+  return quotesAt(calls, own) - before;
 }
 
 console.log('Pay page');
@@ -350,6 +393,70 @@ await test('below the relay\'s minimum nothing is offered', async () => {
   assert.match(await receiptText(page, /needs at least/), /needs at least 0\.000856 ETH/);
   assert.equal(await page.locator('#f-go').isDisabled(), true);
   assert.equal(sent.length, 0);
+  await ctx.close();
+});
+await test('a name payment uses the built-in receiver\'s minimum, not the community spend quote\'s', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
+  const R2 = '0x' + 'b2'.repeat(20), own = 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', community = 'https://tacit-evm-pool-forwarder.onrender.com/1/evm-pool/keeper';
+  const { ctx, page, sent, problems } = await open({
+    search: '?fixed=1', names, registry: [{ relayer: R2, stake: 1000n * 10n ** 18n, url: community }],
+    quotes: (url) => {
+      if (url === `${own}/quote`) return { ...QUOTE, receiveMin: '2000000000000000000' };
+      if (url === `${community}/quote`) return { ...QUOTE, relayer: R2, receiveMin: '1000000000000000000' };
+      return null;
+    },
+  });
+  await toSend(page, 'ross.wei', '1.5');
+  assert.match(await receiptText(page, /needs at least/), /needs at least 2(?:\.0+)? ETH/);
+  assert.equal(await page.locator('#f-go').isDisabled(), true);
+  assert.equal(sent.length, 0);
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('a name payment cannot fall back to a community minimum when the built-in receiver fails at submission', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
+  const R2 = '0x' + 'b2'.repeat(20), own = 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', community = 'https://tacit-evm-pool-forwarder.onrender.com/1/evm-pool/keeper';
+  let ownDown = false;
+  const { ctx, page, sent, told, problems } = await open({
+    search: '?fixed=1', names, registry: [{ relayer: R2, stake: 1000n * 10n ** 18n, url: community }],
+    quotes: (url) => {
+      if (url === `${own}/quote`) return ownDown ? { status: 503, body: { error: 'the built-in receiver is down' } } : { ...QUOTE, receiveMin: '500000000000000000' };
+      if (url === `${community}/quote`) return { ...QUOTE, relayer: R2, receiveMin: '100000000000000000' };
+      return null;
+    },
+  });
+  await toSend(page, 'ross.wei', '0.75');
+  await receiptText(page, /You send/);
+  ownDown = true;
+  await page.click('#f-go');
+  await page.waitForFunction(() => /Could not read the relay’s minimum/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 30000 });
+  assert.equal(sent.length, 0);
+  assert.deepEqual(told.filter((b) => b.npk === N1.toString()), []);
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('a request link paid from a wallet is refused while the relay\'s minimum cannot be read, and goes once it can', async () => {
+  // the minimum is the built-in relay's floor for moving a payment in: below it the payment waits at the link's address for its payee to take in, from a
+  // wallet of theirs and at their cost, and the payer cannot take it back; so an unknown minimum sends nothing rather than guess it is 0
+  const own = 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', r = await rec(payee.v, N1);
+  let ownDown = true;
+  const { ctx, page, sent, told, problems } = await open({
+    keeper: QUOTE, quotes: (url) => (ownDown && url === `${own}/quote` ? { status: 503, body: { error: 'the built-in relay is down' } } : null),
+  });
+  await unlock(page);
+  await page.evaluate((h) => { location.hash = h; }, `pay=${payee.address}&n=${r.n}&ns=${r.ns}&amount=0.5&chain=ethereum`);
+  const press = async () => { await page.waitForSelector('#req-wallet:not([disabled])', { timeout: 30000 }); await page.click('#req-wallet'); };
+  await press();
+  await page.waitForFunction(() => /Could not read the relay’s minimum/.test(document.querySelector('#req')?.textContent || ''), null, { timeout: 30000 });
+  assert.equal(sent.length, 0, 'nothing was sent to the link\'s address');
+  assert.deepEqual(told.filter((b) => b.npk === N1.toString()), []);
+  ownDown = false;
+  await press();
+  await page.waitForFunction(() => /Paid 0\.5 ETH/.test(document.body.textContent || ''), null, { timeout: 30000 });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to.toLowerCase(), BOX1.toLowerCase(), 'plain ETH to the box the link names');
+  assert.equal(sent[0].value, '0x' + (5n * 10n ** 17n).toString(16));
+  assert.deepEqual(problems, []);
   await ctx.close();
 });
 await test('a name with no deposit address cannot be paid from the wallet here, and the form says what to do', async () => {
@@ -760,6 +867,257 @@ await test('a registry that cannot be read leaves the page working with its own 
   await page.waitForFunction(() => /Deposit/.test(document.querySelector('#f-go')?.textContent || ''), null, { timeout: 30000 });
   assert.deepEqual(problems, []);
   await ctx.close();
+});
+await test('a native ETH withdrawal keeps the community relay option when the built-in keeper cannot quote', async () => {
+  const R2 = '0x' + 'b2'.repeat(20), host = 'https://tacit-evm-pool-keepers.onrender.com', communityHost = 'https://tacit-evm-pool-forwarder.onrender.com';
+  const own = `${host}/1/evm-pool/keeper`, community = `${communityHost}/1/evm-pool/keeper`;
+  const { ctx, page, problems, keeperCalls } = await open({
+    notes: [10n * ETH], registry: [{ relayer: R2, stake: 1000n * 10n ** 18n, url: community }],
+    quotes: (url) => {
+      if (url === `${own}/quote`) return { status: 503, body: { error: 'the built-in keeper is down' } };
+      if (url === `${community}/quote`) return { ...QUOTE, relayer: R2 };
+      return null;
+    },
+  });
+  await unlock(page);
+  await page.click('#tab-withdraw');
+  await page.fill('#f-wto', DEAD);
+  await page.fill('#f-wamt', '0.1');
+  await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled && /Sent by the relay/.test(document.querySelector('#form')?.textContent || ''), null, { timeout: 30000 });
+  assert.ok(keeperCalls.some((c) => c.url === `${community}/quote`), 'the registered community relay supplied the spend quote');
+  await syncAgain(page, keeperCalls, own); await syncAgain(page, keeperCalls, own);
+  assert.equal(quotesAt(keeperCalls, community), 1, 'the form asked the listed relay once, and the syncs after it did not');
+  assert.match(await page.locator('#form').innerText(), /Sent by the relay/, 'its quote stands while the built-in keeper cannot quote');
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('an open deposit view keeps the built-in receive minimum and reacts when only its service quote fails', async () => {
+  const R2 = '0x' + 'b2'.repeat(20), host = 'https://tacit-evm-pool-keepers.onrender.com', communityHost = 'https://tacit-evm-pool-forwarder.onrender.com';
+  const own = `${host}/1/evm-pool/keeper`, community = `${communityHost}/1/evm-pool/keeper`;
+  let ownDown = false;
+  const { ctx, page, problems, waiting } = await open({
+    notes: [10n * ETH], registry: [{ relayer: R2, stake: 1000n * 10n ** 18n, url: community }],
+    quotes: (url) => {
+      if (url === `${own}/quote`) return ownDown ? { status: 503, body: { error: 'the built-in receive service is down' } } : { ...QUOTE, receiveMin: '2000000000000000000' };
+      if (url === `${community}/quote`) return { ...QUOTE, relayer: R2, receiveMin: '1000000000000000000' };
+      return null;
+    },
+  });
+  await unlock(page);
+  await page.click('#dep-addr');
+  await page.waitForFunction(() => /takes it in from 2(?:\.0+)? ETH/.test(document.querySelector('#form')?.textContent || ''), null, { timeout: 30000 });
+  assert.doesNotMatch(await page.locator('#form').innerText(), /takes it in from 1(?:\.0+)? ETH/, 'a community spend quote cannot replace the built-in receive minimum');
+  const address = await page.locator('#form .addr code').first().innerText();
+  waiting.set(address.toLowerCase(), '0x' + (5n * 10n ** 17n).toString(16));
+  await page.click('#f-check');
+  await page.waitForFunction(() => /below the relay’s minimum/.test(document.querySelector('#form')?.textContent || '') && document.querySelector('[data-sweep]'), null, { timeout: 30000 });
+  ownDown = true;
+  await page.click('#f-check');
+  await page.waitForFunction(() => /The relay can’t take this one right now/.test(document.querySelector('#form')?.textContent || '') && document.querySelector('[data-sweep]'), null, { timeout: 30000 });
+  assert.doesNotMatch(await page.locator('#form').innerText(), /The relay will collect it/);
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('a token withdrawal uses the registry relay projected to its pool when the built-in token keeper cannot quote', async () => {
+  const R2 = '0x' + 'b2'.repeat(20), host = 'https://tacit-evm-pool-keepers.onrender.com', communityHost = 'https://tacit-evm-pool-forwarder.onrender.com';
+  const own = `${host}/1-xa0b86991c6/evm-pool/keeper`, community = `${communityHost}/1-xa0b86991c6/evm-pool/keeper`;
+  const native = `${host}/1/evm-pool/keeper`, nativeCommunity = `${communityHost}/1/evm-pool/keeper`;
+  const usdc = { chainId: 1, pool: '0x6C0be904750Fe1b50cd7207cc94731642d99e908', relayer: R2, fee: '1000' };
+  const { ctx, page, problems, keeperCalls } = await open({
+    search: '?chains=all', notes: [10_000_000n],
+    registry: [{ relayer: R2, stake: 1000n * 10n ** 18n, url: nativeCommunity }],
+    quotes: (url) => {
+      if (url === `${own}/quote`) return { status: 503, body: { error: 'the built-in token keeper is down' } };
+      if (url === `${community}/quote`) return usdc;
+      if (url === `${native}/quote`) return QUOTE;
+      if (url === `${nativeCommunity}/quote`) return { ...QUOTE, relayer: R2, fee: '100000000000000' };
+      return null;
+    },
+  });
+  await unlock(page);
+  await page.click('[data-tok="usdc"]');
+  await page.click('#tab-withdraw');
+  await page.fill('#f-to', DEAD);
+  await page.fill('#f-amt', '1');
+  await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled && /Relay fee/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, { timeout: 30000 });
+  assert.ok(keeperCalls.some((c) => c.url === `${community}/quote`), 'the registry entry was projected from the native route to the USDC pool');
+  assert.ok(keeperCalls.some((c) => c.url === `${own}/quote`), 'the built-in token keeper was asked too');
+  assert.match(await page.locator('#f-rcpt').innerText(), /at most .* USDC/);
+  await syncAgain(page, keeperCalls, own); await syncAgain(page, keeperCalls, own);
+  assert.equal(quotesAt(keeperCalls, community), 1, 'the form asked the projected relay once, and the syncs after it did not');
+  assert.match(await page.locator('#f-rcpt').innerText(), /at most .* USDC/, 'its quote stands while the built-in keeper cannot quote');
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('a sync asks the built-in relay alone, once: a listed relay hears from the page when a withdrawal is sent, not on the page\'s timer', async () => {
+  const R2 = '0x' + 'b2'.repeat(20), own = 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', community = 'https://tacit-evm-pool-forwarder.onrender.com/1/evm-pool/keeper';
+  const { ctx, page, problems, keeperCalls } = await open({
+    notes: [10n * ETH], registry: [{ relayer: R2, stake: 1000n * 10n ** 18n, url: community }],
+    quotes: (url) => (url === `${own}/quote` ? QUOTE : url === `${community}/quote` ? { ...QUOTE, relayer: R2 } : null),
+  });
+  await unlock(page);
+  await page.click('#tab-withdraw');
+  await page.fill('#f-wto', DEAD);
+  await page.fill('#f-wamt', '0.1');
+  await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled && /Relay fee/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, { timeout: 30000 });
+  // a sync on the page's own timer can fall in one of these two, not in both
+  const asked = [await syncAgain(page, keeperCalls, own), await syncAgain(page, keeperCalls, own)];
+  assert.ok(asked.includes(1), `one quote from the built-in relay for a sync, not two (${asked})`);
+  assert.equal(quotesAt(keeperCalls, community), 0, 'no sync and no form asked the listed relay while the built-in relay quotes');
+  await page.click('#f-go');
+  // the spend asks every relay for its quote first; it then stops, since the notes here are stand-ins the pool does not hold
+  await page.waitForFunction(() => /does not cover this amount/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 60000 });
+  assert.equal(quotesAt(keeperCalls, community), 1, 'the withdrawal asked the listed relay as it was priced');
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('a token pool\'s sync asks its built-in relay alone: the projected relay is asked when its withdrawal is sent', async () => {
+  const R2 = '0x' + 'b2'.repeat(20), host = 'https://tacit-evm-pool-keepers.onrender.com', communityHost = 'https://tacit-evm-pool-forwarder.onrender.com';
+  const own = `${host}/1-xa0b86991c6/evm-pool/keeper`, community = `${communityHost}/1-xa0b86991c6/evm-pool/keeper`;
+  const usdc = { chainId: 1, pool: '0x6C0be904750Fe1b50cd7207cc94731642d99e908', relayer: '0x' + '11'.repeat(20), fee: '2000' };
+  const { ctx, page, problems, keeperCalls } = await open({
+    search: '?chains=all', notes: [10_000_000n],
+    registry: [{ relayer: R2, stake: 1000n * 10n ** 18n, url: `${communityHost}/1/evm-pool/keeper` }],
+    quotes: (url) => {
+      if (url === `${own}/quote`) return usdc;
+      if (url === `${community}/quote`) return { ...usdc, relayer: R2, fee: '1000' };
+      if (url.endsWith('/1/evm-pool/keeper/quote')) return { ...QUOTE, ...(url.startsWith(communityHost) ? { relayer: R2 } : {}) };
+      return null;
+    },
+  });
+  await unlock(page);
+  await page.click('[data-tok="usdc"]');
+  await page.click('#tab-withdraw');
+  await page.fill('#f-to', DEAD);
+  await page.fill('#f-amt', '1');
+  await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled && /Relay fee/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, { timeout: 30000 });
+  await syncAgain(page, keeperCalls, own); await syncAgain(page, keeperCalls, own);
+  assert.equal(quotesAt(keeperCalls, community), 0, 'no sync asked the projected relay, so its timing does not say which pool is open');
+  await page.click('#f-go');
+  await page.waitForFunction(() => /does not cover this amount/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 60000 });
+  assert.equal(quotesAt(keeperCalls, community), 1, 'the withdrawal asked the projected relay as it was priced');
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+
+// ── the private route, on: the keepers service's gateway and a listed relay's are real sealed gateways (worker-relay/src/lib/evm-pool-keeper-sealed.js) on this
+// machine, and only the forwarders are stood in for: each envelope they get is handed to the gateway it is for, as a forwarder does ──
+const jsonTo = (res, code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+// an account as a relay's key signs with it: its address, and a raw hash signed r ‖ s ‖ v
+const accountOf = (priv) => {
+  const k = hexToBytes(priv.replace(/^0x/, ''));
+  return { address: '0x' + bytesToHex(keccak_256(secp.getPublicKey(k, false).slice(1)).slice(12)),
+    sign: async ({ hash }) => { const g = await secp.signAsync(hexToBytes(hash.replace(/^0x/, '')), k); return bytesToHex(g.toCompactRawBytes()) + (g.recovery + 27).toString(16); } };
+};
+async function sealedRoute({ ownServe, relayServe, relay }) {
+  const own = newGatewayKey(), carried = [];
+  const listen = async (take) => {
+    const srv = createServer((req, res) => { if (!take(req, res)) jsonTo(res, 404, { error: 'not found' }); });     // only what comes sealed, or the key document
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    return srv;
+  };
+  const a = await listen(makeServiceGateway({ secret: own, serve: ownServe, json: jsonTo, ratePerMin: 100_000 }));
+  const b = await listen(makeServiceGateway({ secret: newGatewayKey(), serve: relayServe, json: jsonTo, accounts: [relay], ratePerMin: 100_000 }));
+  const at = (srv, path) => `http://127.0.0.1:${srv.address().port}${path}`;
+  const pass = async (url, req) => {
+    const post = req.method() === 'POST', r = await fetch(url, { method: req.method(), headers: post ? { 'content-type': 'application/octet-stream' } : {}, body: post ? req.postDataBuffer() : undefined });
+    return { status: r.status, type: r.headers.get('content-type') || 'application/octet-stream', body: Buffer.from(await r.arrayBuffer()) };
+  };
+  return {
+    gateway: bytesToHex(gatewayKeys(own).pub), carried,
+    // a forwarder's routes: /f/k for the keepers service, /r/<chain>/<relayer> and its /key for a relay the registry lists (the wallet-read and API gateways are not here)
+    async carry(req) {
+      const u = new URL(req.url());
+      if (!/^https:\/\/tacit-evm-pool-forwarder(?:-2)?\.onrender\.com$/.test(u.origin)) return null;
+      carried.push(`${req.method()} ${u.pathname}`);
+      if (u.pathname === '/f/k' && req.method() === 'POST') return pass(at(a, '/sealed'), req);
+      const m = /^\/r\/1\/(0x[0-9a-fA-F]{40})(\/key)?$/.exec(u.pathname);
+      if (m && lcs(m[1]) === lcs(relay.address)) return pass(at(b, m[2] ? '/sealed/key' : '/sealed'), req);
+      return { status: 502, type: 'application/json', body: Buffer.from('{"error":"not carried here"}') };
+    },
+    close: () => { a.close(); b.close(); },
+  };
+}
+// a token pool's logs as fakePool in tests/evm-pool-wallet-rpc.test.mjs keeps them: a Transact a block, its leaves in a tree whose root at each size the pool answers
+function tokenChain(pool) {
+  const tree = zk.incTree(), sizeOf = new Map([[tree.root, 0]]), logs = [], receipts = new Map();
+  return { pool, logs, sizeOf, receipts, tip: 0x1c9c380,
+    transact({ block, nf = [0n, 0n], out = null, memo = [null, null], tx = '0x' + w64(block) }) {
+      const firstIndex = tree.size, [o0, o1] = out ?? [0n, 0n];
+      if (out) { tree.append(out.map(BigInt)); sizeOf.set(tree.root, tree.size); }
+      const m = memo.map((x) => Buffer.from(x ?? []).toString('hex')), pad = (h) => h + '0'.repeat((64 - (h.length % 64)) % 64), body0 = w64(m[0].length / 2) + pad(m[0]);
+      const l = { address: pool, blockNumber: '0x' + block.toString(16), transactionHash: tx, logIndex: '0x0', topics: [T_TRANSACT, '0x' + w64(nf[0]), '0x' + w64(nf[1])],
+        data: '0x' + [o0, o1, firstIndex, 0, 0, 0, 0, 0, 320, 320 + body0.length / 2].map(w64).join('') + body0 + w64(m[1].length / 2) + pad(m[1]) };
+      logs.push(l);
+      return l;
+    } };
+}
+console.log('The private route');
+await test('a token withdrawal is quoted and sent through the registry relay projected to its pool, sealed to that relay\'s key through the forwarders', async () => {
+  const usdc = { token: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', pool: '0x6C0be904750Fe1b50cd7207cc94731642d99e908' }, id = '1-xa0b86991c6';
+  const PRIV = '5a'.repeat(32), keys = evmPoolKeys(zk, hexToBytes(PRIV)), asset = poolAsset({ chainId: 1n, pool: usdc.pool, token: usdc.token });
+  // the key's one note in the USDC pool, 10 USDC
+  const chainOf = TOKEN_CHAIN = tokenChain(usdc.pool), note = sealNote(zk, { to: { V: keys.V, A: keys.A, N: keys.N }, value: 10_000_000n, asset });
+  chainOf.transact({ block: 29_000_000, out: [note.leaf, 21n], memo: [note.memo, null] });
+  const nf = zk.nullifier(openNote(zk, keys, { memo: note.memo, leaf: note.leaf, asset }).nk, note.leaf, 0);
+  const relay = accountOf('3a'.repeat(32)), H = '0x' + 'cd'.repeat(32), seen = { own: [], relay: [] }, relayed = [];
+  const sr = await sealedRoute({
+    relay,
+    ownServe: (req, res) => {
+      const path = req.url.split('?')[0];
+      seen.own.push(`${req.method} ${path}`);
+      if (path === `/${id}/evm-pool/keeper/quote`) return jsonTo(res, 200, { chainId: 1, pool: usdc.pool, relayer: '0x' + '11'.repeat(20), fee: '5000' });
+      if (path === '/1/evm-pool/keeper/quote') return jsonTo(res, 200, QUOTE);
+      if (path.endsWith('/receive')) return jsonTo(res, 200, { ok: true });
+      if (path.endsWith('/rpc')) return jsonTo(res, 503, { error: 'no node behind this stand-in' });
+      return jsonTo(res, 404, { error: 'not found' });
+    },
+    relayServe: async (req, res) => {
+      const path = req.url.split('?')[0];
+      seen.relay.push(`${req.method} ${path}`);
+      if (path === `/${id}/evm-pool/keeper/quote`) return jsonTo(res, 200, { chainId: 1, pool: usdc.pool, relayer: relay.address, fee: '1000' });
+      if (path === `/${id}/evm-pool/keeper/relay` && req.method === 'POST') {
+        const parts = [];
+        for await (const c of req) parts.push(c);
+        relayed.push(JSON.parse(Buffer.concat(parts).toString()));
+        // it lands: the spend of the note, in a block the wallet reads next, and its receipt
+        chainOf.tip += 10;
+        const l = chainOf.transact({ block: chainOf.tip - 5, nf: [nf, 0n], tx: H });
+        chainOf.receipts.set(H, { status: '0x1', transactionHash: H, blockNumber: l.blockNumber, logs: [l] });
+        return jsonTo(res, 200, { txHash: H });
+      }
+      return jsonTo(res, 404, { error: 'not found' });
+    },
+  });
+  const { ctx, page, problems, keeperCalls } = await open({
+    search: '?chains=all', tabKey: PRIV, stubProve: true, route: sr,
+    registry: [{ relayer: relay.address, stake: 1000n * 10n ** 18n, url: 'https://relay.example/1/evm-pool/keeper' }],
+  });
+  try {
+    await unlock(page);
+    await page.click('[data-tok="usdc"]');
+    await page.click('#tab-withdraw');
+    await page.fill('#f-to', DEAD);
+    await page.fill('#f-amt', '1');
+    await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled && /Relay fee/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, { timeout: 60000 });
+    assert.ok(seen.own.includes(`GET /${id}/evm-pool/keeper/quote`), 'the built-in token keeper priced the form, through its gateway');
+    assert.ok(!seen.relay.some((x) => x.endsWith('/quote')), 'the listed relay was not asked before the spend');
+    await page.click('#f-go');
+    await page.waitForFunction(() => /Withdrew 1 USDC/.test(document.querySelector('#status')?.textContent || '') || document.querySelector('#status .err'), null, { timeout: 120000 });
+    assert.match(await page.locator('#status').innerText(), /Withdrew 1 USDC/);
+    assert.ok(sr.carried.some((x) => new RegExp(`^GET /r/1/${relay.address}/key$`, 'i').test(x)), 'a forwarder fetched the relay\'s key document, which the wallet checked against the registry\'s address');
+    assert.ok(sr.carried.some((x) => new RegExp(`^POST /r/1/${relay.address}$`, 'i').test(x)), 'and carried envelopes sealed to that key');
+    assert.ok(seen.relay.includes(`GET /${id}/evm-pool/keeper/quote`), 'the native registry entry was projected to the USDC pool and quoted through the relay\'s gateway');
+    assert.equal(relayed.length, 1, 'the spend went to it, cheaper than the built-in keeper');
+    const tx = relayed[0].tx;
+    assert.equal(lcs(tx.relayer), lcs(relay.address), 'the proof pays the address the registry lists');
+    assert.equal(String(tx.fee), '1000');
+    assert.equal(lcs(tx.recipient), lcs(DEAD));
+    assert.equal(String(tx.extAmount), String(-1_000_000n));
+    assert.equal(await page.evaluate(() => globalThis.__proved), 1);
+    assert.deepEqual(keeperCalls, [], 'no relay was asked in the open');
+    assert.deepEqual(problems, []);
+  } finally { await ctx.close(); sr.close(); TOKEN_CHAIN = null; }
 });
 await test('ETH only: a saved Base choice is ignored, no chain strip and no token row are drawn, and ?chains=all brings them back', async () => {
   const one = await open({ search: '', chain: 8453, min: null });

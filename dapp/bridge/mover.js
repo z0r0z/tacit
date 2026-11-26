@@ -166,10 +166,15 @@ export function mountMover({ pick, repaint = () => {}, say = () => {}, onState =
       return say(after.stage === 'rburn-mined' ? 'Looking again: it is waiting for Bitcoin’s proof on Ethereum to record the burn.' : 'Checked.');
     }
     if (kind === 'cancel') {
-      if (!confirmed(id)) { if (!armed(id)) drop = { id, at: Date.now() }; say('Cancelling drops this bridge from this page once Bitcoin is asked again and has neither of its transactions; what it holds stays where it is. Press “Yes, cancel it” to go ahead.'); return; }
+      if (!confirmed(id)) { if (!armed(id)) drop = { id, at: Date.now() }; say('Cancelling drops this bridge from this page once Bitcoin is asked again and has neither of its transactions; what it holds stays where it is. If its TAC was already spent by another bridge, Cancel also sends the bitcoin its first transaction held back to your address. Press “Yes, cancel it” to go ahead.'); return; }
       drop = null;
       say('Asking Bitcoin for its transactions once more…');
-      const txid = rec.burn?.txid || rec.migrate?.revealTxid, after = await ux.cancelSigned(pub, id);
+      const txid = rec.burn?.txid || rec.migrate?.revealTxid, after = await TS.withKey(() => ux.cancelSigned(pub, id, { walletPriv: priv() }), pub);
+      if (after?.gaveUp) {
+        const sats = (n) => `${Number(n).toLocaleString('en-US')} sats`;
+        return say(`Cancelled. This bridge could never finish: its TAC was already spent by another bridge${after.spent?.by ? ` (${after.spent.by})` : ''}. ${after.swept ? `The ${sats(after.swept.sats)} its first transaction held are on their way back to your Bitcoin address (${after.swept.txid}). They show there once it confirms.`
+          : after.moved ? `The bitcoin its first transaction held was already moved (${after.moved}).` : `Its first transaction held only ${sats(after.held)}, too little to be worth moving.`}`);
+      }
       return say(after ? 'Bitcoin has this bridge’s transaction, so it was not cancelled: it goes on from its row.' : `Cancelled. What it held is where it was.${txid ? ` Its transaction id, should it ever show on Bitcoin: ${txid}` : ''}`);
     }
     say('That press is on the front page.', row.href || true);

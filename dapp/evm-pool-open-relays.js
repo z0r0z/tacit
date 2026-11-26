@@ -78,6 +78,25 @@ export async function openRelays({ call, chainId, own = null, pinned = true, reg
   return drawRelays(usable, Math.max(0, max - (own ? 1 : 0)), random).map((e) => ({ url: e.url, relayer: e.relayer }));
 }
 
+// A chain's registry entry can point at a multi-keeper. Project only its root native route (or one already projected) to the requested pool; a bare,
+// prefixed or unrelated route is not a candidate. Token support is proved by the quote, and the registry's relayer pin and any selection weight stay with the entry.
+export function keepersForPool(entries, chainId, poolId) {
+  const chain = Number(chainId), id = String(poolId || '');
+  if (!Number.isSafeInteger(chain) || chain <= 0 || !new RegExp(`^${chain}-[a-z][a-z0-9]*$`).test(id)) return [];
+  const native = `/${chain}/evm-pool/keeper`, target = `/${id}/evm-pool/keeper`, out = [];
+  for (const e of entries || []) {
+    try {
+      const u = new URL(String(e?.url || ''));
+      if (u.username || u.password || u.search || u.hash) continue;
+      const path = u.pathname.replace(/\/+$/, '');
+      if (path === native) u.pathname = target;
+      else if (path !== target) continue;
+      out.push({ ...e, url: u.href.replace(/\/+$/, '') });
+    } catch { /* not a URL a wallet can use */ }
+  }
+  return out;
+}
+
 // A quote from each relay in `entries` (`ask(entry)` → a quote or null), as `{ e, q }`, without waiting on the slowest: all of them when they all answer, and
 // otherwise those that had answered `graceMs` after the first did (or when the last has failed). A relay that never answers costs a spend the grace, not
 // the time a request waits to give up.
