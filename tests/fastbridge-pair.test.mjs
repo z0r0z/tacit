@@ -267,8 +267,8 @@ test('the swap is kept: a new page over the same stores shows it, and a lock who
   const fresh = w.makePair({ stores: { fwd: empty, index: memStore(), swaps: () => memStore(), quotes: () => memStore() } });
   assert.deepEqual(await fresh.records(), []);
   assert.equal(await fresh.recover(), 1);
-  assert.equal((await fresh.records())[0].title, 'Returning your BTC');
-  assert.match((await fresh.records())[0].detail, /ends\. It was found again from your key\.$/, 'the reason is a sentence of its own');
+  // the lock is the provider's to answer (it took no offer here): the swap is kept as waiting for its offer, and falls to the timelock refund when none comes
+  assert.equal((await fresh.records())[0].title, 'Provider is sending ETH');
   w.btc.mine(143);
   for (let i = 0; i < 60 && (await fresh.records())[0].state !== 'returned'; i++) { await fresh.pump(); w.btc.mine(1); w.clock.advance(60); }
   assert.equal((await fresh.records())[0].state, 'returned');
@@ -424,7 +424,7 @@ test('found again from the key: while the swaps found are read one by one, each 
   // what a page listing the swaps would show when the first step of the first one is written
   const st = freshStores(), put = st.fwd.put;
   let shown = null;
-  st.fwd.put = async (r) => { if (!shown && r.phase !== 'refund-wait') shown = (await st.fwd.list()).map((x) => describeFwd(x).title); return put(r); };
+  st.fwd.put = async (r) => { if (!shown && r.phase !== 'refund-wait' && (await st.fwd.list()).length === 2) shown = (await st.fwd.list()).map((x) => describeFwd(x).title); return put(r); };
   const fresh = w.makePair({ stores: st });
   assert.equal(await fresh.recover(), 2);
   assert.deepEqual(shown, ['Checking', 'Checking'], 'the second swap is listed as being checked while the first is read');
@@ -775,6 +775,39 @@ test('the coins a payment made to this address are read from its transaction, in
   assert.deepEqual(await pc.arriving('ee'.repeat(32)), [{ txid: 'ee'.repeat(32), vout: 1, value: 150000 }], 'its output to this address; not dust, not another address, not one spent');
   assert.deepEqual(await pc.arriving('11'.repeat(32)), [], 'a transaction no explorer has yet: nothing');
   assert.deepEqual(await pc.arriving('not a txid'), []);
+});
+
+// ── the tab closed (or the device lost) after the provider locked its ETH: the key, the chain and the provider's published offer finish the swap ──
+test('record lost after the provider locked: the swap is found again from the key and the claim is built from key-only data', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  await w.pair.start(await w.pair.quote({ dir: 'b2e', amount: SATS }));
+  // the page is gone once the provider's offer for this swap is out (its lock is in the pool) and the user has not claimed
+  const rec0 = async () => (await w.mems.get('fwd').list())[0];
+  const offerOut = async () => { const r = await rec0(); if (!r) return false; const a = await w.fwd.handle({ method: 'GET', path: '/swap/' + r.id + '/offer' }); return a.status === 200; };
+  for (let i = 0; i < 800 && !(await offerOut()); i++) { await stepWorld(w, []); w.clock.advance(30); if (i % 20 === 19) w.btc.mine(1, { advance: false }); await w.pair.pump(); }
+  const rec = await rec0();
+  assert.ok(await offerOut(), 'the provider locked and published its offer');
+  assert.ok(!rec.claim, 'the user had not claimed');
+  const lost = freshStores();
+  const fresh = w.makePair({ stores: lost });
+  assert.equal(await fresh.recover(), 1);
+  const kept = (await lost.fwd.list())[0];
+  assert.equal(kept.id, rec.id);
+  assert.ok(kept.recovered && kept.claimFromKey);
+  const phase = async () => (await lost.fwd.list())[0].phase;
+  for (let i = 0; i < 800 && !['done', 'claimed', 'refund-wait'].includes(await phase()); i++) { await stepWorld(w, [fresh]); w.clock.advance(30); if (i % 20 === 19) w.btc.mine(1, { advance: false }); }
+  const end = (await lost.fwd.list())[0];
+  assert.ok(['claimed', 'done'].includes(end.phase), 'finished from the key: ' + end.phase + ' ' + (end.why || ''));
+  assert.ok(end.claim && end.claim.op, 'the claim was built from the key and the published offer');
+  assert.equal(end.evmAmount, String(end.evmOffer.amount));
+});
+
+test('two swap ids give unrelated secrets (t, the lock blinding, the claim output blinding)', () => {
+  const seed = new Uint8Array(32).fill(7);
+  const a = X.deriveSwapSecrets({ seed, swapId: new Uint8Array(36).fill(1) }), b = X.deriveSwapSecrets({ seed, swapId: new Uint8Array(36).fill(2) });
+  assert.ok(a.t !== b.t && a.rOut !== b.rOut && a.rLock !== b.rLock && a.t !== a.rOut && a.t !== a.rLock);
 });
 
 let passed = 0;
