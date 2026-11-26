@@ -36,7 +36,7 @@ const TERMINAL = new Set(['done', 'refunded', 'aborted', 'lost']);
 const OPEN = new Set(['locking', 'locked', 'offered', 'refunding']);
 
 export function makeBtcSwapDesk(ctx) {
-  const { seed, store, quotes, btc, inventory } = ctx;
+  const { seed, store, quotes, btc, inventory, pledge } = ctx;
   const P = { ...S.DEFAULTS, maxSessions: 4, acceptWaitSecs: 6 * 3600, validSecs: 600, feeBps: 30, flatFee: 0n, minConfsFor: () => 1, ...ctx.policy };
   const log = ctx.log || (() => {}), alert = ctx.alert || (() => {});
   const deskPub = hx(btc.wallet.pub);
@@ -62,12 +62,27 @@ export function makeBtcSwapDesk(ctx) {
   const exclusive = (fn) => { const run = picking.catch(() => {}).then(fn); picking = run; return run; };
 
   const feeOf = (amount) => (BigInt(amount) * BigInt(P.feeBps)) / 10000n + BigInt(P.flatFee);
+  const outsidePledge = 'the total discount is outside this desk’s pledge limits';
+  async function records(pledged) {
+    const list = await store.list();
+    if (pledged && store.problems?.().length) throw new Error('a swap record could not be read; pledged funds are on hold');
+    return list;
+  }
+  async function fund(method, args, cap) {
+    if (cap != null) return ctx.pledgedFunding(method, args, cap, await records(true));
+    return btc.tx[method]({ ...args, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate() });
+  }
+  const feeInputsOf = (pair) => pair.feeInputs ? { feeInputs: pair.feeInputs } : {};
 
   // The notes the desk can lock: the proof follows them, and no open swap holds them.
   async function lockable() {
+    if (pledge?.empty) return [];
+    const list = await records(pledge);
     const held = new Set();
-    for (const r of await store.list()) if (OPEN.has(r.phase) || (r.phase === 'accepted' && r.lockPair)) for (const n of r.noteInputs || []) held.add(`${n.txid}:${n.vout}`);
-    const notes = (await inventory.notes()).filter((n) => !held.has(`${n.txid}:${n.vout}`));
+    for (const r of list) if (OPEN.has(r.phase) || (r.phase === 'accepted' && r.lockPair)) for (const n of r.noteInputs || []) held.add(`${n.txid}:${n.vout}`);
+    let notes = (await inventory.notes()).filter((n) => !held.has(`${n.txid}:${n.vout}`));
+    if (pledge) notes = pledge.inventory(notes, list);
+    if (!notes.length) return [];
     const tr = await ctx.tracking(notes);
     return notes.filter((n) => tr.get(`${n.txid}:${n.vout}`) === 'tracked').sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : -1));
   }
@@ -78,8 +93,9 @@ export function makeBtcSwapDesk(ctx) {
     if (a < BigInt(P.minAmount) || a > BigInt(P.maxAmount)) return { ok: false, why: 'amount outside this desk\'s limits' };
     const out = a - feeOf(a);
     if (out <= 0n) return { ok: false, why: 'the amount does not cover the fee' };
+    if (pledge && !pledge.permits(a, out)) return { ok: false, why: outsidePledge };
     if ((await available()) < out) return { ok: false, why: 'this desk does not hold that much just now' };
-    const q = { id: hx(sha256(new TextEncoder().encode(`${deskPub}|${a}|${ctx.now()}|${Math.random()}`))).slice(0, 32), asset: strip(P.asset), value: String(a), out: String(out), deskPub, csvHolder: P.csvHolder, validUntil: ctx.now() + P.validSecs };
+    const q = { id: hx(sha256(new TextEncoder().encode(`${deskPub}|${a}|${ctx.now()}|${Math.random()}`))).slice(0, 32), asset: strip(P.asset), value: String(a), out: String(out), deskPub, csvHolder: P.csvHolder, validUntil: ctx.now() + P.validSecs, ...(pledge ? { pledged: true } : {}) };
     await quotes.put(q);
     return { ok: true, quote: q };
   }
@@ -96,6 +112,8 @@ export function makeBtcSwapDesk(ctx) {
       const q = await quotes.get(String(quoteId || ''));
       if (!q) return no('unknown quote');
       if (ctx.now() > q.validUntil) return no('quote expired');
+      if (q.pledged && !pledge) return no('the desk withdrew its pledge');
+      if (pledge && !pledge.permits(q.value, q.out)) return no(outsidePledge);
       const l = offer.lock || {};
       const tx = /^[0-9a-f]{64}$/.test(strip(l.txid || '')) ? await btc.fetchTx(strip(l.txid)) : null;
       if (!tx) return no('the lock transaction is not on the chain', true);
@@ -112,7 +130,7 @@ export function makeBtcSwapDesk(ctx) {
       if (await btc.outspend(strip(l.txid), l.vout)) return no('the lock is spent');
       const consumed = await btc.crossLaneBlocked(tx);
       if (consumed) return no('a spent note is already consumed on Ethereum: ' + consumed);
-      const rec = { v: 1, role: 'desk', id, phase: 'accepted', created: ctx.now(), updated: ctx.now(), quoteId: q.id, offer, csvDesk: P.csvDesk, sessions: [] };
+      const rec = { v: 1, role: 'desk', id, phase: 'accepted', created: ctx.now(), updated: ctx.now(), quoteId: q.id, offer, csvDesk: P.csvDesk, sessions: [], ...(pledge ? { pledged: true } : {}) };
       await store.put(rec);
       return { ok: true, rec };
     });
@@ -145,13 +163,21 @@ export function makeBtcSwapDesk(ctx) {
         }
         if (st.height + l.csvBlocks - 1 < tip + P.lockDelayBlocks + rec.csvDesk + P.takeMarginBlocks) return save(rec, { phase: 'aborted', why: 'the holder\'s refund opens too soon to lock against' });
         if (!rec.lockPair) {
+          if (rec.pledged && !pledge) return save(rec, { phase: 'aborted', why: 'the desk withdrew its pledge' });
+          if (pledge && !pledge.permits(l.value, rec.offer.out)) return save(rec, { phase: 'aborted', why: outsidePledge });
           const pair = await exclusive(async () => {
             const want = BigInt(rec.offer.out), notes = [];
             let sum = 0n;
-            for (const n of await lockable()) { if (sum >= want) break; notes.push(n); sum += BigInt(n.amount); }
+            for (const n of await lockable()) {
+              if (sum >= want) break;
+              if (pledge && await btc.outspend(n.txid, n.vout)) continue;
+              notes.push(n); sum += BigInt(n.amount);
+            }
             if (sum < want) return null;
-            const p = btc.tx.lockTransfer({ asset: hexToBytes(strip(P.asset)), notes, lock: jointOf(rec), lockAmount: want, rLock: mine(rec).rLock, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate() });
-            await save(rec, { lockPair: { txid: p.revealTxid, vout: 0, value: p.revealTx.outputs[0].value, commitTxid: p.commitTxid, commitHex: p.commitHex, revealHex: p.revealHex }, noteInputs: notes.map((n) => ({ txid: n.txid, vout: n.vout })) });
+            const maxMinerFeeSats = pledge?.terms.maxMinerFeeSats;
+            const p = await fund('lockTransfer', { asset: hexToBytes(strip(P.asset)), notes, lock: jointOf(rec), lockAmount: want, rLock: mine(rec).rLock }, maxMinerFeeSats);
+            const pledgeState = pledge ? { pledgeRoots: [...new Set(notes.flatMap((n) => n.pledgeRoots))], maxMinerFeeSats } : {};
+            await save(rec, { lockPair: { txid: p.revealTxid, vout: 0, value: p.revealTx.outputs[0].value, commitTxid: p.commitTxid, commitHex: p.commitHex, revealHex: p.revealHex, ...feeInputsOf(p) }, noteInputs: notes.map((n) => ({ txid: n.txid, vout: n.vout })), ...pledgeState });
             return p;
           });
           if (!pair) {
@@ -175,13 +201,13 @@ export function makeBtcSwapDesk(ctx) {
         const by = await btc.outspend(rec.lock.txid, rec.lock.vout);
         if (by) return spentLock(rec, by);
         if ((await btc.tip()) < rec.lockHeight + rec.csvDesk - 1) return rec;
-        if (!rec.refund) {
-          const pair = btc.tx.refundTransfer({
+        if (!rec.refund) await exclusive(async () => {
+          const pair = await fund('refundTransfer', {
             asset: hexToBytes(strip(P.asset)), lockOut: { txid: rec.lock.txid, vout: rec.lock.vout, value: rec.lock.value }, lock: jointOf(rec), dLocker: btc.wallet.priv,
-            amount: BigInt(rec.offer.out), rLock: mine(rec).rLock, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate(),
-          });
-          await save(rec, { refund: { txid: pair.revealTxid, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex } });
-        }
+            amount: BigInt(rec.offer.out), rLock: mine(rec).rLock,
+          }, rec.maxMinerFeeSats);
+          await save(rec, { refund: { txid: pair.revealTxid, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, ...feeInputsOf(pair) } });
+        });
         await btc.broadcast({ ...rec.refund, revealTxid: rec.refund.txid });
         return save(rec, { phase: 'refunding' });
       }
@@ -193,15 +219,15 @@ export function makeBtcSwapDesk(ctx) {
         return rec;
       }
       case 'taking': {
-        if (!rec.take) {
+        if (!rec.take) await exclusive(async () => {
           const lock = holderLockOf(rec);
           const sk = claimSecret({ dClaimer: btc.wallet.priv, t: BigInt('0x' + rec.t), lock });
-          const pair = btc.tx.claimTransfer({
+          const pair = await fund('claimTransfer', {
             asset: hexToBytes(strip(P.asset)), lockOut: { txid: l.txid, vout: l.vout, value: (await btc.fetchTx(l.txid)).vout[l.vout].value }, lock, sk,
-            amount: BigInt(l.value), rLock: BigInt('0x' + l.rLock), satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate(),
-          });
-          await save(rec, { take: { txid: pair.revealTxid, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex } });
-        }
+            amount: BigInt(l.value), rLock: BigInt('0x' + l.rLock),
+          }, rec.maxMinerFeeSats);
+          await save(rec, { take: { txid: pair.revealTxid, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, ...feeInputsOf(pair) } });
+        });
         const by = await btc.outspend(l.txid, l.vout);
         if (by && by !== rec.take.txid) {
           alert({ level: 'alert', msg: 'the holder took its lock back before the desk could open it', id: rec.id, spender: by });
@@ -286,7 +312,7 @@ export function makeBtcSwapDesk(ctx) {
     try {
       if (method === 'GET' && path === '/info') {
         const a = await available().catch(() => null);
-        return reply({ v: 1, deskPub, asset: strip(P.asset), minAmount: String(P.minAmount), maxAmount: String(P.maxAmount), feeBps: P.feeBps, flatFee: String(P.flatFee), csvHolder: P.csvHolder, csvDesk: P.csvDesk, available: a == null ? null : String(a) });
+        return reply({ v: 1, deskPub, asset: strip(P.asset), minAmount: String(P.minAmount), maxAmount: String(P.maxAmount), feeBps: P.feeBps, flatFee: String(P.flatFee), csvHolder: P.csvHolder, csvDesk: P.csvDesk, available: a == null ? null : String(a), ...(pledge ? { pledge: pledge.terms } : {}) });
       }
       if (method === 'POST' && path === '/quote') {
         if (!body || !/^\d{1,30}$/.test(String(body.amount))) return reply({ error: 'amount must be a whole number' }, 400);

@@ -12,9 +12,15 @@
   "quote": {
     "minAmount": "100000000",
     "maxAmount": "100000000000",
-    "feeBps": 30,
-    "flatFee": "100000000",
-    "validSecs": 600
+    "feeBps": 500,
+    "flatFee": "0",
+    "validSecs": 3600
+  },
+  "pledge": {
+    "outpoints": [],
+    "minDiscountBps": 400,
+    "maxDiscountBps": 600,
+    "maxMinerFeeSats": 10000
   },
   "policy": {
     "csvHolder": 288,

@@ -12,10 +12,12 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { makePledge, makePledgedFunding } from './pledge.mjs';
 
 const DRY = process.argv.includes('--dry-run');
 const cfgPath = resolve(process.env.BTCSWAP_DESK_CONFIG || 'btcswap-desk/config.json');
 const C = JSON.parse(readFileSync(cfgPath, 'utf8'));
+const pledge = makePledge(C.pledge);
 const keyHex = String(process.env.BTCSWAP_DESK_KEY || '').trim().replace(/^0x/, '');
 if (!/^[0-9a-f]{64}$/i.test(keyHex)) { console.error('BTCSWAP_DESK_KEY must be 64 hex characters (set it in the environment)'); process.exit(1); }
 const log = (o) => console.log(JSON.stringify({ ts: new Date().toISOString(), ...o }));
@@ -40,7 +42,7 @@ const key = Uint8Array.from(keyHex.match(/../g).map((x) => parseInt(x, 16)));
 const seed = hmac(sha256, key, new TextEncoder().encode('tacit-btcswap-desk-seed'));
 const data = resolve(C.dataDir || 'btcswap-desk/data');
 
-const tacit = await loadTacit(network);
+const tacit = await loadTacit(network, { livePool: true });
 // as in fastbridge-lp/server.mjs: the wallet module's checkpoints go to a file, and it is built with no location
 globalThis.localStorage = makeFileStorage(resolve(data, 'wallet-cache.json'));
 const savedLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
@@ -63,6 +65,7 @@ const policy = {
 const alert = (o) => { log(o); if (process.env.BTCSWAP_DESK_ALERT_WEBHOOK) fetch(process.env.BTCSWAP_DESK_ALERT_WEBHOOK, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(o) }).catch(() => {}); };
 const desk = makeBtcSwapDesk({
   seed, now: () => Math.floor(Date.now() / 1000), policy, btc, log, alert,
+  pledge, pledgedFunding: makePledgedFunding(btc, tacit.txOutputEnvelope),
   store: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'swaps')), quotes: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'quotes')),
   inventory: makeOwnNotes({ btc, tacit, asset: C.asset }),
   tracking: makeReflectionTracking({ base: C.apiBase || 'https://tacit-api.onrender.com', pool: ux.pool, network }),

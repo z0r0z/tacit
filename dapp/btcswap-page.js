@@ -11,15 +11,17 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=82196961';
 import { makeLocalStore } from '/fastbridge-client.js?cb=09a13249';
 import { makeBtcSwapHolder, holderDone } from '/btcswap-holder.js?cb=ec8dc7eb';
-import { deskClient } from '/btcswap-desk.js?cb=e511951b';
+import { deskClient } from '/btcswap-desk.js?cb=f389b7aa';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
 
-// The desk's URL. None is running yet, so the page offers no swap and asks nothing until this is set.
-export const DESK = null;
+// A self-hosted page can opt in to its own desk with ?desk=1. The URL stays on the
+// page's origin, including when a later visit resumes a swap without the parameter.
+const deskPath = '/btcswap-desk';
+export const DESK = new URLSearchParams(globalThis.location?.search).get('desk') === '1' ? deskPath : null;
 const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.bitaroo.net/api', 'https://mempool.ninja/api', 'https://btcscan.org/api', 'https://mempool.emzy.de/api'];
 const enc = new TextEncoder();
 
-export function openBtcSwap({ T, withKey, ux, priv, pubHex, desk = DESK || 'http://localhost:0', fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc' }) {
+export function openBtcSwap({ T, withKey, ux, priv, pubHex, desk = DESK || deskPath, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc' }) {
   const { prims } = makeBtcWallet({ priv, hrp, fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
   if (prims.wallet.address() !== T.wallet.address()) throw new Error('The Bitcoin address of this key is not the one the wallet reads. Nothing was done.');
   const btc = makeEsploraBtcChain({

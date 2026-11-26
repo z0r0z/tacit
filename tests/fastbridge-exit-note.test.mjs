@@ -19,12 +19,11 @@ const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
 // the pool service and an explorer, stood in for by one fetch; anything else is a read the test did not expect
-// the origin the validator consults for exits once loadTacit has set it up (worker-relay's replay helper answers it from the relay's own
-// exit set, which is empty here, so the stub goes in after the load)
-const POOL = 'http://btc-pool.replay';
+// Install the fixture before the live-wallet loader. The replay loader would answer from its empty exit set instead.
+const POOL = 'http://pool.test';
+process.env.TACIT_BTC_POOL_API = POOL;
 let poolSays = () => json(REC);
 const reads = [];
-const T = await loadTacit('mainnet');
 globalThis.fetch = async (input) => {
   const u = String(input?.url ?? input);
   reads.push(u);
@@ -32,6 +31,7 @@ globalThis.fetch = async (input) => {
   if (u === `http://esplora.test/tx/${TXID}`) return json(TX);
   throw new Error('offline test: ' + u);
 };
+const T = await loadTacit('mainnet', { livePool: true });
 const { prims } = makeBtcWallet({ priv: new Uint8Array(32).fill(7), hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
 const btc = makeEsploraBtcChain({ bases: ['http://esplora.test'], prims, builder: null, fetchImpl: (...a) => globalThis.fetch(...a), tacit: T });
 
