@@ -25,7 +25,7 @@
 import { esc, fmtUnits, parseUnits, plain, E10 } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=e5b9b386';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=09ab4fb1';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=70e92934';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const NO_ANSWER = 'No answer just now. Nothing was sent. Try again soon.', RETRY_MS = [2000, 4000, 8000, 15000, 30000], RETRY_SHOWN = 3;
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
@@ -1112,6 +1112,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       if (g === gen) follow(document.hidden ? HIDDEN_POLL_MS : POLL_MS);
     }, wait);
   }
+  // a tab brought back to the front (the browser slows or stops a hidden tab's timers) steps the swaps under way at once
+  globalThis.document?.addEventListener?.('visibilitychange', () => { if (!document.hidden && pair && L.open && L.recs.some((r) => r.state === 'working')) follow(0); });
   // leaving the page while a swap is under way stops its steps: the browser asks first
   globalThis.addEventListener?.('beforeunload', (e) => { if (L.chain || L.recs.some((r) => r.state === 'working')) { e.preventDefault(); e.returnValue = ''; } });
 

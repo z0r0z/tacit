@@ -366,7 +366,7 @@ export function makeEthereumLocker(ctx) {
           if (deadline - nowSecs >= (policy.minClaimSecs ?? 1800)) return rec;
           return save(rec, { phase: 'aborted', why: bad.join('; ') });
         }
-        return save(rec, { phase: 'locking', deadline, lockHeight: height });
+        return save(rec, { phase: 'locking', deadline, lockHeight: height, lockingAt: ctx.now() });
       }
       case 'locking': {
         const { T, rEvmLock } = secretsOf(rec);
@@ -384,7 +384,7 @@ export function makeEthereumLocker(ctx) {
           if (rec.deadline - nowSecs < policy.minClaimSecs) return save(rec, { phase: 'aborted', why: 'too late to lock' });
           const args = { rec, rEvmLock, T, deadline: rec.deadline, recipient: rec.offer.evm.recipient, refundXonly: refund.xonly, prefer: rec.lockNote || null };
           const failures = rec.buildFailures || 0;
-          const next = { buildRetryAt: ctx.now() + Math.min(policy.buildRetryMaxSecs ?? 600, (policy.buildRetrySecs ?? 30) * 2 ** Math.min(failures, 10)), buildFailures: failures + 1 };
+          const next = { buildRetryAt: ctx.now() + Math.min(policy.buildRetryMaxSecs ?? 60, (policy.buildRetrySecs ?? 30) * 2 ** Math.min(failures, 10)), buildFailures: failures + 1 };
           let built;
           try {
             built = await evm.lockOp(args);
