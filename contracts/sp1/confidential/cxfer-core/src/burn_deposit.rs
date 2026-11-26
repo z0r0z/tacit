@@ -24,6 +24,43 @@ use crate::{
 /// `commitment_hash`/`commitment_hash_compressed` of the SAME commitment the caller fed to
 /// `verify_cxfer_conservation` — binding VALUE across a link, so a seam that swaps a low-value producing
 /// output for a high-value claimed input cannot inflate.
+///
+/// One DEPOSIT-LEAF anchor for a provenance segment: an `(outpoint, commitment_hash)` pair the
+/// REFLECTION ITSELF has proven, taken from the fold's own `depositLeavesRoot` accumulator —
+/// not from the prover's witness. Every time the fold onboards a note into the live set (a
+/// conserving CXFER output, a cross-out mint, a verified burn-deposit deposit, or a shielded-pool
+/// exit), it inserts `(outpoint, commitment_hash)` into that IMT. A blob names such anchors via
+/// membership proofs; the fold checks each proof against `depositLeavesRoot` BEFORE the DAG uses
+/// the anchor, so "the note existed and the reflection tracked it" is a proven fact, the same
+/// trust level as the etch anchor `C_0` itself.
+pub struct DepositLeafWitness {
+    pub outpoint: [u8; 32],
+    pub commitment_hash: [u8; 32],
+    pub leaf_index: u64,
+    pub path: Vec<[u8; 32]>,
+}
+
+/// Verify a `DepositLeafWitness` against the fold's own accumulator root. The IMT is keyed by the
+/// outpoint (the same key discipline the live set uses: one UTXO, one insert), so a membership
+/// proof over `(outpoint, commitment_hash)` proves the reflection onboarded a note at that
+/// outpoint with that commitment — the pair a provenance segment then consumes as its leaf.
+/// `imt_membership` is the caller's IMT membership check (cxfer_core::imt_membership's exact
+/// argument order); this module stays crypto-free.
+pub fn verify_deposit_leaf(
+    deposit_leaves_root: &[u8; 32],
+    w: &DepositLeafWitness,
+    imt_membership: impl Fn(&[u8; 32], &[u8; 32], &[u8; 32], u64, &[[u8; 32]]) -> bool,
+) -> bool {
+    imt_membership(
+        deposit_leaves_root,
+        &w.outpoint,
+        &w.commitment_hash,
+        w.leaf_index,
+        &w.path,
+    )
+}
+
+#[derive(Clone)]
 pub struct VerifiedCxfer {
     pub txid: [u8; 32],
     /// `(prev_txid, prev_vout, spent_commitment_hash)` per input.
@@ -152,6 +189,110 @@ pub fn verify_provenance_dag_leaves(
         .iter()
         .find(|(o, _)| o == burned_outpoint)
         .map(|(_, ch)| *ch)
+}
+
+/// SEGMENTED provenance: the same linkage check run over a lineage too long for one blob
+/// (`ncx > 256` — the `parse` cap), or one that passes THROUGH a fact the etch-to-burn walk
+/// cannot express (a note whose history enters at a Bitcoin shielded-pool exit, opcode 0x6D).
+///
+/// The lineage is split into SEGMENTS at anchor points. Each segment is an ordinary
+/// `verify_provenance_dag_leaves` check whose inputs must resolve either inside the segment or at
+/// the segment's own anchor leaves. An anchor is one of:
+///
+///   - the etch supply note `C_0` (as today) — passed in `anchors`;
+///   - a DEPOSIT-LEAF anchor: an `(outpoint, commitment_hash)` pair proven against the fold's own
+///     `depositLeavesRoot` accumulator (`verify_deposit_leaf`, checked by the CALLER before this
+///     function sees them — this module stays crypto-free);
+///   - a pool-membership leaf already verified by `verify_pool_membership_leaf` against
+///     `pool_root` (same discipline as today's shortcut leaves).
+///
+/// SOUNDNESS is the single-segment argument applied per segment, PLUS the anchor proof: an anchor
+/// pair is a fact the reflection itself established when it onboarded that note (one UTXO, one
+/// insert, key = outpoint), so terminating a segment there is exactly as trustworthy as
+/// terminating at `C_0`. Value flows segment to segment only through commitment-hash-matched
+/// edges (the same seam check as step 3), so total conserved value from each anchor to the
+/// burned note is preserved.
+///
+/// Every CXFER must be accepted by exactly one segment; the burned note must be PRODUCED by some
+/// segment (never merely anchored) and NOT consumed inside any of them.
+pub fn verify_provenance_segmented(
+    anchors: &[([u8; 32], [u8; 32])],
+    burned_outpoint: &[u8; 32],
+    burned_commitment_hash: &[u8; 32],
+    segments: &[&[VerifiedCxfer]],
+) -> Option<[u8; 32]> {
+    // Global indexes shared by all segments: a producer lives in exactly one segment, a consumed
+    // outpoint is spent exactly once across the whole lineage.
+    let mut produced: Vec<([u8; 32], [u8; 32])> = Vec::new();
+    let mut consumed: Vec<[u8; 32]> = Vec::new();
+    let mut reachable: Vec<([u8; 32], [u8; 32])> = anchors.to_vec();
+    for segment in segments.iter().copied() {
+        if segment.is_empty() {
+            return None;
+        }
+        // Per-segment producer index: an outpoint produced twice (within or across segments) is a
+        // double-mint shape, rejected.
+        for cx in segment {
+            if cx.outputs.is_empty() || cx.inputs.is_empty() {
+                return None;
+            }
+            for (vout, ch) in &cx.outputs {
+                let op = outpoint_key(&cx.txid, *vout);
+                if produced.iter().any(|(o, _)| o == &op) {
+                    return None;
+                }
+                produced.push((op, *ch));
+            }
+            for (ptxid, pvout, _) in &cx.inputs {
+                let op = outpoint_key(ptxid, *pvout);
+                if consumed.iter().any(|o| o == &op) {
+                    return None;
+                }
+                consumed.push(op);
+            }
+        }
+        // Reachability to a fixpoint over this segment's CXFERs, starting from everything already
+        // reachable (the anchors plus every prior segment's outputs).
+        let mut accepted = vec![false; segment.len()];
+        loop {
+            let mut progress = false;
+            for (i, cx) in segment.iter().enumerate() {
+                if accepted[i] {
+                    continue;
+                }
+                let all_inputs_reachable = cx.inputs.iter().all(|(ptxid, pvout, in_ch)| {
+                    let op = outpoint_key(ptxid, *pvout);
+                    reachable.iter().any(|(o, ch)| o == &op && ch == in_ch)
+                });
+                if all_inputs_reachable {
+                    accepted[i] = true;
+                    progress = true;
+                    for (vout, ch) in &cx.outputs {
+                        reachable.push((outpoint_key(&cx.txid, *vout), *ch));
+                    }
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
+        if accepted.iter().any(|&a| !a) {
+            return None; // a CXFER no anchor and no prior output explains => disconnected / cycle
+        }
+    }
+    if consumed.iter().any(|o| o == burned_outpoint) {
+        return None;
+    }
+    // The burned note must be a real produced output whose commitment hash matches — a leaf anchor
+    // alone (the self-inflation shape the single-segment test locks) never resolves a burn here.
+    let produced_ch = produced
+        .iter()
+        .find(|(o, _)| o == burned_outpoint)
+        .map(|(_, ch)| *ch)?;
+    if *burned_commitment_hash != produced_ch {
+        return None;
+    }
+    Some(*burned_commitment_hash)
 }
 
 /// One provenance CXFER, bound to the ACTUAL confirmed Bitcoin transaction. `txid`, the CXFER envelope
@@ -1254,5 +1395,233 @@ mod tests {
         let (asset, c0_op, c0_ch, b_op, b_ch, mut w) = build_valid();
         w.burned_amount = 5;
         assert!(verify_provenance(&asset, &c0_op, &c0_ch, &b_op, &b_ch, &[w]).is_err());
+    }
+
+    // ---- verify_provenance_segmented (the >256-hop / pool-exit lineage rule) ----
+
+    /// A deposit-leaf anchor: the keyed outpoint of (txid, vout) with its commitment hash.
+    fn anchored(a_txid: u8, ch: [u8; 32]) -> ([u8; 32], [u8; 32]) {
+        (op(a_txid, 0), ch)
+    }
+
+    #[test]
+    fn segmented_two_segment_lineage_accepted() {
+        // Segment 0: C_0 -> A:0 (a hop already onboarded by an earlier reflection batch — its
+        // deposit leaf is proven). Segment 1: A:0 -> B:0 = the burned note.
+        let a = VerifiedCxfer {
+            txid: [0x0A; 32],
+            inputs: vec![([0x00; 32], 0, c0_ch())],
+            outputs: vec![(0, [0xAA; 32])],
+        };
+        let b = VerifiedCxfer {
+            txid: [0x0B; 32],
+            inputs: vec![([0x0A; 32], 0, [0xAA; 32])],
+            outputs: vec![(0, [0xBB; 32])],
+        };
+        let anchors = vec![(c0_op(), c0_ch()), anchored(0x0A, [0xAA; 32])];
+        assert_eq!(
+            verify_provenance_segmented(&anchors, &op(0x0B, 0), &[0xBB; 32], &[&[a], &[b]]),
+            Some([0xBB; 32])
+        );
+    }
+
+    #[test]
+    fn segmented_pool_exit_lineage_accepted() {
+        // The pool-exit shape: E:0 is a note the reflection onboarded FROM a T_BTC_SPEND exit
+        // (its deposit leaf is proven, its pre-pool history is unreachable by design — the exit
+        // is recorded by the pool-exit fold, not by a provenance CXFER). The lineage segment
+        // spends E:0 onward to the burn; the anchor proof explains E:0, nothing else needs to.
+        let f = VerifiedCxfer {
+            txid: [0x0F; 32],
+            inputs: vec![([0x0E; 32], 0, [0xEE; 32])],
+            outputs: vec![(0, [0xFF; 32])],
+        };
+        // Anchors: ONLY E:0's deposit leaf (no C_0 — the note was born in the pool).
+        let anchors = vec![anchored(0x0E, [0xEE; 32])];
+        assert_eq!(
+            verify_provenance_segmented(&anchors, &op(0x0F, 0), &[0xFF; 32], &[&[f]]),
+            Some([0xFF; 32])
+        );
+    }
+
+    #[test]
+    fn segmented_unproven_anchor_rejected() {
+        // Segment spends E:0 but E:0 is NOT among the verified anchors — the prover cannot assert
+        // "the reflection tracked this note" without the membership proof behind it.
+        let f = VerifiedCxfer {
+            txid: [0x0F; 32],
+            inputs: vec![([0x0E; 32], 0, [0xEE; 32])],
+            outputs: vec![(0, [0xFF; 32])],
+        };
+        let anchors: Vec<([u8; 32], [u8; 32])> = vec![]; // no anchor proven
+        assert_eq!(
+            verify_provenance_segmented(&anchors, &op(0x0F, 0), &[0xFF; 32], &[&[f]]),
+            None
+        );
+    }
+
+    #[test]
+    fn segmented_anchor_alone_cannot_resolve_the_burn() {
+        // SELF-INFLATION through the segmented door: the prover anchors a deposit leaf at B:0
+        // (the burned outpoint) naming the target commitment, with a filler segment that never
+        // produces B:0. The burned note must be PRODUCED by a segment, never merely anchored.
+        let filler = VerifiedCxfer {
+            txid: [0x0A; 32],
+            inputs: vec![([0x00; 32], 0, c0_ch())],
+            outputs: vec![(0, [0xAA; 32])],
+        };
+        let anchors = vec![(c0_op(), c0_ch()), anchored(0x0B, [0xBB; 32])];
+        assert_eq!(
+            verify_provenance_segmented(&anchors, &op(0x0B, 0), &[0xBB; 32], &[&[filler]]),
+            None,
+            "an anchored outpoint that no segment produced must not resolve a burn"
+        );
+    }
+
+    #[test]
+    fn segmented_value_seam_across_segments_rejected() {
+        // Segment 1 claims to spend A:0 with an inflated commitment hash — the cross-segment seam
+        // is commitment-hash-matched, so the inflated claim leaves A:0's real output unreachable
+        // and the segment rejects.
+        let a = VerifiedCxfer {
+            txid: [0x0A; 32],
+            inputs: vec![([0x00; 32], 0, c0_ch())],
+            outputs: vec![(0, [0xAA; 32])],
+        };
+        let b = VerifiedCxfer {
+            txid: [0x0B; 32],
+            inputs: vec![([0x0A; 32], 0, [0xFF; 32])], // seam: inflated commitment hash
+            outputs: vec![(0, [0xBB; 32])],
+        };
+        let anchors = vec![(c0_op(), c0_ch()), anchored(0x0A, [0xAA; 32])];
+        // A:0's anchor names 0xAA, so segment 1's input (claiming 0xFF) does not resolve -> rejected.
+        assert_eq!(
+            verify_provenance_segmented(&anchors, &op(0x0B, 0), &[0xBB; 32], &[&[a], &[b]]),
+            None
+        );
+    }
+
+    #[test]
+    fn segmented_shared_producer_rejected() {
+        // Two segments both producing the SAME outpoint (a double-mint shape) is rejected even
+        // though each segment is individually reachable.
+        let a1 = VerifiedCxfer {
+            txid: [0x0A; 32],
+            inputs: vec![([0x00; 32], 0, c0_ch())],
+            outputs: vec![(0, [0xAA; 32])],
+        };
+        let a2 = VerifiedCxfer {
+            txid: [0x0A; 32], // same txid+vout => same produced outpoint
+            inputs: vec![([0x01; 32], 0, [0x11; 32])],
+            outputs: vec![(0, [0xAA; 32])],
+        };
+        let anchors = vec![(c0_op(), c0_ch()), (op(0x01, 0), [0x11; 32])];
+        assert_eq!(
+            verify_provenance_segmented(&anchors, &op(0x0A, 0), &[0xAA; 32], &[&[a1], &[a2]]),
+            None,
+            "one outpoint, two producers — rejected"
+        );
+    }
+
+    #[test]
+    fn segmented_double_spend_across_segments_rejected() {
+        // Two segments both consuming C_0 (an in-lineage double-spend) is rejected.
+        let a = VerifiedCxfer {
+            txid: [0x0A; 32],
+            inputs: vec![([0x00; 32], 0, c0_ch())],
+            outputs: vec![(0, [0xAA; 32])],
+        };
+        let b = VerifiedCxfer {
+            txid: [0x0B; 32],
+            inputs: vec![([0x00; 32], 0, c0_ch())], // C_0 spent again in the next segment
+            outputs: vec![(0, [0xBB; 32])],
+        };
+        let anchors = vec![(c0_op(), c0_ch())];
+        assert_eq!(
+            verify_provenance_segmented(&anchors, &op(0x0B, 0), &[0xBB; 32], &[&[a], &[b]]),
+            None
+        );
+    }
+
+    #[test]
+    fn segmented_burned_note_consumed_in_lineage_rejected() {
+        // The burned note is spent by a later CXFER inside a segment -> not live, rejected.
+        let a = VerifiedCxfer {
+            txid: [0x0A; 32],
+            inputs: vec![([0x00; 32], 0, c0_ch())],
+            outputs: vec![(0, [0xAA; 32])],
+        };
+        let b = VerifiedCxfer {
+            txid: [0x0B; 32],
+            inputs: vec![([0x0A; 32], 0, [0xAA; 32])],
+            outputs: vec![(0, [0xBB; 32])],
+        };
+        let anchors = vec![(c0_op(), c0_ch())];
+        assert_eq!(
+            verify_provenance_segmented(&anchors, &op(0x0A, 0), &[0xAA; 32], &[&[a], &[b]]),
+            None
+        );
+    }
+
+    #[test]
+    fn segmented_empty_segment_and_wrong_commitment_rejected() {
+        let a = VerifiedCxfer {
+            txid: [0x0A; 32],
+            inputs: vec![([0x00; 32], 0, c0_ch())],
+            outputs: vec![(0, [0xAA; 32])],
+        };
+        let anchors = vec![(c0_op(), c0_ch())];
+        // An empty segment is rejected outright (a segment must do work).
+        assert_eq!(
+            verify_provenance_segmented(
+                &anchors,
+                &op(0x0A, 0),
+                &[0xAA; 32],
+                &[std::slice::from_ref(&a), &[]]
+            ),
+            None
+        );
+        // A burned commitment hash that disagrees with the produced one is rejected.
+        assert_eq!(
+            verify_provenance_segmented(
+                &anchors,
+                &op(0x0A, 0),
+                &[0xDD; 32],
+                &[std::slice::from_ref(&a)]
+            ),
+            None
+        );
+        // A disconnected island segment is rejected.
+        let island = VerifiedCxfer {
+            txid: [0x0C; 32],
+            inputs: vec![([0x0D; 32], 0, [0xDE; 32])],
+            outputs: vec![(0, [0xCC; 32])],
+        };
+        assert_eq!(
+            verify_provenance_segmented(&anchors, &op(0x0A, 0), &[0xAA; 32], &[&[a], &[island]]),
+            None
+        );
+    }
+
+    #[test]
+    fn verify_deposit_leaf_is_the_membership_check() {
+        // The anchor check is a plain IMT membership over the fold's accumulator root: the
+        // closure mirrors cxfer_core::imt_membership's argument order.
+        let root = [0x77; 32];
+        let w = DepositLeafWitness {
+            outpoint: op(0x0A, 0),
+            commitment_hash: [0xAA; 32],
+            leaf_index: 3,
+            path: vec![[0x01; 32]],
+        };
+        let seen: std::cell::RefCell<Vec<([u8; 32], [u8; 32], [u8; 32], u64)>> = Default::default();
+        let ok = verify_deposit_leaf(&root, &w, |r, k, v, i, _p| {
+            seen.borrow_mut().push((*r, *k, *v, i));
+            true
+        });
+        assert!(ok);
+        assert_eq!(seen.borrow().as_slice(), [(root, w.outpoint, w.commitment_hash, 3)]);
+        // A failing membership proof is a rejected anchor — the caller must not seed the DAG with it.
+        assert!(!verify_deposit_leaf(&root, &w, |_, _, _, _, _| false));
     }
 }
