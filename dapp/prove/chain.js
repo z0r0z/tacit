@@ -128,6 +128,17 @@ export function cleanBlock(b) {
 }
 export const cleanProof = (p) => (p && (p.house === true || addrOr(p.miner)) ? { at: nat(p.at), miner: addrOr(p.miner) || undefined, house: p.house === true, points: nat(p.points), secs: nat(p.secs) } : null);
 export const cleanMiner = (m) => (m && addrOr(m.miner) ? { miner: addrOr(m.miner), proofs: nat(m.proofs), points: nat(m.points) } : null);
+// A day row's work, without pretending that a pool proof and a GPU-board job are the same unit. The short form fits the leaderboard;
+// the long form is for this address's own receipt. A pool-only fallback still works before the board tally has been read.
+export function dayWorkText(m, { compact = false, points = true } = {}) {
+  const pool = nat(m?.pool?.proofs), board = nat(m?.board?.proofs), total = nat(m?.proofs), out = [], n = (x) => x.toLocaleString('en-US');
+  const unit = (x, one) => `${n(x)} ${x === 1 ? one : `${one}s`}`;
+  if (pool) out.push(compact ? `${n(pool)} pool` : unit(pool, 'pool proof'));
+  if (board) out.push(compact ? `${n(board)} GPU` : unit(board, 'GPU job'));
+  if (!out.length && total) out.push(unit(total, 'proof'));
+  if (points && Number.isSafeInteger(Number(m?.points))) out.push(compact ? `${n(nat(m.points))} pts` : unit(nat(m.points), 'point'));
+  return out.join(' · ');
+}
 // Each address's day across the proof pool's tally and the board's (a GPU's batches and blocks), both of which the points service pays:
 // lowercased address -> { miner, proofs, points, pool: { proofs, points }, board: { proofs, points } }.
 export function dayTotals(poolMiners = [], boardMiners = []) {

@@ -93,9 +93,10 @@ const memoOk = (memo, dest) => {
 // One venue's quote, with its vault address checked. `from`/`to`: 'ETH' or 'BTC'; `amount`: 1e8 units; `destination`: the provider's own address on the `to` chain.
 export async function venueQuote({ venue, nodes, fetchImpl, from, to, amount, destination, slipBps, now = () => Math.floor(Date.now() / 1000) }) {
   const p = VENUES[venue].prefix, asset = (c) => `${c}.${c}`;
-  const books = (await Promise.all(nodes.map((n) => getJson(fetchImpl, `${n}/${p}/inbound_addresses`).then((l) => ({ n, l }), () => null)))).filter(Boolean);
+  const failed = [];
+  const books = (await Promise.all(nodes.map((n) => getJson(fetchImpl, `${n}/${p}/inbound_addresses`).then((l) => ({ n, l }), (e) => { failed.push(`${new URL(n).host}: ${err(e)}`); return null; })))).filter(Boolean);
   const seen = books.map(({ n, l }) => ({ n, ib: l.find((x) => x.chain === from), out: l.find((x) => x.chain === to) })).filter((x) => x.ib && x.out);
-  if (seen.length < 2) throw new Error(`${venue}: only ${seen.length} node(s) answered; two must agree on the vault address`);
+  if (seen.length < 2) throw new Error(`${venue}: only ${seen.length} node(s) answered; two must agree on the vault address${failed.length ? ` (not answering: ${failed.join('; ')})` : ''}`);
   const ib = seen[0].ib;
   for (const s of seen) if (!same(s.ib.address, ib.address)) throw new Error(`${venue}: the nodes disagree on the ${from} vault address; nothing sent`);
   for (const s of seen) {
@@ -202,7 +203,7 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       if (now() < nextAt) return { did: 'wait' };
       const mkt = await rateNow();
       const inv = await inventory();
-      if (!inv || inv.sats == null || inv.ethWei == null || !(mkt > 0)) { nextAt = now() + cfg.everySecs; return { did: 'unread' }; }
+      if (!inv || inv.sats == null || inv.ethWei == null || !(mkt > 0)) { nextAt = now() + cfg.everySecs; last = { at: now(), plan: `unread: ${!(mkt > 0) ? 'no market price' : 'holdings not read'}` }; return { did: 'unread' }; }
       const plan = planRebalance({ ethWei: inv.ethWei, sats: inv.sats, ethPerBtc: mkt, cfg, movedTodayWei: BigInt(st.moved) });
       last = { at: now(), ethBps: plan && plan.ethBps != null ? plan.ethBps : null, plan: plan && plan.dir ? plan.dir : plan && plan.skip ? `skip: ${plan.skip}` : 'in band' };
       nextAt = now() + cfg.everySecs;

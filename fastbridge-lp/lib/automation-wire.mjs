@@ -126,17 +126,19 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
       const evmTx = makeEvmTx({ secp: sp, keccak256 });
       const UNITW = 10n ** 10n, rpc = (m, p) => ux.rpc(m, p);
       const satsAll = async () => { let t = 0n; for (const b of [btc, rside.btc]) if (b && typeof b.satsUtxos === 'function') t += (await b.satsUtxos()).reduce((x, c) => x + BigInt(c.value), 0n); return t; };
+      // the provider's own ETH notes as the pool names the asset (with its 0x): the shared ethNotes above looks the id up bare and finds none, which is left as it is here
+      const ownEthNotes = async () => { const { byAsset } = await ux.balance(key, { bridge: false, cbtc: false }); const id = asset.replace(/^0x/, ''); return (((byAsset[`0x${id}`] || byAsset[id] || {}).notes) || []).filter((n) => BigInt(n.value) > 0n); };
       const publicWei = async () => BigInt(await rpc('eth_getBalance', [address, 'latest']));
-      const ethPerBtc = () => { const r = Number(rateFeed && rateFeed.rate()); return r > 0 ? (r < 1 ? 1 / r : r) : null; };
+      const ethPerBtc = () => { const c = rateFeed && rateFeed.current(); return c && Number(c.ethPerBtc) > 0 ? Number(c.ethPerBtc) : null; };   // (feed.rate() is a { num, den } ratio, not a price)
       rebalancer = makeRebalancer({
         cfg: rc, rate: async () => ethPerBtc(), quiet, gate: poolTurn, turn,
         inventory: async () => {
-          const notes = await ethNotes(), pub = await publicWei();
-          const priv = notes.reduce((t, n) => t + BigInt(n.value), 0n) * UNITW, spare = pub > sc.reserveWei ? pub - sc.reserveWei : 0n;
+          const pub = await publicWei();
+          const priv = BigInt(await service.free()) * UNITW, spare = pub > sc.reserveWei ? pub - sc.reserveWei : 0n;
           return { ethWei: priv + spare, sats: Number(await satsAll()) };
         },
         unshield: async ({ units }) => {
-          const want = BigInt(units), note = (await ethNotes()).filter((n) => BigInt(n.value) >= want).sort((a, b) => (BigInt(a.value) < BigInt(b.value) ? -1 : 1))[0];
+          const want = BigInt(units), note = (await ownEthNotes()).filter((n) => BigInt(n.value) >= want).sort((a, b) => (BigInt(a.value) < BigInt(b.value) ? -1 : 1))[0];
           if (!note) throw new Error(`no single private note covers ${want} pool units`);
           const r = await ux.sendUnwrap({ note, walletPriv: key, recipient: address, amount: want });
           notesLast = null;
