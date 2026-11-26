@@ -63,11 +63,18 @@ const hex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, '0')).join('')
 
 // opts: api, name, handle, spawn (a worker factory), workers, getRandom, onStatus, signal, partSize
 export async function runContribution(opts) {
-  const { api, name, handle = '', spawn, workers = 4, getRandom = (b) => crypto.getRandomValues(b), onStatus = () => {}, signal, partSize = 16 << 20 } = opts;
+  const { api, name, handle = '', spawn, spawnBeat, workers = 4, getRandom = (b) => crypto.getRandomValues(b), onStatus = () => {}, signal, partSize = 16 << 20 } = opts;
   const joined = await call(api, 'POST', '/join', null, { name, handle }, signal);
   const token = joined.token;
   let state = joined, lost = null, finished = false;
-  const beat = (async () => {
+  // in a page the poll runs in a worker (see beat.js), so a background tab keeps its place; elsewhere it runs here
+  let beatW = null;
+  if (spawnBeat) {
+    beatW = spawnBeat();
+    beatW.onmessage((m) => { if (m.lost) lost = new Refused('the coordinator dropped this place in the queue', 404); else if (m.state) state = { ...state, ...m.state }; });
+    beatW.post({ api, token, every: Math.max(3, state.poll_seconds || 10) * 1000 });
+  }
+  const beat = spawnBeat ? Promise.resolve() : (async () => {
     while (!finished && !signal?.aborted) {
       await sleep(Math.max(2, state.poll_seconds || 10) * 1000, signal).catch(() => {});
       if (finished || signal?.aborted) return;
@@ -97,6 +104,7 @@ export async function runContribution(opts) {
     // upload in parts as the file is made
     let buf = new Uint8Array(partSize), fill = 0, sent = 0;
     const put = async (bytes) => {
+      let busy = 0;                                    // the coordinator takes one part at a time: a retry that lands while the last attempt is still being read waits for it
       for (let i = 0; ; i++) {
         try {
           const r = await F(`${api}/upload-part?offset=${sent}`, { method: 'PUT', signal, headers: { 'X-Ceremony-Token': token }, body: bytes });
@@ -106,6 +114,7 @@ export async function runContribution(opts) {
           sent = j.have; report({ sent });
           return;
         } catch (e) {
+          if (!signal?.aborted && e instanceof Refused && e.code === 409 && /still arriving/.test(e.message) && busy++ < 150) { await sleep(5000, signal); i--; continue; }
           if (signal?.aborted || (e instanceof Refused && e.code !== 502 && e.code !== 503) || i >= 5) throw e;
           await sleep(1500 * (i + 1), signal);
         }
@@ -132,9 +141,12 @@ export async function runContribution(opts) {
 
     onStatus({ phase: 'check' });
     await call(api, 'POST', '/upload-finish', token, null, signal);
+    let nones = 0;
     for (;;) {
       await sleep(3000, signal);
       const res = await call(api, 'GET', '/upload-result', token, null, signal);
+      // the coordinator restarted while it was checking: it no longer knows the file was sent for checking, so say so again
+      if (res.state === 'none' && ++nones >= 3) { nones = 0; try { await call(api, 'POST', '/upload-finish', token, null, signal, 1); } catch { /* it is already being checked */ } }
       if (res.state === 'done') { finished = true; onStatus({ phase: 'done', receipt: res.receipt }); return res.receipt; }
       if (res.state === 'refused') throw new Refused(res.error || 'the contribution was refused', res.code);
     }
@@ -144,5 +156,6 @@ export async function runContribution(opts) {
   } finally {
     finished = true;
     pool?.terminate(); hasher?.terminate();
+    if (beatW) { beatW.post({ stop: true }); beatW.terminate(); }
   }
 }

@@ -2,6 +2,8 @@ package ceremony
 
 import (
 	"bytes"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -29,6 +31,138 @@ func waitResult(t *testing.T, srv *httptest.Server, tok string) apiResp {
 
 // A contribution sent in parts: resumed after a failed part, refused when a part starts in the wrong place, checked on
 // finish exactly like an upload, and the old PUT /api/upload still works beside it.
+// A one-byte part must not freeze the slot rules: an upload that has not moved 64 MiB within ten minutes is dropped; one that has is kept to the cap.
+func TestTrickleUploadIsDropped(t *testing.T) {
+	oldB := floorBytes
+	floorBytes = 100
+	defer func() { floorBytes = oldB }()
+	f := newFixture(t)
+	c := f.chain(t)
+	clk := withClock(c)
+	c.PerIP = -1
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	in := filepath.Join(f.dir, "in")
+	_ = copyFile(c.path(17), in)
+	out := filepath.Join(f.dir, "out")
+	if _, err := Contribute(in, out); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(out)
+	pollFor := func(tok string, d time.Duration) error {
+		for el := time.Duration(0); el < d; el += 30 * time.Second {
+			clk.add(30 * time.Second)
+			if _, err := c.Poll(tok); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	slow := joinHTTP(t, srv, "trickle")
+	call(t, srv, "POST", "/api/claim", slow, nil, -1)
+	if r := putPart(t, srv, slow, 0, data[:1]); r.Code != 200 {
+		t.Fatalf("a part: %d %v", r.Code, r.Body)
+	}
+	if err := pollFor(slow, floorWindow-time.Minute); err != nil {
+		t.Fatalf("a slot is not dropped inside the window: %v", err)
+	}
+	if err := pollFor(slow, 2*time.Minute); err == nil {
+		t.Fatal("a slot whose upload has moved a byte in ten minutes is dropped")
+	}
+	// a second holder that moved enough keeps the slot
+	fast := joinHTTP(t, srv, "steady")
+	call(t, srv, "POST", "/api/claim", fast, nil, -1)
+	if r := putPart(t, srv, fast, 0, data[:200]); r.Code != 200 {
+		t.Fatalf("a part: %d %v", r.Code, r.Body)
+	}
+	if err := pollFor(fast, 30*time.Minute); err != nil {
+		t.Fatalf("a slot whose upload is moving is kept: %v", err)
+	}
+}
+
+// A single-request upload that trickles is cut once it is clearly too slow, and one that moves is not.
+func TestFloorReader(t *testing.T) {
+	oldW, oldB := floorWindow, floorBytes
+	floorWindow, floorBytes = 40*time.Millisecond, 10
+	defer func() { floorWindow, floorBytes = oldW, oldB }()
+	slow := &floorReader{r: bytes.NewReader(make([]byte, 100)), t0: time.Now()}
+	buf := make([]byte, 1)
+	slow.Read(buf)
+	time.Sleep(60 * time.Millisecond)
+	if _, err := slow.Read(buf); err != errTooSlow {
+		t.Fatalf("a body that moved one byte in the window is cut: %v", err)
+	}
+	ok := &floorReader{r: bytes.NewReader(make([]byte, 100)), t0: time.Now()}
+	ok.Read(make([]byte, 50))
+	time.Sleep(60 * time.Millisecond)
+	if _, err := ok.Read(buf); err != nil {
+		t.Fatalf("a body that moved enough is not: %v", err)
+	}
+}
+
+// Parts no claimed place owns are removed at start-up; the holder's are kept.
+func TestStartupRemovesStrayParts(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	clk := withClock(c)
+	c.PerIP = -1
+	a, _, _ := c.Join("alice", "", "192.0.2.1")
+	c.Claim(a)
+	mine := c.partPath(a)
+	stray := filepath.Join(c.Dir, "part-deadbeefdeadbeef")
+	os.WriteFile(mine, []byte("x"), 0o600)
+	os.WriteFile(stray, []byte("y"), 0o600)
+	if _, err := open(c.Dir, clk.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(mine); err != nil {
+		t.Fatal("the holder's parts are kept")
+	}
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Fatal("a stray part is removed")
+	}
+}
+
+// A part cut off by a dropped connection or a restart leaves bytes past the confirmed end; the next part from the confirmed end replaces them.
+func TestPartReplacesAnUnconfirmedTail(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	c.PerIP = -1
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	in := filepath.Join(f.dir, "in")
+	_ = copyFile(c.path(17), in)
+	out := filepath.Join(f.dir, "out")
+	hash, err := Contribute(in, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(out)
+	tok := joinHTTP(t, srv, "restart")
+	call(t, srv, "POST", "/api/claim", tok, nil, -1)
+	cut := len(data) / 2
+	if r := putPart(t, srv, tok, 0, data[:cut]); r.Code != 200 {
+		t.Fatalf("first part: %d %v", r.Code, r.Body)
+	}
+	// a stray tail past what the client has confirmed (as a cut-off part would leave)
+	p := c.partPath(tok)
+	fh, _ := os.OpenFile(p, os.O_WRONLY|os.O_APPEND, 0)
+	fh.Write([]byte("partial bytes of a part that did not finish"))
+	fh.Close()
+	if r := putPart(t, srv, tok, cut, data[cut:]); r.Code != 200 || r.Body["have"].(float64) != float64(len(data)) {
+		t.Fatalf("the part from the confirmed end: %d %v", r.Code, r.Body)
+	}
+	if got, _ := os.ReadFile(p); !bytes.Equal(got, data) {
+		t.Fatal("the stored file is not the contribution")
+	}
+	if r := call(t, srv, "POST", "/api/upload-finish", tok, nil, -1); r.Code != 202 {
+		t.Fatalf("finish: %d %v", r.Code, r.Body)
+	}
+	if r := waitResult(t, srv, tok); r.Body["state"] != "done" || r.Body["receipt"].(map[string]any)["contribution_hash"] != hash {
+		t.Fatalf("result: %v", r.Body)
+	}
+}
+
 func TestUploadInParts(t *testing.T) {
 	f := newFixture(t)
 	c := f.chain(t)
@@ -114,5 +248,59 @@ func TestUploadInParts(t *testing.T) {
 	}
 	if m, _ := filepath.Glob(filepath.Join(f.dir, "part-*")); len(m) != 0 {
 		t.Fatalf("junk part left behind: %v", m)
+	}
+}
+
+// Two parts at the same offset, both started before either wrote a byte, could both pass the offset check; the second
+// then wrote into the file after it was checked (or into the head it became). One part at a time, and no check while
+// a part is still arriving.
+func TestOnePartAtATime(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	c.PerIP = -1
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	in := filepath.Join(f.dir, "in")
+	_ = copyFile(c.path(17), in)
+	out := filepath.Join(f.dir, "out")
+	if _, err := Contribute(in, out); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(out)
+	tok := joinHTTP(t, srv, "browser")
+	if r := call(t, srv, "POST", "/api/claim", tok, nil, -1); r.Code != 200 {
+		t.Fatalf("claim: %d", r.Code)
+	}
+	cut := len(data) - 8
+	if r := putPart(t, srv, tok, 0, data[:cut]); r.Code != 200 {
+		t.Fatalf("first part: %d %v", r.Code, r.Body)
+	}
+	// part A opens and stalls before its body
+	pr, pw := io.Pipe()
+	req, _ := http.NewRequest("PUT", srv.URL+"/api/upload-part?offset="+strconv.Itoa(cut), pr)
+	req.ContentLength = 8
+	req.Header.Set(TokenHeader, tok)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	time.Sleep(300 * time.Millisecond)
+	if r := putPart(t, srv, tok, cut, data[cut:]); r.Code != 409 {
+		t.Fatalf("a second part while one is arriving: %d %v", r.Code, r.Body)
+	}
+	if r := call(t, srv, "POST", "/api/upload-finish", tok, nil, -1); r.Code != 409 {
+		t.Fatalf("finish while a part is arriving: %d %v", r.Code, r.Body)
+	}
+	_, _ = pw.Write(data[cut:])
+	pw.Close()
+	<-done
+	if r := call(t, srv, "POST", "/api/upload-finish", tok, nil, -1); r.Code != 202 {
+		t.Fatalf("finish after it ended: %d %v", r.Code, r.Body)
+	}
+	if r := waitResult(t, srv, tok); r.Body["state"] != "done" {
+		t.Fatalf("result: %v", r.Body)
 	}
 }

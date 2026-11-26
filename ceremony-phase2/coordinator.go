@@ -138,11 +138,14 @@ type ticket struct {
 	// Lane "pool": a machine of the prover pool that contributes when idle; it waits behind every person in the queue.
 	Lane      string `json:"lane,omitempty"`
 	lastSeen  time.Time
+	partBusy  bool // a part of a chunked upload is arriving (parts.go)
 	uploading bool // the upload's body is arriving
 	verifying bool // the whole body arrived and is being checked: the slot's cap waits (up to verifyGrace)
 	// progress of a claimed slot (restored as done after a restart, so a restart never drops a slot)
 	served        int64 // bytes of the head sent to this slot's token
 	uploadStarted bool
+	uploadFirst   time.Time // when the first part of a chunked upload arrived
+	partBytes     int64     // bytes of the chunked upload stored and confirmed
 	refused       int
 }
 
@@ -279,6 +282,25 @@ func open(dir string, now func() time.Time) (*Coordinator, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
+	// parts of a chunked upload that no claimed place owns (the holder's are kept: its client carries on from them)
+	keep := map[string]bool{}
+	for _, t := range c.queue {
+		if !t.Claimed.IsZero() {
+			keep[c.partPath(t.Token)] = true
+		}
+	}
+	if old, _ := filepath.Glob(filepath.Join(dir, "part-*")); len(old) > 0 {
+		n := 0
+		for _, p := range old {
+			if !keep[p] {
+				os.Remove(p)
+				n++
+			}
+		}
+		if n > 0 {
+			c.logf("removed %d stray part file(s)", n)
+		}
+	}
 	// uploads cut off by a crash or a restart
 	if old, _ := filepath.Glob(filepath.Join(dir, "upload-*")); len(old) > 0 {
 		for _, p := range old {
@@ -376,6 +398,8 @@ func (c *Coordinator) slotOverL(t *ticket, now time.Time) string {
 		}
 	case in > c.slotCap():
 		return fmt.Sprintf("slot ran past %s", c.slotCap())
+	case t.uploadStarted && !t.uploading && !t.uploadFirst.IsZero() && now.Sub(t.uploadFirst) > floorWindow && t.partBytes < floorBytes:
+		return "the upload is too slow to finish inside the slot"
 	case t.uploadStarted || t.uploading:
 	case t.served == 0 && in > c.downloadStart():
 		return fmt.Sprintf("the head's download did not start within %s", c.downloadStart())
@@ -720,6 +744,9 @@ func (c *Coordinator) beginUpload(tok string, length int64) (*ticket, time.Time,
 	}
 	if t.uploading {
 		return nil, time.Time{}, refuse(409, "an upload for this slot is already in progress", nil)
+	}
+	if t.partBusy {
+		return nil, time.Time{}, refuse(409, "a part of this contribution is still arriving", nil)
 	}
 	if length != c.headSize {
 		return nil, time.Time{}, refuse(400, fmt.Sprintf("the upload must be exactly %d bytes (the size of the head)", c.headSize), nil)

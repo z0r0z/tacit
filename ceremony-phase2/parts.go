@@ -3,6 +3,7 @@ package ceremony
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,7 +23,33 @@ import (
 //	GET  /api/upload-result    (token)         {state: none | verifying | done | refused, receipt | error}
 const maxPart = 64 << 20
 
+// An upload that moves under floorBytes in its first floorWindow cannot finish inside a slot, and a trickle must not hold the slot to its cap:
+// the slot is dropped then (a chunked upload) or the request is cut (a single request). Any connection that can finish in time is far above it.
+var (
+	floorWindow       = 10 * time.Minute
+	floorBytes  int64 = 64 << 20
+)
+
+var errTooSlow = errors.New("the upload is too slow to finish inside the slot")
+
+// floorReader fails a body that has moved less than floorBytes by floorWindow after it began.
+type floorReader struct {
+	r  io.Reader
+	t0 time.Time
+	n  int64
+}
+
+func (f *floorReader) Read(b []byte) (int, error) {
+	n, err := f.r.Read(b)
+	f.n += int64(n)
+	if err == nil && f.n < floorBytes && time.Since(f.t0) > floorWindow {
+		return n, errTooSlow
+	}
+	return n, err
+}
+
 type finishResult struct {
+	at      time.Time
 	state   string // verifying, done, refused
 	receipt *Receipt
 	code    int
@@ -35,7 +62,11 @@ func (c *Coordinator) partPath(tok string) string {
 }
 
 // partHolder: the token holds the claimed slot of an open ceremony.
-func (c *Coordinator) partHolder(tok string) (*ticket, error) {
+func (c *Coordinator) partHolder(tok string) (*ticket, error) { return c.partHolderTake(tok, false) }
+
+// partHolderTake: as partHolder; with take, the caller becomes the one part in flight for this slot (partBusy), so two
+// parts can never write the stored file at once, and no check starts while one is still arriving.
+func (c *Coordinator) partHolderTake(tok string, take bool) (*ticket, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.state.Closed {
@@ -51,6 +82,12 @@ func (c *Coordinator) partHolder(tok string) (*ticket, error) {
 	}
 	if t.uploading {
 		return nil, refuse(409, "the contribution is being checked", nil)
+	}
+	if take {
+		if t.partBusy {
+			return nil, refuse(409, "another part of this contribution is still arriving", nil)
+		}
+		t.partBusy = true
 	}
 	return t, nil
 }
@@ -90,11 +127,12 @@ func (c *Coordinator) partRoutes(mux *http.ServeMux) {
 
 func (c *Coordinator) handlePart(w http.ResponseWriter, r *http.Request) {
 	tok := token(r)
-	t, err := c.partHolder(tok)
+	t, err := c.partHolderTake(tok, true)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	defer func() { c.mu.Lock(); t.partBusy = false; c.mu.Unlock() }()
 	if r.ContentLength <= 0 || r.ContentLength > maxPart {
 		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("a part is 1 to %d bytes, with a Content-Length", maxPart)})
 		return
@@ -142,7 +180,13 @@ func (c *Coordinator) handlePart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if st.Size() != off {
+	if st.Size() > off {
+		// bytes past the confirmed end belong to a part that was cut off (or to a coordinator restart mid-part): drop them, this part replaces them
+		if err := f.Truncate(off); err != nil {
+			writeErr(w, err)
+			return
+		}
+	} else if st.Size() < off {
 		writeJSON(w, 409, map[string]any{"error": "that part does not start where the stored bytes end", "have": st.Size()})
 		return
 	}
@@ -164,6 +208,10 @@ func (c *Coordinator) handlePart(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Lock()
 	t.uploadStarted = true // the upload has begun: the "upload did not start" rule is met
+	if t.uploadFirst.IsZero() {
+		t.uploadFirst = c.clock()
+	}
+	t.partBytes = off + n
 	t.lastSeen = c.clock()
 	c.mu.Unlock()
 	writeJSON(w, 200, map[string]int64{"have": off + n})
@@ -188,7 +236,12 @@ func (c *Coordinator) handleFinish(w http.ResponseWriter, r *http.Request) {
 	if c.finishRes == nil {
 		c.finishRes = map[string]*finishResult{}
 	}
-	res := &finishResult{state: "verifying"}
+	for k, old := range c.finishRes { // answers older than an hour are no longer asked for
+		if old.state != "verifying" && time.Since(old.at) > time.Hour {
+			delete(c.finishRes, k)
+		}
+	}
+	res := &finishResult{state: "verifying", at: time.Now()}
 	c.finishRes[tok] = res
 	t.verifying = true // as bodyDone does, with the lock already held
 	c.mu.Unlock()

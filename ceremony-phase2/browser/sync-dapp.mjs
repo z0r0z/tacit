@@ -18,6 +18,7 @@ const site = (s) => s.replace(/from '\.\/(core|pool)\.js'/g, (_, m) => `from '/p
 writeFileSync(join(out, 'core.js'), src('core.js'));
 writeFileSync(join(out, 'pool.js'), src('pool.js'));
 writeFileSync(join(out, 'flow.js'), site(src('flow.js')));
+writeFileSync(join(out, 'beat.js'), src('beat.js'));
 writeFileSync(join(out, 'worker.js'), src('worker.js').replaceAll("'./g.wasm'", `'./${name}'`));
 writeFileSync(join(out, 'wasm_exec.js'), src('wasm_exec.js'));
 console.log('synced', name);
