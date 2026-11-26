@@ -820,15 +820,7 @@ fn read_shield_authenticates_the_carrier_before_crediting() {
 
     let mut l = BackingLedger::default();
     let w = mk(&tx, 1, real_root);
-    let credited = read_shield(
-        &w,
-        &ASSET,
-        &mut l,
-        &blind,
-        &[0x42u8; 32],
-        &|_, _| true,
-        &|_, _, _| true,
-    );
+    let credited = read_shield(&w, &ASSET, &mut l, &blind, &|_, _| true, &|_, _, _| true);
     assert_eq!(
         credited,
         Some(value),
@@ -840,27 +832,11 @@ fn read_shield_authenticates_the_carrier_before_crediting() {
     let mut l2 = BackingLedger::default();
     let w2 = mk(&tx, 1, real_root);
     assert_eq!(
-        read_shield(
-            &w2,
-            &ASSET,
-            &mut l2,
-            &blind,
-            &[0x42u8; 32],
-            &|_, _| true,
-            &|_, _, _| true
-        ),
+        read_shield(&w2, &ASSET, &mut l2, &blind, &|_, _| true, &|_, _, _| true),
         Some(value)
     );
     assert_eq!(
-        read_shield(
-            &w2,
-            &ASSET,
-            &mut l2,
-            &blind,
-            &[0x42u8; 32],
-            &|_, _| true,
-            &|_, _, _| true
-        ),
+        read_shield(&w2, &ASSET, &mut l2, &blind, &|_, _| true, &|_, _, _| true),
         None
     );
     assert_eq!(l2.available(), value as u128, "a re-fold does not mint");
@@ -874,7 +850,6 @@ fn read_shield_authenticates_the_carrier_before_crediting() {
             &ASSET,
             &mut bad_root,
             &blind,
-            &[0x42u8; 32],
             &|_, _| true,
             &|_, _, _| true
         ),
@@ -921,7 +896,6 @@ fn read_shield_authenticates_the_carrier_before_crediting() {
             &ASSET,
             &mut l_noin,
             &blind,
-            &[0x42u8; 32],
             &|_, _| true,
             &|_, _, _| true
         ),
@@ -929,6 +903,110 @@ fn read_shield_authenticates_the_carrier_before_crediting() {
         "a shield claiming more notes than the carrier carries never lands"
     );
     assert_eq!(l_noin.available(), 0);
+}
+
+/// The pool reads a shield only from vin[0] (`T_BTC_SHIELD must ride vin[0]`), so a confirmed shield sitting
+/// on a later input is a spend the pool rejected whole and must credit nothing here.
+#[test]
+fn read_shield_refuses_a_shield_that_does_not_ride_vin0() {
+    let value = 500u64;
+    let blind = [0x0Fu8; 32];
+    let c_secp = c_secp_of(value, &blind);
+    let mut b = vec![T_BTC_SHIELD];
+    b.extend_from_slice(&ASSET);
+    b.push(1);
+    b.push(1);
+    b.extend_from_slice(&[0x01; POOL_OUTPUT_LEN]);
+    b.extend_from_slice(&boundary_bytes(&c_secp, &[0x0Eu8; 32]));
+    b.extend_from_slice(&[0x09; KERNEL_SIG_LEN]);
+    b.extend_from_slice(&0u16.to_le_bytes());
+
+    let outs: Vec<(u64, Vec<u8>)> = vec![(0u64, p2tr_script(&[0x50u8; 32]))];
+    let tx = segwit_tx_multi(
+        &[
+            (
+                [0x11u8; 32],
+                0,
+                vec![vec![0xFFu8; 32], vec![0x00u8; 8], vec![0x20u8; 33]],
+            ),
+            ([0x12u8; 32], 1, env_stack(&b)),
+        ],
+        &outs,
+    );
+    let cb = coinbase_for(&tx);
+    let cb_txid = cxfer_core::bitcoin::compute_txid(&cb).unwrap();
+    let txid = cxfer_core::bitcoin::compute_txid(&tx).unwrap();
+    let root = cxfer_core::bitcoin::compute_merkle_root(&[cb_txid, txid]);
+    let w = ShieldWitness {
+        tx,
+        vin: 1, // the envelope is real, confirmed, and on the wrong input
+        wtxid_siblings: vec![[0u8; 32]],
+        coinbase: cb,
+        coinbase_txid_siblings: vec![txid],
+        merkle_index: 1,
+        merkle_siblings: vec![cb_txid],
+        confirmed_block_root: root,
+        pool_root: [0x42u8; 32],
+        value,
+    };
+    let mut l = BackingLedger::default();
+    assert_eq!(
+        read_shield(&w, &ASSET, &mut l, &blind, &|_, _| true, &|_, _, _| true),
+        None
+    );
+    assert_eq!(l.available(), 0);
+}
+
+/// The merkle path proves the txid; BIP141 is what proves the witness actually committed to it. A carrier whose
+/// wtxid commitment is broken is not in the block as witnessed, which is exactly what the pool checks first.
+#[test]
+fn read_shield_refuses_a_carrier_whose_witness_commitment_is_broken() {
+    let value = 500u64;
+    let blind = [0x0Fu8; 32];
+    let c_secp = c_secp_of(value, &blind);
+    let mut b = vec![T_BTC_SHIELD];
+    b.extend_from_slice(&ASSET);
+    b.push(1);
+    b.push(1);
+    b.extend_from_slice(&[0x01; POOL_OUTPUT_LEN]);
+    b.extend_from_slice(&boundary_bytes(&c_secp, &[0x0Eu8; 32]));
+    b.extend_from_slice(&[0x09; KERNEL_SIG_LEN]);
+    b.extend_from_slice(&0u16.to_le_bytes());
+
+    let outs: Vec<(u64, Vec<u8>)> = vec![(0u64, p2tr_script(&[0x50u8; 32]))];
+    let tx = segwit_tx_multi(
+        &[
+            ([0x11u8; 32], 0, env_stack(&b)),
+            (
+                [0x12u8; 32],
+                1,
+                vec![vec![0xFFu8; 32], vec![0x00u8; 8], vec![0x20u8; 33]],
+            ),
+        ],
+        &outs,
+    );
+    let cb = coinbase_for(&tx);
+    let cb_txid = cxfer_core::bitcoin::compute_txid(&cb).unwrap();
+    let txid = cxfer_core::bitcoin::compute_txid(&tx).unwrap();
+    let root = cxfer_core::bitcoin::compute_merkle_root(&[cb_txid, txid]);
+    let w = ShieldWitness {
+        tx,
+        vin: 0,
+        wtxid_siblings: vec![[0xAAu8; 32]], // the commitment the coinbase actually carries is the zero one
+        coinbase: cb,
+        coinbase_txid_siblings: vec![txid],
+        merkle_index: 1,
+        merkle_siblings: vec![cb_txid],
+        confirmed_block_root: root,
+        pool_root: [0x42u8; 32],
+        value,
+    };
+    let mut l = BackingLedger::default();
+    assert_eq!(
+        read_shield(&w, &ASSET, &mut l, &blind, &|_, _| true, &|_, _, _| true),
+        None
+    );
+    assert_eq!(l.available(), 0);
 }
 
 #[test]

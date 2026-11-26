@@ -12,7 +12,8 @@ Status: design + tests. No deployed contract, verifying key or ELF changes. Entr
 
 **What it does.** It adds the fact the burn proof is missing: how much value the shielded pool is holding
 against the transparent notes it has already handed out. A shield credits that ledger through
-`credit_shield`; an exit is read out of a confirmed Bitcoin transaction by `read_exit` and debited by
+`read_shield`, which reads it out of a confirmed Bitcoin transaction the same way; an exit is read out by
+`read_exit` and debited by
 `admit_exit`; the exit note then becomes a leaf the provenance DAG can resolve, alongside `C_0` and cmint
 leaves. A second piece lets a lineage longer than 256 transfers be presented from a nearer anchor instead of
 the etch.
@@ -23,7 +24,7 @@ backing instead.
 
 **What it assumes.** Three things, worst first. (1) `verify_btc_pool_spend` is sound — the pool half of
 every exit is still the extension's proof, and the ledger inherits whatever that proof fails to say. (2) The
-boundary seam is honest because the caller passes the right closure: `credit_shield` and `read_exit` take
+boundary seam is honest because the caller passes the right closure: `read_shield` and `read_exit` take
 `boundary_ok` as an argument, and a caller who substitutes a permissive closure still credits and debits
 anything. `boundary_opens` is the in-crate check a caller must pass — it runs
 `btc-pool-zk-core::boundary::verify_bytes` and `cxfer_core::verify_pedersen_opening`, and
@@ -124,6 +125,11 @@ history for the same reason the spent set and the burn set do, and ride the batc
 
 ### 2.1 Value enters only through a proven shield
 
+The entry point is `read_shield`, mirroring `read_exit`: the shield must ride `vin[0]` of a confirmed
+carrier (the pool refuses any other input), the carrier must hold at least `n_in + 1` inputs, and the
+transaction must be proven into the attested block by its merkle path and its BIP141 witness commitment.
+Only then is the parsed body handed to `credit_shield`:
+
 ```rust
 pub fn credit_shield(
     ledger: &mut BackingLedger,
@@ -150,11 +156,11 @@ nothing, and a shield body already credited is refused so a re-fold cannot mint 
 `sha256` of the canonical parsed body, not a caller-supplied txid: a caller-supplied key let one verified
 shield body be credited again under a fresh value, which is a mint. This is the only place `funded` moves:
 `fund` is private, `credit_shield` is its only caller, and the counters and sets are private too, so no
-public path in this crate credits or debits out of band. What that does **not** buy is a proof that the
-shield was real. `boundary_ok` is a closure the caller supplies — this crate cannot resolve a shield's
-inputs to supply — so a
-caller that passes `|_, _, _| true` can credit any value it names. §10 states that as the central
-assumption; the honest reading of the code is "no unverified *path*", not "no unverified *claim*".
+public path in this crate credits or debits out of band. What that still does **not** buy is the pool half:
+`pool_ok` is a closure the caller supplies — this crate cannot resolve a shield's inputs to a note — so a
+caller that passes `|_, _| true` can credit a body whose proof it never checked. `boundary_ok` has an
+in-crate replacement (`boundary_opens`), but the type does not force it either. §10 states both seams; the
+honest reading is "no unverified *carrier*", not "no unverified *claim*".
 
 ### 2.2 An exit is admissible iff the ledger covers it, and admitting it debits exactly that much
 
@@ -387,7 +393,7 @@ Three edits in `burn_deposit.rs`, none of them crypto:
    present a ledger whose counters already include an event whose set entry was dropped, and every
    transition would re-book.
 2. **Fold pool envelopes.** For each `T_BTC_SHIELD`/`T_BTC_SPEND` the reflection already sees, call
-   `credit_shield` or `read_exit` + `admit_exit`. The per-event crypto stays where it is: the pool proof,
+   `read_shield` or `read_exit` + `admit_exit`. The per-event crypto stays where it is: the pool proof,
    the boundary sigma, the range proofs are all still verified by the existing call sites; this adds the
    accounting transition after them.
 3. **Grow the leaf set.** Pass `valid_leaves(&existing, &admitted)` into the provenance DAG, and route a
@@ -411,11 +417,11 @@ What *is* additive is the state, not the digest: the ledger is a new field, and 
 already exist in the reflection. That is what makes the change reviewable — but reviewable is not
 digest-compatible.
 
-## 8. What the 29 tests cover
+## 8. What the 30 tests cover
 
 All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, no pool).
 
-Line counts: 3 054 lines of Rust (1 099 `lib.rs`, 1 955 `tests.rs`).
+Line counts: 3 137 lines of Rust (1 104 `lib.rs`, 2 033 `tests.rs`).
 
 | Test | What it pins |
 | --- | --- |
@@ -426,6 +432,8 @@ Line counts: 3 054 lines of Rust (1 099 `lib.rs`, 1 955 `tests.rs`).
 | `shield_parse_reads_the_layout_and_refuses_non_canonical_shapes` | §3 shield layout field by field; wrong opcode, `n_in`/`n_out` out of range, every truncation, trailing bytes |
 | `read_shield_authenticates_the_carrier_before_crediting` | a shield must ride a real input of a confirmed transaction whose merkle path reaches the attested block, and the carrier must hold `n_in + 1` inputs; a re-fold credits nothing |
 | `credit_shield_requires_a_matching_boundary` | a shield that moved nothing, of another asset, whose pool proof failed, or whose boundary does not open, credits nothing — and re-folding it mints nothing |
+| `read_shield_refuses_a_shield_that_does_not_ride_vin0` | a confirmed shield on a later input is a spend the pool rejected whole, so it credits nothing |
+| `read_shield_refuses_a_carrier_whose_witness_commitment_is_broken` | the merkle path alone is not enough: a carrier failing its BIP141 commitment is refused |
 | `credit_shield_dedups_on_the_shield_body_not_a_caller_key` | one verified shield body credits once whatever the caller passes, so a fresh key cannot re-mint; the ledger can only be credited through a shield |
 | `boundary_parse_rejects_every_wrong_length` | 824 and 826 bytes are refused |
 | `spend_parse_reads_the_exit_where_the_layout_puts_it` | §3 offset arithmetic, field by field |
@@ -450,7 +458,7 @@ Line counts: 3 054 lines of Rust (1 099 `lib.rs`, 1 955 `tests.rs`).
 | `spend_parse_is_panic_free_on_a_hostile_corpus` | 4 000 pseudo-random payloads, runaway `n_in` |
 
 Run: `cd contracts/sp1/confidential/provenance-anchor && cargo +stable test --offline`
-Result: `test result: ok. 29 passed; 0 failed`.
+Result: `test result: ok. 30 passed; 0 failed`.
 
 ## 9. What this does not do
 
@@ -468,13 +476,12 @@ Result: `test result: ok. 29 passed; 0 failed`.
 
 Stated the way the brief asks, worst first.
 
-1. **The ledger trusts a value the caller supplies.** `read_exit` takes `w.value` and `credit_shield` takes
-   `shielded` from the caller, and only binds them to the *boundary* (`depC = v·H + r·G`). That proves the
-   claim is the one the pool committed to — it does not prove the pool actually moved that much, because
-   this crate cannot run the range proof offline. **If the pool's own range check is unsound, the ledger
-   inherits that, and a caller can inflate either side.** The seam is deliberate (this is a design entry,
-   not a verifier), but it is the single largest trust assumption here and a merge would have to wire the
-   real check, not a stub.
+1. **The value is bound to a commitment, not to the pool actually moving it.** `read_shield` and `read_exit`
+   authenticate their carrier — real input, merkle path to the attested block, BIP141 — so bytes cannot be
+   made up, but `w.value` / `shielded` are still bound only to the *boundary* (`depC = v·H + r·G`). What
+   proves the pool moved that much is `pool_ok`, the `resolveInput` / `depC` / `verify_btc_pool_spend`
+   relation, which arrives as a closure. **If that relation is unsound or stubbed, the ledger inherits it and
+   a caller can inflate either side.** A merge would have to wire the real check, not a stub.
 2. **The two idempotence sets grow without bound.** `shielded` and `exited_at` are `BTreeSet<[u8; 32]>`,
    one entry per event, forever. At 4 546 unspent notes today that is nothing; over years it is the same
    problem the spent set and burn set already have, inherited rather than solved. A production version

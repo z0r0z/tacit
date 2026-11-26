@@ -249,7 +249,6 @@ pub fn read_shield(
     asset: &[u8; 32],
     ledger: &mut BackingLedger,
     blinding: &[u8; 32],
-    pool_root: &[u8; 32],
     pool_ok: ShieldProofCheck<'_>,
     boundary_ok: BoundaryCheck<'_>,
 ) -> Option<u64> {
@@ -268,6 +267,12 @@ pub fn read_shield(
         &w.confirmed_block_root,
     )?;
 
+    // The pool reads a shield only from vin[0] — every other input is a note it resolves
+    // (`T_BTC_SHIELD must ride vin[0]`, `worker-relay/src/btc-pool-indexer.js`) — so a shield on a later
+    // input is a spend the pool rejected whole. Reading it anyway would credit backing the pool never took.
+    if w.vin != 0 {
+        return None;
+    }
     let payload = envelope_of_input(&w.tx, w.vin)?;
     let body = ShieldBody::parse(&payload)?;
     if &body.asset != asset {
@@ -286,7 +291,7 @@ pub fn read_shield(
         &body,
         w.value,
         blinding,
-        pool_root,
+        &w.pool_root,
         pool_ok,
         boundary_ok,
     )?;
