@@ -64,6 +64,15 @@ Safety properties:
 - clean-class proceeds are ignored;
 - a broadcast error is recorded and not retried automatically, because the failure may be after a relay accepted the reveal; the operator inspects that swap before touching it;
 - when the move confirms the forward swap record is marked `stuckInventoryAt`; reverse sales are attributed without guessing input ownership: a sale made only from tracked recycled notes reduces the corresponding recovered amount, a partial sale of one tracked note is followed through its deterministic change output, and a partial sale mixed with untracked inventory stays as exposure. The record is marked `stuckRecoveredAt` and stops counting against lineage caps only when the whole original amount has been sold back for pool TAC;
+
+The Bitcoin-side move is rehearsed on public signet by `tests/fastbridge-signet-recycle.mjs`: a small stand-in note was etched at a
+main provider key, spent by the same `buildAndBroadcastCXferMulti` call the recycler uses to the production-derived reverse key,
+confirmed, and then found by `scanHoldings` as the reverse key. The public evidence is the etch reveal
+[`d74a1dc6...6b81859d`](https://mempool.space/signet/tx/d74a1dc6110a6618e29ba157a1403b134a91b1e1d14a435dc74d3c846b81859d)
+and the 5,000-unit recycle reveal
+[`699884f8...d3104868`](https://mempool.space/signet/tx/699884f8bbf2eed4fe538138c3f390b3177972f8023a954d3c4880f4d3104868).
+This proves the real broadcast/scan path for the exact note movement; it is not a TAC pool-liquidity proof and the reverse sale itself
+remains machine-tested offline.
 - `stuckRecycle.enabled` defaults on only when the reverse side is on, and can be disabled in config or with `FB_LP_STUCK_RECYCLE=off`. Manual `recoveredSwaps` / `FB_LP_RECOVERED_SWAPS` remains available for notes recovered outside this loop.
 
 ## Numbers
@@ -127,8 +136,10 @@ node tests/fastbridge-lineage-pricing.test.mjs
 node tests/fastbridge-lineage-pricing-sim.test.mjs
 node tests/fastbridge-stuck-recycle.test.mjs
 node tests/fastbridge-reverse-service.test.mjs
+# live public-signet rehearsal, with a funded signet key file:
+node tests/fastbridge-signet-recycle.mjs
 node tests/fastbridge-wire.test.mjs
 node tests/fastbridge-lp-env.test.mjs
 ```
 
-Not tested: a live mainnet or signet bridge, a real reverse sale of a recycled note, fee bumping of a stuck recycle transfer (a stalled move alerts rather than replaces itself), the real reflection service's latency on a maximally long history, browser UI copy, and market measurement of actual haircuts. No contracts, keys, pool parameters or deployed services change.
+Not tested: a live mainnet or signet fast-bridge swap, a real reverse sale of a recycled note, fee bumping of a stuck recycle transfer (a stalled move alerts rather than replaces itself), the real reflection service's latency on a maximally long history, browser UI copy, and market measurement of actual haircuts. No contracts, keys, pool parameters or deployed services change.
