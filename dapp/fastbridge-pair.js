@@ -199,6 +199,8 @@ export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip 
     id: rec.id, dir: 'e2b', state, title, detail: andNodes(rec.phase === 'aborted' ? withWhy(detail, rec.why) : detail, rec, now()),
     pay: rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: rec.offer ? BigInt(rec.offer.btc.value) : 0n, got, steps: stepsOf('e2b', at, state),
     etaSecs: state !== 'working' ? 0 : rec.phase === 'accepted' && rec.offer ? confsLeft(confsForSats(rec.offer.btc.value), rec.lockConfs) + REV_AFTER.accepted : revLeft(rec, eta, now()), at: rec.created,
+    // (the take of the BTC was signed ahead and published where a watcher reads it: said only when that publish was answered, dapp/fastbridge-el.js protect)
+    watched: state === 'working' && !!(rec.presig && rec.presig.published),
     // (once the provider has claimed, the ETH is not coming back: the BTC is taken instead, so no return time is given)
     refundAt: state === 'working' && rec.deadline && rec.phase !== 'taking' ? rec.deadline : null, lockTxid: rec.lockTxid || null, error: rec.lastError || null, provider: rec.providerName || null,
     // the page has to be back by the pool deadline: a claim by the provider then gives the BTC, which must be taken before the provider's own refund opens (at least
@@ -304,7 +306,7 @@ export function noteOutpoints(holdings) {
 // The providers ETH for Bitcoin is asked of by default (see e2bFrom above)
 export const namedProvider = (p) => !!p && (p.http === true || p.pinned === true || !!OWN_PROVIDERS[strip((p.ref && p.ref.claimPub) || p.id || '')]);
 
-export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), exclusive = (work) => work(), ethAsset = ETH_ASSET, memo = null, strikes: strikeStore = null, e2bFrom = namedProvider, holdings = null }) {
+export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), exclusive = (work) => work(), ethAsset = ETH_ASSET, memo = null, strikes: strikeStore = null, e2bFrom = namedProvider, holdings = null, takePresig = null }) {
   const policy = { ...PAIR_POLICY, ...policyIn };
   const ETH = strip(ethAsset);
   const isPairProvider = (p) => !!p && !!p.assets && strip(p.assets.btcAsset || '') === SATS_ASSET && strip(p.assets.evmAsset || '') === ETH;
@@ -470,7 +472,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
         pins: { btcAsset: SATS_ASSET, evmAsset: ETH }, confsOf: confsForSats, policy: { early: policy.early },
         // the two sides are different units: the price is judged against the market (below), so here only that the payout is something and the fee is not the amount
         valueCheck: () => ({ fee: 0n, highFee: false }),
-        admit: (o) => lockInUse(p.id, o),
+        admit: (o) => lockInUse(p.id, o), ...(takePresig ? { takePresig } : {}),
       }));
     }
     return revClients.get(p.id);

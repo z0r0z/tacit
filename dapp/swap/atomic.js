@@ -24,8 +24,8 @@
 // to be seen again can miss its window); and the page asks before it is left while one is under way.
 import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 
-const BTC_MODULE = '/trade/btc.js?cb=69f3f0fb';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=3475331b';
+const BTC_MODULE = '/trade/btc.js?cb=e5b9b386';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=8ce882a4';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
 // A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
@@ -539,7 +539,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       const locked = r.dir === 'e2b' && (r.steps || []).some((s) => s.key === 'match' && s.state !== 'todo'), by = r.state === 'working' && r.backBy ? clockText(r.backBy, now()) : '';
       const stay = r.state !== 'working' ? '' : !by ? (r.dir === 'b2e' ? 'Keep this page open until your BTC has its confirmation, about 10 minutes. If you close it, reopen this page in this browser and it continues; on another browser or device it can only return your BTC, after about a day.' : 'Keep this page open.')
         : r.dir === 'b2e' ? `Keep this page open. If you close it, come back by ${by} to receive your ETH; otherwise your BTC returns after about a day.`
-          : locked ? `Keep this page open until your BTC arrives. If you close it, come back by ${r.takeBy ? clockText(r.takeBy, now()) : by} at the latest to receive your BTC: after that the provider can take its BTC back and keep the ETH you sent. Coming back sooner is better; the BTC is yours the moment the provider claims.` : 'Keep this page open.';
+          : locked ? `Keep this page open until your BTC arrives. If you close it, come back by ${r.takeBy ? clockText(r.takeBy, now()) : by} at the latest to receive your BTC: after that the provider can take its BTC back and keep the ETH you sent. Coming back sooner is better; the BTC is yours the moment the provider claims.${r.watched ? ' Your BTC is also protected if you close this page: a watcher can finish the take.' : ''}` : 'Keep this page open.';
       const steps = (r.steps || []).map((s) => `<li class="${esc(s.state)}" data-step="${esc(s.key)}"><i aria-hidden="true"></i>${esc(s.title)}</li>`).join('');
       // (a press may be cancelled only while that costs the provider nothing: before it is asked, which is before the deposit is mined, or while new numbers wait)
       const cancel = r.press && !L.chain.cancelled && (L.chain.phase === 'paused' || (L.chain.phase === 'adding' && !L.chain.mined)) ? ' <button class="link cx" type="button" data-press-cancel>Cancel</button>' : '';

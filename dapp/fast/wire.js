@@ -19,7 +19,7 @@ import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=f3f78bdd';
 import { makeLpService } from '/fastbridge-provider.js?cb=f008fa6c';
 import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=da2bd2bf';
-import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=cc29143a';
+import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=0635460a';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
 import { adLabel } from '/fastbridge-board.js';
 import { signSchnorr } from '/bulletproofs.js';

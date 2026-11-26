@@ -15711,15 +15711,16 @@ function _pendingChunkedListingsForAsset(aid) {
     .filter(r => r.network === NET.name && r.aid === aid && Number(r.expiry || 0) > Math.floor(Date.now() / 1000));
 }
 const _autoResumedThisSession = new Set();
-async function _autoResumePendingChunkedListings() {
+async function _autoResumePendingChunkedListings({ aid = null, force = false } = {}) {
   if (typeof wallet === 'undefined' || !wallet.priv) return;
   const _now = Math.floor(Date.now() / 1000);
   const all = _loadPendingChunkedListings().filter(r =>
     r.network === NET.name
+    && (!aid || r.aid === aid)
     && Number(r.expiry || 0) > _now
     && Array.isArray(r.pending_vouts)
     && r.pending_vouts.length > 0
-    && !_autoResumedThisSession.has(r.revealTxid),
+    && (force || !_autoResumedThisSession.has(r.revealTxid)),
   );
   if (all.length === 0) return;
   for (const rec of all) {
@@ -27799,10 +27800,29 @@ async function publishPreauthSaleChunks({ sourceUtxoTxid, sourceUtxoVout, chunks
   _progress('fan-done', { revealTxid: splitResult.revealTxid });
 
   _progress('wait-visible', { revealTxid: splitResult.revealTxid });
-  await waitForTxVisible(splitResult.revealTxid);
 
   const groupSeed = crypto.getRandomValues(new Uint8Array(8));
   const groupIdHex = bytesToHex(groupSeed);
+
+  // The fan-out is already on chain: whatever stops the listings from here
+  // (slow indexer, throttle, dropped connection) must leave a record, or the
+  // K pieces sit in the wallet with nothing that lists them.
+  const _keep = (fromIdx, why) => {
+    try {
+      _savePendingChunkedListing({
+        network: NET.name, aid: assetIdHex, ticker, decimals,
+        revealTxid: splitResult.revealTxid, group_id: groupIdHex,
+        chunk_amount: chunkAmount.toString(),
+        chunks_published: fromIdx, chunks_requested: K,
+        pending_vouts: Array.from({ length: K - fromIdx }, (_, j) => fromIdx + j),
+        min_price_sats: minPriceSatsPerChunk, expiry,
+        last_error: String(why?.message || why || ''),
+        last_attempt_ts: Math.floor(Date.now() / 1000),
+      });
+    } catch {}
+  };
+  try { await waitForTxVisible(splitResult.revealTxid); }
+  catch (e) { _keep(0, e); throw e; }
 
   const saleIds = [];
   let firstError = null;
@@ -27838,6 +27858,7 @@ async function publishPreauthSaleChunks({ sourceUtxoTxid, sourceUtxoVout, chunks
       break;
     }
   }
+  if (firstError) _keep(saleIds.length, firstError);
   _progress('done', { saleIds });
   return {
     revealTxid: splitResult.revealTxid,
@@ -56723,9 +56744,16 @@ async function _btcMarketListForSale(aid, { amountBase, shape, expirySec, onStag
       chunks: shape.k, minPriceSatsPerChunk: shape.perLotSats, expiry,
       preResolvedSource: target, preResolvedAssetIdHex: aid,
     });
-    if (r?.error) throw new Error(`pieces were created but listing didn't finish (${r.error}) — they're in your wallet; list them again`);
-    if (r?.partialFailure) {
-      const err = new Error(`${r.chunks_published || 0} of ${shape.k} pieces listed (${r.partialFailure}) — the rest are in your wallet; list them again`);
+    if (r?.error || r?.partialFailure) {
+      // Usually a lagging indexer or a throttle: wait a few seconds and re-post
+      // the same signed pieces (no new split, no new fee).
+      try { onStage?.('finishing the listings'); } catch {}
+      await new Promise((res) => setTimeout(res, 5000));
+      await _autoResumePendingChunkedListings({ aid, force: true }).catch(() => {});
+      const left = _pendingChunkedListingsForAsset(aid).find((x) => x.revealTxid === r.revealTxid);
+      if (!left || !left.pending_vouts?.length) { invalidateMarketCache(); return { txid: r?.revealTxid || null, via: 'chunks', group_id: r?.group_id }; }
+      const n = left.pending_vouts.length;
+      const err = new Error(`${shape.k - n} of ${shape.k} pieces listed (${left.last_error || r.error || r.partialFailure}). The other ${n} are safe in your wallet and publish on their own the next time this page opens, no new fee. Reload and unlock to finish.`);
       err.noReroute = true;
       throw err;
     }
@@ -56804,6 +56832,7 @@ function _btcMarketCtx(aid) {
     asset: () => _btcMarketAssetView(aid),
     listings: () => (_marketCache?.listings || []).filter(l => (l._asset?.asset_id || l.asset_id) === aid),
     loadListings: async ({ force } = {}) => {
+      try { _autoResumePendingChunkedListings({ aid }); } catch {}
       if (force) invalidateMarketCache();
       await fetchMarketDataDeduped();
     },
