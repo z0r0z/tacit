@@ -122,7 +122,11 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
   // /info carries the totals, the target, the lean, the buybacks and what the provider needs (refill)
   const wrap = (handle) => async (req) => {
     const r = await handle(req);
-    if (req && req.method === 'GET' && req.path === '/info' && r && r.status === 200 && r.body && typeof r.body === 'object') { const x = auto.info(); if (x) return { ...r, body: { ...r.body, ...x, ...(watch ? { refill: watch.info() } : {}) } }; }
+    if (req && req.method === 'GET' && req.path === '/info' && r && r.status === 200 && r.body && typeof r.body === 'object') {
+      // the extras are the upkeep's own view: when one cannot be built, /info is the terms alone, and still answers
+      try { const x = auto.info(); if (x) return { ...r, body: { ...r.body, ...x, ...(watch ? { refill: watch.info() } : {}) } }; }
+      catch (e) { log({ level: 'error', msg: '/info: the upkeep part could not be read', error: String((e && e.message) || e).slice(0, 160) }); }
+    }
     return r;
   };
   return { auto, wrap, cfg };

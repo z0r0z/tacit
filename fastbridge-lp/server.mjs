@@ -275,8 +275,15 @@ if (PAIR && !DRY) {
   if (auto) handle = auto.wrap(handle);
 }
 // /info says what the flat fees follow
-if (flat) { const inner = handle; handle = async (req) => { const r = await inner(req); return req && req.method === 'GET' && req.path === '/info' && r && r.status === 200 && r.body && typeof r.body === 'object' ? { ...r, body: { ...r.body, feeModel: flat.view() } } : r; }; }
-const server = makeHttpServer({ handle, origins: C.origins || [], trustProxy: !!C.trustProxy, clientIp: C.clientIp || null });
+if (flat) {
+  const inner = handle;
+  handle = async (req) => {
+    const r = await inner(req);
+    if (!(req && req.method === 'GET' && req.path === '/info' && r && r.status === 200 && r.body && typeof r.body === 'object')) return r;
+    try { return { ...r, body: { ...r.body, feeModel: flat.view() } }; } catch (e) { log({ level: 'error', msg: '/info: the fee model could not be read', error: String((e && e.message) || e).slice(0, 160) }); return r; }
+  };
+}
+const server = makeHttpServer({ handle, origins: C.origins || [], trustProxy: !!C.trustProxy, clientIp: C.clientIp || null, log });
 server.listen(C.port ?? 8787, () => log({ level: 'info', msg: 'listening', port: C.port ?? 8787 }));
 
 // Boards the LP is on as well: its ad is posted there and the requests left for it are answered, so a user finds it without its URL.

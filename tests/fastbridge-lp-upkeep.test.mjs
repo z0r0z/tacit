@@ -381,6 +381,11 @@ test('the daemon\'s wiring: /info gains the totals, the target, the lean and the
     assert.deepEqual((await h({ method: 'GET', path: '/swap/x' })).body, { error: 'not found' });
     const bad = w.wrap(async () => ({ status: 503, body: { error: 'down' } }));
     assert.deepEqual((await bad({ method: 'GET', path: '/info' })).body, { error: 'down' });
+    // an upkeep view that cannot be built leaves /info as the terms alone: it still answers
+    w.auto.info = () => { throw new TypeError("Cannot read properties of null (reading 'first')"); };
+    const unread = await h({ method: 'GET', path: '/info' });
+    assert.equal(unread.status, 200);
+    assert.deepEqual(unread.body, { v: 1, minAmount: '1' });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
