@@ -244,6 +244,13 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
   return { ctx, page, problems, sent, told, keeperCalls, waiting: WAITING, landed };
 }
 
+// the ordinary quotes a relay was asked for (its base URL), and a sync forced through the balance's refresh, as a person would
+const quotesAt = (calls, base) => calls.filter((c) => c.url === `${base}/quote`).length;
+async function refresh(page) {
+  await page.click('#bal-re');
+  await page.waitForFunction(() => { const b = document.querySelector('#bal-re'); return b && !b.disabled && !b.hasAttribute('aria-disabled'); }, null, { timeout: 30000 });
+}
+
 console.log('Pay page');
 await test('with ?fixed=0 the deposit form has no large-pool cards and the module is never asked for', async () => {
   const { ctx, page, problems } = await open({ search: '?fixed=0' });
@@ -824,6 +831,11 @@ await test('a native ETH withdrawal keeps the community relay option when the bu
   await page.fill('#f-wamt', '0.1');
   await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled && /Sent by the relay/.test(document.querySelector('#form')?.textContent || ''), null, { timeout: 30000 });
   assert.ok(keeperCalls.some((c) => c.url === `${community}/quote`), 'the registered community relay supplied the spend quote');
+  const ownBefore = quotesAt(keeperCalls, own);
+  await refresh(page); await refresh(page);
+  assert.ok(quotesAt(keeperCalls, own) >= ownBefore + 2, 'each sync asked the built-in keeper again');
+  assert.equal(quotesAt(keeperCalls, community), 1, 'the form asked the listed relay once, and the syncs after it did not');
+  assert.match(await page.locator('#form').innerText(), /Sent by the relay/, 'its quote stands while the built-in keeper cannot quote');
   assert.deepEqual(problems, []);
   await ctx.close();
 });
@@ -879,6 +891,65 @@ await test('a token withdrawal uses the registry relay projected to its pool whe
   assert.ok(keeperCalls.some((c) => c.url === `${community}/quote`), 'the registry entry was projected from the native route to the USDC pool');
   assert.ok(keeperCalls.some((c) => c.url === `${own}/quote`), 'the built-in token keeper was asked too');
   assert.match(await page.locator('#f-rcpt').innerText(), /at most .* USDC/);
+  const ownBefore = quotesAt(keeperCalls, own);
+  await refresh(page); await refresh(page);
+  assert.ok(quotesAt(keeperCalls, own) >= ownBefore + 2, 'each sync asked the built-in token keeper again');
+  assert.equal(quotesAt(keeperCalls, community), 1, 'the form asked the projected relay once, and the syncs after it did not');
+  assert.match(await page.locator('#f-rcpt').innerText(), /at most .* USDC/, 'its quote stands while the built-in keeper cannot quote');
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('a sync asks the built-in relay alone, once: a listed relay hears from the page when a withdrawal is sent, not on the page\'s timer', async () => {
+  const R2 = '0x' + 'b2'.repeat(20), own = 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', community = 'https://tacit-evm-pool-forwarder.onrender.com/1/evm-pool/keeper';
+  const { ctx, page, problems, keeperCalls } = await open({
+    notes: [10n * ETH], registry: [{ relayer: R2, stake: 1000n * 10n ** 18n, url: community }],
+    quotes: (url) => (url === `${own}/quote` ? QUOTE : url === `${community}/quote` ? { ...QUOTE, relayer: R2 } : null),
+  });
+  await unlock(page);
+  await page.click('#tab-withdraw');
+  await page.fill('#f-wto', DEAD);
+  await page.fill('#f-wamt', '0.1');
+  await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled && /Relay fee/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, { timeout: 30000 });
+  for (let i = 0; i < 2; i++) {
+    const before = quotesAt(keeperCalls, own);
+    await refresh(page);
+    assert.equal(quotesAt(keeperCalls, own) - before, 1, 'one quote from the built-in relay for a sync, not two');
+  }
+  assert.equal(quotesAt(keeperCalls, community), 0, 'no sync and no form asked the listed relay while the built-in relay quotes');
+  await page.click('#f-go');
+  // the spend asks every relay for its quote first; it then stops, since the notes here are stand-ins the pool does not hold
+  await page.waitForFunction(() => /does not cover this amount/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 60000 });
+  assert.equal(quotesAt(keeperCalls, community), 1, 'the withdrawal asked the listed relay as it was priced');
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('a token pool\'s sync asks its built-in relay alone: the projected relay is asked when its withdrawal is sent', async () => {
+  const R2 = '0x' + 'b2'.repeat(20), host = 'https://tacit-evm-pool-keepers.onrender.com', communityHost = 'https://tacit-evm-pool-forwarder.onrender.com';
+  const own = `${host}/1-xa0b86991c6/evm-pool/keeper`, community = `${communityHost}/1-xa0b86991c6/evm-pool/keeper`;
+  const usdc = { chainId: 1, pool: '0x6C0be904750Fe1b50cd7207cc94731642d99e908', relayer: '0x' + '11'.repeat(20), fee: '2000' };
+  const { ctx, page, problems, keeperCalls } = await open({
+    search: '?chains=all', notes: [10_000_000n],
+    registry: [{ relayer: R2, stake: 1000n * 10n ** 18n, url: `${communityHost}/1/evm-pool/keeper` }],
+    quotes: (url) => {
+      if (url === `${own}/quote`) return usdc;
+      if (url === `${community}/quote`) return { ...usdc, relayer: R2, fee: '1000' };
+      if (url.endsWith('/1/evm-pool/keeper/quote')) return { ...QUOTE, ...(url.startsWith(communityHost) ? { relayer: R2 } : {}) };
+      return null;
+    },
+  });
+  await unlock(page);
+  await page.click('[data-tok="usdc"]');
+  await page.click('#tab-withdraw');
+  await page.fill('#f-to', DEAD);
+  await page.fill('#f-amt', '1');
+  await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled && /Relay fee/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, { timeout: 30000 });
+  const before = quotesAt(keeperCalls, own);
+  await refresh(page); await refresh(page);
+  assert.ok(quotesAt(keeperCalls, own) >= before + 2, 'each sync asked the built-in token keeper');
+  assert.equal(quotesAt(keeperCalls, community), 0, 'no sync asked the projected relay, so its timing does not say which pool is open');
+  await page.click('#f-go');
+  await page.waitForFunction(() => /does not cover this amount/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 60000 });
+  assert.equal(quotesAt(keeperCalls, community), 1, 'the withdrawal asked the projected relay as it was priced');
   assert.deepEqual(problems, []);
   await ctx.close();
 });

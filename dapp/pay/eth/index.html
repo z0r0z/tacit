@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-rfeoJrfx9gSlKJahriMscQDO/V+PmcHuiKe90icTO90=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-g0AeDzGRJBkNKWJehlZvSN3tuXXJqC5utxkUlEiISA0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -1307,7 +1307,7 @@ const WC = announceWalletConnect({
   onAsk: (x) => wcSheet.onAsk(x),
 });
 const ROUTES = readJson(ROUTE_PREF) || {};
-const relayUp = () => !!chainKeeper(S.chain) && !CH[S.chain.chainId]?.quoteErr;
+const relayUp = () => !!chainKeeper(S.chain) && (!CH[S.chain.chainId]?.quoteErr || CH[S.chain.chainId].others instanceof Promise);
 const receiveUp = (c) => !!chainKeeper(c) && !CH[c.chainId]?.serviceErr;
 const serviceSig = (c) => { const st = CH[c.chainId]; return `${!!st?.serviceErr}:${st?.serviceQuote?.receiveMin ?? ''}`; };
 const routeOf = (tab) => (ROUTES[tab] === 'wallet' || !chainKeeper(S.chain) ? 'wallet' : 'relay');
@@ -1390,7 +1390,7 @@ function forget() {
   GIFTSEEN.clear(); MADEQ.clear();
   SENT.v = null; say($('#status'), '');
   for (const k of Object.keys(TK)) Object.assign(TK[k], tkBlank());
-  for (const st of Object.values(CH)) { clearTimeout(st.histTimer); Object.assign(st, { W: null, for: null, bal: null, notes: [], quote: null, waiting: null, err: null, syncing: null, at: 0, fails: 0, fill: null, hist: null, histing: null, histNext: null, histErr: null, histFails: 0, histTimer: null, histStart: 0, last: null, waitBoxes: [], serviceQuote: null, quoteErr: null, serviceErr: null, deferred: false, unread: false, whole: false }); }
+  for (const st of Object.values(CH)) { clearTimeout(st.histTimer); Object.assign(st, { W: null, for: null, bal: null, notes: [], quote: null, waiting: null, err: null, syncing: null, at: 0, fails: 0, fill: null, hist: null, histing: null, histNext: null, histErr: null, histFails: 0, histTimer: null, histStart: 0, last: null, waitBoxes: [], serviceQuote: null, quoteErr: null, serviceErr: null, others: null, deferred: false, unread: false, whole: false }); }
 }
 function lock() { forget(); tabKeyClear(); evm.deselectProvider(); paintWallet(); renderApp(); paintRecover(); }
 function lockForWallet(msg) {
@@ -1793,6 +1793,21 @@ function paintSynced(c) {
   if (!S.busy) { if (formStale(c)) renderForm(); else FORM.check?.(); }
   paintRecover(); paintDue();
 }
+// A sync asks the built-in relay alone, once: its quote prices what a spend form shows, and its receive minimum the deposit and receive views. The relays
+// the registry lists are asked only when a spend is priced: a spend asks every relay as it goes (the wallet's quoteFor), and while the built-in relay cannot
+// quote, a form that needs the fee asks them once (askOthers), so a page does not show itself to them on a timer, nor by its timing which pool is open.
+// Their quote stands until the built-in relay answers again.
+const spendQuoteOf = (st, q, err) => (q ? { quote: q, quoteErr: null, others: null } : st.others?.fee != null ? { quote: st.others, quoteErr: null } : { quote: null, quoteErr: err });
+function askOthers(c) {
+  const st = CH[c.chainId], W = st.W, pub = S.key?.pubHex;
+  if (!W || !st.quoteErr || st.others != null || !c.keepers?.length) return;
+  const p = st.others = W.spendQuote().catch(() => null).then((q) => {
+    if (st.W !== W || S.key?.pubHex !== pub || st.others !== p) return;
+    st.others = q || false;
+    if (q && st.quoteErr) Object.assign(st, { quote: q, quoteErr: null });
+    paintSynced(c);
+  });
+}
 function syncChain(c, fresh = false) {
   const st = CH[c.chainId];
   if (!S.key) return Promise.resolve();
@@ -1802,12 +1817,8 @@ function syncChain(c, fresh = false) {
   const p = st.syncing = prev.catch(() => {}).then(async () => {
     const W = await walletOn(c);
     const boxes = [0, ...linkRange()];
-    let quoteErr = null, serviceErr = null;
-    const rest = Promise.all([
-      chainKeeper(c) ? W.quote().catch((e) => { serviceErr = e; return null; }) : null,
-      chainKeeper(c) ? W.spendQuote().catch((e) => { quoteErr = e; return null; }) : null,
-      boxBalances(c, W, boxes),
-    ]);
+    let quoteErr = null;
+    const rest = Promise.all([chainKeeper(c) ? W.quote().catch((e) => { quoteErr = e; return null; }) : null, boxBalances(c, W, boxes)]);
     const s = await W.sync();
     if (st.W !== W || S.key?.pubHex !== pub) return;
     if (st.shownBy === W && s.leaves < st.leaves && Date.now() - (st.lagAt ||= Date.now()) < 60e3) { Object.assign(st, { err: null, at: Date.now(), fails: 0 }); return; }
@@ -1822,10 +1833,10 @@ function syncChain(c, fresh = false) {
     const seen = readJson(BAL_SEEN) || {};
     seen[pub] = { ...(seen[pub] || {}), [c.chainId]: s.balance.toString() };
     writeJson(BAL_SEEN, seen);
-    rest.then(([service, spend, waits]) => {
+    rest.then(([q, waits]) => {
       if (st.fill !== mine || st.W !== W || S.key?.pubHex !== pub) return;
       const waitBoxes = waits.filter(([, v]) => v != null && v > 0n);
-      Object.assign(st, { quote: spend, serviceQuote: service, quoteErr, serviceErr, waiting: waitBoxes.reduce((a, [, v]) => a + v, 0n), waitBoxes });
+      Object.assign(st, { serviceQuote: q, serviceErr: quoteErr, ...spendQuoteOf(st, q, quoteErr), waiting: waitBoxes.reduce((a, [, v]) => a + v, 0n), waitBoxes });
       for (const [i] of waitBoxes) watchBox(c, i, true);
       for (const [i] of waitBoxes) if (i > 0 && BOXST.for === pub && BOXST.top[c.chainId] != null && i > BOXST.top[c.chainId]) BOXST.top[c.chainId] = i;
       const wk = SHOWN.k != null && waits.find(([i]) => i === SHOWN.k);
@@ -2935,7 +2946,7 @@ function depositFor(amount, cap, st = cur()) {
   return ROUND.find((d) => d >= from && spendPlan(amount, cap, { notes: [...st.notes, d] })) ?? amount + cap;
 }
 const quoteFee = (c) => { const f = CH[c.chainId].quote?.fee; return f == null || f === '' ? null : BigInt(f); };
-const relayFee = (tab, c = S.chain) => (routeOf(tab) !== 'relay' ? 0n : quoteFee(c));
+const relayFee = (tab, c = S.chain) => { if (routeOf(tab) !== 'relay') return 0n; const f = quoteFee(c); if (f == null) askOthers(c); return f; };
 const capOf = (fee) => (fee == null ? null : (fee * 5n) / 4n);
 const atCap = (fee) => capOf(fee) ?? 0n;
 const upTo = (v) => fmt(((v + 10n ** 12n - 1n) / 10n ** 12n) * 10n ** 12n, 18, 6);
@@ -2955,6 +2966,7 @@ async function feeChanged(c, fee, bridge = null) {
   else {
     const q = await st.W?.spendQuote().catch(() => null);
     st.quote = q || (st.quote && { ...st.quote, fee: fee.toString() });
+    if (st.serviceErr && st.quote) st.others = st.quote;      // while the built-in relay cannot quote, this fee stands as the others' did
   }
 }
 
@@ -4661,14 +4673,16 @@ async function busyBtn(btn, fn) {
   try { return await fn(); } finally { btn.removeAttribute('aria-busy'); btn.disabled = false; }
 }
 
-const GIFT = { v: null, W: null, bal: null, fee: null, err: null, busy: false, step: '', done: null, to: '' };
+const GIFT = { v: null, W: null, bal: null, fee: null, err: null, busy: false, step: '', done: null, to: '', asked: null };
+// A link's fee is the built-in relay's; while that relay cannot quote, the others are asked once for the link (syncChain says why), not on each retry.
+const giftOthers = (g, W) => (GIFT.asked === g ? null : ((GIFT.asked = g), W.spendQuote().catch(() => null)));
 async function loadGift() {
   const g = GIFT.v;
   if (!g) return;
   try {
     const W = GIFT.v === g && GIFT.W || await giftWallet(g.seed, g.chain);
     if (GIFT.v === g) GIFT.W = W;
-    const [st, q] = await Promise.all([giftSync(W), W.spendQuote().catch(() => null)]);
+    const [st, q] = await Promise.all([giftSync(W), W.quote().catch(() => giftOthers(g, W))]);
     if (GIFT.v === g) Object.assign(GIFT, { bal: st.balance, fee: q?.fee != null ? BigInt(q.fee) : GIFT.fee, err: null });
   } catch (e) { if (GIFT.v === g) GIFT.err = e; }
   paintGift();
@@ -4831,7 +4845,7 @@ const TOKENS = (SHOW_ALL ? Object.entries(TOKEN_POOLS) : []).flatMap(([chainId, 
 const tokOf = (k, c = null) => TOKENS.find((t) => t.key === lc(k) && (!c || t.chain === c)) || null;
 const tokIcon = (t, cls = 'sm') => (TOKEN_LOGOS[t.key] ? html`<img class="tk ${cls}" src="${TOKEN_LOGOS[t.key]}" alt="" aria-hidden="true">` : html`<svg class="tk ${cls}" aria-hidden="true"><use href="#tk-${t.key}"/></svg>`);
 const plainOf = (v, dec) => fmt(v, dec, dec).replace(/,/g, '');
-const tkBlank = () => ({ W: null, for: null, bal: null, notes: [], quote: null, qErr: null, err: null, syncing: null, at: 0, self: false, pool: null, poolAt: 0 });
+const tkBlank = () => ({ W: null, for: null, bal: null, notes: [], quote: null, qErr: null, others: null, err: null, syncing: null, at: 0, self: false, pool: null, poolAt: 0 });
 const TK = Object.fromEntries(TOKENS.map((t) => [t.id, tkBlank()]));
 S.tok = tokOf(readJson(TOK_PREF) || '', S.chain);
 
@@ -4939,9 +4953,9 @@ function tokSync(t, fresh = false) {
   const pub = S.key.pubHex, prev = st.syncing || Promise.resolve();
   const p = st.syncing = prev.catch(() => {}).then(async () => {
     const W = await tokWallet(t);
-    const [s, q] = await Promise.all([W.sync(), W.spendQuote().then((x) => x, (e) => { st.qErr = e; return null; })]);
+    const [s, q] = await Promise.all([W.sync(), W.quote().then((x) => x, (e) => { st.qErr = e; return null; })]);
     if (S.key?.pubHex !== pub || st.W !== W) return;
-    Object.assign(st, { bal: s.balance, notes: W.notes().map((n) => BigInt(n.v)), err: null, at: Date.now(), ...(q ? { quote: q, qErr: null } : {}) });
+    Object.assign(st, { bal: s.balance, notes: W.notes().map((n) => BigInt(n.v)), err: null, at: Date.now(), ...(q ? { quote: q, qErr: null, others: null } : {}) });
   }).catch((e) => { if (S.key?.pubHex === pub) Object.assign(st, { err: e, at: Date.now() }); })
     .finally(() => { if (st.syncing === p) st.syncing = null; paintAssets(); if (S.tok === t) { paintBal(); if (!S.busy) FORM.check?.(); } });
   return p;
@@ -5018,7 +5032,7 @@ async function tokAct(btn, fn) {
   try { await st.syncing?.catch(() => {}); await fn(step, t); }
   catch (e) {
     err = e;
-    if (e?.feeMoved != null) st.quote = null;
+    if (e?.feeMoved != null) Object.assign(st, { quote: null, others: null });
     say(status, html`<span class="err">${e?.feeMoved != null ? `The relay fee changed to ${fmt(e.feeMoved, t.dec, 6)} ${t.sym}. Check it and press again.` : errText(e)}</span>${relayTrouble(e) && !st.self && (S.tab === 'send' || S.tab === 'withdraw') ? html` <button class="link" type="button" id="use-wallet">Send it from your wallet instead</button>` : ''}`);
   } finally {
     clearInterval(timer);
@@ -5039,7 +5053,18 @@ const tokAmountField = (id, label, t, extra = '') => html`
   <div class="amt"><input id="${id}" inputmode="decimal" data-dec="${t.dec ?? 18}" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${label}"><span class="u">${tokIcon(t)}${t.sym}</span></div>`;
 // A spend goes through the relay, its fee in the token out of the private balance, or from the wallet (no relay fee, the wallet seen as sender).
 const tokRelay = (t) => !TK[t.id].self && !!t.keeper;
-const tokFee = (t) => { const q = TK[t.id].quote; return !tokRelay(t) ? 0n : q?.fee != null && q.fee !== '' ? BigInt(q.fee) : null; };
+const tokFee = (t) => { const q = TK[t.id].quote; if (!tokRelay(t)) return 0n; if (q?.fee != null && q.fee !== '') return BigInt(q.fee); tokOthers(t); return null; };
+// A token pool's askOthers: its built-in relay could not quote, and a form needs the fee (syncChain says why only then).
+function tokOthers(t) {
+  const st = TK[t.id], W = st.W, pub = S.key?.pubHex;
+  if (!W || !st.qErr || st.others != null || !t.chain.keepers?.length) return;
+  const p = st.others = W.spendQuote().catch(() => null).then((q) => {
+    if (st.W !== W || S.key?.pubHex !== pub || st.others !== p) return;
+    st.others = q || false;
+    if (q && !st.quote) st.quote = q;
+    if (S.tok === t && !S.busy) { paintBal(); FORM.check?.(); }
+  });
+}
 const tokRoute = (t) => html`<p class="route">${tokRelay(t)
   ? html`Sent by the relay, no network fee to pay${tokFee(t) != null ? html` · relay fee at most <b class="num">${tokUp(capOf(tokFee(t)), t.dec)} ${t.sym}</b>, from your private balance` : ''} · <button class="link" type="button" data-troute="wallet">send from my wallet instead</button>`
   : html`Sent from your wallet${S.wallet ? html` <span class="nw">${viewAddr(S.wallet)}</span>` : ''}: you pay the network fee, no relay fee${t.keeper ? html` · <button class="link" type="button" data-troute="relay">use the relay</button>` : ''}`}</p>`;
