@@ -63,10 +63,11 @@ await test('the span each node starts a log scan at, from what was measured', ()
   assert.equal(refuses(ONERPC, 'eth_getLogs', logs(HEAD - 50, HEAD)), true);
 });
 
-await test('the log list leaves out the nodes that only refuse logs (drpc) or limit them at once (thirdweb), and keeps them for plain reads', () => {
+await test('the log list leaves out nodes that only refuse logs, and excludes the browser-403 PublicNode route', () => {
   assert.ok(!ETH_LOG_NODES.includes(DRPC) && !ETH_LOG_NODES.includes(THIRDWEB));
   assert.ok(ETH_NODES.includes(DRPC) && ETH_NODES.includes(THIRDWEB));
-  for (const u of [MEV, NODEREAL, PUBLIC]) assert.ok(ETH_LOG_NODES.includes(u));
+  for (const u of [MEV, NODEREAL]) assert.ok(ETH_LOG_NODES.includes(u));
+  assert.ok(!ETH_NODES.includes(PUBLIC) && !ETH_LOG_NODES.includes(PUBLIC));
 });
 
 const B_PUBLIC = 'https://base-rpc.publicnode.com', B_BLAST = 'https://base-mainnet.public.blastapi.io', B_DRPC = 'https://base.drpc.org', B_OWN = 'https://mainnet.base.org';
@@ -118,7 +119,7 @@ await test('the key every visitor shares is asked last: only nodereal is shared,
   assert.deepEqual(shared, [NODEREAL]);
   assert.equal(ETH_NODES.at(-1), NODEREAL);
   assert.equal(ETH_ARCHIVE_NODES.at(-1), NODEREAL);
-  assert.ok(ETH_LOG_NODES.indexOf(NODEREAL) > ETH_LOG_NODES.indexOf(PUBLIC), 'among the log nodes it follows the nodes with a quota of their own');
+  assert.ok(ETH_LOG_NODES.indexOf(NODEREAL) > ETH_LOG_NODES.indexOf(MEV), 'among the log nodes it follows the nodes with a quota of their own');
 });
 
 const BUIDLGUIDL = 'https://mainnet.rpc.buidlguidl.com';
@@ -237,7 +238,7 @@ await test('the nodes a browser gets 429s from (no CORS headers, a console line 
   const BUIDLGUIDL = 'https://mainnet.rpc.buidlguidl.com';
   for (const u of [MEV, 'https://rpc.mevblocker.io/fast', BUIDLGUIDL]) assert.equal(lastResort(u), true);
   assert.equal(lastResort(PUBLIC), false);
-  for (const list of [ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES]) assert.ok(list.indexOf(PUBLIC) < 0 || list.indexOf(PUBLIC) < list.indexOf(MEV), 'publicnode is asked before mevblocker');
+  for (const list of [ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES]) assert.ok(!list.includes(PUBLIC), 'publicnode is not a browser fallback');
   assert.ok(ETH_NODES.indexOf(MEV) > ETH_NODES.indexOf('https://tacit-node-gw.onrender.com/eth'), 'our own gateway comes before it');
   forgetRests();
   const asked = [], real = Date.now;
