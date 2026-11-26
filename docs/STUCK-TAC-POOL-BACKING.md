@@ -421,7 +421,7 @@ digest-compatible.
 
 All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, no pool).
 
-Line counts: 3 137 lines of Rust (1 104 `lib.rs`, 2 033 `tests.rs`).
+Line counts: 3 157 lines of Rust (1 124 `lib.rs`, 2 033 `tests.rs`).
 
 | Test | What it pins |
 | --- | --- |
