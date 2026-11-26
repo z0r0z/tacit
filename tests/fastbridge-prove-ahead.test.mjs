@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import { checkPreDeadline, preDeadline, PRE_DEFAULTS, lockDeadline } from '../dapp/fastbridge-el.js';
 import * as X from '../dapp/adaptor-xswap.js';
+import { lockBumpCap } from '../dapp/fastbridge-bl.js';
 import { fetched } from './lib/btc-sim.mjs';
 import { pairWorld, UNITS, strip } from './lib/pair-world.mjs';
 import { makeReverseClient, makeReverseCounter } from '../dapp/fastbridge-reverse-client.js';
@@ -273,10 +274,17 @@ test('a lock of sats that a block goes by without is bumped from its change, chi
   const s1 = (await w.stores.rv.swaps.list())[0];
   assert.ok(s1.cpfp && child(), 'a block went by without the lock: a child of its change was sent');
   assert.equal(s1.lock.txid, lockTxid, 'the lock keeps its txid');
-  const cap = Math.floor(Number(s1.amount) / 100), want = 20 * (s1.lock.vsize + w.rBtc.tx.childVsize()) - s1.lock.fee;
-  assert.equal(s1.cpfp.fee, Math.min(cap, want), 'the two together pay the rate the next block wants, or as near it as 1% of the amount allows');
+  const cap = lockBumpCap(s1.amount, s1.lock.change.value), want = 20 * (s1.lock.vsize + w.rBtc.tx.childVsize()) - s1.lock.fee;
+  assert.equal(s1.cpfp.fee, Math.min(cap, want), 'the two together pay the rate the next block wants, or as near it as the cap for the amount allows');
   w.btc.mine(1);
   assert.ok((await w.btc.status(lockTxid)).confirmations > 0, 'the lock is mined with its child');
+});
+
+test('the cap on a lock\'s bumps: 1% of a large amount, up to 1,500 sats for a small one, never past what the change holds', () => {
+  assert.equal(lockBumpCap(26_000, 26_505), 1500, '1% of 26,000 is 260: too little to leave a backlog, so the small-amount allowance applies');
+  assert.equal(lockBumpCap(1_000_000, 900_000), 10_000, 'a large amount keeps 1%');
+  assert.equal(lockBumpCap(10_000, 9_000), 600, 'a tiny amount: 6% of it');
+  assert.equal(lockBumpCap(26_000, 1_000), 453, 'the change bounds it');
 });
 
 let passed = 0;
