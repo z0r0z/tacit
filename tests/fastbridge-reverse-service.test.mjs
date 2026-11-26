@@ -15,6 +15,7 @@ import { bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { tacit, te, scalar, etchNote, fetched } from './lib/btc-sim.mjs';
 import { makeClock, makeBitcoinSim, makeEvmSim, makeEvmParty, partyKeys, pool, sha256, ASSET } from './lib/chain-sim.mjs';
 import { memStore, VALUE } from './lib/fastbridge-world.mjs';
+import { applyReverseSalesToRecycling } from '../fastbridge-lp/lib/stuck-recycle.mjs';
 import { guardedStorage } from '../dapp/safe-storage.js';
 
 const tests = [];
@@ -238,6 +239,47 @@ test('a read of its notes that fails is remembered for ten seconds, so a stream 
   await svc2.start();
   assert.equal((await svc2.handle({ method: 'GET', path: '/reverse/info' })).body.available, '5215', 'start() forgets the failure');
   assert.ok(n > afterFail); assert.ok(qa.id);
+});
+
+// A recycled note really can go through the reverse machine, including a partial sale whose change is the next note.
+// The accounting never guesses mixed inputs: here both sales spend only the tracked recycled chain, so the whole original amount is recovered.
+test('offline end-to-end: a recycled note goes through reverse sales and its partial-sale change is recovered', async () => {
+  const w = world();
+  const recycled = w.inventory[0];
+  const keyOf = (n) => `${n.txid}:${n.vout}`;
+  const state = { labels: { [keyOf(recycled)]: { swapId: 'forward-stuck', amount: String(VALUE) } }, recovered: {}, processedReverse: {} };
+  const sales = async () => await w.stores.swaps.list();
+
+  // first sale: 3,000 in the pool buys 2,791 of the 5,000-note on Bitcoin; 2,209 returns as change at vout 1 of the lock
+  const qt1 = await w.client.quote(SEND);
+  await w.client.start({ quote: qt1 });
+  await w.run(async () => (await w.stores.swaps.list())[0]?.phase === 'done' && (await w.client.records())[0]?.phase === 'done');
+  const rev1 = (await w.stores.swaps.list())[0];
+  assert.deepEqual(rev1.noteInputs, [{ txid: recycled.txid, vout: recycled.vout }]);
+  assert.equal(rev1.amount, '2791');
+  let events = applyReverseSalesToRecycling(state, await sales());
+  assert.deepEqual(events, [{ reverseSwapId: rev1.id, swapId: 'forward-stuck', sold: '2791', partial: true }]);
+  assert.equal(state.recovered['forward-stuck'], '2791');
+
+  // the change is a real note of the same wallet. Its blinding is the wallet's change blinding for output 1 of the lock transfer.
+  const anchor = Uint8Array.from([...hexToBytes(recycled.txid).reverse(), recycled.vout & 0xff, (recycled.vout >>> 8) & 0xff, 0, 0]);
+  const changeBlinding = tacit.deriveChangeBlinding(w.lW.wallet.priv, anchor, 1);
+  const change = { txid: rev1.lock.txid, vout: 1, value: 546, amount: VALUE - 2791n, blinding: changeBlinding };
+  assert.deepEqual(state.labels[`${change.txid}:1`], { swapId: 'forward-stuck', amount: '2209' });
+  w.inventory.push(change);
+
+  // second sale: 2,416 in the pool buys exactly the 2,209 change (fee 7 + 200); afterwards the whole original 5,000 is recovered
+  w.uEvm.fund(2416n, 'inv1');
+  const qt2 = await w.client.quote(2416n);
+  assert.equal(qt2.btcValue, 2209n);
+  await w.client.start({ quote: qt2 });
+  await w.run(async () => (await w.stores.swaps.list())[1]?.phase === 'done' && (await w.client.records())[1]?.phase === 'done');
+  const rev2 = (await w.stores.swaps.list())[1];
+  assert.deepEqual(rev2.noteInputs, [{ txid: change.txid, vout: 1 }]);
+  events = applyReverseSalesToRecycling(state, await sales());
+  assert.deepEqual(events, [{ reverseSwapId: rev2.id, swapId: 'forward-stuck', sold: '2209', partial: false }]);
+  assert.equal(state.recovered['forward-stuck'], String(VALUE));
+  assert.equal(Object.keys(state.labels).length, 0, 'nothing of the recycled chain remains as unsold reverse inventory');
 });
 
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;

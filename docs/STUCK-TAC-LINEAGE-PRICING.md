@@ -118,12 +118,15 @@ while that mistake is being corrected.
 Offline tests cover class reduction, unread/retry behavior, quote math, exact-outpoint binding and rejection, exposure-cap intake,
 `/info` publication, environment overrides, provider-side enforcement before a pool lock, page quote hints with exact inputs,
 candidate selection, dry-run/send/confirm behavior, exact forced-outpoint movement, clean-note exclusion, failure non-retry, and
-the numeric tables above:
+the numeric tables above. `tests/fastbridge-reverse-service.test.mjs` also includes an offline end-to-end reverse-machine scenario:
+a 5,000-unit recycled note is sold in a 2,791-unit reverse swap, its deterministic 2,209-unit change output is sold in a second
+reverse swap, and the accounting releases exactly the whole original amount only after both machine-completed sales:
 
 ```sh
 node tests/fastbridge-lineage-pricing.test.mjs
 node tests/fastbridge-lineage-pricing-sim.test.mjs
 node tests/fastbridge-stuck-recycle.test.mjs
+node tests/fastbridge-reverse-service.test.mjs
 node tests/fastbridge-wire.test.mjs
 node tests/fastbridge-lp-env.test.mjs
 ```
