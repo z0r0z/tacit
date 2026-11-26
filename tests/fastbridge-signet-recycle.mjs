@@ -58,9 +58,19 @@ async function broadcastSaved(name, pair) {
   log('sent', { step: name, commit: S[name].commitTxid, reveal: S[name].revealTxid });
 }
 
-const coins = await chain.satsUtxos();
-assert.ok(coins.length, `${main.wallet.address()} needs one confirmed plain signet coin`);
-log('main key funded', { address: main.wallet.address(), coins: coins.length, sats: coins.reduce((s, c) => s + c.value, 0) });
+let coins = await chain.satsUtxos();
+if (!coins.length && process.env.FB_RECYCLE_ALLOW_UNCONFIRMED === '1') {
+  // Optional rehearsal-only chaining mode: signet can pause for many minutes, and a CPFP child back to this key is a
+  // perfectly spendable mempool output. Production waits for confirmed coins; this switch only avoids sitting idle in the drill.
+  let utxos = null, last = null;
+  for (const b of BASES) {
+    try { const r = await fetch(`${b}/address/${main.wallet.address()}/utxo`); if (r.ok) { utxos = await r.json(); break; } last = new Error(`HTTP ${r.status}`); } catch (e) { last = e; }
+  }
+  if (!utxos) throw last || new Error('no signet explorer answered');
+  coins = utxos.filter((u) => u.value > DUST).sort((a, b) => b.value - a.value).map((u) => ({ txid: u.txid, vout: u.vout, value: u.value }));
+}
+assert.ok(coins.length, `${main.wallet.address()} needs one plain signet coin`);
+log('main key funded', { address: main.wallet.address(), coins: coins.length, sats: coins.reduce((s, c) => s + c.value, 0), unconfirmed: process.env.FB_RECYCLE_ALLOW_UNCONFIRMED === '1' });
 
 // A note at the main provider address, etched with the production payload/validator shape.
 const rNote = BigInt('0x' + bytesToHex(sha256(concatBytes(mainPriv, te('stuck-recycle-note'))))) % (SECP_N - 1n) + 1n;

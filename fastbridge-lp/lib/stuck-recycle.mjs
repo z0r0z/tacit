@@ -38,7 +38,7 @@ const vsizeOf = (tx) => tx && Number.isFinite(Number(tx.vsize)) ? Number(tx.vsiz
 const packageOf = (...txs) => ({ vsize: txs.reduce((n, tx) => n + vsizeOf(tx), 0), fee: txs.reduce((n, tx) => n + (tx && Number.isFinite(Number(tx.fee)) ? Number(tx.fee) : 0), 0) });
 
 export function buildCpfpBump({ anchor, rate, mainSpkHex, sign, parent = null }) {
-  if (!anchor || !/^[0-9a-f]{64}$/.test(String(anchor.txid || '')) || !Number.isInteger(anchor.vout)) throw new Error('cpfp: a confirmed anchor outpoint is needed');
+  if (!anchor || !/^[0-9a-f]{64}$/.test(String(anchor.txid || '')) || !Number.isInteger(anchor.vout)) throw new Error('cpfp: a valid anchor outpoint is needed');
   const fee = cpfpFee({ rate, parent }), out = Number(anchor.value) - fee;
   if (!(rate > 0) || out < DUST) throw new Error(`cpfp: ${anchor.value} sats cannot pay ${fee} sats of fee and leave dust`);
   const tx = { version: 2, locktime: 0, inputs: [{ txid: anchor.txid, vout: anchor.vout, sequence: 0xfffffffd, witness: [] }], outputs: [{ value: out, script: bytesOf(mainSpkHex) }] };
@@ -149,10 +149,10 @@ export function makeStuckRecycler({
     }));
   }
 
-  // A sent confidential transfer is a commit/reveal pair. While both are waiting, the reveal's explicit sats-change
-  // reserve is the best CPFP anchor because its child lifts the whole commit→reveal chain; the commit's ordinary change is
-  // a fallback. Once the commit is in a block only the reveal reserve can be CPFPed. The note output itself is never spent
-  // by the bump, and a missing reserve is reported rather than guessed.
+  // A sent confidential transfer is a commit/reveal pair. Only the reveal's explicit sats-change reserve is a useful CPFP
+  // anchor: its child cannot confirm without the reveal, and while the commit is also waiting it lifts the whole commit→reveal
+  // chain. Spending commit change would lift only the commit and leave the reveal behind. The note output itself is never
+  // spent by the bump, and a missing reserve is reported rather than guessed.
   async function maybeBump(state, sid, r) {
     if (!bump.enabled || !r.commitTxid || !serialize || !txidOf || !ownSpk || typeof btc.fetchTx !== 'function' || typeof btc.broadcast !== 'function') return false;
     if (now() - Number(r.bumpAt || r.at || 0) < bump.afterSecs || Number(r.bumps || 0) >= bump.maxBumps) return false;
@@ -165,13 +165,10 @@ export function makeStuckRecycler({
     const commit = await btc.status(r.commitTxid).catch(() => null);
     let targetTxid, tx, parent, anchor;
     if (!(commit && commit.confirmations > 0)) {
-      // While both are waiting, the reveal reserve is the better anchor: its child descends from the whole
-      // commit→reveal chain, so the package fee lifts both. The commit's ordinary change is only a fallback.
+      // While both are waiting, the reveal reserve is the only anchor that descends from the whole commit→reveal chain.
       const commitTx = await btc.fetchTx(r.commitTxid).catch(() => null), revealTx = await btc.fetchTx(r.revealTxid).catch(() => null);
-      if (!commitTx) return false;
-      const revealAnchor = revealTx && findCpfpAnchor(revealTx, ownSpk);
-      if (revealAnchor) { targetTxid = r.revealTxid; tx = revealTx; parent = packageOf(commitTx, revealTx); anchor = revealAnchor; }
-      else { targetTxid = r.commitTxid; tx = commitTx; parent = commitTx; anchor = findCpfpAnchor(commitTx, ownSpk); }
+      if (!commitTx || !revealTx) return false;
+      targetTxid = r.revealTxid; tx = revealTx; parent = packageOf(commitTx, revealTx); anchor = findCpfpAnchor(revealTx, ownSpk);
     } else {
       targetTxid = r.revealTxid;
       tx = await btc.fetchTx(targetTxid).catch(() => null);
@@ -275,8 +272,13 @@ export function makeStuckRecycler({
 
   async function info() {
     const state = await load(), counts = {};
-    for (const r of Object.values(state.bySwap)) counts[r.status] = (counts[r.status] || 0) + 1;
-    return { enabled: true, ...counts };
+    let bumps = 0, bumpBlocked = 0;
+    for (const r of Object.values(state.bySwap)) {
+      counts[r.status] = (counts[r.status] || 0) + 1;
+      bumps += Number(r.bumps || 0);
+      if (r.bumpWhy) bumpBlocked++;
+    }
+    return { enabled: true, ...counts, bumps, bumpBlocked };
   }
 
   return { tick, info };

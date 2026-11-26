@@ -146,14 +146,14 @@ test('partial reverse sales are followed through the change output, and mixed in
 });
 
 
-test('a stalled recycle transfer is CPFP-bumped from its sats-change output without touching the note', async () => {
+test('a stalled recycle transfer is CPFP-bumped from its reveal sats-change reserve without touching the note', async () => {
   const commit = 'c'.repeat(64), mainSpk = '0014' + '55'.repeat(20), reverseSpk = '0014' + '66'.repeat(20);
   const store = memStore();
   await store.put({ id: 'state', bySwap: { s1: { status: 'sent', at: 100, amount: '5000', txid: T1, vout: 0, commitTxid: commit, revealTxid: T2 } } });
   const broadcasts = [], signed = [];
   const btc = {
     status: async (txid) => ({ confirmations: 0 }),
-    fetchTx: async (txid) => txid === commit ? { txid, vout: [{ value: 870, scriptpubkey: '5120' + '77'.repeat(32) }, { value: 5000, scriptpubkey: mainSpk }] } : { txid, vout: [{ value: 546, scriptpubkey: reverseSpk }] },
+    fetchTx: async (txid) => txid === commit ? { txid, vout: [{ value: 870, scriptpubkey: '5120' + '77'.repeat(32) }] } : { txid, vout: [{ value: 546, scriptpubkey: reverseSpk }, { value: 5000, scriptpubkey: mainSpk }] },
     outspend: async () => null,
     feeRate: async () => 2,
     broadcast: async (x) => broadcasts.push(x),
@@ -169,7 +169,7 @@ test('a stalled recycle transfer is CPFP-bumped from its sats-change output with
   assert.equal(broadcasts.length, 1);
   assert.equal(broadcasts[0].revealHex, 'aa');
   assert.equal(signed.length, 1);
-  assert.equal(signed[0].tx.inputs[0].txid, commit);
+  assert.equal(signed[0].tx.inputs[0].txid, T2);
   assert.equal(signed[0].tx.inputs[0].vout, 1);
   assert.equal(signed[0].tx.inputs[0].sequence, 0xfffffffd);
   assert.equal(signed[0].tx.outputs.length, 1);
@@ -178,6 +178,8 @@ test('a stalled recycle transfer is CPFP-bumped from its sats-change output with
   assert.equal(r.state.bySwap.s1.bumps, 1);
   assert.deepEqual(r.state.bySwap.s1.bumpTxids, ['b'.repeat(64)]);
   assert.equal(r.state.bySwap.s1.bumpWhy, undefined);
+  assert.equal((await rec.info()).bumps, 1);
+  assert.equal((await rec.info()).bumpBlocked, 0);
 });
 
 
@@ -242,6 +244,7 @@ test('after the commit confirms, CPFP uses the reveal reserve; without one it sa
   const r2 = await no.rec.tick();
   assert.equal(no.broadcasts.length, 0);
   assert.match(r2.state.bySwap.s1.bumpWhy, /no spendable sats-change/);
+  assert.equal((await no.rec.info()).bumpBlocked, 1);
 });
 
 test('CPFP helpers find only main-key sats change and preserve dust', () => {

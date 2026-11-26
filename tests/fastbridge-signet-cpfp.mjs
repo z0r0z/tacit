@@ -1,7 +1,8 @@
-// Live-signet proof of the recycler's CPFP path: pick the ordinary main-key sats output of an unconfirmed parent, pay a
-// package-aware child back to the same key, broadcast it through the public explorers, and wait for parent+child to confirm.
+// Live-signet proof of the recycler's CPFP path: spend the ordinary main-key sats reserve output of an unconfirmed reveal,
+// pay a package-aware child back to the same key, broadcast it through the public explorers, and wait for the chain to confirm.
+// Use the reveal txid, never the commit txid: a commit-output child does not force the reveal into a block.
 // Secrets stay in ~/.tacit-validation; the parent txid/vout can be given explicitly or found from the parent transaction.
-//   FB_CPFP_PARENT=<txid> node tests/fastbridge-signet-cpfp.mjs
+//   FB_CPFP_PARENT=<reveal-txid> node tests/fastbridge-signet-cpfp.mjs
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
