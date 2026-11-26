@@ -117,6 +117,19 @@ than the proof folds (255 transfers) is not looked at this way: the trace's verd
 provider takes it is the provider's rule. The Bridge tab offers the fast bridge for a note the regular bridge cannot follow when a
 provider online takes any TAC.
 
+**Taking a stuck class at a price.** A provider may instead take a class of TAC the proof cannot follow at a fee that covers its
+expected haircut for that class (`dapp/fast/stuck-terms.js`): the classes are the trace's own verdicts — `long` (a history longer
+than the proof folds), `pool-exit` (an exit from the shielded pool, opcode 0x6c or 0x6d), and `unprovable` (any other history the
+trace does not follow). The fee binds at the quote, where fees bind: the holder's side, which vets its own notes before it builds a
+lock, names the worst class it will spend in its quote request (an optional `cls` an old provider ignores); the provider prices that
+quote at the class's fee and keeps the class on it; and the provider's screen checks the lock against the class its quote was priced
+at, refusing one that spends worse TAC than it paid for, with the class named, so the holder asks again at that class's fee. The
+provider's terms carry the schedule (`stuckFees` in `/info`: each class's fee and least amount). A class's fee is the provider's
+standing fee plus its expected haircut under the provider's own stated assumptions (the share of such notes that never becomes
+lendable again, what unsticking the rest costs — the swap desk's published price is the default calibration), so the floor a provider
+sells a class at is one it can read in its own config. A provider with no stuck terms is as it was: one that takes any TAC takes it at
+its standing fee, and one that screens refuses it at any price.
+
 ## On the front page
 
 The Bridge tab's way in for TAC from Bitcoin prefers the fast bridge: when a note is picked, the tab asks the providers there are

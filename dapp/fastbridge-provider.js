@@ -4,6 +4,7 @@ export const takeSatsAt = (feeRate) => 546 + Math.ceil(TAKE_VB * feeRate * 2);
 const FEE_WARM_MS = 30000;
 
 import { makeWatchdog } from './fastbridge-watch.js';
+import { classTerms, takesClass, stuckSchedule, STUCK_CLASSES } from './fast/stuck-terms.js';
 import { makeEthereumLocker, confValue } from './fastbridge-el.js';
 import { isSats } from './adaptor-xswap.js';
 import { deriveLock } from './adaptor-btc-lock.js';
@@ -34,11 +35,23 @@ export function makeQuoter({ store, now, params, macKey = null }) {
     return { num: BigInt(r?.num ?? 1), den: BigInt(r?.den ?? 1) };
   };
 
-  function price(amount) {
+  // A quote request may name the class of TAC it will spend (dapp/fast/stuck-terms.js): a provider with stuck terms prices that quote at the class's fee,
+  // so the fee binds where fees bind, at the quote; a provider without them prices as it always did, and its screen decides what it takes.
+  const stuckCfg = () => (p.stuck ? { ...p.stuck, base: { feeBps: Number(p.feeBps ?? 0), flatFee: flatNow() } } : null);
+  function price(amount, cls) {
     const a = BigInt(amount);
     if (a < min || a > max) throw Object.assign(new Error(`the amount must be between ${min} and ${max}`), { status: 400 });
     const { num, den } = rateNow();
-    const fee = (a * bps) / 10000n + flatNow();
+    let fee = (a * bps) / 10000n + flatNow();
+    if (cls != null && cls !== 'clean') {
+      if (!STUCK_CLASSES.includes(cls)) throw Object.assign(new Error(`unknown TAC class ${cls}`), { status: 400 });
+      const cfg = stuckCfg();
+      if (cfg) {
+        if (!takesClass(cls, cfg)) throw Object.assign(new Error(`this provider does not take ${cls} TAC`), { status: 400 });
+        const t = classTerms(cls, cfg);
+        fee = (a * BigInt(t.feeBps)) / 10000n + t.flatFee;
+      }
+    }
     const out = ((a - fee) * num) / den;
     if (a <= fee || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
     return { btcValue: a, evmAmount: out, fee };
@@ -70,20 +83,23 @@ export function makeQuoter({ store, now, params, macKey = null }) {
     return q;
   }
 
-  async function quote(amount) {
-    const { btcValue, evmAmount } = price(amount);
+  async function quote(amount, cls) {
+    const { btcValue, evmAmount } = price(amount, cls);
     const q = {
       id: randomHex(16), btcAsset: p.btcAsset, btcValue: String(btcValue), evmAsset: p.evmAsset, evmAmount: String(evmAmount),
       claimPub: p.claimPub, csvBlocks: p.csvBlocks, evmWindowSecs: p.evmWindowSecs, minConfs: p.minConfsFor(btcValue),
       takeSats: p.takeSats ? await p.takeSats() : 0, created: now(), validUntil: now() + (p.validSecs ?? 600),
     };
+    // a quote priced at a stuck class's fee carries the class, so the lock can be checked against what it was priced at (policy.screen, dapp/fastbridge-el.js);
+    // it is stored, not sealed: a sealed id carries only the two amounts and has no room for the class
+    if (stuckCfg() && cls && cls !== 'clean') q.cls = cls;
     // a provider that takes the fee of its take from a second output of the lock's own script says so; a page that does not know the word locks as it always did
     if (inLock(q.takeSats)) q.takeInLock = true;
     // this side answers a lock at any output of a transaction that holds several (the swap id names the output: adaptor-xswap.js legSwapId), and weighs its confirmations by
     // the total the transaction locks (fastbridge-el.js confValue): a page splits a swap across providers only among those that say so
     q.legVouts = 1;
     // (sealed, it costs this side nothing to give: nothing is stored until it is used)
-    const sealed = macKey ? sealedId(q) : null;
+    const sealed = macKey && !q.cls ? sealedId(q) : null;
     if (sealed) { q.id = sealed; return q; }
     await store.put(q);
     return q;
@@ -115,7 +131,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const sats = isSats(config.quote.btcAsset);
   const takeSats = btc.feeRate && !sats ? async () => takeSatsAt(await btc.feeRate()) : null;
   const seedBytes = seed instanceof Uint8Array ? seed : hexToBytes(String(seed).replace(/^0x/, ''));
-  const quoter = makeQuoter({ store: quoteStore, now, macKey: hmac(sha256, seedBytes, te.encode('tacit-fastbridge-quote-mac-v1')), params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats } });
+  const quoter = makeQuoter({ store: quoteStore, now, macKey: hmac(sha256, seedBytes, te.encode('tacit-fastbridge-quote-mac-v1')), params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats, stuck: config.stuck || null } });
   // `perClient`: the reservations with no lock named yet that one client address holds at once (`perBoard` for the requests that come through a board,
   // which name no address); a new one past that lets go of the client's oldest, so a user who asks again is answered and one address holds a few at most
   const hold = { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 0.5, perClient: 2, perBoard: 4, ...(config.reserve || {}) };
@@ -451,11 +467,11 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (method === 'GET' && path === '/health') return reply({ ok: health.ok, lastTick: health.lastTick, error: health.lastError }, health.ok ? 200 : 503);
       if (method === 'GET' && path === '/info') {
         const q = config.quote, a = await availableAmount();
-        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(quoter.flat()), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false });
+        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(quoter.flat()), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false, ...(config.stuck ? { stuckFees: stuckSchedule(config.stuck, { feeBps: q.feeBps, flatFee: quoter.flat() }) } : {}) });
       }
       if (method === 'POST' && path === '/quote') {
         if (!body || !amountOk(body.amount)) return reply({ error: 'amount must be a whole number' }, 400);
-        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount).evmAmount); const made = await quoter.quote(body.amount); if (quotesHeld !== null && !quoter.sealed(made.id)) quotesHeld++; return made; }));
+        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount, body.cls).evmAmount); const made = await quoter.quote(body.amount, body.cls); if (quotesHeld !== null && !quoter.sealed(made.id)) quotesHeld++; return made; }));
       }
       if (method === 'POST' && path === '/reserve') {
         if (!body || !isId(body.quoteId)) return reply({ error: 'quoteId is required' }, 400);

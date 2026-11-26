@@ -413,3 +413,10 @@ node tests/fastbridge-fork.mjs          # the Ethereum side against the live poo
 The daemon takes any TAC the note validator accepts, a note made by an exit from the Bitcoin shielded pool included, and says so in its terms
 and ad (`anyTac: true`), so bridgers send it such notes. That TAC cannot be bridged home afterwards, only traded on Bitcoin. The daemon has no
 option to refuse it; a provider run from the page's "Provide liquidity" panel has one.
+
+An optional `stuck` block in the config prices the classes of TAC that cannot be bridged home instead of leaving them at the standing fee:
+a quote request that names a class (`long`, `pool-exit`, `unprovable`; see `dapp/fast/stuck-terms.js`) is priced at that class's fee — the
+standing fee plus an uplift covering the class's expected haircut, from the `neverBps` / `costBps` / `flatCost` / `recoveryBps` the block
+states — a class with `take: false` is not quoted, and the schedule is advertised as `stuckFees` in `/info`. The block changes nothing else:
+the daemon still takes any TAC under a plain quote, as above. A provider run from the page enforces the same terms at its screen: a lock
+that spends a worse class than its quote was priced at is refused, with the class named.

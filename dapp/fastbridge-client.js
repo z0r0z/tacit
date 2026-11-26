@@ -55,13 +55,15 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
       claimPub: strip(i.claimPub), btcAsset: strip(i.btcAsset), evmAsset: strip(i.evmAsset), minAmount: big(i.minAmount, 'minimum'), maxAmount: big(i.maxAmount, 'maximum'),
       feeBps: Number(i.feeBps) || 0, flatFee: big(i.flatFee ?? 0, 'flat fee'), csvBlocks: Number(i.csvBlocks), evmWindowSecs: Number(i.evmWindowSecs),
       available: i.available == null ? null : big(i.available, 'capacity'),
+      stuckFees: i.stuckFees || null,               // the classes of TAC this provider takes priced, and at what fees (dapp/fast/stuck-terms.js); null: none priced
     };
     for (const k of ['claimPub', 'btcAsset', 'evmAsset']) if (pinned(k) && pinned(k) !== t[k]) throw new Error(`the provider's ${k === 'claimPub' ? 'key' : 'asset'} is not the one this page expects`);
     return t;
   }
 
-  async function quote(amount) {
-    const q = await counter.quote(amount);
+  async function quote(amount, cls) {
+    const q = await counter.quote(amount, cls);
+    if (q && q.cls && q.cls !== cls) throw new Error('the provider\'s quote is priced for a different class of TAC than the one asked for');
     if (!q || typeof q.id !== 'string' || q.id.length > 128 || !isHex(q.claimPub, 66) || !isHex(q.btcAsset, 64) || !isHex(q.evmAsset, 64)) throw new Error('the provider\'s quote is not readable');
     for (const k of ['claimPub', 'btcAsset', 'evmAsset']) if (pinned(k) && pinned(k) !== strip(q[k])) throw new Error(`the provider's ${k === 'claimPub' ? 'key' : 'asset'} is not the one this page expects`);
     const btcValue = big(q.btcValue, 'amount'), evmAmount = big(q.evmAmount, 'payout');
@@ -225,10 +227,10 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   // Each quote is also checked against the provider's own terms (`aboveTerms`: it keeps more than its ad says) and against the most the holder said
   // it will pay (`maxFeeBps`, a kept want's price: `aboveWant`). Quotes are ranked by what they cost the holder: one with a take above fair or a fee
   // above its word comes after every one without, then the most paid out first.
-  async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS, maxFeeBps = null } = {}) {
+  async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS, maxFeeBps = null, cls = null } = {}) {
     const got = await Promise.all(providers.map(async (provider) => {
       try {
-        const q = await withTimeout(clientFor(provider.ref).quote(amount), timeoutMs);
+        const q = await withTimeout(clientFor(provider.ref).quote(amount, cls), timeoutMs);
         let aboveTerms = false;
         // (for one asset on both sides the fee is what is not paid out; a provider that lists no terms is judged as before)
         try { aboveTerms = !!provider.terms && q.btcAsset === q.evmAsset && q.fee > feeOf(provider.terms, q.btcValue); } catch { }
@@ -404,6 +406,7 @@ export const termsOf = (i) => ({
   feeBps: Number(i.feeBps) || 0, flatFee: BigInt(i.flatFee ?? 0), minAmount: BigInt(i.minAmount), maxAmount: BigInt(i.maxAmount),
   available: i.available == null ? null : BigInt(i.available),
   anyTac: i.anyTac === true,
+  stuckFees: i.stuckFees || null,
 });
 
 export function makeLocalStore(prefix, storage = globalThis.localStorage) {
