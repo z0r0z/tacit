@@ -1055,7 +1055,11 @@ export function makeBurnDepositUx(deps) {
         try { await chain.broadcastWithRetry(signed.hex || signed.revealHex); }
         catch (e) {
           const said = String((e && e.message) || e);
-          if (/missingorspent|missing-inputs|inputs-missing|bad-txns-inputs|already spent|txn-mempool-conflict/i.test(said) && await chainTxState(signed.txid || signed.revealTxid) === 'absent') { abandon(walletPub, id); return null; }
+          if (/missingorspent|missing-inputs|inputs-missing|bad-txns-inputs|already spent|txn-mempool-conflict/i.test(said) && await chainTxState(signed.txid || signed.revealTxid) === 'absent') {
+            let kept = false;
+            try { storage.setItem(`${JOURNAL_PREFIX}-left:${network}:${stripHex(signed.commitTxid)}`, serializeRecord([rec])); kept = true; } catch {}
+            if (kept) { abandon(walletPub, id); return null; }
+          }
           throw new Error(`burndep-ux: the first of its two transactions is on Bitcoin, so it was not cancelled, and Bitcoin refused the second: ${said}`);
         }
         return putRecord({ ...rec, stage: burn ? 'rburn-sent' : 'migrate-sent', sentAt: rec.sentAt || now(), lastError: null, errorCount: 0 });
