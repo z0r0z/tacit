@@ -25,7 +25,7 @@
 import { esc, fmtUnits, parseUnits, plain, E10 } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=679a3143';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=a292076b';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=45628220';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const NO_ANSWER = 'No answer just now. Nothing was sent. Try again soon.', RETRY_MS = [2000, 4000, 8000, 15000, 30000], RETRY_SHOWN = 3;
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;

@@ -189,7 +189,7 @@ test('while the commit waits too, CPFP prefers the reveal reserve and prices the
   const store = memStore();
   await store.put({ id: 'state', bySwap: { s1: { status: 'sent', at: 100, amount: '5000', txid: T1, vout: 0, commitTxid: commit, revealTxid: T2 } } });
   const signed = [];
-  const commitTx = { txid: commit, weight: 440, fee: 220, vout: [{ value: 870, scriptpubkey: '5120' + '77'.repeat(32) }] };
+  const commitTx = { txid: commit, weight: 440, fee: 220, vout: [{ value: 870, scriptpubkey: '5120' + '77'.repeat(32) }, { value: 20000, scriptpubkey: mainSpk }] };
   const revealTx = { txid: T2, weight: 800, fee: 400, vout: [{ value: 546, scriptpubkey: reverseSpk }, { value: 15000, scriptpubkey: mainSpk }] };
   const btc = {
     status: async () => ({ confirmations: 0 }),

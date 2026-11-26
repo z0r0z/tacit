@@ -10,6 +10,7 @@
 //      This needs contracts/lib (solady); in a git worktree, which has none: ln -s <main checkout>/contracts/lib contracts/lib
 //   2. run it (needs anvil and cast on PATH, and playwright-core):
 //        VAULT_OUT=<forge out dir> PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/vault-page.mjs        (SHOTS=dir saves screenshots)
+//      Set CHROME_EXECUTABLE when Playwright's bundled Chromium is unavailable.
 //
 // VAULT_OUT holds the compiled TacVault, the test mocks (contracts/test/TacVaultMocks.sol) and FixedFeed; it defaults to contracts/out. If an artifact
 // is missing, or is there without bytecode (output left by an older build of the repo), the test says "skipped" and why, and stops with status 0; rebuild
@@ -30,6 +31,7 @@ if (absent.length) { console.log(`skipped: ${OUT} has no compiled ${absent.join(
 if (stale.length) { console.log(`skipped: ${OUT} is stale, ${stale.join(', ')} has no bytecode; rebuild: ${BUILD}`); process.exit(0); }
 const PW = process.env.PLAYWRIGHT || (existsSync('/Users/z/zFi/node_modules/playwright-core') ? '/Users/z/zFi/node_modules/playwright-core' : 'playwright-core');
 const { chromium } = createRequire(import.meta.url)(PW);
+const CHROME_EXECUTABLE = process.env.CHROME_EXECUTABLE || undefined;
 const PORT = Number(process.env.ANVIL_PORT) || 21000 + Math.floor(Math.random() * 1000), WEB = Number(process.env.WEB_PORT) || PORT + 1, ANVIL = `http://127.0.0.1:${PORT}`;
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 
@@ -104,7 +106,7 @@ const vaultOf = (v, who) => { const [c, d, a] = view(v, 'vaults(address)(uint256
 const snap = async () => (await rpcA('eth_getBlockByNumber', ['latest', false])).timestamp;
 
 // ── the page ──
-const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', 'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io', 'eth.rpc.blxrbdn.com', '1.rpc.thirdweb.com', '1rpc.io', 'mainnet.gateway.tenderly.co', 'eth-mainnet.nodereal.io', 'rpc.flashbots.net'];
+const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', 'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io', 'eth.rpc.blxrbdn.com', '1rpc.io', 'eth-mainnet.nodereal.io', 'tacit-node-gw.onrender.com', '1.rpc.thirdweb.com'];
 // `batch`: a wallet that is a smart account and sends several calls as one transaction (EIP-5792): its account is given BatchRun's code (a 7702-style delegation), so each call
 // comes from the account, as it would from a real one.
 const BATCH_RUN_HEX = /BATCH_RUN = '(0x[0-9a-f]+)'/.exec(readFileSync(join(DAPP, 'vault/batch.js'), 'utf8'))[1];
@@ -147,7 +149,7 @@ const hashFor = (extra = '') => `#vusd=${USD}&veth=${ETH}&t=deposit${extra}`;
 // `hold`: { re, gate }: a call whose body matches `re` waits for the promise `gate` before it is answered (a slow node, or a router not yet asked).
 // `rpcLog`: an array that gets the body of every request the page sends to a node, from the first.
 async function openPage({ viewport = { width: 1280, height: 900 }, who = null, noTyped = false, batch = false, hash = hashFor(), host = '127.0.0.1', scheme = 'light', args = [], bare = false, limited = [], hold = null, lp = null, rpcLog = null } = {}) {
-  const browser = await chromium.launch({ args });
+  const browser = await chromium.launch({ args, executablePath: CHROME_EXECUTABLE });
   const ctx = await browser.newContext({ viewport, colorScheme: scheme });
   if (bare) await ctx.route('**/vault/deployments.js*', (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: 'export const DEPLOYMENTS = Object.freeze({ chainId: 1, vaults: Object.freeze([]) });' }));
   await ctx.route('https://tacit-points.onrender.com/**', (route) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(lp ?? { enabled: false }) }));
@@ -253,13 +255,13 @@ try {
   const p = r.page;
   await until(p, () => /250,000\s*TACD/.test(document.querySelector('#board')?.textContent || ''));
   const cap = await text(p, '#board');
-  ok(/Borrowing is open on both vaults/.test(cap) && /Room to borrow\s*250,000 TACD\s*100 TACE/.test(cap) && /Borrowed so far\s*0 TACD\s*0 TACE/.test(cap) && /Fee\s*1%\s*1%/.test(cap) && /Smallest debt\s*100 TACD\s*0\.04 TACE/.test(cap), `the status board says both are open, with the room (the depth's 5% less the debt), the smallest debt, the fee and what is borrowed: ${cap.slice(0, 200)}`);
+  ok(/New borrowing is available/.test(cap) && /Room to borrow\s*250,000 TACD\s*100 TACE/.test(cap) && /Borrowed so far\s*0 TACD\s*0 TACE/.test(cap) && /Fee\s*1%\s*1%/.test(cap) && /Smallest debt\s*100 TACD\s*0\.04 TACE/.test(cap), `the status board says both are open, with the room (the depth's 5% less the debt), the smallest debt, the fee and what is borrowed: ${cap.slice(0, 200)}`);
   ok(!/Pools’ depth|TAC price|Collateral ratio/.test(cap) && (await text(p, '#board [data-more]')) === 'More figures', 'the further figures wait behind More figures');
   await p.click('#board [data-more]');
   const more = await text(p, '#board');
   ok(/Pools’ depth\s*5,000,000 TACD.*2,000 TACE/.test(more) && /Share of depth lent\s*5%\s*5%/.test(more) && /Borrow \/ liquidate at\s*350% · 200%\s*350% · 200%/.test(more) && /TAC deposited\s*0 TAC\s*0 TAC/.test(more), 'and give the pools\' depth, the share of it lent, the TAC deposited and the ratios');
   ok(/TAC price\s*\$0\.25\s*0\.0001 ETH/.test(more) && /ETH\/USD price\s*\d+ (min|s|h)[^—]*—/.test(more) && (await text(p, '#board [data-more]')) === 'Fewer figures', 'the TAC price now in each vault\'s token, and how old the dollar feed is (TAC Ether has none)');
-  ok(await p.evaluate(() => localStorage.getItem('tacit-vault-more')) === '1', 'the choice is kept in this browser');
+  ok(await p.evaluate(() => localStorage.getItem('tacit-vault-details-v2')) === '1', 'the choice is kept in this browser');
   ok(await p.title() === 'tacit borrow' && /read (just now|\d+ s ago)/.test(await text(p, '#board .eyebrow')) && !!(await p.$('#board [data-refresh]')), 'the tab\'s title is the page\'s name, and the board says when it was read, with a Refresh');
   ok((await p.$$eval('#pick button', (b) => b.map((x) => x.textContent))).join('|') === 'TAC DollarTACD|TAC EtherTACE', 'two vaults to pick: TAC Dollar and TAC Ether');
   ok(/Connect a wallet to see your vault/.test(await text(p, '#pos')) && /Connect wallet/.test(await text(p, '#go')), 'with no wallet the position asks for one and the button connects');
@@ -273,7 +275,7 @@ try {
   // ── the nodes first in line are rate limited: the page reads from the one left, and its content policy allows every node it asks ──
   r = await openPage({ limited: RPC_HOSTS.slice(0, -1) });
   await until(r.page, () => /250,000\s*TACD/.test(document.querySelector('#board')?.textContent || ''));
-  ok(/Borrowing is open on both vaults/.test(await text(r.page, '#board')), 'with every node but the last saying it is rate limited the page still reads both vaults');
+  ok(/New borrowing is available/.test(await text(r.page, '#board')), 'with every node but the last saying it is rate limited the page still reads both vaults');
   ok(r.errors.filter((e) => !/status of 429/.test(e)).length === 0 && r.blocked.length === 0, `and asked each of them without the content policy refusing any (${[...r.errors, ...r.blocked].join(' | ').slice(0, 200)})`);
   await closeAll(r);
 
@@ -282,7 +284,7 @@ try {
   r = await openPage();
   await until(r.page, () => /Could not read the prices/.test(document.querySelector('#board')?.textContent || ''));
   const pb = await text(r.page, '#board');
-  ok(/Borrowing is not open yet/.test(pb) && /Borrowing\s*Not open.*Not open/.test(pb) && /Room to borrow\s*—\s*—/.test(pb) && !/error|revert/i.test(pb), 'with no price the board says borrowing is not open and that prices cannot be read, calmly, with no room shown');
+  ok(/New borrowing is unavailable/.test(pb) && /Borrowing\s*Not open.*Not open/.test(pb) && /Room to borrow\s*—\s*—/.test(pb) && !/error|revert/i.test(pb), 'with no price the board says borrowing is unavailable and that prices cannot be read, calmly, with no room shown');
   ok(r.errors.length === 0, 'and logs no error');
   await shot(r.page, 'paused');
   await closeAll(r);
@@ -291,16 +293,16 @@ try {
   // ── thin: the room is under the smallest debt ──
   send('deployer', ORACLE, 'setDepth(uint256)', String(E18 / 2n));                                       // 0.5 ETH deep: the room is 0.025 ETH, under each vault's smallest debt
   r = await openPage();
-  await until(r.page, () => /under the smallest debt/.test(document.querySelector('#board')?.textContent || ''));
+  await until(r.page, () => /a new position needs at least/.test(document.querySelector('#board')?.textContent || ''));
   const tb = await text(r.page, '#board');
-  ok(/Borrowing is not open yet/.test(tb) && /Room to borrow\s*62\.5 TACD\s*0\.025 TACE/.test(tb) && /TAC Dollar: Room \(62\.5 TACD\) is under the smallest debt \(100 TACD\)/.test(tb) && /TAC Ether: Room \(0\.025 TACE\) is under the smallest debt \(0\.04 TACE\)/.test(tb), `a room under the smallest debt is said with both figures, and the vault is not open (${tb.slice(0, 160)})`);
+  ok(/New borrowing is unavailable/.test(tb) && /Room to borrow\s*62\.5 TACD\s*0\.025 TACE/.test(tb) && /TAC Dollar: 62\.5 TACD is available; a new position needs at least 100 TACD/.test(tb) && /TAC Ether: 0\.025 TACE is available; a new position needs at least 0\.04 TACE/.test(tb), `room under the minimum is explained as available capacity, and the vault is unavailable (${tb.slice(0, 160)})`);
   ok((await r.page.$eval('#board .needs a[href="/rewards/#farm"]', (a) => a.textContent)) === 'Add liquidity →' && await r.page.title() === 'tacit borrow', 'the way to more room is the TAC pools, and the tab\'s title stays the page\'s name');
   // an announced change to the share of depth lent opens it: the board says what the room becomes and from when
   send('owner', USD, 'queueParam(uint8,uint256)', '0', '1000'); send('owner', ETH, 'queueParam(uint8,uint256)', '0', '1000');
   await r.page.reload();
-  await until(r.page, () => /borrowing opens from/.test(document.querySelector('#board')?.textContent || ''), null, 30000);
+  await until(r.page, () => /The announced change makes 125 TACD available from/.test(document.querySelector('#board')?.textContent || ''), null, 30000);
   const ta = await text(r.page, '#board');
-  ok(/The announced change makes the room 125 TACD \(smallest debt 100 TACD\): borrowing opens from \d+ \w+ \d+:\d+ UTC/.test(ta) && /makes the room 0\.05 TACE \(smallest debt 0\.04 TACE\): borrowing opens from/.test(ta), `an announced change that opens it says the room it makes and from when (${ta.replace(/\s+/g, ' ').slice(120, 330)})`);
+  ok(/The announced change makes 125 TACD available from \d+ \w+ \d+:\d+ UTC/.test(ta) && /makes 0\.05 TACE available from/.test(ta), `an announced change that opens it says the room it makes and from when (${ta.replace(/\s+/g, ' ').slice(120, 330)})`);
   send('owner', USD, 'cancelParam(uint8)', '0'); send('owner', ETH, 'cancelParam(uint8)', '0');
   send('deployer', ORACLE, 'setDepth(uint256)', String(2000n * E18));
   await closeAll(r);
@@ -445,7 +447,7 @@ try {
 
   // ── paused with a position open: repaying and depositing go on, borrowing and withdrawing wait ──
   send('deployer', ORACLE, 'setBroken(bool)', 'true');
-  await u.reload(); await until(u, () => /Borrowing is not open yet/.test(document.querySelector('#board')?.textContent || ''));
+  await u.reload(); await until(u, () => /New borrowing is unavailable/.test(document.querySelector('#board')?.textContent || ''));
   await tab(u, 'borrow');
   ok(/Borrowing is paused/.test(await text(u, '#go')) && await u.$eval('#go', (b) => b.disabled), 'paused: the borrow button says borrowing is paused');
   await tab(u, 'withdraw');
@@ -623,7 +625,7 @@ try {
   K.stall = true; K.sends.length = 0;
   await tab(k, 'deposit'); await typed(k, '5');
   await k.click('#go');
-  await untilText(k, '#status', /Waiting for your wallet\. Open it to answer, or stop waiting/, 40000);
+  await untilText(k, '#status', /Waiting for your wallet\. Open it to answer\..*stop waiting/, 40000);
   ok(await k.$eval('#go', (b) => b.disabled), 'a wallet that has not answered: the page says so after a while, and nothing else can be sent meanwhile');
   await k.click('#status [data-stop]');
   await untilText(k, '#status', /Stopped waiting\./, 20000);
@@ -712,9 +714,9 @@ try {
     await until(r.page, () => /Mint|TACD|Room to borrow/.test(document.querySelector('#board')?.textContent || '') && !document.querySelector('#board').classList.contains('loading'));
     await sleep(1500);
     const waitBoard = await text(r.page, '#board');
-    ok(/Checking whether borrowing is open/.test(waitBoard) && /Borrowing\s*Checking\s*Checking/.test(waitBoard) && !/Borrowing\s*Not open|not open yet\./.test(waitBoard) && !/Borrowing is not open/.test(waitBoard) && await r.page.$eval('#board .verdict', (e) => e.classList.contains('wait')), 'while the router is being asked, the board says it is checking, and never that borrowing is closed');
+    ok(/Checking borrowing capacity/.test(waitBoard) && /Borrowing\s*Checking\s*Checking/.test(waitBoard) && !/Borrowing\s*Not open|not open yet\./.test(waitBoard) && !/New borrowing is unavailable/.test(waitBoard) && await r.page.$eval('#board .verdict', (e) => e.classList.contains('wait')), 'while the router is being asked, the board says it is checking, and never that borrowing is closed');
     release();
-    await until(r.page, () => /Borrowing is open on/.test(document.querySelector('#board')?.textContent || ''));
+    await until(r.page, () => /New borrowing is available/.test(document.querySelector('#board')?.textContent || ''));
     ok(/The last 6 prices are recorded with your transaction/.test(await text(r.page, '#board')), 'and once the router answers, it is open, with the six prices to go with the transaction');
     await closeAll(r);
     r = await openPage({ who: 'bob', batch: true, hash: `#vusd=${VC}&veth=${VD}&router=${RT}` });
@@ -723,7 +725,7 @@ try {
     await ready(bb, /^Deposit [\d,.]+ TAC and borrow$/);
     ok(/Price records\s*6 included/.test(await text(bb, '#info')) && Number(await bb.inputValue('#amt')) > 0, 'the ticket reads the vault as it will be once the records are in: the amount is filled, and it says six records are included');
     const board1 = await text(bb, '#board');
-    ok(/Borrowing is open/.test(board1) && /The last 6 prices are recorded with your transaction/.test(board1) && /Room to borrow\s*[\d,.]+ TACD\s*[\d,.]+ TACE/.test(board1), 'and the board calls borrowing open, says the six prices go with the transaction, and shows the room of both vaults as it will be');
+    ok(/New borrowing is available/.test(board1) && /The last 6 prices are recorded with your transaction/.test(board1) && /Room to borrow\s*[\d,.]+ TACD\s*[\d,.]+ TACE/.test(board1), 'and the board calls borrowing available, says the six prices go with the transaction, and shows the room of both vaults as it will be');
     ok(await bb.$eval('#feed', (e) => e.hidden), 'with no separate price panel offering a step of its own');
     await shot(bb, 'records-bundle');
     const sg = BL.signs; BL.sends.length = 0;
@@ -789,7 +791,7 @@ try {
     await connect(oo);
     await untilText(oo, '#go', new RegExp(`^Record ${n} prices to open borrowing$`), 60000);
     await sleep(1500);
-    ok((await text(oo, '#info')) === '' && new RegExp(`Borrowing is not open yet`).test(await text(oo, '#board')) && new RegExp(`waits for ${n} prices`).test(await text(oo, '#board')), 'with that many missing nothing is prepared in the background, and the board says borrowing waits for them');
+    ok((await text(oo, '#info')) === '' && new RegExp(`Checking borrowing capacity`).test(await text(oo, '#board')) && new RegExp(`waits for ${n} prices`).test(await text(oo, '#board')), 'with that many missing nothing is prepared in the background, and the board says borrowing waits for them');
     // 10 records to a confirmation (a transaction carries at most 128 KB, a record 9-11 KB); the ticket counts only the ones before the borrow, which carries the last 10
     const confsTicket = Math.ceil((n - 10) / 10), confsFeed = Math.ceil(n / 10);
     const hint = await text(oo, '#hint'), feedTxt = await text(oo, '#feed');
@@ -1102,7 +1104,7 @@ try {
   // ── the order the page is read in: a phone leads from the vault picker to the ticket, then the position and figures; a wide screen keeps it beside them ──
   for (const [width, phone] of [[390, true], [1280, false]]) {
     const x = await openPage({ viewport: { width, height: 900 }, who: 'user' });
-    await connect(x.page); await until(x.page, () => /Borrowing is open/.test(document.querySelector('#board')?.textContent || ''));
+    await connect(x.page); await until(x.page, () => /New borrowing is available/.test(document.querySelector('#board')?.textContent || ''));
     const at = await x.page.evaluate(() => Object.fromEntries(['#pos', '#ticket', '#board'].map((q) => { const r = document.querySelector(q).getBoundingClientRect(); return [q, { top: r.top + scrollY, left: r.left, right: r.right }]; })));
     ok(phone ? at['#ticket'].top < at['#pos'].top && at['#pos'].top < at['#board'].top : at['#ticket'].left >= at['#board'].right, phone ? 'on a phone the ticket comes before the position and the board' : 'on a wide screen the ticket sits beside the board');
     if (phone) {

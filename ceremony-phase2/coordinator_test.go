@@ -728,6 +728,36 @@ func TestNumberedNamesAreLimited(t *testing.T) {
 	}
 }
 
+// With the pool lane closed, a pool machine is refused and its waiting places are dropped at start-up; people are not affected.
+func TestPoolLaneCanBeClosed(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	c.PerIP = -1
+	if _, _, err := c.JoinLane("pool-a", "", "192.0.2.1", "pool"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.Join("alice", "", "192.0.2.2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.JoinLane("pool-b", "", "192.0.2.3", "pool"); err != nil {
+		t.Fatal(err)
+	}
+	c.NoPool = true
+	if _, _, err := c.JoinLane("pool-c", "", "192.0.2.4", "pool"); err == nil {
+		t.Fatal("a pool machine is refused while the lane is closed")
+	}
+	if _, _, err := c.Join("bob", "", "192.0.2.5"); err != nil {
+		t.Fatalf("a person is not: %v", err)
+	}
+	if n := c.TrimPool(); n != 2 {
+		t.Fatalf("the two waiting pool places are dropped: %d", n)
+	}
+	q := c.Queue()
+	if len(q) != 2 || q[0].Name != "alice" || q[1].Name != "bob" {
+		t.Fatalf("the people stay in order: %+v", q)
+	}
+}
+
 func TestOnePlacePerAddressAndQueueCap(t *testing.T) {
 	f := newFixture(t)
 	c := f.chain(t)

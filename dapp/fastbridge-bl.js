@@ -48,6 +48,13 @@ import { bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 const hx = bytesToHex;
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 
+// The most all the bumps of a lock may pay: 1% of the amount, or more for a small amount (up to `lockBumpMaxSats` and `lockBumpShareBps` of it), never past what its change holds
+export function lockBumpCap(amount, changeValue, policy = {}) {
+  const a = Number(amount), pct = Math.floor((a * (policy.lockBumpMaxBps ?? 100)) / 10000);
+  const small = Math.min(policy.lockBumpMaxSats ?? 1500, Math.floor((a * (policy.lockBumpShareBps ?? 600)) / 10000));
+  return Math.min(Math.max(pct, small), Number(changeValue) - 547);
+}
+
 export function makeBitcoinLocker(ctx) {
   const { seed, store, policy, btc, evm, counter } = ctx;
   const secrets = (rec) => X.deriveSwapSecrets({ seed, swapId: hexToBytes(rec.id) });
@@ -160,7 +167,8 @@ export function makeBitcoinLocker(ctx) {
     return { fee: pair.revealFee, vsize: btc.tx.vsizeOf(pair.revealTx), ...(change > 0 ? { change: { vout: change, value: pair.revealTx.outputs[change].value } } : {}) };
   }
   // A lock of sats that a block went by without is bumped (child pays for parent) from its change: a child whose fee lifts the two to the rate the explorers give
-  // for the next block, never more than `lockBumpMaxBps` of the amount between all its bumps (1%), asked again after each block that still goes by without it, up
+  // for the next block, never more than lockBumpCap between all its bumps (1% of the amount, or for a small amount up to `lockBumpMaxSats` (1,500) when that is not over 6% of it:
+  // 1% of 26,000 sats cannot lift a lock out of a backlog, 2026-11-26), asked again after each block that still goes by without it, up
   // to `lockMaxBumps` times. The lock keeps its txid, which the counterparty holds. A bump that cannot be made changes nothing: the lock waits as it would have.
   async function bumpLock(rec) {
     if (!X.isSats(rec.asset) || policy.lockBump === false || !btc.tx.childSats || !rec.lock.change || rec.lock.fee == null || !rec.lock.vsize || !btc.tip) return;
@@ -170,7 +178,7 @@ export function makeBitcoinLocker(ctx) {
     const last = rec.cpfp || null;
     if ((last ? last.bumps : 0) >= (policy.lockMaxBumps ?? 4)) return;
     const rate = Math.ceil(await btc.feeRate(0)), childVb = btc.tx.childVsize ? btc.tx.childVsize() : 110;
-    const cap = Math.min(Math.floor((Number(rec.amount) * (policy.lockBumpMaxBps ?? 100)) / 10000), rec.lock.change.value - 547);
+    const cap = lockBumpCap(rec.amount, rec.lock.change.value, policy);
     let fee = rate * (rec.lock.vsize + childVb) - rec.lock.fee;
     if (last) fee = Math.max(fee, last.fee + childVb + 1);                 // (a replacement pays more than the child it replaces, by the relay's increment)
     fee = Math.min(fee, cap);

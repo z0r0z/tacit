@@ -4,7 +4,7 @@ import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vault/chain.js?cb=3c1d1b84';
 import { makeFeed } from '/vault/feed.js?cb=bd584ab8';
 import { makePools } from '/vault/pools.js?cb=32f5128e';
-import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=9a968a9d';
+import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=c6d26f51';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=514272b7';
 import { tabKeyRead } from '/tab-key.js?cb=e90d6a31';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
@@ -35,7 +35,9 @@ const ROUTER = (() => { const a = LOCAL && ADDR.test(params().get('router') || '
 
 const S = { v: VS[0]?.key, t: 'borrow', pre: true, batchOk: false, batchFor: null, routerFor: null, routerOff: false, routerSettled: false, batchBusy: false, amt: '', view: null, busy: false, seq: 0, chainT: 0, chainAt: 0, loaded: false, failed: false, more: false, toPools: false };
 const BOOT = now();
-const MORE_KEY = 'tacit-vault-more';
+// A new key resets the old always-expanded preference for the redesigned compact board. The detail choice is
+// still remembered after someone opens it again.
+const MORE_KEY = 'tacit-vault-details-v2';
 try { S.more = localStorage.getItem(MORE_KEY) === '1'; } catch { }
 const WALLET_READS = new Set(['eth_call', 'eth_blockNumber', 'eth_getBlockByNumber', 'eth_getProof', 'eth_getTransactionReceipt', 'eth_gasPrice']);
 let walletNow = null;
@@ -124,9 +126,13 @@ function statusOf(x) {
     const ceil = x.d.debtCeiling, g = (v) => `${syn(x, v)} ${x.sym}`;
     if (x.ownerCap && ceil === 0n) return { state: 'thin', short: 'switched off', why: 'The owner has switched borrowing off.', next: '' };
     if (x.ownerCap) return { state: 'thin', short: 'cap reached', why: `The owner caps borrowing at ${g(ceil)}; ${g(x.room)} is left, under the smallest debt (${g(x.s.minDebt)}).`, next: '' };
-    const after = afterAnnounced(x), why = x.room === 0n ? `All ${g(x.cap)} is borrowed.` : `Room (${g(x.room)}) is under the smallest debt (${g(x.s.minDebt)}).`;
-    if (after && after.room >= after.minDebt && after.room > 0n) return { state: 'thin', short: 'room too small', why, next: `The announced change makes the room ${g(after.room)} (smallest debt ${g(after.minDebt)}): borrowing opens from ${onDay(after.eta)}.` };
-    return { state: 'thin', short: 'room too small', why, next: 'More liquidity in the TAC pools adds room. <a href="/rewards/#farm">Add liquidity →</a>' };
+    const after = afterAnnounced(x), used = x.room === 0n;
+    const why = used && x.d.totalDebt != null && x.cap != null
+      ? `${g(x.d.totalDebt)} is owed against ${g(x.cap)} of current capacity.`
+      : `${g(x.room)} is available; a new position needs at least ${g(x.s.minDebt)}.`;
+    const short = used ? 'capacity used' : 'below minimum';
+    if (after && after.room >= after.minDebt && after.room > 0n) return { state: 'thin', short, why, next: `The announced change makes ${g(after.room)} available from ${onDay(after.eta)}.` };
+    return { state: 'thin', short, why, next: `Capacity follows the TAC markets’ lowest depth over eight hours. <a href="/rewards/#farm">Add liquidity →</a>` };
   }
   return { state: 'open', short: '', why: '', next: '' };
 }
@@ -166,7 +172,7 @@ function renderBoard() {
   if (!xs.length) { setHtml(el, `${head}<p class="verdict off">${S.failed ? 'Could not read the vaults.' : 'Reading the vaults…'}</p>${S.failed ? '<p class="note">Try again in a moment.</p>' : '<div class="sk" aria-hidden="true">' + '<i></i>'.repeat(9) + '</div>'}`); return; }
   for (const x of xs) x.status = statusOf(x);
   const open = xs.filter((x) => x.status.state === 'open'), waiting = xs.some((x) => x.status.state === 'wait');
-  const verdict = waiting ? 'Checking whether borrowing is open…' : open.length === xs.length ? (xs.length > 1 ? 'Borrowing is open on both vaults' : `Borrowing is open on ${xs[0].k.name}`) : open.length ? `Borrowing is open on ${open.map((x) => x.k.name).join(' and ')}` : 'Borrowing is not open yet';
+  const verdict = waiting ? 'Checking borrowing capacity…' : open.length === xs.length ? (xs.length > 1 ? 'New borrowing is available' : `New borrowing is available on ${xs[0].k.name}`) : open.length ? `New borrowing is available on ${open.map((x) => x.k.name).join(' and ')}` : 'New borrowing is unavailable';
   const need = GROUP(xs.filter((x) => x.status.state !== 'open').map((x) => [x, { why: x.status.why, next: x.status.next }]));
   const shared = need.length === 1 && need[0].names.length === xs.length;
   for (const x of xs) x.hideShort = shared;
@@ -302,6 +308,8 @@ function renderTicket() {
   }
   const P = planOf();
   const sym = x?.sym || KIND[S.v]?.sym || '', isTac = t === 'deposit' || t === 'withdraw';
+  const unavailable = t === 'borrow' && x && !x.paused && x.room != null && x.room < x.s.minDebt;
+  $('#ticket').classList.toggle('unavailable', !!unavailable);
   setHtml($('#acts'), ACTS.map(([k, l]) => `<button type="button" data-t="${k}" aria-pressed="${k === t}"${S.busy ? ' disabled' : ''}>${l}</button>`).join(''));
   const st = V && derive(V) ? statusOf(derive(V)) : null;
   setHtml($('#tk-h'), `<span>${esc(x ? `${x.k.name} vault` : 'Vault')}</span>${st ? `<span class="st s-${st.state}"><i class="sd"></i>${st.state === 'open' ? 'Borrowing open' : st.state === 'wait' ? 'Checking' : 'Borrowing not open'}</span>` : ''}`);
@@ -320,7 +328,7 @@ function renderTicket() {
   else if (!canAct()) { go.textContent = 'Viewing another account'; go.disabled = true; }
   else if (S.busy || (F.busy && P.record)) { go.textContent = F.busy && P.record ? 'Recording…' : 'Working…'; go.disabled = true; }
   else { go.textContent = P.cta; go.disabled = !P.ok && !P.record; }
-  $('#amt').disabled = S.busy;
+  $('#amt').disabled = S.busy || !!unavailable;
   maybePrepare();
 }
 function setAmount(pct) {
