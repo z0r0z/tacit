@@ -537,7 +537,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <main>
     <section class="hero" aria-labelledby="h">
       <h1 id="h">BTC <em>⇄</em> ETH</h1>
-      <p class="sub">Swap Bitcoin and ETH directly, in either direction, with a provider. No one holds your coins in between, and nothing is wrapped. The ETH you receive arrives private, inside Tacit’s confidential pool. This is a pilot: the code is new, it has had no independent audit yet, and each swap is capped while liquidity builds.</p>
+      <p class="sub">Swap Bitcoin for ETH, or ETH for Bitcoin, with a provider. No one holds your coins in between. Your ETH arrives as a private balance on Tacit. This is a pilot: the code is new, it has had no independent audit, and each swap is capped.</p>
 
       <figure class="map" aria-labelledby="map-cap">
         <div class="mp">
@@ -557,33 +557,30 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
           <li><svg class="tk" aria-hidden="true"><use href="#c-eth"/></svg><b>ETH</b><span>private balance on Tacit</span></li>
           <li><svg class="tk" aria-hidden="true"><use href="#c-btc"/></svg><b>Bitcoin</b><span>your bc1q… address</span></li>
         </ul>
-        <figcaption id="map-cap">You and a provider each lock your coin so that one secret opens both. Whichever of you claims first shows the secret, and the other uses it. If anyone stops, both locks refund.</figcaption>
+        <figcaption id="map-cap">You and a provider each lock a coin. One secret opens both locks. If anyone stops, both refund.</figcaption>
       </figure>
 
       <div class="ways">
         <section class="way" aria-labelledby="w-use">
-          <p class="k">For everyone</p>
+          <p class="k">At a glance</p>
           <h2 id="w-use">Use <em>it</em></h2>
           <dl>
-            <dt>Does</dt><dd>Swap BTC for private ETH, or private ETH for BTC</dd>
-            <dt>Needs</dt><dd>BTC, or ETH in an Ethereum wallet</dd>
-            <dt>Costs</dt><dd>0.20% plus a flat part, and the Bitcoin network fee. Shown before you press.</dd>
-            <dt>Speed</dt><dd>BTC to ETH about 15–20 min, ETH to BTC about 20–30 min</dd>
+            <dt>Swap</dt><dd>BTC for private ETH, or private ETH for BTC</dd>
+            <dt>Time</dt><dd>BTC to ETH about 15–20 min, ETH to BTC about 20–30 min</dd>
+            <dt>Cost</dt><dd>0.20% plus a flat part and the Bitcoin network fee, shown before you press</dd>
             <dt>Where</dt><dd><a href="/btc/">tacit.finance/btc</a></dd>
           </dl>
-          <div class="go"><a href="#start">Get started</a><a href="#safety">If something goes wrong</a></div>
+          <div class="go"><a href="#steps">Swap in three steps</a><a href="#wrong">If something goes wrong</a></div>
         </section>
         <section class="way" aria-labelledby="w-how">
           <p class="k">For builders</p>
-          <h2 id="w-how">How it <em>works</em></h2>
+          <h2 id="w-how">Under <em>the hood</em></h2>
           <dl>
-            <dt>Swap</dt><dd>Adaptor signatures. One secret opens a Taproot lock on Bitcoin and a lock in the pool.</dd>
-            <dt>Pool</dt><dd>Tacit’s confidential pool on Ethereum, proved with zk proofs</dd>
-            <dt>Timelocks</dt><dd>Bitcoin refunds in 144 blocks (about a day), ETH in about 4 h</dd>
-            <dt>Providers</dt><dd>Anyone with a key, ETH and BTC to lend</dd>
-            <dt>Pool contract</dt><dd>0x000000000Ed1eabD231Be41d93b719056F7febFC</dd>
+            <dt>Swap</dt><dd>An adaptor-signature swap between a Bitcoin Taproot lock and a pool lock</dd>
+            <dt>Pool</dt><dd>Tacit’s confidential pool on Ethereum</dd>
+            <dt>Contract</dt><dd>0x000000000Ed1eabD231Be41d93b719056F7febFC</dd>
           </dl>
-          <div class="go"><a href="#path">How it works</a><a href="https://github.com/src-company/tacit/blob/main/docs/FAST-BRIDGE.md" target="_blank" rel="noopener noreferrer">Full spec ↗</a></div>
+          <div class="go"><a href="#hood">Under the hood</a><a href="https://github.com/src-company/tacit/blob/main/docs/FAST-BRIDGE.md" target="_blank" rel="noopener noreferrer">Full spec ↗</a></div>
         </section>
       </div>
     </section>
@@ -592,17 +589,17 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <nav class="toc" aria-label="On this page">
         <p>Use it</p>
         <ol>
-          <li><a href="#start">Get started</a></li>
-          <li><a href="#fees">Limits and fees</a></li>
-          <li><a href="#public">What is public</a></li>
-          <li><a href="#safety">If something goes wrong</a></li>
+          <li><a href="#steps">Swap in three steps</a></li>
+          <li><a href="#fees">Fees and limits</a></li>
+          <li><a href="#wrong">If something goes wrong</a></li>
+          <li><a href="#safe">Is it safe?</a></li>
         </ol>
-        <p>How it works</p>
+        <p>Under the hood</p>
         <ol>
-          <li><a href="#path">The swap’s path</a></li>
-          <li><a href="#lock">The lock and the secret</a></li>
-          <li><a href="#pool">The private pool</a></li>
-          <li><a href="#trust">What you trust</a></li>
+          <li><a href="#hood">The mechanism</a></li>
+          <li><a href="#paths">Both directions</a></li>
+          <li><a href="#secrets">Secrets and recovery</a></li>
+          <li><a href="#price">The price check</a></li>
         </ol>
         <p>More</p>
         <ol>
@@ -615,121 +612,99 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
       <article>
 
-<!-- ─────────────── Get started ─────────────── -->
-<section class="part" id="start">
+<section class="part" id="steps">
   <p class="kick">Use it</p>
-  <h2>Get <em>started</em></h2>
-  <p>Go to <a href="/btc/">tacit.finance/btc</a> and sign in with your Ethereum wallet or a passkey. Signing in opens your Tacit key, which holds both your Bitcoin address and your private ETH. The same wallet or passkey always opens the same key, so you can sign in again on any device.</p>
-  <p>Pick a direction and an amount. The page asks the providers for a quote and shows it before you press: the market rate, the fee, the Bitcoin network fee, what you receive, how long it takes and who the provider is. A quote stands for about five minutes, and the page renews it while you look.</p>
+  <h2>Swap in <em>three steps</em></h2>
+  <p>Go to <a href="/btc/">tacit.finance/btc</a> and sign in with your Ethereum wallet or a passkey. That opens your Tacit key, which holds your Bitcoin address and your private ETH. The same sign-in opens the same key on any device.</p>
+  <p>Pick a direction and an amount. The page shows a quote before you press: the rate, the fee, what you receive and the provider. It stands for about five minutes.</p>
+  <dl class="gl">
+    <dt>Provider</dt><dd>The process that takes the other side of your swap and earns a fee.</dd>
+    <dt>Lock</dt><dd>A coin set aside so that only this swap, or a refund after a timeout, can move it.</dd>
+    <dt>Claim, refund</dt><dd>Claim takes the lock meant for you. Refund takes back your own lock after the timeout.</dd>
+    <dt>Private balance</dt><dd>Your ETH inside Tacit’s pool, where amounts and owners are hidden.</dd>
+  </dl>
 
   <h3>Bitcoin to ETH</h3>
   <ol class="steps">
-    <li><b>Choose “Receive as”.</b> Keep the ETH as a private balance, or have it sent on to an Ethereum address once it has arrived.</li>
-    <li><b>Press Swap.</b> If a Bitcoin wallet is open in this browser, one payment from it starts the swap. If not, send the BTC to your Tacit Bitcoin address first (it is in your account menu and under “Your Bitcoin”), then press Swap.</li>
-    <li><b>Wait for one Bitcoin block.</b> Your page locks the BTC with one ordinary Bitcoin transaction. After its confirmations, the provider locks the same value in ETH in the pool for you, and your page claims it. Then the provider takes the BTC.</li>
-    <li><b>Done.</b> The ETH is in your private balance. You can send it on from “Your ETH”. The whole swap takes about 15–20 minutes.</li>
+    <li><b>Press Swap.</b> If a Bitcoin wallet is open in this browser, one payment from it starts the swap. If not, first send BTC to your Tacit Bitcoin address (in your account menu).</li>
+    <li><b>Wait for one Bitcoin block.</b> Your page locks the BTC. Then the provider locks the same value in ETH, and your page claims it. The provider then takes the BTC.</li>
+    <li><b>Done in about 15–20 minutes.</b> The ETH is in your private balance. Send it on from “Your ETH”.</li>
   </ol>
 
   <h3>ETH to Bitcoin</h3>
   <ol class="steps">
-    <li><b>Press Swap.</b> If your private ETH balance is short, the page adds ETH from your wallet first: one transaction from your wallet adds it, then the swap starts. That deposit is public, but nothing on chain links it to the swap or to your Bitcoin address.</li>
-    <li><b>The provider locks its BTC first.</b> Your page waits for it to confirm: one block for smaller swaps, more for larger ones.</li>
-    <li><b>You lock your ETH, the provider claims it, you take the BTC.</b> Your page does the first and the last step.</li>
-    <li><b>Done.</b> The BTC is at your Tacit Bitcoin address (bc1q…), less the fee of the transaction that took it. From there you can send it to any wallet or exchange, use it on Tacit’s Bitcoin order book, or import its key into another wallet. The whole swap takes about 20–30 minutes.</li>
+    <li><b>Press Swap.</b> If your private ETH is short, the page first adds ETH from your wallet with one transaction. That deposit is public, but not linked to the swap.</li>
+    <li><b>Wait for the provider’s BTC.</b> The provider locks its BTC first and the page waits for it to confirm: one block for smaller swaps, more for larger ones. Then the page locks your ETH, the provider claims it, and the page takes the BTC.</li>
+    <li><b>Done in about 20–30 minutes.</b> The BTC is at your Tacit Bitcoin address (bc1q…), less the fee of the take. Send it on to any wallet or exchange.</li>
   </ol>
 
-  <p><b>Keep the page open until it says Done.</b> Your browser does the signing, so it has to be there for the steps that need it. If you close it by mistake, see <a href="#safety">If something goes wrong</a>.</p>
-  <p>Under “Your swaps” on the page, <b>Back up</b> saves your swaps to a file and <b>Restore</b> reads one back. Restore only a file you made yourself. The swaps can also be found again from your key alone, so the backup is a convenience, not a requirement.</p>
+  <p><b>Keep the page open until it says Done.</b> Your browser does the signing. If you close it, see <a href="#wrong">If something goes wrong</a>.</p>
 </section>
 
-<!-- ─────────────── Limits and fees ─────────────── -->
 <section class="part" id="fees">
   <p class="kick">Use it</p>
-  <h2>Limits <em>and fees</em></h2>
-  <p>While liquidity builds, each swap has a floor and a cap. Both move with what the providers hold, and the page shows the live range under “Limits”.</p>
-  <div class="tbl"><table>
-    <tr><th>Direction</th><th>Least</th><th>Most per swap</th></tr>
-    <tr><td class="t">BTC to ETH</td><td>0.00025 BTC</td><td>0.01 BTC</td></tr>
-    <tr><td class="t">ETH to BTC</td><td>0.008 ETH</td><td>What the providers hold in BTC at that moment</td></tr>
-  </table></div>
-  <p>A BTC to ETH swap that is larger than one provider can fill may be split across up to four providers. The page shows the parts.</p>
-
-  <h3>What a swap costs</h3>
+  <h2>Fees <em>and limits</em></h2>
   <ul>
-    <li><b>The provider’s fee.</b> A share of the amount, 0.20% at the provider Tacit runs, plus a flat part that covers its own Bitcoin costs. Each provider sets its own, and the page asks the cheapest first.</li>
-    <li><b>A lean.</b> A provider that holds too much of one side moves its price a little to attract the other. The provider program allows up to 0.15% by default, and the one Tacit runs is set to up to 0.40%; it is never so far that the quote falls near the page’s 3% limit.</li>
-    <li><b>The Bitcoin network fee.</b> In BTC to ETH, the fee of your lock transaction. In ETH to BTC, the fee of your take, which comes out of the BTC you receive. It is a few hundred sats at typical fee rates, about 500, and the quote shows it.</li>
+    <li><b>Limits.</b> BTC to ETH: 0.00025 BTC to 0.01 BTC. ETH to BTC: from 0.008 ETH, up to the BTC the providers hold at that moment. A larger BTC to ETH swap may be split across up to four providers.</li>
+    <li><b>Provider fee.</b> 0.20% of the amount at the provider Tacit runs, plus a flat part: 400 sats (BTC to ETH) or 0.0001 ETH (ETH to BTC). Other providers set their own.</li>
+    <li><b>Lean.</b> A provider short of one side nudges its price to attract the other. Up to 0.15% by default, up to 0.40% at Tacit’s provider.</li>
+    <li><b>Bitcoin network fee.</b> About 500 sats. In BTC to ETH it is the fee of your lock. In ETH to BTC it comes out of the BTC you receive.</li>
+    <li><b>Price check.</b> The page blocks a quote more than 3% under the market price. It asks you to accept a Bitcoin fee above 2% of the amount.</li>
   </ul>
-  <p>Fixed parts weigh most on small swaps. These figures are illustrative: they use the Tacit provider’s terms (0.20%, a flat 400 sats from BTC to ETH and 0.0001 ETH from ETH to BTC) and a network fee of about 500 sats, and take 30 ETH to a BTC. Real quotes differ.</p>
-  <div class="tbl"><table>
-    <tr><th>Swap</th><th>About what it costs in all</th></tr>
-    <tr><td class="t">0.00025 BTC to ETH</td><td>About 3.8%</td></tr>
-    <tr><td class="t">0.001 BTC to ETH</td><td>About 1.1%</td></tr>
-    <tr><td class="t">0.01 BTC to ETH</td><td>About 0.3%</td></tr>
-    <tr><td class="t">0.011 ETH to BTC</td><td>About 2.5%</td></tr>
-    <tr><td class="t">0.05 ETH to BTC</td><td>About 0.7%</td></tr>
-    <tr><td class="t">0.1 ETH to BTC</td><td>About 0.5%</td></tr>
-  </table></div>
-  <p>The page says so when the all-in cost is high, and it needs you to accept a Bitcoin fee above 2% of the amount.</p>
-
-  <h3>How the price is checked</h3>
-  <p>A provider prices from the market rate plus its fee. The page does not take that on trust. It reads Chainlink’s ETH/BTC price from at least two separate Ethereum nodes, all asked at the same block, and uses it only while they agree and the reading is fresh. It warns on a quote 2.5% under that price and blocks one more than 3% under it. If it cannot read the market, it blocks the quote, because a page that cannot tell cannot say a price is fair.</p>
+  <p>The fixed parts weigh most on small swaps. At Tacit’s provider, without the lean, a BTC to ETH swap of 0.00025 BTC costs about 3.8% in all, 0.001 BTC about 1.1%, and 0.01 BTC about 0.3%.</p>
 </section>
 
-<!-- ─────────────── What is public ─────────────── -->
-<section class="part" id="public">
-  <p class="kick">Use it</p>
-  <h2>What is <em>public</em></h2>
-  <p>Bitcoin payments are public. The ETH side is private: it moves inside the pool, where amounts and owners are sealed. What each chain shows for each leg:</p>
-  <div class="tbl"><table>
-    <tr><th></th><th>Public</th><th>Hidden</th></tr>
-    <tr><td class="t">Your BTC lock</td><td>A Bitcoin transaction from your address, with its amount, to a Taproot address. A sealed 43-byte note in it can be read only with your key.</td><td>That it is a swap. Nothing in it marks it as a Tacit transaction.</td></tr>
-    <tr><td class="t">The provider’s BTC take</td><td>A spend of that output with one ordinary signature</td><td>That it is a swap: it looks like any Taproot key-path spend</td></tr>
-    <tr><td class="t">The ETH lock</td><td>That a lock was added to the pool, and when</td><td>The amount, and who owns it</td></tr>
-    <tr><td class="t">The ETH claim or refund</td><td>That the lock was claimed or refunded, and when. A claim’s proof carries the completed signature, which is how the secret becomes known.</td><td>The amount, and who received it</td></tr>
-    <tr><td class="t">Adding ETH first</td><td>Your Ethereum address and the amount of the deposit</td><td>Which swap it was for, and your Bitcoin address</td></tr>
-    <tr><td class="t">Your ETH balance</td><td>The pool’s total</td><td>What you hold</td></tr>
-  </table></div>
-  <p>In ETH to BTC, the BTC amount and the transactions that lock and take it are public on Bitcoin, and your Bitcoin address is the one that receives it. The swap does not make Bitcoin private.</p>
-</section>
-
-<!-- ─────────────── Safety ─────────────── -->
-<section class="part" id="safety">
+<section class="part" id="wrong">
   <p class="kick">Use it</p>
   <h2>If something <em>goes wrong</em></h2>
-  <p>Closing a tab does not give anyone your funds. Each lock refunds on its own clock, and nothing leaves your control except into the swap’s lock. Here is what happens at each point.</p>
-
-  <h3>Bitcoin to ETH</h3>
-  <div class="tbl"><table>
-    <tr><th>If you close the page…</th><th>What happens</th></tr>
-    <tr><td class="t">Before your BTC is sent</td><td>Nothing moved. Your BTC never left your address.</td></tr>
-    <tr><td class="t">After your BTC is sent, before the provider locks its ETH</td><td>Reopen the page in the same browser and it carries on. On another device, it finds the swap again from your key and finishes it while the provider still holds its offer. If no one finishes, your BTC returns to your address after 144 blocks, about a day.</td></tr>
-    <tr><td class="t">After the provider has locked its ETH</td><td>Come back before the ETH deadline, about 4 hours after the lock. The page shows the time. If you do not, the ETH goes back to the provider and your BTC returns after about a day. You lose nothing.</td></tr>
-  </table></div>
-
-  <h3>ETH to Bitcoin</h3>
-  <div class="tbl"><table>
-    <tr><th>If you close the page…</th><th>What happens</th></tr>
-    <tr><td class="t">While the provider’s BTC confirms</td><td>None of your ETH is locked yet. If you do not come back, the provider’s BTC returns to it.</td></tr>
-    <tr><td class="t">After you lock your ETH, before the provider claims</td><td>Your ETH returns to your private balance after about 4 hours if the provider does not claim. A refund puts it back as private ETH.</td></tr>
-    <tr><td class="t">After the provider has claimed</td><td>The BTC is yours from that moment. Take it before the provider’s refund opens, about 16 hours after its lock confirms. Your page also posts a take that is signed ahead, so a watcher can finish it for you. It can pay only your own address. The page says when your BTC is watched.</td></tr>
-  </table></div>
-  <p>The one case where timing matters is the last one. If you are offline past the provider’s refund and no watcher takes for you, the provider can take its BTC back and keep your ETH. Coming back sooner is better.</p>
-
-  <h3>Other cases</h3>
+  <p><b>Closing a tab never gives anyone your funds.</b> Every lock refunds on its own clock. The worst case is that your coins come back after a timeout.</p>
   <ul>
-    <li><b>The provider goes offline.</b> Before it has locked, nothing is at risk. After, each lock refunds as above.</li>
-    <li><b>The quote ran out.</b> A swap starts only on a quote with more than two minutes left. If it ran out before your BTC was sent, nothing was sent. Ask for a new quote.</li>
-    <li><b>Bitcoin is slow.</b> Blocks come about every ten minutes but sometimes much slower. After 15 minutes without a block the page says so. The Bitcoin refund counts blocks, so it waits for them.</li>
-    <li><b>You lose your device.</b> Sign in with the same wallet or passkey. The page finds your swaps again from your key and the chains.</li>
+    <li><b>You closed the page.</b> Reopen it in the same browser and it carries on. On another device, sign in again: the page finds the swap from your key while the provider still serves its offer.</li>
+    <li><b>BTC to ETH, the provider has not locked.</b> Your BTC returns to your address after 144 Bitcoin blocks, about a day.</li>
+    <li><b>BTC to ETH, the provider has locked its ETH.</b> Come back within about 4 hours of its lock. If you do not, its ETH goes back to it and your BTC returns after about a day.</li>
+    <li><b>ETH to BTC, you have locked your ETH.</b> If the provider does not claim, your ETH returns to your private balance after about 4 hours.</li>
+    <li><b>ETH to BTC, the provider has claimed.</b> The BTC is yours. Take it within about 16 hours of the provider’s lock confirming, before its refund opens. If you are away, a watcher can finish the take. It can pay only your own address. If you are offline past that time and no watcher takes, the provider can take its BTC back and keep your ETH. This is the one case where timing matters.</li>
+    <li><b>Bitcoin is slow.</b> After 15 minutes without a block, the page says so. Refunds count blocks, so they wait too. A quote with under two minutes left is refused: ask again.</li>
   </ul>
 </section>
 
-<!-- ─────────────── Path ─────────────── -->
-<section class="part" id="path">
-  <p class="kick">How it works</p>
-  <h2>The swap’s <em>path</em></h2>
-  <p>Both directions follow one order. The side that locks Bitcoin holds a secret <code>t</code> and locks first. The other side locks only after that lock is confirmed. The side that holds <code>t</code> claims first on Ethereum, which shows <code>t</code>, and the other side uses it on Bitcoin.</p>
+<section class="part" id="safe">
+  <p class="kick">Use it</p>
+  <h2>Is it <em>safe?</em></h2>
+  <ul>
+    <li><b>It is a pilot.</b> The code is new and has had no independent audit. Swaps are capped. Do not move more than you can afford to have delayed.</li>
+    <li><b>Your browser checks both.</b> It verifies the provider’s offer before it reveals anything, and compares each quote with Chainlink’s ETH/BTC price.</li>
+    <li><b>Bitcoin stays public.</b> The ETH side is private. The BTC amount and its transactions are visible on Bitcoin, and your Bitcoin address receives the BTC.</li>
+    <li><b>ETH to BTC uses only providers the site names.</b> BTC to ETH can also use community providers.</li>
+    <li><b>Never sign the Tacit sign-in message on any other site.</b> It is not tied to a website. Anyone who holds that signature controls your Tacit funds, including your swaps.</li>
+  </ul>
+</section>
+
+<section class="part" id="hood">
+  <p class="kick">Under the hood</p>
+  <h2>The <em>mechanism</em></h2>
+  <p>You do not need this part to swap. It is here so you can check the claims above.</p>
+
+  <h3>The swap</h3>
+  <p>It is an adaptor-signature atomic swap. An adaptor signature is a signature made incomplete on purpose. A secret <code>t</code> completes it, and the finished signature shows <code>t</code>.</p>
+  <ul>
+    <li><b>On Bitcoin,</b> the lock is a Taproot output. Taproot is Bitcoin’s address type that can hide a script. The output key is the claimer’s key plus <code>T = t·G</code>, so spending it needs both the claimer’s key and <code>t</code>. One script leaf lets the locker refund after a number of blocks (<code>CHECKSEQUENCEVERIFY</code>).</li>
+    <li><b>On Ethereum,</b> the pool has three operations: <code>adaptorlock</code>, <code>adaptorclaim</code> and <code>adaptorrefund</code>. A lock holds a note of the exact amount under <code>(T, deadline, recipient)</code>. A claim needs a signature that is whole only with <code>t</code>. A refund returns the note to its owner after the deadline.</li>
+    <li><b>The link is <code>t</code>.</b> The claimer pre-signs with <code>T</code>. Completing that pre-signature takes <code>t</code>: <code>z = s̃ + t</code>. The claim’s proof carries <code>z</code>, so anyone reading the pool can compute <code>t = z − s̃</code>.</li>
+  </ul>
+
+  <h3>The pool</h3>
+  <p>A private balance is a set of notes. A note is a sealed record of an amount and its owner. The pool stores only the seal, a commitment, in a Merkle tree of 32 levels.</p>
+  <p>To spend a note you publish its nullifier, a tag only the owner can compute. It marks the note spent without saying which note it was. Each operation is proved with SP1 and wrapped in Groth16, so Ethereum checks it cheaply. A relay posts the proof. It sees proofs, not keys, and cannot move your funds. The proofs use pairings, so they are not post-quantum.</p>
+
+  <h3>What is public</h3>
+  <p>On Bitcoin: your lock, with its amount, and the provider’s take, an ordinary Taproot key-path spend. In the pool: that a lock was added, claimed or refunded, and when, not the amount or owner. Adding ETH first shows your Ethereum address and the deposit, not the swap it was for.</p>
+</section>
+
+<section class="part" id="paths">
+  <p class="kick">Under the hood</p>
+  <h2>Both <em>directions</em></h2>
+  <p>The side that locks Bitcoin first is the one that holds <code>t</code>. The other side locks only after that lock confirms. The holder of <code>t</code> claims first on Ethereum, which shows <code>t</code>, and the other side uses it on Bitcoin.</p>
 
   <h3>Bitcoin to ETH</h3>
   <figure class="fig">
@@ -758,10 +733,10 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <figcaption>You hold <code>t</code>. The orange arrow is the claim, which shows <code>t</code>.</figcaption>
   </figure>
   <ol class="steps">
-    <li>You make <code>t</code> from your key and lock the BTC to a Taproot address keyed to the provider’s key plus <code>T = t·G</code>. The lock has a refund leaf that returns the BTC to you after 144 blocks.</li>
-    <li>The provider reads your lock from Bitcoin, waits for its confirmations, and locks pool ETH of the quoted amount to <code>T</code>, with a deadline of about 4 hours and your claim key as the recipient. It sends you a pre-signature of the claim.</li>
-    <li>Your browser checks the provider’s offer: the pre-signature, <code>T</code>, the recipient and the time left. Only then does it claim, completing the signature with <code>t</code>. The claim’s proof carries the signature <code>z</code>.</li>
-    <li>The provider reads <code>z</code>, works out <code>t = z − s̃</code>, and takes your BTC.</li>
+    <li>You make <code>t</code> and lock the BTC to the provider’s key plus <code>T</code>, refundable to you after 144 blocks.</li>
+    <li>The provider waits for confirmations, then locks pool ETH to <code>T</code> for your claim key, with a deadline of about 4 hours. It sends a pre-signature of the claim.</li>
+    <li>Your browser checks the offer (pre-signature, <code>T</code>, recipient, time left), then claims with <code>t</code>.</li>
+    <li>The provider reads <code>z</code>, works out <code>t</code>, and takes your BTC.</li>
   </ol>
 
   <h3>ETH to Bitcoin</h3>
@@ -791,173 +766,87 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <figcaption>The provider holds <code>t</code>. The orange arrow is its claim, which shows <code>t</code> to you.</figcaption>
   </figure>
   <ol class="steps">
-    <li>The provider makes <code>t</code> and locks its BTC to a Taproot address keyed to your key plus <code>T</code>, refundable to it after a number of blocks, 96 (about 16 hours) in today’s ads.</li>
-    <li>Your page reads that lock itself and waits for its confirmations. It checks the windows, then locks your pool ETH to <code>T</code> with a deadline of about 4 hours, the provider as the recipient.</li>
-    <li>The provider claims your ETH. That shows <code>z</code>, and so <code>t</code>.</li>
-    <li>You take the BTC with your key plus <code>t</code>.</li>
+    <li>The provider makes <code>t</code> and locks its BTC to your key plus <code>T</code>, refundable to it after 96 blocks (about 16 hours) in today’s ads.</li>
+    <li>Your page reads that lock itself, waits for confirmations, checks the windows, then locks your pool ETH to <code>T</code> for the provider, with a deadline of about 4 hours.</li>
+    <li>The provider claims your ETH, which shows <code>t</code>. You take the BTC with your key plus <code>t</code>.</li>
   </ol>
 
   <h3>Why the order is safe</h3>
-  <p>The timelocks are set so that the Bitcoin refund opens at least two hours after the Ethereum deadline. The party that locks Ethereum then has time to see <code>t</code> and take the BTC before the other side could refund. A claim that is sent but does not land before its deadline still shows <code>t</code>, so the page refuses to build a claim with less than an hour left.</p>
+  <p>The Bitcoin refund opens at least two hours after the Ethereum deadline. So whoever locks ETH has time to see <code>t</code> and take the BTC before the other side can refund. A claim that is sent but misses its deadline still shows <code>t</code>, so the page will not build a claim with less than an hour left.</p>
 </section>
 
-<!-- ─────────────── Lock ─────────────── -->
-<section class="part" id="lock">
-  <p class="kick">How it works</p>
-  <h2>The lock <em>and the secret</em></h2>
-  <p>This is an adaptor-signature swap. Neither chain has to know about the other.</p>
-  <ul>
-    <li><b>On Bitcoin,</b> the lock is a Taproot output. Its key is the claimer’s key plus <code>T</code>, so spending it by the key path needs the claimer’s key and <code>t</code>. One script leaf lets the locker refund after a number of blocks (<code>CHECKSEQUENCEVERIFY</code>, 144 blocks from you, 96 from a provider). The sats are plain sats, not a Tacit note.</li>
-    <li><b>On Ethereum,</b> the pool has three operations, <code>adaptorlock</code>, <code>adaptorclaim</code> and <code>adaptorrefund</code>. A lock puts a note of the exact amount into the pool’s lock set under <code>(T, deadline, recipient)</code>. A claim spends it to the recipient and needs a signature that is only whole when it includes <code>t</code>. A refund returns it to its owner after the deadline.</li>
-    <li><b>The link is <code>t</code>.</b> The claimer pre-signs with <code>T</code>, so the pre-signature is not yet valid. Completing it takes <code>t</code>: <code>z = s̃ + t</code>. The claim’s proof carries <code>z</code>, so anyone reading the pool can work out <code>t = z − s̃</code>.</li>
-  </ul>
-  <p>A pre-signature exists only if the locked note holds exactly the quoted amount. Nothing in an offer stands in for a chain read: each side takes the swap’s id, the lock’s script and the confirmations from the chains themselves.</p>
+<section class="part" id="secrets">
+  <p class="kick">Under the hood</p>
+  <h2>Secrets <em>and recovery</em></h2>
+  <p>The secret, the note blindings and a sealed hint in the Bitcoin lock are all derived from your Tacit key and the lock’s outpoint. A swap can therefore be found again from your key and the chains alone. That is how another device, or a browser with cleared storage, picks one up.</p>
 
-  <h3>Secrets come from your key</h3>
-  <p>The secret, the blindings of the notes and a sealed hint in the Bitcoin lock are all derived from your Tacit key and the lock’s outpoint. So a swap can be found again from your key and the chains alone. That is how another device, or a browser with its storage cleared, picks a swap up.</p>
-
-  <h3>The take that anyone can finish</h3>
-  <p>In ETH to Bitcoin you take the BTC after the provider claims. If you are offline then, a watcher can do it for you. Your page signs the take ahead, except for the one number that needs <code>t</code>, and posts that pre-signature. It shows nothing without <code>t</code>, so it is safe to publish.</p>
-  <p>The signature uses <code>SIGHASH_SINGLE | ANYONECANPAY</code>. It fixes the lock as the input and your own address as the output, with the fee taken out. Anyone may add inputs to pay a higher fee, and no one can change where the sats go. When the provider claims, the watcher completes the signature with <code>t</code>, and the take pays your address. The API only holds these pre-signatures and checks each against the key that made it. The watcher checks again before it broadcasts.</p>
+  <h3>The take watcher</h3>
+  <p>In ETH to Bitcoin, your page signs the take ahead, except for the one number that needs <code>t</code>, and posts that pre-signature. It is useless without <code>t</code>, so publishing it is safe.</p>
+  <p>It is signed with <code>SIGHASH_SINGLE | ANYONECANPAY</code>. That fixes the lock as the input and your own address as the output, with the fee taken out. Anyone may add inputs to raise the fee, but no one can change where the sats go. After the provider claims, the watcher completes the signature with <code>t</code>. The API and the watcher both check it first.</p>
 </section>
 
-<!-- ─────────────── Pool ─────────────── -->
-<section class="part" id="pool">
-  <p class="kick">How it works</p>
-  <h2>The private <em>pool</em></h2>
-  <p>The ETH side lives in Tacit’s confidential pool on Ethereum. A balance there is a set of private notes. A note is a sealed record of an amount and its owner. The pool stores only the seal, called a commitment, in a Merkle tree of 32 levels. It keeps three such trees: notes, locks and positions.</p>
-  <p>To spend a note, you publish its nullifier. A nullifier is a tag only the owner can compute. It marks the note as spent, so it cannot be spent twice, and it does not say which note it was.</p>
-  <p>Each operation is proved with a zk proof. The proof shows that you own the notes and the amounts add up, without revealing either. The proofs are made with SP1 and wrapped in Groth16, so Ethereum checks each one cheaply. A relay posts them. The relay sees proofs, not keys, and cannot move your funds.</p>
-  <p>The swap uses the pool’s lock set: a lock is a note held under <code>(T, deadline, recipient)</code> until it is claimed or refunded. That is the Ethereum half of the swap.</p>
-  <div class="more">
-    <a href="https://github.com/src-company/tacit/blob/main/docs/FAST-BRIDGE.md" target="_blank" rel="noopener noreferrer">The swap, in full<span>Messages, windows and checks</span></a>
-    <a href="https://github.com/src-company/tacit/blob/main/docs/DEPLOYMENTS.md" target="_blank" rel="noopener noreferrer">The pool contract<span>Addresses and verifying keys</span></a>
-  </div>
+<section class="part" id="price">
+  <p class="kick">Under the hood</p>
+  <h2>The price <em>check</em></h2>
+  <p>A provider quotes the market rate plus its fee. The page does not take that on trust. It reads Chainlink’s ETH/BTC price from at least two Ethereum nodes, asked at the same block, and uses it only while they agree and the reading is fresh. It warns on a quote 2.5% under that price and blocks one more than 3% under. If it cannot read the market, it blocks the quote.</p>
 </section>
 
-<!-- ─────────────── Trust ─────────────── -->
-<section class="part" id="trust">
-  <p class="kick">How it works</p>
-  <h2>What you <em>trust</em></h2>
-  <div class="tbl"><table>
-    <tr><th>For</th><th>You rely on</th><th>Not on</th></tr>
-    <tr><td class="t">Your funds</td><td>The swap code in your browser, the proofs, and the pool’s contract code</td><td>The provider, the relay or the provers</td></tr>
-    <tr><td class="t">Your price</td><td>The page’s own market check, from Chainlink on several nodes</td><td>The provider’s word</td></tr>
-    <tr><td class="t">Your privacy on Ethereum</td><td>Your device, which makes the proofs of your own notes</td><td>The provider or the relay</td></tr>
-  </table></div>
-  <ul>
-    <li><b>Your browser checks the provider.</b> Before it publishes anything that reveals <code>t</code>, it verifies the provider’s offer: the pre-signature, <code>T</code>, the recipient and the time left.</li>
-    <li><b>The provider cannot take both sides.</b> The second locker never locks before the first lock is confirmed, and both locks open with the same secret.</li>
-    <li><b>The relay and prover cannot move your funds.</b> They see proofs, not keys. Whoever proves a claim sees <code>z</code> before it lands, which is why the claim is not proved by the provider.</li>
-    <li><b>A modified provider</b> could matter only in ETH to BTC, if you stay offline past the provider’s refund and no watcher takes for you.</li>
-    <li><b>ETH to BTC uses only providers the site names.</b> In that direction the provider claims, and your BTC comes from reading its claim off the pool. Until that can be read from the pool’s own record, the page asks only providers it names. Other providers serve BTC to ETH only, until reviewed.</li>
-    <li><b>It is a pilot.</b> The swap code is new and has had no independent audit. Swap sizes are capped, and you should not move more than you can afford to have delayed while you learn how it behaves.</li>
-    <li><b>Do not sign the Tacit sign-in message anywhere else.</b> It is not tied to a website. It says to sign it only in a Tacit app you trust, and anyone who holds the signature controls your Tacit funds, including your swaps.</li>
-  </ul>
-  <p>The pool’s proofs use pairings, like most zk systems on Ethereum, so they are not post-quantum.</p>
-</section>
-
-<!-- ─────────────── Provide ─────────────── -->
 <section class="part" id="provide">
   <p class="kick">More</p>
   <h2>Run <em>a provider</em></h2>
-  <p>Anyone can provide. A provider is a small process with its own key. It quotes from the market price plus its fee, and each swap locks both sides, so it never holds anyone’s funds. More providers add room to each swap and keep prices close.</p>
-  <h3>What it needs</h3>
-  <ul>
-    <li>A key. Setup makes one and shows it once. Copy it somewhere offline: the funds are only as safe as that key.</li>
-    <li>ETH, shielded into the pool as the key’s private notes, to serve BTC to ETH. A small start is about 0.07 ETH, which covers swaps up to 0.001 BTC.</li>
-    <li>Optionally BTC at the provider’s own Bitcoin address, to serve ETH to BTC. Setup counts one confirmation.</li>
-    <li>A machine that stays on, with Node 22, or Docker. It must finish each swap before the user’s refund opens.</li>
-  </ul>
-  <h3>One command</h3>
+  <p>A provider is a small process with its own key. It quotes the market price plus its fee. Each swap locks both sides, so it never holds anyone’s funds. You need a key (setup shows it once, so copy it offline), ETH shielded into the pool, optionally BTC at its own Bitcoin address, and a machine that stays on with Node 22 or Docker.</p>
   <div class="code"><pre><code>git clone https://github.com/src-company/tacit &amp;&amp; cd tacit
 (cd worker-relay &amp;&amp; npm ci --omit=dev --ignore-scripts) &amp;&amp; (cd worker &amp;&amp; npm ci --omit=dev --ignore-scripts)
 node fastbridge-lp/setup.mjs</code></pre></div>
-  <p>Setup asks for a name and your fee, prints the two addresses to fund, checks the nodes, the explorers, the price and a test quote, and starts. Stop it at any point and run it again: it picks up where it was.</p>
-  <h3>How users find you</h3>
-  <p>The provider signs an ad with its key: its terms, its limits and what it can lend now. It posts the ad to a board every minute, and each ad stands for a few minutes. The page reads the board and checks each signature itself. Your provider shows under “Providers” on <a href="/btc/">tacit.finance/btc</a> within a few minutes. You need no public address or domain.</p>
-  <h3>Earn and risk</h3>
-  <p>You earn a share of each swap (setup defaults to 0.30%) plus a flat part that covers Bitcoin fees. You risk capacity tied up while a swap is open, up to about 16 hours if a user disappears. You also pay network fees on both chains, and the price can move in that time. All of it is bounded by the most you allow per swap. Nothing here is a promise of income.</p>
+  <p>Setup asks for a name and a fee (default 0.30% plus 1,000 sats), prints the two addresses to fund, checks the nodes and the price, and starts. The provider posts a signed ad to a board every minute, and the page checks each signature. You need no public address. You earn the fee. You risk capacity tied up while a swap is open, up to about 16 hours if a user disappears. Nothing here is a promise of income.</p>
   <div class="more">
     <a href="https://github.com/src-company/tacit/blob/main/fastbridge-lp/README.md" target="_blank" rel="noopener noreferrer">The provider’s guide<span>Setup, config and running it</span></a>
     <a href="/btc/#be">Run a provider<span>The same steps, on the swap page</span></a>
   </div>
 </section>
 
-<!-- ─────────────── Build ─────────────── -->
 <section class="part" id="build">
   <p class="kick">More</p>
   <h2>Build <em>on it</em></h2>
-  <p>The swap runs on public parts. A provider answers over HTTP and through the board, and a page signs and proves on the user’s device.</p>
+  <p>Providers answer over HTTP and through a board. Pages sign and prove on the user’s device.</p>
   <div class="code"><pre><code>curl https://tacit-fast-board.onrender.com/ads   <span class="c"># providers' signed ads</span>
 curl https://api.tacit.finance/take-presig        <span class="c"># signed-ahead takes, for a watcher</span></code></pre></div>
-  <div class="tbl"><table>
-    <tr><th>Route</th><th>Where</th><th>Returns</th></tr>
-    <tr><td class="t"><code>GET /ads</code></td><td>The board</td><td>Every provider’s signed ad: terms, limits, what it can lend, in each direction</td></tr>
-    <tr><td class="t"><code>GET /info</code></td><td>A provider</td><td>Its terms for BTC to ETH: least, most, fee, flat part, windows, what it can lend now</td></tr>
-    <tr><td class="t"><code>POST /quote</code></td><td>A provider</td><td>A quote for an amount, good for about five minutes</td></tr>
-    <tr><td class="t"><code>POST /reserve</code>, <code>POST /offer</code></td><td>A provider</td><td>Holds a quote, takes your lock offer</td></tr>
-    <tr><td class="t"><code>GET /swap/ID/offer</code></td><td>A provider</td><td>The provider’s ETH lock offer and pre-signature</td></tr>
-    <tr><td class="t"><code>GET /reverse/info</code>, <code>POST /reverse/quote</code></td><td>A provider</td><td>The same, for ETH to BTC</td></tr>
-    <tr><td class="t"><code>POST /reverse/start</code>, <code>GET /reverse/swap/ID</code></td><td>A provider</td><td>Starts a swap and reads its state</td></tr>
-    <tr><td class="t"><code>GET /take-presig</code>, <code>POST /take-presig</code></td><td>The API</td><td>Lists or publishes a signed-ahead take. Each one is verified before it is kept.</td></tr>
-  </table></div>
-  <p>Requests to a provider can also go through the board, sealed to the provider’s gateway key, so a provider needs no public address.</p>
-  <p>On the client, these modules in the repository are the swap:</p>
-  <div class="tbl"><table>
-    <tr><th>Module</th><th>What it is</th></tr>
-    <tr><td class="t"><a href="https://github.com/src-company/tacit/blob/main/dapp/fastbridge-pair.js" target="_blank" rel="noopener noreferrer"><code>dapp/fastbridge-pair.js</code></a></td><td>The user’s side of both directions behind one object: <code>quote</code>, <code>start</code>, <code>pump</code>, <code>records</code>, <code>recover</code></td></tr>
-    <tr><td class="t"><a href="https://github.com/src-company/tacit/blob/main/dapp/adaptor-xswap.js" target="_blank" rel="noopener noreferrer"><code>dapp/adaptor-xswap.js</code></a></td><td>The terms, the secrets and the checks each side runs before it commits</td></tr>
-    <tr><td class="t"><a href="https://github.com/src-company/tacit/blob/main/dapp/take-presig.js" target="_blank" rel="noopener noreferrer"><code>dapp/take-presig.js</code></a></td><td>The take signed ahead: its making, its check and its completing</td></tr>
-    <tr><td class="t"><a href="https://github.com/src-company/tacit/blob/main/dapp/swap/atomic.js" target="_blank" rel="noopener noreferrer"><code>dapp/swap/atomic.js</code></a></td><td>The swap tile: <code>makeAtomicLane({ host, wallet, provider, … })</code> draws the form and the swaps under it</td></tr>
-    <tr><td class="t"><a href="https://github.com/src-company/tacit/blob/main/dapp/fastbridge-rate.js" target="_blank" rel="noopener noreferrer"><code>dapp/fastbridge-rate.js</code></a></td><td>The market price, from Chainlink and other sources that must agree</td></tr>
-  </table></div>
-  <p>To put the swap in your own page, mount the tile as <code>dapp/btc/app.js</code> does: it opens the pair client with the user’s Tacit key through <code>dapp/fast/pair-wire.js</code> (<code>openPair</code>), then gives <code>makeAtomicLane</code> a host element. The pool’s side of the swap is the <code>adaptorlock</code>, <code>adaptorclaim</code> and <code>adaptorrefund</code> operations in the <a href="https://github.com/src-company/tacit/blob/main/SPEC.md" target="_blank" rel="noopener noreferrer">spec</a>.</p>
+  <ul>
+    <li><b>A provider:</b> <code>GET /info</code>, <code>POST /quote</code>, <code>POST /reserve</code>, <code>POST /offer</code> for BTC to ETH. <code>GET /reverse/info</code>, <code>POST /reverse/quote</code>, <code>POST /reverse/start</code> for ETH to BTC. Requests can also go through the board, sealed to the provider’s gateway key.</li>
+    <li><b>The client:</b> <a href="https://github.com/src-company/tacit/blob/main/dapp/fastbridge-pair.js" target="_blank" rel="noopener noreferrer"><code>dapp/fastbridge-pair.js</code></a> is the user’s side of both directions. <a href="https://github.com/src-company/tacit/blob/main/dapp/adaptor-xswap.js" target="_blank" rel="noopener noreferrer"><code>dapp/adaptor-xswap.js</code></a> holds the terms and checks. <a href="https://github.com/src-company/tacit/blob/main/dapp/take-presig.js" target="_blank" rel="noopener noreferrer"><code>dapp/take-presig.js</code></a> makes the take signed ahead.</li>
+    <li><b>The tile:</b> <a href="https://github.com/src-company/tacit/blob/main/dapp/swap/atomic.js" target="_blank" rel="noopener noreferrer"><code>dapp/swap/atomic.js</code></a> exports <code>makeAtomicLane({ host, wallet, provider, … })</code>. Open the pair client with <code>openPair</code> from <code>dapp/fast/pair-wire.js</code>, as <code>dapp/btc/app.js</code> does.</li>
+  </ul>
   <div class="more">
     <a href="https://github.com/src-company/tacit/blob/main/docs/FAST-BRIDGE.md" target="_blank" rel="noopener noreferrer">The spec<span>Every message and window</span></a>
-    <a href="https://github.com/src-company/tacit/tree/main/fastbridge-lp" target="_blank" rel="noopener noreferrer">The provider<span>The daemon and setup</span></a>
+    <a href="https://github.com/src-company/tacit/blob/main/SPEC.md" target="_blank" rel="noopener noreferrer">The pool’s spec<span>The adaptor operations</span></a>
     <a href="/btc/">The swap, live<span>Providers and limits now</span></a>
     <a href="/build/">Build on tacit<span>The DeFi pool and the Pay pool</span></a>
   </div>
 </section>
 
-<!-- ─────────────── FAQ ─────────────── -->
 <section class="part" id="faq">
   <p class="kick">More</p>
   <h2>Questions</h2>
-  <h3>Does anyone hold my coins during a swap?</h3>
-  <p>No. Your BTC is in a Bitcoin lock that you can refund. Your ETH is in a pool lock that you can refund. The provider’s coins are in the other lock of each pair. The lock opens only with the swap’s secret.</p>
   <h3>Is my ETH wrapped?</h3>
-  <p>No. It is ETH in the pool, as private notes. You can send it on to any Ethereum address.</p>
+  <p>No. It is ETH in the pool, as private notes. You can send it to any Ethereum address.</p>
   <h3>Can I get stuck?</h3>
-  <p>Your coins can be late, but not lost. Each lock refunds after its timelock: about 4 hours for ETH, and about a day for Bitcoin you locked. See <a href="#safety">If something goes wrong</a>.</p>
+  <p>Your coins can be late, not lost. See <a href="#wrong">If something goes wrong</a>.</p>
   <h3>Why does a small swap cost so much?</h3>
-  <p>The Bitcoin network fee and the provider’s flat part are fixed. On a swap near the minimum they are a large share. Larger swaps cost close to the 0.20% fee.</p>
-  <h3>Who sets the price?</h3>
-  <p>The provider, from the market rate plus its fee. Your page checks it against Chainlink and blocks a quote more than 3% under.</p>
-  <h3>Has it been audited?</h3>
-  <p>Not yet by an independent party. The swap code is new, and the sizes are capped while it proves itself.</p>
+  <p>The network fee and the flat part are fixed, so near the minimum they are a large share.</p>
   <h3>Can I swap without a Bitcoin wallet?</h3>
-  <p>For BTC to ETH you need BTC at your Tacit Bitcoin address, from any wallet or exchange. For ETH to BTC you need only ETH.</p>
-  <h3>Why only some providers for ETH to BTC?</h3>
-  <p>There the provider makes the claim your BTC depends on. The page asks only providers the site names until a claim can be read from the pool’s own record.</p>
+  <p>For ETH to BTC you need only ETH. For BTC to ETH you need BTC at your Tacit Bitcoin address, from any wallet or exchange.</p>
 </section>
 
-<!-- ─────────────── Words ─────────────── -->
 <section class="part" id="words">
   <p class="kick">More</p>
   <h2>Words <em>used here</em></h2>
   <dl class="gl">
-    <dt>Provider</dt><dd>A process with a key that takes the other side of a swap and earns a fee.</dd>
     <dt>Atomic swap</dt><dd>A swap in which both sides complete or both refund.</dd>
     <dt>Adaptor signature</dt><dd>A signature made incomplete on purpose. A secret <code>t</code> completes it, and the completed signature shows <code>t</code>.</dd>
-    <dt>Taproot</dt><dd>Bitcoin’s address type that can hide a script. A lock is a Taproot output.</dd>
-    <dt>CSV timelock</dt><dd>A rule that lets a refund be spent only after a number of blocks.</dd>
-    <dt>Pre-signature</dt><dd>An adaptor signature a party hands over before it can be used.</dd>
+    <dt>Taproot</dt><dd>Bitcoin’s address type that can hide a script. A swap lock is a Taproot output.</dd>
     <dt>Note</dt><dd>A sealed record of an amount and its owner. A private balance is a set of notes.</dd>
-    <dt>Nullifier</dt><dd>A tag that marks a note as spent without saying which note it was.</dd>
-    <dt>Watcher</dt><dd>A process that finishes a user’s take from a signed-ahead pre-signature, and can pay only the user’s own address.</dd>
-    <dt>Board</dt><dd>A small service where providers post signed ads and users find them.</dd>
+    <dt>Nullifier</dt><dd>A tag that marks a note spent without saying which note it was.</dd>
+    <dt>Watcher</dt><dd>A process that finishes your take from a signed-ahead pre-signature. It can pay only your own address.</dd>
   </dl>
 </section>
 
