@@ -8,6 +8,7 @@
 //   add.pending(pubHex)                -> the kept deposit, or null
 //   add.resume({ key, onStep })        -> { landed } | null       finishes a kept deposit (null: there was none, or nothing was sent)
 //
+//   add.balance()                      -> { account, wei } of the connected Ethereum wallet, or null
 //   add.warm()                         reads ahead what a deposit needs (before the key is open)
 //
 // onStep(k, d): 'wallet' (finding the wallet), 'quote', 'prepare', 'confirm' ({ wei, tip, from }), 'sent' (hash), 'mined' ({ hash, units }: the deposit is in a block,
@@ -67,6 +68,18 @@ export function makeAddEth({ getUx, pick = null }) {
   }
 
   // What the deposit asks of the wallet, checked before the wallet is asked: the ETH, the relay's tip and the network fee, against what the account holds.
+  // What the connected Ethereum wallet holds publicly, in wei: read only when the page's wallet is connected (or this browser connected one before, which
+  // reconnects without asking). null when there is none or the read failed.
+  async function balance() {
+    try {
+      const M = await load();
+      wallet ||= M.makeWallet({ rpc });
+      if (!wallet.state.account && !(await wallet.restore().catch(() => false))) return null;
+      const a = wallet.state.account;
+      return a ? { account: a, wei: await rpc('eth_getBalance', [a, 'latest']).then(BigInt) } : null;
+    } catch { return null; }
+  }
+
   async function afford({ to, data, value, from }) {
     const [have, price, gas] = await Promise.all([
       rpc('eth_getBalance', [from, 'latest']).then(BigInt, () => null),
@@ -165,5 +178,5 @@ export function makeAddEth({ getUx, pick = null }) {
   // What a deposit reads first, read before it is asked for: the modules, and the pool's record of ETH deposits (which the next deposit index is picked from)
   const warm = () => load().then(() => getUx()).then((t) => t.warmWrapLogs?.({ ticker: 'cETH' })).catch(() => {});
 
-  return { start, resume, warm, pending: (pub) => read(pub), relayWords: async (e) => (await load()).relayWords(e) };
+  return { start, resume, warm, balance, pending: (pub) => read(pub), relayWords: async (e) => (await load()).relayWords(e) };
 }

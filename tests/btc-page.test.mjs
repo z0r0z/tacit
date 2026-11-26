@@ -117,7 +117,7 @@ const A = window.__add;
 export class UserStopped extends Error { constructor() { super('Nothing was sent.'); this.userStopped = true; } }
 export function makeWallet() {
   const state = { account: null };
-  return { state, restore: async () => false, available: () => (A.noWallet ? [] : [{ info: { name: 'Test wallet', uuid: 'w1' }, provider: {} }]),
+  return { state, restore: async () => { if (A.restored) { state.account = A.account; return true; } return false; }, available: () => (A.noWallet ? [] : [{ info: { name: 'Test wallet', uuid: 'w1' }, provider: {} }]),
     connect: async () => { state.account = A.account; A.connects++; return true; },
     sendTx: async (tx) => { A.asked.push({ to: tx.to, value: String(tx.value), from: tx.from }); if (A.reject) throw new UserStopped(); return '0x' + 'ab'.repeat(32); },
     receipt: async (h) => { if (A.holdReceipt) await new Promise((r) => { A.mine = r; }); return { status: '0x1', transactionHash: h }; } };
@@ -485,6 +485,27 @@ for (const scheme of ['light', 'dark']) {
   if (scheme === 'dark') { await page.setViewportSize({ width: 1200, height: 1000 }); await SHOT(page, 'desktop-dark'); }
   ok(errs.length === 0 && csp.length === 0, `${scheme}: no page errors or CSP violations (${errs.concat(csp).join(' | ')})`);
   await page.close();
+}
+
+console.log('One press: the connected wallet\u2019s own ETH is shown, counted by Max, and checked');
+{
+  RPCV.balance = 14n * 10n ** 15n;
+  const { page, errs } = await fresh({ path: '/btc/?dir=e2b', init: 'window.__add.restored = true; window.__atom.bal.eth = 0n;' });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /Balance 0 ETH private · 0\.014 ETH in your wallet/.test(document.querySelector('#a-bal').textContent), null, { timeout: 15000 });
+  ok(true, 'the From box says what is private and what the wallet holds');
+  await page.click('#a-quick [data-quick]:last-child');
+  const mx = await page.inputValue('#a-amt');
+  ok(mx === '0.011', `Max is the wallet\u2019s ETH less the 0.003 kept for gas and fees (${mx})`);
+  await page.waitForFunction(() => /^Swap 0\.011 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  await SHOT(page, 'w-1280-light'); await page.emulateMedia({ colorScheme: 'dark' }); await SHOT(page, 'w-1280-dark'); await page.setViewportSize({ width: 390, height: 900 }); await SHOT(page, 'w-390-dark'); await page.emulateMedia({ colorScheme: 'light' }); await SHOT(page, 'w-390-light'); await page.setViewportSize({ width: 1200, height: 1000 });
+  ok(/^Adds 0\.011 ETH from your wallet first, then swaps\./.test(await text(page, '#a-q')), 'the note says the press adds ETH from the wallet first');
+  await page.fill('#a-amt', '0.013'); await page.dispatchEvent('#a-amt', 'input');
+  await page.waitForFunction(() => /^Not enough ETH: you have 0\.014 in your wallet and 0 private; need 0\.016 including fees$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  ok(await page.$eval('#a-go', (e) => e.disabled), 'too little ETH in the wallet says so, with the numbers');
+  ok(errs.length === 0, `no page errors (${errs.join(' | ')})`);
+  await page.close();
+  RPCV.balance = 10n ** 18n;
 }
 
 console.log('One press: a swap of ETH the private balance is short of (the ETH made private first, then swapped)');

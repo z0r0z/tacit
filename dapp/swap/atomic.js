@@ -22,10 +22,10 @@
 //
 // A swap under way is stepped while the lane is open, the tab hidden or not (a hidden tab's timers run about once a minute, and a claim or a take that waits for the tab
 // to be seen again can miss its window); and the page asks before it is left while one is under way.
-import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
+import { esc, fmtUnits, parseUnits, plain, E10 } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=e5b9b386';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=588c974c';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=f638b83c';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
 // A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
@@ -39,6 +39,7 @@ const SPLIT_LEGS = 4;
 const DISMISS_KEY = 'tacit-atomic-dismissed-v1';
 const LOCK_GUESS_SATS = 3000;                                     // what Max keeps back for the Bitcoin fee until a quote has said what it is
 const SHIELD_NOTE = 'The deposit is public. Nothing on chain links it to the swap or your Bitcoin address.';
+const WALLET_KEEP = 300000n;                                      // pool units (0.003 ETH) a wallet keeps back for the deposit's gas and the relay's tip
 const ONE_PRESS = 'One transaction from your wallet adds your ETH, then swaps.';
 const ONE_PRESS_BTC = 'One payment from your Bitcoin wallet starts the swap.';
 const HOW = 'Sign in · pick an amount · done in about 15–30 min. If anything stops, your funds come back.';
@@ -147,7 +148,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange, busy = 
 export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, provider = () => null, getUx = null, door = null, onState = () => {}, dir = 'b2e', now = nowSecs, recsHost = null, market = null, onRecs = () => {}, shield = null, onBal = () => {}, onOpen = () => {}, onNext = null, payout = null }) {
   // (a swap under way, or a press that is still making the ETH private, keeps the key open: the page has steps to take for it)
   const D = door || bitcoinDoor({ notify, wallet, provider, getUx, onChange: () => keyChanged(), busy: () => !!L.chain || !!L.adding || L.recs.some((r) => r.state === 'working') });
-  const L = { dir: dir === 'e2b' ? 'e2b' : 'b2e', amt: '', q: null, qErr: '', bal: { sats: null, eth: null, ethHeld: null, pending: 0n }, recs: [], busy: false, open: false, line: '', cls: '', unlocked: false, loaded: false, terms: null, mk: null, fits: null, chain: null, payTo: { mode: 'private', address: null } };
+  const L = { dir: dir === 'e2b' ? 'e2b' : 'b2e', amt: '', q: null, qErr: '', bal: { sats: null, eth: null, ethHeld: null, pending: 0n }, pub: null, recs: [], busy: false, open: false, line: '', cls: '', unlocked: false, loaded: false, terms: null, mk: null, fits: null, chain: null, payTo: { mode: 'private', address: null } };
   let fundAsk = null, addAsk = null, pair = null, pairP = null, pairKey = null, gen = 0, opened = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, marketTimer = 0, recovered = false, recovering = null, lookFailed = false, reading = null, began = null;
   // the swaps started with one press, by id: their first step (the ETH made private) is shown before the swap's own, until the deposit has landed
   const chains = new Map();
@@ -215,7 +216,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     pair = null; pairP = null; pairKey = null; opened = null; began = null; recovered = false; recovering = null; lookFailed = false; reading = null;
     clearInterval(refreshTimer); clearTimeout(poll); clearTimeout(qTimer);
     seq++; known.clear();
-    L.bal = { sats: null, eth: null, ethHeld: null, pending: 0n }; L.recs = []; L.q = null; L.qErr = ''; L.unread = null; L.fits = null; L.terms = null; L.busy = false; L.chain = null;
+    L.bal = { sats: null, eth: null, ethHeld: null, pending: 0n }; L.pub = null; L.recs = []; L.q = null; L.qErr = ''; L.unread = null; L.fits = null; L.terms = null; L.busy = false; L.chain = null;
     chains.clear();
   }
   // The wallet locked, or opened with a key: a key other than the pair client's drops it, and its swaps are no longer listed or stepped. A swap of the key that
@@ -252,6 +253,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         if (b) L.bal = { sats: b.sats ?? null, eth: b.eth ?? null, ethHeld: b.ethHeld ?? null, pending: b.pendingSats ?? 0n };
         // a side the explorers or nodes did not answer for is said as such (the lane's refresh reads it again), not left as 'reading'
         L.unread = { btc: !b || b.sats == null, eth: !b || b.eth == null };
+        // the connected Ethereum wallet's own ETH (public), so an ETH swap shows what one press can add from it
+        if (shield?.balance && L.dir === 'e2b') { const w = await shield.balance().catch(() => null); if (g !== gen) return; L.pub = w ? BigInt(w.wei) / E10 : null; }
         try { onBal({ ...L.bal }); } catch { /* a page's hook does not stop the lane */ }
         paint();
       }
@@ -384,6 +387,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       // swap on first, as the swap's own press does. Else the button says what is short.
       const add = shield ? addUnits(amount, bal) : 0n;
       if (add > 0n) {
+        if (L.pub != null && L.pub < add + WALLET_KEEP) return { label: `Not enough ETH: you have ${fmt(L.pub)} in your wallet and ${fmt(bal)} private; need ${fmt(add + WALLET_KEEP + bal)} including fees`, off: true };
         if (L.qErr) return { label: 'No quote', off: true };
         if (!q) return { label: 'Getting a quote…', off: true };
         if (q.blocked) return { label: 'Not at this price', off: true };
@@ -559,9 +563,10 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     // sats that have reached the address and wait for a block are said, so a deposit that has not confirmed yet is not mistaken for a balance that is not there
     const confirming = (k) => (k === 'btc' && L.bal.pending > 0n ? ` · ${fmt(L.bal.pending)} BTC confirming` : '');
     const unread = (k) => (k === 'btc' ? L.unread?.btc : L.unread?.eth);
-    $('a-bal').textContent = !D.unlocked || !pair ? '' : hp == null ? (unread(pk) ? `${p.sym} balance not read yet: trying again` : 'Reading your balance…') : `Balance ${fmt(hp)} ${p.sym}${confirming(pk)}`;
+    $('a-bal').textContent = !D.unlocked || !pair ? '' : hp == null ? (unread(pk) ? `${p.sym} balance not read yet: trying again` : 'Reading your balance…') : `Balance ${fmt(hp)} ${p.sym}${pk === 'eth' && shield && L.pub > 0n ? ` private · ${fmt(L.pub)} ETH in your wallet` : ''}${confirming(pk)}`;
     $('a-get-bal').textContent = !D.unlocked || !pair || hg == null ? '' : `Balance ${fmt(hg)} ${g.sym}${confirming(gk)}`;
-    const max = bp != null && bp > 0n ? (pk === 'btc' ? bp - BigInt(L.q?.networkFeeSats ?? LOCK_GUESS_SATS) : bp) : 0n;
+    const wal = pk === 'eth' && shield && L.pub > WALLET_KEEP ? L.pub - WALLET_KEEP : 0n;
+    const max = bp != null && (bp > 0n || wal > 0n) ? (pk === 'btc' ? bp - BigInt(L.q?.networkFeeSats ?? LOCK_GUESS_SATS) : bp + wal) : 0n;
     $('a-quick').innerHTML = max > 0n ? [25, 50, 100].map((n) => `<button type="button" data-quick="${tidy(plain((max * BigInt(n)) / 100n, DEC))}">${n === 100 ? 'Max' : `${n}%`}</button>`).join('') : '';
     const out = $('a-out'), q = L.q;
     // what arrives is what the provider locks less the fee of the transaction that takes it (e2b), not the lock
@@ -575,7 +580,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const gt = gate(), go = $('a-go');
     go.textContent = gt.label; go.disabled = !!gt.off; go.dataset.act = gt.act || ''; fundAsk = gt.fund || null; addAsk = gt.add || null;
     // what one press does, and what its deposit from the wallet shows on chain, said under the button
-    if (gt.act === 'oneclick' && !L.busy && (!L.line || L.cls === 'hint')) say(`${ONE_PRESS}<small>${esc(SHIELD_NOTE)}</small>`, 'hint');
+    if (gt.act === 'oneclick' && !L.busy && (!L.line || L.cls === 'hint')) say(`${L.pub != null && gt.add ? `Adds ${fmt(gt.add)} ETH from your wallet first, then swaps.` : ONE_PRESS}<small>${esc(SHIELD_NOTE)}</small>`, 'hint');
     else if (gt.act === 'bpress' && !L.busy && (!L.line || L.cls === 'hint')) say(`${ONE_PRESS_BTC}<small>${esc(BTC_NOTE)}</small>`, 'hint');
     else if (gt.act === 'unlock' && !L.line && !L.chain) say(HOW, 'hint');
     else if (gt.act !== 'unlock' && gt.act !== 'oneclick' && gt.act !== 'bpress' && L.cls === 'hint') say('');
