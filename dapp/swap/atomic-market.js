@@ -12,7 +12,7 @@ import { discoverProviders } from '/fast/discover.js?cb=9b85f002';
 import { makeRateFeed, chainlinkEthBtc, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=b392f6cc';
 import { ETH_NODES, batchSize } from '/eth-nodes.js';
 import { bodyType } from '/rpc-body.js';
-import { SATS_ASSET_ID, ETH_ASSET_ID } from '/swap/atomic-probe.js?cb=c6d5d8e2';
+import { SATS_ASSET_ID, ETH_ASSET_ID } from '/swap/atomic-probe.js?cb=99f7488b';
 import { OWN_PROVIDERS } from '/fastbridge-board.js';
 
 const loadLists = async (fetchImpl) => {

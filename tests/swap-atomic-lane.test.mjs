@@ -539,6 +539,12 @@ console.log('the words: durations, the market, errors, the probe');
       httpOther: await p.probeAtomic({ lists: { boards: [], providers: [{ base: 'https://p.example' }] }, fetchImpl: j({ btcAsset: '00'.repeat(32), evmAsset: 'f0'.repeat(32) }) }),
       insecure: await p.probeAtomic({ lists: { boards: ['http://b.example'], providers: [{ base: 'http://p.example' }] }, fetchImpl: j({ ads: [adJson], btcAsset: '00'.repeat(32), evmAsset: p.ETH_ASSET_ID }) }),
     };
+    // a board that names the pair is enough: the provider's own address is not read while it is there, and is read when no board names the pair
+    const first = [], later = [], clock = () => Math.floor(Date.now() / 1000), both = { boards: ['https://b.example'], providers: [{ base: 'https://p.example' }] };
+    out.probe.boardFirst = await p.probeAtomic({ lists: both, now: clock, fetchImpl: async (u) => { first.push(String(u)); return String(u).endsWith('/ads') ? { ok: true, json: async () => ({ ads: [adJson] }) } : { ok: false, json: async () => ({}) }; } });
+    out.firstReads = first;
+    out.probe.fallback = await p.probeAtomic({ lists: both, now: clock, fetchImpl: async (u) => { later.push(String(u)); return { ok: true, json: async () => (String(u).endsWith('/ads') ? { ads: [] } : { btcAsset: '00'.repeat(32), evmAsset: p.ETH_ASSET_ID }) }; } });
+    out.laterReads = later;
     out.sats = p.SATS_ASSET_ID; out.eth = p.ETH_ASSET_ID;
     return out;
   }, ad());
@@ -551,6 +557,8 @@ console.log('the words: durations, the market, errors, the probe');
   ok(JSON.stringify(r.fmt) === JSON.stringify(['0.00000001', '1', '0.304']), `amounts have eight places and no trailing zeros (${JSON.stringify(r.fmt)})`);
   ok(r.probe.none === false && r.probe.other === false && r.probe.otherToken === false && r.probe.signed === true && r.probe.down === false && r.probe.bad === false && r.probe.http === true && r.probe.httpOther === false, `the probe: no list, another pair, sats against another token, a signed ad of the pair, a board down, a board that errs, and a provider that serves its own terms ${JSON.stringify(r.probe)}`);
   ok(r.probe.insecure === false, 'a board or provider that is not https is not read');
+  ok(r.probe.boardFirst === true && r.firstReads.some((u) => u === 'https://b.example/ads') && !r.firstReads.some((u) => u.endsWith('/info')), `the probe: a board that names the pair is enough, and the provider's own address is not read (${r.firstReads.join(' ')})`);
+  ok(r.probe.fallback === true && r.laterReads.includes('https://p.example/info'), `and the provider's own address is read when no board names the pair (${r.laterReads.join(' ')})`);
   ok(r.sats === SATS, 'the probe\'s asset id is plain sats (64 zeros, adaptor-xswap.js SATS_ASSET)');
   ok(r.eth === ETH, 'and the pool\'s ETH is the pair\'s other side (fastbridge-pair.js ETH_ASSET)');
   await page.close();
