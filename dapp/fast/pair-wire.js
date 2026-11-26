@@ -14,15 +14,15 @@ import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=7410374b';
 import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=d115e531';
-import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=cc29143a';
+import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=0635460a';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=4c2ccb36';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
 import { makeLocalStore } from '/fastbridge-client.js?cb=00d4b6bc';
-import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=95ea52c7';
+import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=fcdca510';
 import { makeRateFeed, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
 import { discoverProviders } from '/fast/discover.js?cb=08d71bf9';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=d00480d8';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=63a466b1';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();
@@ -37,7 +37,7 @@ export async function loadLists(fetchImpl = (...a) => fetch(...a)) {
   } catch { return { providers: [], boards: [] }; }
 }
 
-export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, lists = null, storage = globalThis.localStorage, discover: discoverO = null, feed: feedO = null, priceNodes = PRICE_NODES, log = () => {} }) {
+export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, lists = null, storage = globalThis.localStorage, discover: discoverO = null, feed: feedO = null, priceNodes = PRICE_NODES, log = () => {}, presigBase = 'https://api.tacit.finance' }) {
   const { prims } = makeBtcWallet({ priv, hrp, fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
   // the lock spends the wallet's own coins: tacit.js and this must name the same address
   if (T && prims.wallet.address() !== T.wallet.address()) throw new Error('The Bitcoin address of this key is not the one the wallet reads. Nothing was done.');
@@ -94,7 +94,9 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   const counterOf = (ref, o = {}) => counterFor(ref, { fetchImpl, ...(o.timeoutMs ? { call: { timeoutMs: o.timeoutMs } } : {}) });
   // (a lock of sats never takes a coin tacit.js finds a note on: its holdings scan, when the page has tacit.js)
   const holdings = T && typeof T.scanHoldings === 'function' ? () => T.scanHoldings() : null;
-  const pair = makePairClient({ btc, evm, seed, stores, discover, counterFor: counterOf, reverseCallFor, feed, ...(now ? { now } : {}), tend, exclusive, memo, strikes, holdings });
+  // The take of an ETH-for-Bitcoin swap, signed ahead and posted where a watcher reads it (dapp/take-presig.js): true only when the API took it. Best effort.
+  const takePresig = presigBase ? { publish: async (p) => { const r = await fetchImpl(`${presigBase}/take-presig`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ presig: p }) }); if (!r || !r.ok) return false; const j = await r.json().catch(() => null); return !!(j && j.ok === true); } } : null;
+  const pair = makePairClient({ btc, evm, seed, stores, discover, counterFor: counterOf, reverseCallFor, feed, ...(now ? { now } : {}), tend, exclusive, memo, strikes, holdings, ...(takePresig ? { takePresig } : {}) });
   const run = ({ everyMs = 15000, onChange = () => {} } = {}) => {
     let busy = false, stopped = false;
     const once = async () => { if (busy || stopped) return; busy = true; try { onChange(await pair.pump()); } catch { /* the next pass */ } finally { busy = false; } };

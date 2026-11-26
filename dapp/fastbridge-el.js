@@ -4,6 +4,7 @@ import * as adaptor from './adaptor-signature.js';
 import { deriveLock, claimSecret } from './adaptor-btc-lock.js';
 import { secp, bytesToHex, hexToBytes, hmac, sha256 } from './vendor/tacit-deps.min.js';
 import { pedersenCommit } from './bulletproofs.js';
+import * as TP from './take-presig.js';
 
 const hx = bytesToHex;
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
@@ -263,6 +264,32 @@ export function makeEthereumLocker(ctx) {
     return rec;
   }
 
+  // ── the take, signed ahead for anyone to finish (dapp/take-presig.js) ──
+  // Once the pool offer is out, the user (this side, with `ctx.takePresig`) signs the take of the provider's lock except for t, and publishes that where a watcher can read it
+  // whatever the provider does. A watcher that sees the provider's claim reads t out of it and finishes the take to the user's own address. This only adds a way to the
+  // BTC: nothing waits on it, a failure leaves the swap as it was, and the page says the BTC is protected only when the publish was answered. Plain sats only.
+  async function protect(rec) {
+    try {
+      const tp = ctx.takePresig;
+      if (!tp || !rec.evmOffer || !rec.lock || !X.isSats(rec.offer.btc.asset) || (rec.presig && (rec.presig.published || (rec.presig.tries || 0) >= (policy.presigTries ?? 8) || (rec.presig.nextAt || 0) > ctx.now()))) return rec;
+      const tries = ((rec.presig && rec.presig.tries) || 0) + 1, retry = ctx.now() + Math.min(900, 30 * tries);
+      try {
+        const own = btc.prims.p2wpkhScript(btc.wallet.pub);
+        const rate = Math.max(2, Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5)));
+        const fee = TP.takeFee({ dest: own, feeRate: rate, lockValue: rec.lockValue });
+        if (!(rec.lockValue - fee >= TP.MIN_OUT)) return save(rec, { presig: { published: false, tries: 99, why: 'the lock is too small to pre-sign a take' } });
+        const p = TP.makePresig({
+          dUser: btc.wallet.priv, claimerPub: btc.wallet.pub, T: secretsOf(rec).T, lockerXonly: strip(rec.offer.btc.lockerXonly), csvBlocks: rec.csvBlocks,
+          lockOut: { txid: rec.lockTxid, vout: rec.lockVout, value: rec.lockValue }, dest: own, fee, sTilde: rec.evmOffer.presign.sTilde, lockNu: rec.lock.lockNu, deadline: rec.deadline,
+        });
+        const v = TP.verifyPresig(p);
+        if (!v.ok || (rec.lockSpk && v.spk !== strip(rec.lockSpk))) return save(rec, { presig: { published: false, tries: 99, why: 'the pre-signature does not match the lock' } });
+        const ok = (await tp.publish(p)) === true;
+        return save(rec, { presig: { published: ok, tries, at: ctx.now(), fee, nextAt: ok ? null : retry, sighash: hx(v.sighash) } });
+      } catch (e) { return save(rec, { presig: { published: false, tries, nextAt: retry, why: String((e && e.message) || e).slice(0, 120) } }); }
+    } catch { return rec; }
+  }
+
   async function advance(rec) {
     if (rec.lock && (rec.phase === 'locking' || rec.phase === 'locked') && (await evm.now()) > rec.deadline) {
       return save(rec, { phase: 'offered', noOffer: !rec.evmOffer });
@@ -406,9 +433,10 @@ export function makeEthereumLocker(ctx) {
         });
         if (strip(evmOffer.lockLeaf) !== strip(rec.lock.lockLeaf)) return save(rec, { phase: 'aborted', why: 'the offer and the lock disagree' });
         await counter.publishEvmOffer(rec.id, evmOffer);
-        return save(rec, { phase: 'offered', evmOffer });
+        return protect(await save(rec, { phase: 'offered', evmOffer }));
       }
       case 'offered': {
+        rec = await protect(rec);
         if (waiting(rec)) return rec;
         // (nodes that do not agree hold no swap past its deadline: the refund that follows is what the pool decides on)
         let r = null, held = null;
