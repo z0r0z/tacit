@@ -90,6 +90,63 @@ test('the offer check enforces the class price: a clean quote cannot be spent as
   }
 });
 
+test('exact-outpoint quotes bind the price to the notes the lock must spend', async () => {
+  const lf = fees();
+  // wrong outpoints: the lock spends another note, so nothing is locked in the pool
+  {
+    const { w, ref } = httpWorld();
+    w.lEvm.fund(VALUE, 'exact-reject');
+    const s = await serve(w, { config: configFor(w, { quote: { lineageFees: lf }, policy: { screen: async () => ({ class: 'pool-exit' }) } }) });
+    ref.base = s.base;
+    const q = await makeHttpCounter({ base: s.base, fetchImpl: realFetch }).quote(VALUE, { lineage: 'pool-exit', inputs: [{ txid: 'e'.repeat(64), vout: 0 }] });
+    assert.deepEqual(q.inputs, [{ txid: 'e'.repeat(64), vout: 0 }]);
+    assert.equal(q.id.length, 32, 'an exact quote is kept in the store, not compressed into a sealed id');
+    await startSwap(w, q);
+    await w.run(async () => s.logs.some((l) => /does not spend the notes/.test(l.why || '')) || ['refund-wait', 'refunded'].includes((await w.user())?.phase));
+    assert.ok(s.logs.some((l) => l.msg === 'offer declined' && /does not spend the notes/.test(l.why || '')), JSON.stringify(s.logs));
+    assert.equal(w.evm.locks.leaves.length, 0);
+  }
+  // the note the page will really spend: it goes through
+  {
+    const { w, ref } = httpWorld();
+    const payout = VALUE - (VALUE * 250n) / 10000n;
+    w.lEvm.fund(payout, 'exact-accept');
+    const s = await serve(w, { config: configFor(w, { quote: { lineageFees: lf }, policy: { screen: async () => ({ class: 'pool-exit' }) } }) });
+    ref.base = s.base;
+    const inputs = [{ txid: w.note.txid, vout: w.note.vout }];
+    const q = await makeHttpCounter({ base: s.base, fetchImpl: realFetch }).quote(VALUE, { lineage: 'pool-exit', inputs });
+    assert.deepEqual(q.inputs, inputs);
+    await startSwap(w, q);
+    await w.run(bothDone(w));
+    assert.equal(w.evm.locks.leaves.length, 1);
+  }
+});
+
+test('lineage caps reject intake over the configured class exposure', async () => {
+  const capped = () => normalizeLineageFees({
+    defaultClass: 'pool-exit', long: { feeBps: 100, flatFee: '0' }, poolExit: { feeBps: 250, flatFee: '0' },
+    caps: { poolExit: '10000', total: '10000' },
+  });
+  const { w } = httpWorld();
+  w.lEvm.fund(100_000n, 'lineage-caps');
+  const s = await serve(w, { config: configFor(w, { quote: { lineageFees: capped() } }) });
+  const info = await call(s.base, 'GET', '/info');
+  assert.equal(info.body.lineagePricing.exactInputs, true);
+  assert.equal(info.body.lineagePricing.caps.poolExit, '10000');
+  assert.equal(info.body.lineagePricing.caps.total, '10000');
+
+  const first = await call(s.base, 'POST', '/quote', { amount: '6000', lineage: 'pool-exit' });
+  assert.equal(first.status, 200);
+  const held = await call(s.base, 'POST', '/reserve', { quoteId: first.body.id });
+  assert.equal(held.status, 200, JSON.stringify(held.body));
+  const second = await call(s.base, 'POST', '/quote', { amount: '5000', lineage: 'pool-exit' });
+  assert.equal(second.status, 400);
+  assert.match(second.body.error, /cap/);
+
+  const clean = await call(s.base, 'POST', '/quote', { amount: '5000', lineage: 'clean' });
+  assert.equal(clean.status, 200, 'clean TAC is not stuck exposure');
+});
+
 let passed = 0, ran = 0;
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 for (const [name, fn] of tests) {

@@ -30,6 +30,27 @@ export function classifyVerdicts(inputs, verdicts) {
   return unread.length ? { class: 'unread', unread, notes } : { class: cls, notes };
 }
 
+export function normalizeLineageInputs(inputs, { max = 64 } = {}) {
+  if (inputs == null) return null;
+  if (!Array.isArray(inputs) || !inputs.length || inputs.length > max) throw Object.assign(new Error(`inputs must be 1 to ${max} note outpoints`), { status: 400 });
+  const seen = new Set(), out = [];
+  for (const n of inputs) {
+    const txid = String(n && n.txid || '').toLowerCase(), vout = Number(n && n.vout);
+    if (!/^[0-9a-f]{64}$/.test(txid) || !Number.isInteger(vout) || vout < 0 || vout > 0xffff) throw Object.assign(new Error('inputs must name note outpoints as txid:vout'), { status: 400 });
+    const id = `${txid}:${vout}`;
+    if (seen.has(id)) throw Object.assign(new Error('inputs must not repeat an outpoint'), { status: 400 });
+    seen.add(id); out.push({ txid, vout });
+  }
+  return out.sort((a, b) => `${a.txid}:${a.vout}` < `${b.txid}:${b.vout}` ? -1 : 1);
+}
+
+export function sameLineageInputs(a, b) {
+  if (a == null || b == null) return false;
+  if (a.length !== b.length) return false;
+  const aa = normalizeLineageInputs(a), bb = normalizeLineageInputs(b);
+  return aa.every((n, i) => n.txid === bb[i].txid && n.vout === bb[i].vout);
+}
+
 export function makeLineageClassScreen(vet, { refusePoolExit = false } = {}) {
   return async (inputs) => {
     let verdicts;
@@ -56,9 +77,11 @@ const bps = (v, name) => {
 export function normalizeLineageFees(x) {
   if (!x) return null;
   const one = (o, key) => ({ feeBps: bps(o && o.feeBps, `lineageFees.${key}.feeBps`), flatFee: amount(o && o.flatFee, `lineageFees.${key}.flatFee`) });
+  const cap = (v, key) => (v == null ? null : amount(v, `lineageFees.caps.${key}`));
   const out = {
     defaultClass: classKey(x.defaultClass || 'pool-exit') ? (x.defaultClass || 'pool-exit') : null,
     clean: one(x.clean, 'clean'), long: one(x.long, 'long'), poolExit: one(x.poolExit, 'poolExit'),
+    ...(x.caps ? { caps: { long: cap(x.caps.long, 'long'), poolExit: cap(x.caps.poolExit, 'poolExit'), total: cap(x.caps.total, 'total') } } : {}),
   };
   if (!out.defaultClass) throw new Error('lineageFees.defaultClass must be clean, long or pool-exit');
   return out;
@@ -85,9 +108,25 @@ export function lineageInfo(fees) {
   const one = (x) => ({ feeBps: x.feeBps, flatFee: String(x.flatFee) });
   return {
     addedToBaseFee: true,
+    exactInputs: true,
     defaultClass: fees.defaultClass === 'poolExit' ? 'pool-exit' : fees.defaultClass,
     classes: { clean: one(fees.clean), long: one(fees.long), 'pool-exit': one(fees.poolExit) },
+    ...(fees.caps ? { caps: { ...(fees.caps.long != null ? { long: String(fees.caps.long) } : {}), ...(fees.caps.poolExit != null ? { poolExit: String(fees.caps.poolExit) } : {}), ...(fees.caps.total != null ? { total: String(fees.caps.total) } : {}) } } : {}),
   };
+}
+
+// Caps are in base units of face value and cover the stuck classes only: long and pool-exit. A missing cap is unbounded;
+// zero means the class is not taken. `exposure` is { long, poolExit } in BigInt base units, counting reserved, in-flight
+// and completed-but-unrecovered face value.
+export function lineageCapAllows(fees, exposure, cls, addition) {
+  const key = classKey(cls);
+  if (!fees || !fees.caps || key === 'clean') return true;
+  const k = key === 'poolExit' ? 'poolExit' : key, a = BigInt(addition);
+  const long = BigInt(exposure && exposure.long || 0n), poolExit = BigInt(exposure && exposure.poolExit || 0n), here = k === 'long' ? long : poolExit;
+  const cap = fees.caps[k];
+  if (cap != null && here + a > cap) return false;
+  const total = fees.caps.total;
+  return total == null || long + poolExit + a <= total;
 }
 
 // The most a class-aware quote can add under a public lineagePricing schedule, in the shape /info serves.

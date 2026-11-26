@@ -28,9 +28,11 @@
     "lineageFees": {
       "defaultClass": "pool-exit",
       "long": { "feeBps": 100, "flatFee": "0" },
-      "poolExit": { "feeBps": 250, "flatFee": "0" }
+      "poolExit": { "feeBps": 250, "flatFee": "0" },
+      "caps": { "long": "25000000000", "poolExit": "10000000000", "total": "30000000000" }
     }
   },
+  "recoveredSwaps": [],
   "policy": {
     "minCsv": 72,
     "evmWindowSecs": 14400,

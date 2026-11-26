@@ -40,8 +40,8 @@ test('a value that is set and is not valid stops the start, naming it', () => {
 
 
 test('the lineage pricing knobs: the class additions over the config, and a value that is not valid stops the start', () => {
-  const c = applyEnv(BASE, { FB_LP_LINEAGE_DEFAULT_CLASS: 'long', FB_LP_LINEAGE_LONG_FEE_BPS: '125', FB_LP_LINEAGE_LONG_FLAT_FEE: '7', FB_LP_LINEAGE_POOL_EXIT_FEE_BPS: '300', FB_LP_LINEAGE_POOL_EXIT_FLAT_FEE: '9' });
-  assert.deepEqual(c.quote.lineageFees, { defaultClass: 'long', long: { feeBps: 125, flatFee: '7' }, poolExit: { feeBps: 300, flatFee: '9' } });
+  const c = applyEnv(BASE, { FB_LP_LINEAGE_DEFAULT_CLASS: 'long', FB_LP_LINEAGE_LONG_FEE_BPS: '125', FB_LP_LINEAGE_LONG_FLAT_FEE: '7', FB_LP_LINEAGE_POOL_EXIT_FEE_BPS: '300', FB_LP_LINEAGE_POOL_EXIT_FLAT_FEE: '9', FB_LP_LINEAGE_LONG_CAP: '2000', FB_LP_LINEAGE_POOL_EXIT_CAP: '1000', FB_LP_LINEAGE_TOTAL_CAP: '2500' });
+  assert.deepEqual(c.quote.lineageFees, { defaultClass: 'long', long: { feeBps: 125, flatFee: '7' }, poolExit: { feeBps: 300, flatFee: '9' }, caps: { long: '2000', poolExit: '1000', total: '2500' } });
   const kept = applyEnv({ ...BASE, quote: { ...BASE.quote, lineageFees: { defaultClass: 'pool-exit', long: { feeBps: 100, flatFee: '0' }, poolExit: { feeBps: 250, flatFee: '0' } } } }, { FB_LP_LINEAGE_LONG_FEE_BPS: '150' });
   assert.deepEqual(kept.quote.lineageFees, { defaultClass: 'pool-exit', long: { feeBps: 150, flatFee: '0' }, poolExit: { feeBps: 250, flatFee: '0' } }, 'a knob over a config keeps the config\'s other classes');
   for (const [env, name] of [[{ FB_LP_LINEAGE_DEFAULT_CLASS: 'stuck' }, 'LINEAGE_DEFAULT_CLASS'], [{ FB_LP_LINEAGE_LONG_FEE_BPS: '9001' }, 'LINEAGE_LONG_FEE_BPS'], [{ FB_LP_LINEAGE_POOL_EXIT_FEE_BPS: '0.5' }, 'LINEAGE_POOL_EXIT_FEE_BPS'], [{ FB_LP_LINEAGE_LONG_FLAT_FEE: '-1' }, 'LINEAGE_LONG_FLAT_FEE']]) {

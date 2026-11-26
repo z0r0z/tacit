@@ -230,8 +230,9 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS, maxFeeBps = null, lineageFor = null } = {}) {
     const got = await Promise.all(providers.map(async (provider) => {
       try {
-        const lineage = lineageFor ? await lineageFor(provider) : null;
-        const q = await withTimeout(clientFor(provider.ref).quote(amount, lineage ? { lineage } : {}), timeoutMs);
+        const hint = lineageFor ? await lineageFor(provider) : null;
+        const opts = hint && typeof hint === 'object' ? hint : (hint ? { lineage: hint } : {});
+        const q = await withTimeout(clientFor(provider.ref).quote(amount, opts), timeoutMs);
         let aboveTerms = false;
         // (for one asset on both sides the fee is what is not paid out; a provider that lists no terms is judged as before)
         try { aboveTerms = !!provider.terms && q.btcAsset === q.evmAsset && q.fee > feeOf(provider.terms, q.btcValue); } catch { }

@@ -260,13 +260,15 @@ test('quoteAll sends the class of the notes a pricing provider would be given: c
   ]) {
     const asked = new Map();
     const counterFor = (ref) => !ref ? {} : {
-      quote: async (amount, opts = {}) => { asked.set(ref.claimPub, opts.lineage || null); return quoteFor(ref.claimPub); },
+      quote: async (amount, opts = {}) => { asked.set(ref.claimPub, opts); return quoteFor(ref.claimPub); },
     };
     const s = await openFast({ T: tt, withKey: (fn) => fn(tt), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor, vet: verdicts({ 1: verdict }) });
     const r = await s.quoteAll(providers, 1000n);
     assert.equal(r.failed.length, 0);
-    assert.equal(asked.get(claimA), openClass, `open ${verdict.state}`);
-    assert.equal(asked.get(claimB), screenClass, `screen ${verdict.state}`);
+    assert.equal((asked.get(claimA) || {}).lineage || null, openClass, `open ${verdict.state}`);
+    assert.equal((asked.get(claimB) || {}).lineage || null, screenClass, `screen ${verdict.state}`);
+    if (openClass) assert.deepEqual(asked.get(claimA).inputs, [{ txid: utxo(1).txid, vout: 0 }], 'the exact note is named');
+    if (screenClass) assert.deepEqual(asked.get(claimB).inputs, [{ txid: utxo(1).txid, vout: 0 }], 'the exact note is named');
   }
   T._testSetScanHoldingsOverride(null);
 });
