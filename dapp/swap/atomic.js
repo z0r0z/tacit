@@ -457,6 +457,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       ...(Number(q.networkFeeSats) > 0 ? [['Network fee', `≈ ${Number(q.networkFeeSats).toLocaleString('en-US')} sats${q.split ? ' for all parts' : ''}`, '']] : []),
       ...(L.dir === 'e2b' && Number(q.takeFeeSats) > 0 ? [['Network fee', `≈ ${Number(q.takeFeeSats).toLocaleString('en-US')} sats, taken from your BTC`, '']] : []),
       ['Time', etaSpan(q.etaSecs), ''],
+      ['Stay', 'Keep this page open until it says Done', ''],
       ['If it stops', L.dir === 'b2e' ? 'BTC returns after about a day' : 'ETH returns after about 4 hours', ''],
       ...(q.warnings || []).map((w) => ['Note', w, 'warn']),
     ];
