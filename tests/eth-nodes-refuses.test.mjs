@@ -7,7 +7,6 @@ import assert from 'node:assert/strict';
 import { refuses, logSpan, isShared, batchSize, ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES, BASE_NODES, ROBINHOOD_NODES } from '../dapp/eth-nodes.js';
 import { hedgedRpc } from '../dapp/trade/rpc.js';
 import { jsonRpc } from '../dapp/evm-pool-wallet.js';
-import { bodyType } from '../dapp/rpc-body.js';
 import { makeConfidentialEvmLog } from '../dapp/confidential-evm-log.js';
 import { keccak_256 } from '@noble/hashes/sha3';
 
@@ -26,7 +25,9 @@ await test('drpc is known to refuse every eth_getLogs and nothing else; a node w
   assert.equal(refuses(DRPC, 'eth_call', [{ to: '0x00' }, hex(HEAD - 5000)]), false);
   assert.equal(refuses(DRPC, 'eth_blockNumber', []), false);
   for (const m of ['eth_getLogs', 'eth_call', 'eth_getBalance']) assert.equal(refuses('https://example.org', m, logs(1, HEAD)), false);
-  assert.equal(refuses('https://eth-mainnet.public.blastapi.io', 'eth_getLogs', logs(1, HEAD)), false);
+  assert.equal(refuses('https://eth-mainnet.public.blastapi.io', 'eth_getLogs', logs(1, HEAD)), true);
+  assert.equal(refuses('https://eth-mainnet.public.blastapi.io', 'eth_getLogs', logs(HEAD - 9, HEAD)), true);
+  assert.equal(refuses('https://eth-mainnet.public.blastapi.io', 'eth_call', [{ to: '0x00' }, 'latest']), false);
 });
 
 await test('publicnode serves logs for a span up to 9,999 blocks and only for recent blocks', () => {
@@ -64,10 +65,11 @@ await test('the span each node starts a log scan at, from what was measured', ()
   assert.equal(refuses(ONERPC, 'eth_getLogs', logs(HEAD - 50, HEAD)), true);
 });
 
-await test('the log list leaves out the nodes that only refuse logs (drpc) or limit them at once (thirdweb), and keeps them for plain reads', () => {
+await test('the log list leaves out nodes that only refuse logs, and excludes the browser-403 PublicNode route', () => {
   assert.ok(!ETH_LOG_NODES.includes(DRPC) && !ETH_LOG_NODES.includes(THIRDWEB));
   assert.ok(ETH_NODES.includes(DRPC) && ETH_NODES.includes(THIRDWEB));
-  for (const u of [MEV, NODEREAL, PUBLIC]) assert.ok(ETH_LOG_NODES.includes(u));
+  for (const u of [MEV, NODEREAL]) assert.ok(ETH_LOG_NODES.includes(u));
+  assert.ok(!ETH_NODES.includes(PUBLIC) && !ETH_LOG_NODES.includes(PUBLIC));
 });
 
 const B_PUBLIC = 'https://base-rpc.publicnode.com', B_BLAST = 'https://base-mainnet.public.blastapi.io', B_DRPC = 'https://base.drpc.org', B_OWN = 'https://mainnet.base.org';
@@ -119,24 +121,15 @@ await test('the key every visitor shares is asked last: only nodereal is shared,
   assert.deepEqual(shared, [NODEREAL]);
   assert.equal(ETH_NODES.at(-1), NODEREAL);
   assert.equal(ETH_ARCHIVE_NODES.at(-1), NODEREAL);
-  assert.ok(ETH_LOG_NODES.indexOf(NODEREAL) > ETH_LOG_NODES.indexOf(PUBLIC), 'among the log nodes it follows the nodes with a quota of their own');
+  assert.ok(ETH_LOG_NODES.indexOf(NODEREAL) > ETH_LOG_NODES.indexOf(MEV), 'among the log nodes it follows the nodes with a quota of their own');
 });
 
 const BUIDLGUIDL = 'https://mainnet.rpc.buidlguidl.com';
 
-await test('BuidlGuidl\'s node (measured: logs complete over 600,000 blocks in 10,000-block chunks, old state at every depth) sits in all three lists ahead of the shared key', () => {
-  assert.equal(logSpan(BUIDLGUIDL), 10_000);
-  assert.equal(refuses(BUIDLGUIDL, 'eth_getLogs', logs(HEAD - 9999, HEAD)), false, '10,000 blocks');
-  assert.equal(refuses(BUIDLGUIDL, 'eth_getLogs', logs(HEAD - 10_000, HEAD)), true, '10,001 blocks');
-  assert.equal(refuses(BUIDLGUIDL, 'eth_getLogs', logs(HEAD - 600_000, HEAD - 590_001), HEAD), false, 'an old chunk is served, unlike publicnode');
-  assert.equal(refuses(BUIDLGUIDL, 'eth_getBalance', ['0x00', hex(HEAD - 5_000_000)]), false, 'old state is served');
-  assert.equal(isShared(BUIDLGUIDL), false, 'its limit is per IP, not one quota for every visitor');
-  assert.equal(bodyType(BUIDLGUIDL), 'text/plain;charset=UTF-8', 'it takes a text/plain body, so a read needs no CORS preflight');
+await test('retired or origin-blocked mainnet endpoints stay out of the browser lists', () => {
   for (const list of [ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES]) {
-    assert.ok(list.includes(BUIDLGUIDL));
-    assert.ok(list.indexOf(BUIDLGUIDL) < list.indexOf(NODEREAL));
-    // its quota is the whole site's (per origin) and is used up for hours at a time: every node with a quota of its own is asked first
-    assert.equal(list.indexOf(BUIDLGUIDL), list.indexOf(NODEREAL) - 1, 'last but the shared key');
+    assert.ok(!list.includes(BUIDLGUIDL));
+    assert.ok(!list.includes(ONERPC));
   }
 });
 
@@ -239,6 +232,28 @@ await test('the log decoder reads a log back as it was written, in lower or uppe
   const ev = dec.decodeLog({ topics: [dec.TOPIC0.NullifiersSpent], data: '0x' + word(32) + word(5) + nfs.join('') });
   assert.deepEqual(ev.nullifiers, nfs.map((n) => '0x' + n));
   assert.doesNotThrow(() => dec.decodeLog({ topics: [dec.TOPIC0.NullifiersSpent], data: '0x' }));
+});
+
+await test('the nodes a browser gets 429s from (no CORS headers, a console line each) are last resorts, and a node that fails once is rested for a minute, longer when it keeps failing', async () => {
+  const { lastResort } = await import('../dapp/eth-nodes.js');
+  const { jsonRpc, forgetRests, restedUntil } = await import('../dapp/json-rpc.js');
+  const BUIDLGUIDL = 'https://mainnet.rpc.buidlguidl.com';
+  for (const u of [MEV, 'https://rpc.mevblocker.io/fast', BUIDLGUIDL]) assert.equal(lastResort(u), true);
+  assert.equal(lastResort(PUBLIC), false);
+  for (const list of [ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES]) assert.ok(!list.includes(PUBLIC), 'publicnode is not a browser fallback');
+  assert.ok(ETH_NODES.indexOf(MEV) > ETH_NODES.indexOf('https://tacit-node-gw.onrender.com/eth'), 'our own gateway comes before it');
+  forgetRests();
+  const asked = [], real = Date.now;
+  const f = async (url) => { asked.push(url); if (url === PUBLIC) throw new TypeError('Failed to fetch'); return { status: 200, json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x1' }) }; };
+  try {
+    const rpc = jsonRpc([PUBLIC, DRPC], f);
+    await rpc('eth_blockNumber', []);
+    await rpc('eth_blockNumber', []); await rpc('eth_blockNumber', []);
+    assert.equal(asked.filter((u) => u === PUBLIC).length, 1, 'asked once, and not again within its minute');
+    assert.ok(restedUntil(PUBLIC) > real() && restedUntil(PUBLIC) <= real() + 61e3, 'rested for about a minute');
+    Date.now = () => real() + 61e3;
+    assert.ok(restedUntil(PUBLIC) <= Date.now(), 'back in play after its minute (a good node that blinked is not out for the day)');
+  } finally { Date.now = real; forgetRests(); }
 });
 
 if (failed) { console.log(`\n${failed} failed`); process.exit(1); }

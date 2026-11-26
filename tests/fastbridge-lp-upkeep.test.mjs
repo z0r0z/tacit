@@ -1,7 +1,7 @@
 // A pair provider's upkeep (fastbridge-lp/lib/automation.mjs and the modules it runs): the move of take coins to the reverse address (never a note, never a coin of
 // a swap under way, batched, capped, a dry run first, the off switch, RBF), the accounting of each swap (the fee over the market, the network costs, reinvested
 // or owed), the lean of the price (its bounds and the 3% guard), the merge of small ETH notes, and the buyback (off unless switched on, only past the target,
-// only to TacBuyback, capped, the TAC it bought). Nothing reaches a network.
+// only to TacBuyback, capped, the TAC it bought), the auto-shield of the pool account's ETH and the low-balance alerts. Nothing reaches a network.
 //   node tests/fastbridge-lp-upkeep.test.mjs        (Node 22)
 
 import assert from 'node:assert/strict';
@@ -13,6 +13,8 @@ import { buybackConfig, targetConfig, planBuyback, attributeBuys, TAC_BUYBACK, b
 import { makeAutomation } from '../fastbridge-lp/lib/automation.mjs';
 import { applyEnv } from '../fastbridge-lp/lib/env-config.mjs';
 import { wireAutomation } from '../fastbridge-lp/lib/automation-wire.mjs';
+import { shieldConfig, makeShield } from '../fastbridge-lp/lib/shield.mjs';
+import { watchConfig, makeRefillWatch } from '../fastbridge-lp/lib/refill-watch.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -90,6 +92,7 @@ test('the fee rate: the median of two or more explorers that agree; too few, a d
   const fx = (vals) => async (u) => { const v = vals[u.split('/fee-estimates')[0]]; if (v == null) throw new Error('down'); return { ok: true, json: async () => ({ 6: v }) }; };
   assert.equal(await agreedFeeRate({ bases: ['a', 'b', 'c'], fetchImpl: fx({ a: 3.2, b: 4.1, c: 5 }) }), 5);
   assert.equal(await agreedFeeRate({ bases: ['a', 'b'], fetchImpl: fx({ a: 2, b: 3 }) }), 3);
+  assert.equal(await agreedFeeRate({ bases: ['a', 'b'], fetchImpl: fx({ a: 0.124, b: 1 }) }), 1, 'estimates under the 1 sat/vB floor count as the floor, so 0.124 against 1 agrees');
   await assert.rejects(() => agreedFeeRate({ bases: ['a', 'b'], fetchImpl: fx({ a: 2 }) }), (e) => e.wait && /1 explorer gave/.test(e.message));
   await assert.rejects(() => agreedFeeRate({ bases: ['a', 'b'], fetchImpl: fx({ a: 2, b: 30 }) }), (e) => e.wait && /disagree/.test(e.message));
   await assert.rejects(() => agreedFeeRate({ bases: ['a', 'b'], fetchImpl: fx({ a: 40, b: 50 }), cap: 25 }), (e) => e.wait && /over the 25/.test(e.message));
@@ -378,6 +381,205 @@ test('the daemon\'s wiring: /info gains the totals, the target, the lean and the
     assert.deepEqual((await h({ method: 'GET', path: '/swap/x' })).body, { error: 'not found' });
     const bad = w.wrap(async () => ({ status: 503, body: { error: 'down' } }));
     assert.deepEqual((await bad({ method: 'GET', path: '/info' })).body, { error: 'down' });
+    // an upkeep view that cannot be built leaves /info as the terms alone: it still answers
+    w.auto.info = () => { throw new TypeError("Cannot read properties of null (reading 'first')"); };
+    const unread = await h({ method: 'GET', path: '/info' });
+    assert.equal(unread.status, 200);
+    assert.deepEqual(unread.body, { v: 1, minAmount: '1' });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── auto-shield and the low-balance alerts ──
+const E = (s) => BigInt(Math.round(Number(s) * 1e8)) * 10n ** 10n;         // ETH -> wei
+const memStore = () => { let rec = null; return { load: async () => rec, save: async (r) => { rec = JSON.parse(JSON.stringify(r)); }, get: () => rec }; };
+function shieldUx(o = {}) {
+  const c = { sent: [], settled: 0, history: 0, checks: 0 };
+  const ux = {
+    rpc: async (m) => {
+      if (m === 'eth_getBalance') return '0x' + o.bal().toString(16);
+      if (m === 'eth_call') { c.checks++; if (o.dup) throw new Error('execution reverted: 0xad2fa98e'); return '0x'; }
+      if (m === 'eth_getTransactionCount') return '0x' + (o.nonce ?? 5).toString(16);
+      if (m === 'eth_getTransactionReceipt') return o.receipt === undefined ? { status: '0x1' } : o.receipt;
+      throw new Error('rpc ' + m);
+    },
+    buildRouterWrap: async ({ index }) => ({ to: '0xrouter', value: '1', calldata: '0x01', index, permitType: 'native' }),
+    routerWrap: async ({ amountWei, index }) => { c.sent.push({ amountWei, index }); return { txHash: '0x' + 'aa'.repeat(32), index }; },
+    nextWrapIndex: async () => { c.history++; return 7; },
+    relay: { state: async () => ({ state: 'ok' }) },
+    submitWrapSettle: async () => { if (o.settleFails) throw new Error('relay said no'); c.settled++; return { status: 'settled' }; },
+  };
+  return { ux, c };
+}
+const mkShield = (o = {}, env = { FB_LP_AUTO_SHIELD: 'on' }, store = memStore(), extra = {}) => {
+  const { ux, c } = shieldUx(o), alerts = [], logs = [];
+  const s = makeShield({ cfg: shieldConfig(env), ux, key: new Uint8Array(32), address: '0xaddr', load: store.load, save: store.save, log: (x) => logs.push(x), alert: (x) => alerts.push(x), waitTries: 1, waitMs: 0, ...extra });
+  return { s, c, alerts, logs, store };
+};
+
+test('auto-shield is off unless FB_LP_AUTO_SHIELD=on; its settings are checked', async () => {
+  assert.equal(shieldConfig({}).enabled, false);
+  assert.equal(shieldConfig({ FB_LP_AUTO_SHIELD: 'on' }).reserveWei, E('0.02'));
+  assert.equal(shieldConfig({ FB_LP_AUTO_SHIELD: 'on' }).minWei, E('0.02'));
+  assert.equal(shieldConfig({}).everySecs, 600);
+  assert.throws(() => shieldConfig({ FB_LP_AUTO_SHIELD: 'yes' }), /on or off/);
+  assert.throws(() => shieldConfig({ FB_LP_SHIELD_RESERVE_ETH: '0.0001' }), /gas/);
+  assert.throws(() => shieldConfig({ FB_LP_SHIELD_EVERY_SECS: '1' }), /30 to 86400/);
+  const m = mkShield({ bal: () => E('5') }, {});
+  assert.equal((await m.s.step()).did, 'off'); assert.equal(m.c.sent.length, 0); assert.equal(m.c.history, 0);
+});
+
+test('auto-shield waits for a quiet address', async () => {
+  let q = false;
+  const m = mkShield({ bal: () => E('1') }, undefined, undefined, { quiet: async () => q });
+  assert.equal((await m.s.step()).did, 'quiet'); assert.equal(m.c.sent.length, 0);
+  q = true;
+  assert.equal((await m.s.step()).did, 'shielded'); assert.equal(m.c.sent.length, 1);
+});
+
+test('auto-shield never touches the gas reserve and sends nothing under the smallest chunk', async () => {
+  let m = mkShield({ bal: () => E('0.5') });
+  assert.equal((await m.s.step()).did, 'shielded');
+  assert.equal(m.c.sent[0].amountWei, E('0.48'), 'the balance less the 0.02 reserve');
+  m = mkShield({ bal: () => E('0.0399') });
+  assert.equal((await m.s.step()).did, 'low'); assert.equal(m.c.sent.length, 0);
+  m = mkShield({ bal: () => E('0.04') });
+  assert.equal((await m.s.step()).did, 'shielded'); assert.equal(m.c.sent[0].amountWei, E('0.02'));
+  m = mkShield({ bal: () => E('1') }, { FB_LP_AUTO_SHIELD: 'on', FB_LP_SHIELD_RESERVE_ETH: '0.5' });
+  await m.s.step(); assert.equal(m.c.sent[0].amountWei, E('0.5'));
+});
+
+test('auto-shield keeps one deposit in flight and waits the gap before the next', async () => {
+  let t = 1000;
+  const m = mkShield({ bal: () => E('1'), receipt: null }, undefined, undefined, { now: () => t });
+  assert.equal((await m.s.step()).did, 'pending');
+  assert.equal((await m.s.step()).did, 'pending'); assert.equal(m.c.sent.length, 1, 'a second is not sent while one is not mined');
+  assert.equal(m.store.get().pending.tx, '0x' + 'aa'.repeat(32));
+  const slow = mkShield({ bal: () => E('1') });
+  const both = await Promise.all([slow.s.step(), slow.s.step()]);
+  assert.deepEqual(both.map((x) => x.did).sort(), ['busy', 'shielded']);
+  assert.equal((await slow.s.step()).did, 'wait', 'the least gap between deposits');
+});
+
+test('auto-shield: a restart settles the pending deposit and does not send it again', async () => {
+  const store = memStore();
+  const a = mkShield({ bal: () => E('1'), receipt: null }, undefined, store);
+  assert.equal((await a.s.step()).did, 'pending'); assert.equal(a.c.sent.length, 1);
+  const b = mkShield({ bal: () => E('1') }, undefined, store);
+  const r = await b.s.step();
+  assert.equal(r.did, 'shielded'); assert.equal(b.c.sent.length, 0); assert.equal(b.c.settled, 1);
+  assert.equal(store.get().pending, null); assert.equal(store.get().nextIndex, 8);
+  // killed between the record and the send: not sent if the nonce did not move, stopped if it did
+  const s1 = memStore(); await s1.save({ v: 1, nextIndex: 8, pending: { index: 8, amountWei: String(E('0.1')), nonce: 5, tx: null, phase: 'sent', at: 1 } });
+  assert.equal((await mkShield({ bal: () => E('1'), nonce: 5 }, undefined, s1).s.step()).did, 'cleared');
+  const s2 = memStore(); await s2.save({ v: 1, nextIndex: 8, pending: { index: 8, amountWei: String(E('0.1')), nonce: 5, tx: null, phase: 'sent', at: 1 } });
+  const moved = mkShield({ bal: () => E('1'), nonce: 6 }, undefined, s2);
+  assert.equal((await moved.s.step()).did, 'halted'); assert.equal(moved.c.sent.length, 0); assert.ok(moved.alerts[0].level === 'error');
+});
+
+test('auto-shield reads the pool history once and keeps the next index', async () => {
+  const store = memStore();
+  let t = 0;
+  const a = mkShield({ bal: () => E('1') }, undefined, store, { now: () => t });
+  await a.s.step(); assert.equal(a.c.history, 1); assert.equal(a.c.sent[0].index, 7); assert.equal(store.get().nextIndex, 8);
+  t += 700; await a.s.step(); assert.equal(a.c.history, 1); assert.equal(a.c.sent[1].index, 8);
+  const b = mkShield({ bal: () => E('1') }, undefined, store);
+  await b.s.step(); assert.equal(b.c.history, 0, 'after a restart the kept index is used'); assert.equal(b.c.sent[0].index, 9);
+});
+
+test('auto-shield: a used index stops it before anything is sent, and says so', async () => {
+  const m = mkShield({ bal: () => E('1'), dup: true });
+  assert.equal((await m.s.step()).did, 'halted');
+  assert.equal(m.c.sent.length, 0); assert.equal(m.alerts.length, 1); assert.equal(m.alerts[0].level, 'error'); assert.match(m.alerts[0].msg, /already used/);
+  assert.equal(m.store.get().nextIndex, null, 'the index is read again at the next start');
+  assert.equal((await m.s.step()).did, 'halted'); assert.equal(m.c.checks, 1);
+});
+
+test('auto-shield: a settle that fails stops it and is alerted; the deposit is not repeated, a restart settles it', async () => {
+  const store = memStore();
+  const a = mkShield({ bal: () => E('1'), settleFails: true }, undefined, store);
+  assert.equal((await a.s.step()).did, 'halted'); assert.equal(a.c.sent.length, 1);
+  assert.match(a.alerts[0].msg, /settle did not go through/); assert.equal(a.alerts[0].error, 'relay said no');
+  assert.equal((await a.s.step()).did, 'halted'); assert.equal(a.c.sent.length, 1);
+  const b = mkShield({ bal: () => E('1') }, undefined, store);
+  assert.equal((await b.s.step()).did, 'shielded'); assert.equal(b.c.sent.length, 0);
+  const r = mkShield({ bal: () => E('1'), receipt: { status: '0x0' } });
+  assert.equal((await r.s.step()).did, 'halted'); assert.match(r.alerts[0].msg, /reverted/);
+});
+
+test('auto-shield: ETH that falls with nothing of the provider\'s under way is alerted and nothing is sent that time', async () => {
+  let bal = E('0.039');
+  const m = mkShield({ bal: () => bal });
+  assert.equal((await m.s.step()).did, 'low');
+  bal = E('0.02');
+  assert.equal((await m.s.step()).did, 'dropped'); assert.equal(m.alerts.length, 1); assert.equal(m.c.sent.length, 0);
+  assert.equal((await m.s.step()).did, 'low');
+});
+
+function mkWatch(o = {}) {
+  const v = { free: E('1') / 10n ** 10n, sats: 500000n, pub: E('0.03'), t: 0, ...o }, alerts = [];
+  const w = makeRefillWatch({
+    cfg: watchConfig({}), shield: shieldConfig({}), autoShield: !!v.auto, freeEth: async () => v.free, sats: async () => v.sats, publicEth: async () => v.pub,
+    poolAccount: '0xPOOL', btcAddresses: ['bc1qmain', 'bc1qrev'], now: () => v.t, alert: (x) => alerts.push(x),
+  });
+  return { w, v, alerts };
+}
+
+test('low-balance alerts: each says what to send where, once per few hours, and a recovery', async () => {
+  assert.equal(watchConfig({}).lowEthUnits, 5_000_000n); assert.equal(watchConfig({}).lowSats, 100000n);
+  assert.equal(watchConfig({ FB_LP_ALERT_LOW_ETH: '0.1', FB_LP_ALERT_LOW_SATS: '5' }).lowEthUnits, 10_000_000n);
+  assert.throws(() => watchConfig({ FB_LP_ALERT_LOW_SATS: 'x' }), /sats/);
+  const { w, v, alerts } = mkWatch();
+  await w.check(); assert.equal(alerts.length, 0);
+  v.free = 1_000_000n; await w.check();
+  assert.equal(alerts.length, 1); assert.match(alerts[0].msg, /private ETH to lend is low.*Send ETH to 0xPOOL/);
+  v.t = 3600; await w.check(); assert.equal(alerts.length, 1, 'deduped');
+  v.t = 15000; await w.check(); assert.equal(alerts.length, 2, 'said again after four hours');
+  v.free = E('1') / 10n ** 10n; await w.check();
+  assert.equal(alerts.length, 3); assert.equal(alerts[2].level, 'info'); assert.match(alerts[2].msg, /back/);
+  await w.check(); assert.equal(alerts.length, 3);
+  v.sats = 99999n; await w.check();
+  assert.match(alerts[3].msg, /Bitcoin is low.*Send BTC to bc1qmain or bc1qrev/);
+  v.pub = E('0.01'); await w.check();
+  assert.match(alerts[4].msg, /gas reserve.*Send ETH to 0xPOOL/);
+  assert.deepEqual(w.info().alerting, ['gas', 'sats']);
+});
+
+test('low-balance alerts: ETH waiting unshielded over 30 minutes is alerted only while auto-shield is off', async () => {
+  const off = mkWatch({ pub: E('0.3') });
+  await off.w.check(); off.v.t = 1700; await off.w.check(); assert.equal(off.alerts.length, 0, 'not yet 30 minutes');
+  off.v.t = 1801; await off.w.check();
+  assert.equal(off.alerts.length, 1); assert.match(off.alerts[0].msg, /unshielded.*FB_LP_AUTO_SHIELD=on/);
+  off.v.pub = E('0.01'); await off.w.check(); assert.ok(off.alerts.some((x) => x.level === 'info'));
+  const on = mkWatch({ pub: E('0.3'), auto: true });
+  await on.w.check(); on.v.t = 5000; await on.w.check(); assert.equal(on.alerts.length, 0);
+  const small = mkWatch({ pub: E('0.03') });
+  await small.w.check(); small.v.t = 5000; await small.w.check(); assert.equal(small.alerts.length, 0, 'under the reserve and the smallest chunk');
+});
+
+test('low-balance alerts: /info shows the same facts, and no secret', async () => {
+  const { w } = mkWatch({ free: 1_000_000n, sats: 7n, pub: E('0.3') });
+  await w.check();
+  const i = w.info();
+  assert.deepEqual({ ...i, alerting: undefined }, { poolAccount: '0xPOOL', btcAddresses: ['bc1qmain', 'bc1qrev'], freeEth: '0.0100', lowEth: '0.0500', sats: '7', lowSats: '100000', publicEth: '0.3000', gasReserveEth: '0.0200', minChunkEth: '0.0200', alerting: undefined, autoShield: { on: false } });
+  assert.deepEqual(i.alerting, ['freeEth', 'sats']);
+});
+
+test('the daemon\'s wiring: /info carries refill, and auto-shield is off with no switch', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'upkeep-'));
+  try {
+    const store0 = (recs = []) => ({ list: async () => recs, get: async () => null });
+    const prims = { p2wpkhScript: (pub) => Uint8Array.from([0, 20, ...Array(20).fill(pub[1])]), wallet: { pub: Uint8Array.from([2, 0x11]) } };
+    const w = await wireAutomation({
+      C: { evmAsset: 'ab'.repeat(32), btcBases: [], quote: { minAmount: '120000', feeBps: 20, flatFee: '800' } },
+      key: new Uint8Array(32), prims, btc: { fetchTx: async () => null, address: 'bc1qmain', satsUtxos: async () => [{ value: 40000 }] }, tacit: {},
+      ux: { balance: async () => ({ byAsset: {} }), account: () => ({ address: '0xPOOL' }), rpc: async () => '0x' + E('0.3').toString(16) }, evm: { cutReserve: async () => 0n },
+      service: { free: async () => 10n ** 8n, held: async () => 0n, reservations: new Map() }, swapStore: store0(), quoteStore: store0(),
+      rside: null, rateFeed: { rate: () => RATE }, poolTurn: (fn) => fn(), data: dir, keccak256: keccak_256, log: () => {}, alert: () => {}, setLean: () => {}, env: {},
+    });
+    await w.auto.tick();
+    const h = w.wrap(async () => ({ status: 200, body: { v: 1 } }));
+    const first = (await h({ method: 'GET', path: '/info' })).body;
+    assert.equal(first.refill.autoShield.on, false); assert.equal(first.refill.poolAccount, '0xPOOL');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

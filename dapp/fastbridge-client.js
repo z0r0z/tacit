@@ -42,7 +42,7 @@ export function pickNotes(notes, amount) {
   return null;
 }
 
-export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, policy: policyIn = {}, provider = null, now = () => Math.floor(Date.now() / 1000) }) {
+export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, policy: policyIn = {}, provider = null, taken = null, now = () => Math.floor(Date.now() / 1000) }) {
   const policy = { ...DEFAULT_POLICY, ...policyIn };
   const counter = typeof lp === 'string' ? makeHttpCounter({ base: lp }) : lp;
   const bl = makeBitcoinLocker({ seed, now, policy, store, btc, evm, counter });
@@ -94,7 +94,9 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
   async function freeNotes(notes) {
     const held = new Set();
     for (const r of await store.list()) if (!TERMINAL.has(r.phase) && r.role === 'bl') for (const i of r.noteInputs || []) held.add(`${i.txid}:${i.vout}`);
-    return held.size ? notes.filter((n) => !held.has(`${n.txid}:${n.vout}`)) : notes;
+    const free = held.size ? notes.filter((n) => !held.has(`${n.txid}:${n.vout}`)) : notes;
+    // `taken(txid, vout)`: the note is held by a bridge of another kind in this browser (the regular bridge's own records)
+    return typeof taken === 'function' ? free.filter((n) => { try { return !taken(n.txid, n.vout); } catch { return true; } }) : free;
   }
 
   // `avoid` (a Set of "txid:vout") are coins this lock must not fund itself from: by default the notes given, which carry TAC. A part of a split
@@ -168,7 +170,12 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
 
   const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map((r) => describe(r, now));
 
-  async function recover({ pages = 12 } = {}) {
+  // `providerFor(claimPubHex)` names the provider whose key a lock is made to (its ref, as a swap's own record keeps it), or null. A confirmed lock of plain sats made to a
+  // provider the page knows is kept as 'offered', not as a refund: everything the claim needs follows the key and the swap id (t, the claim's output blinding and
+  // recipient: adaptor-xswap deriveSwapSecrets, fastbridge-evm recipient/claimOp), and the provider's offer (its pre-signature, the one thing only it can make) is read
+  // by the swap id from where it was published (counter.getEvmOffer). The 'offered' step checks it as always (it is on this key's T, pays this key, the lock is in the
+  // pool, time is left: tooLate) before t is used; with no offer by its deadline the swap falls to the refund as before.
+  async function recover({ pages = 12, providerFor = null } = {}) {
     const known = new Set((await store.list()).map((r) => r.id)), found = [];
     for (const tx of await btc.history(btc.address, pages)) {
       if (!tx.vin || !tx.vin.length || !tx.status?.confirmed) continue;
@@ -185,9 +192,11 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
         // a take locked with the lock (an output of the lock's own script besides the lock) is found with it, so the refund brings it home too
         const lockSpk = String(tx.vout[lock.vout].scriptpubkey || '').toLowerCase();
         const takeAt = sats ? -1 : tx.vout.findIndex((o, k) => k !== lock.vout && String(o.scriptpubkey || '').toLowerCase() === lockSpk && o.value > 546);
+        const ref = sats && providerFor ? (providerFor(typeof lock.claimerPub === 'string' ? lock.claimerPub : bytesToHex(lock.claimerPub)) || null) : null;
         const rec = {
+          ...(ref ? { provider: ref, claimFromKey: true, checking: true } : {}),
           ...(takeAt >= 0 ? { takeInLock: true, takeVout: takeAt, takeValue: tx.vout[takeAt].value } : {}),
-          v: 1, role: 'bl', id, phase: 'refund-wait', why: 'found from the key', created: now(), updated: now(), quoteId: null,
+          v: 1, role: 'bl', id, phase: ref ? 'offered' : 'refund-wait', ...(ref ? { offeredAt: now() } : {}), why: 'found from the key', created: now(), updated: now(), quoteId: null,
           asset: sats ? X.SATS_ASSET : pinned('btcAsset') || '', amount: String(lock.value), evmAsset: pinned('evmAsset') || '', evmAmount: '0',
           counterClaimPub: lock.claimerPub, csvBlocks: lock.csvBlocks, lock: { txid: tx.txid, vout: lock.vout, value: tx.vout[lock.vout].value },
           noteInputs: sats ? [] : tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout })),

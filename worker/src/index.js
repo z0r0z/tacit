@@ -104,6 +104,7 @@ import { ethStatsBody, pageStatsBody } from './stats-views.js';
 import { preauthSalesBookBody } from './book-views.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { makeBoundOffers } from './bound-offers.js';
+import { makeTakePresigs } from './take-presig.js';
 import { buildGovernance } from './governance.js';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS } from '../../dapp/discord/message.js';
 import { DISCORD_VERIFY_BUTTON_ID } from '../../discord/panel.js';
@@ -22604,6 +22605,8 @@ function watchtowerBidKey(network, ownerH160, bidIdHex) {
 }
 // Bound swap offers of bridged tokens into watchtower bids (bound-offers.js); POST off unless BOUND_OFFERS_ENABLED=true.
 const boundOffers = makeBoundOffers({ jsonResponse, verifySchnorr, watchtowerBidKey });
+// Pre-signed takes of ETH-for-Bitcoin swaps, for a watcher to finish (take-presig.js); open, verified, rate limited.
+const takePresigs = makeTakePresigs({ jsonResponse, ipBucket });
 function watchtowerBidPrefix(network, ownerH160) {
   return ownerH160 ? `wtbid:${network}:${ownerH160}:` : `wtbid:${network}:`;
 }
@@ -31284,6 +31287,8 @@ async function _routeFetch(req, env, ctx) {
     // owner. POST is flag-gated; GET (by ?owner=pubkey) + DELETE stay open.
     if (url.pathname === '/watchtower/bids' && req.method === 'POST')   return handleWatchtowerBidPost(req, env, network, cors);
     if (url.pathname === '/watchtower/bids' && req.method === 'GET')    return handleWatchtowerBidsList(url, env, network, cors);
+    if (url.pathname === '/take-presig' && req.method === 'POST')       return takePresigs.post(req, env, network, cors);
+    if (url.pathname === '/take-presig' && req.method === 'GET')        return takePresigs.list(url, env, network, cors);
     // Bound swap offers (bridged tokens into watchtower bids). POST off unless BOUND_OFFERS_ENABLED=true; reads stay open.
     const mbo = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bound-offers$/);
     if (mbo && req.method === 'POST')                          return _mutateAndBust(mbo[1], () => boundOffers.post(mbo[1], req, env, network, cors));

@@ -16,7 +16,7 @@
 //   POST /reverse/quote   { amount, claimPub }  amount = the pool TAC the user locks; claimPub = the Bitcoin key the user will take the note with
 //   POST /reverse/start   { quoteId }           the provider locks (and broadcasts) its Bitcoin note: -> { swapId }
 //   GET  /reverse/swap/<swapId>                 { phase, why }
-//   GET  /reverse/swap/<swapId>/offer           the provider's lock offer, once its lock is confirmed (404 before)
+//   GET  /reverse/swap/<swapId>/offer           the provider's lock offer, once its lock is confirmed (`{ offer: null }` before; a provider before that answered 404)
 //   POST /reverse/swap/<swapId>/evm-offer { evmOffer }   the user's pool lock offer, checked before it is kept
 //
 //   seed, btc, evm   the machine's secrets; the DEDICATED Bitcoin chain (its wallet, coins and notes); the pool side
@@ -75,11 +75,13 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
   let chain = Promise.resolve();
   const exclusive = (fn) => { const run = chain.then(fn, fn); chain = run.catch(() => {}); return run; };
 
+  // the flat part of the fee: a number, or a function that gives it now (a provider whose flat part follows its own costs)
+  const flatNow = () => BigInt((typeof q.flatFee === 'function' ? q.flatFee() : q.flatFee) ?? 0);
   // what a pool amount the user locks becomes: the Bitcoin note it gets is that less the provider's fee (a rate on the amount, and a flat part)
   function price(amount) {
     const a = BigInt(amount);
     if (a < min || a > max) throw Object.assign(new Error(`the amount must be between ${min} and ${max}`), { status: 400 });
-    const fee = feeOf(q, a);
+    const fee = feeOf({ ...q, flatFee: flatNow() }, a);
     let out = a - fee;
     if (sats && out > 0n) { const { num, den } = rateNow(); out = (out * den) / num; }   // the fee is in pool units; what is left buys sats at the rate
     if (a - fee <= 0n || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
@@ -150,7 +152,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     const p = await picture().catch(() => null), a = await availableAmount();
     return {
       v: 1, direction: 'out', lockerPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(min), maxAmount: String(max), available: a == null ? null : String(a),
-      feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks ?? 96, evmWindowSecs: config.evmWindowSecs, minClaimSecs: pol.minClaimSecs ?? 3600,
+      feeBps: q.feeBps, flatFee: String(flatNow()), csvBlocks: config.csvBlocks ?? 96, evmWindowSecs: config.evmWindowSecs, minClaimSecs: pol.minClaimSecs ?? 3600,
       maxOpen, open: p ? p.open : null, anyTac: config.anyTac !== false,
     };
   }
@@ -245,7 +247,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
   // prove its pool lock while the block is awaited. The user checks it against the transaction itself, and locks nothing before the lock has its confirmations.
   async function earlyOffer(id) {
     const s = await swaps.get(id);
-    if (!s || !X.isSats(s.asset) || !['broadcast', 'offered'].includes(s.phase) || !s.lock || !/^[0-9a-f]{64}$/.test(String(s.lock.txid || ''))) return reply({ error: 'no offer yet' }, 404);
+    if (!s || !X.isSats(s.asset) || !['broadcast', 'offered'].includes(s.phase) || !s.lock || !/^[0-9a-f]{64}$/.test(String(s.lock.txid || ''))) return reply({ offer: null });
     const sec = X.deriveSwapSecrets({ seed, swapId: hexToBytes(id) }), recipient = await evm.recipient(id);
     return reply(X.makeBtcLockOffer({
       swapId: hexToBytes(id), asset: s.asset, value: BigInt(s.amount), rLock: null, txid: s.lock.txid, vout: s.lock.vout, csvBlocks: s.csvBlocks, lockerXonly: btc.wallet.xonly, T: sec.T,
@@ -268,7 +270,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
       if (m && isSwapId(m[1])) {
         // (the lock's txid once it is sent: the user's page shows the lock and its confirmation while it waits for the offer, which comes after the block)
         if (method === 'GET' && !m[2]) { const s = await swaps.get(m[1]); return s ? reply({ phase: s.phase, why: s.why || null, lockTxid: s.phase !== 'built' && s.lock && /^[0-9a-f]{64}$/.test(String(s.lock.txid || '')) ? s.lock.txid : null }) : reply({ error: 'unknown swap' }, 404); }
-        if (method === 'GET' && m[2] === '/offer') { const o = await offers.get(m[1]); return o ? reply(o.offer) : reply({ error: 'no offer yet' }, 404); }
+        if (method === 'GET' && m[2] === '/offer') { const o = await offers.get(m[1]); return o ? reply(o.offer) : reply({ offer: null }); }
         if (method === 'GET' && m[2] === '/early-offer') return await earlyOffer(m[1]);
         if (method === 'POST' && m[2] === '/evm-offer') {
           const r = await keepEvmOffer(m[1], body);

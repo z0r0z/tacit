@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /vault/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/vault/app.js?cb=fdb021bd">
+<link rel="modulepreload" href="/vault/app.js?cb=05e43e7e">
 <link rel="modulepreload" href="/vault/deployments.js?cb=02c84743">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
 <link rel="modulepreload" href="/vault/math.js?cb=ac1ed53e">
@@ -37,14 +37,14 @@
 <link rel="modulepreload" href="/vault/reopen.js?cb=40aab9d5">
 <link rel="modulepreload" href="/vault/engine.js?cb=9a968a9d">
 <link rel="modulepreload" href="/vault/router.js?cb=21df6509">
-<link rel="modulepreload" href="/trade/connect.js?cb=41394526">
-<link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
-<link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
+<link rel="modulepreload" href="/trade/connect.js?cb=514272b7">
+<link rel="modulepreload" href="/walletconnect.js?cb=4740866f">
+<link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
+<link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/trade/sheet.js?cb=d857446c">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
-<link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/community-nodes.js">
 <link rel="modulepreload" href="/nodes-pin.js">
@@ -178,9 +178,11 @@ h1 .s-tac { display: contents; }
 @media (min-width: 901px) { #pos.first { order: 0; } }
 @media (max-width: 900px) {
   .grid { grid-template-columns: minmax(0, 1fr); }
-  /* On a phone the page reads in the order of use: the vault, what is in it, the ticket, then the figures behind them and the markets. */
+  /* On a phone, choosing a vault leads straight into the action. The position follows unless it is at risk,
+     in which case .first keeps the warning and recovery controls ahead of the ticket. */
   .col { display: contents; }
-  #pick-w { order: 1; } #pos { order: 2; } #ticket { order: 3; } #board { order: 4; } #feed { order: 5; } #pools { order: 6; } .btc-l { order: 7; }
+  #pick-w { order: 1; } #ticket { order: 2; } #pos { order: 3; } #board { order: 4; } #feed { order: 5; } #pools { order: 6; } .btc-l { order: 7; }
+  #pos.first { order: 2; } #pos.first + #ticket { order: 3; }
   #btc-pos { order: 1; } #btc-ticket { order: 2; } #btc-board { order: 3; } #btc-how { order: 4; } .tac-l { order: 5; }}
 .panel { background: var(--card); border: 1px solid var(--hair); border-radius: 18px; padding: 22px; min-width: 0; }
 @media (max-width: 480px) { .panel { padding: 18px 14px; } }
@@ -587,7 +589,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=5e0caf9e" defer></script>
+<script src="/chrome.js?cb=4c9196f2" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -644,7 +646,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
   <main>
     <!-- chrome:sec:begin -->
-    <div class="sh" id="sec-head" data-of="borrow"><h1 tabindex="-1">Borrow</h1><p>Borrow dollars against your BTC or your TAC.</p><nav class="sh-t" aria-label="Borrow"><i class="sh-i" aria-hidden="true"></i><a href="/vault/#btc" data-v="btc" data-side="btc" aria-current="page">Against BTC</a><a href="/vault/" data-v="tac" data-side="tac">Against TAC</a></nav><p class="sh-n">Lock BTC (you keep the key), mint cBTC, borrow cUSD.</p></div>
+    <div class="sh" id="sec-head" data-of="borrow"><h1 tabindex="-1">Borrow</h1><p>Borrow without selling your BTC or TAC.</p><nav class="sh-t" aria-label="Borrow"><i class="sh-i" aria-hidden="true"></i><a href="/vault/#btc" data-v="btc" data-side="btc" aria-current="page">Against BTC</a><a href="/vault/" data-v="tac" data-side="tac">Against TAC</a></nav><p class="sh-n">Lock BTC (you keep the key), mint cBTC, borrow cUSD.</p></div>
     <!-- chrome:sec:end -->
 
   <section class="hero" aria-labelledby="h">
@@ -677,7 +679,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <section class="panel" id="pools" aria-labelledby="pl-h" hidden></section>
       </div>
       <div class="col">
-        <div id="pick-w"><p class="pick-l">Vault</p><div class="seg big pick" id="pick" role="group" aria-label="Which vault"></div></div>
+        <div id="pick-w"><p class="pick-l">Choose a vault</p><div class="seg big pick" id="pick" role="group" aria-label="Choose a vault"></div></div>
         <section class="panel" id="pos" aria-labelledby="pos-h"></section>
         <section class="panel p-ticket" id="ticket" aria-labelledby="tk-h">
           <p class="eyebrow" id="tk-h">Move TAC and borrow</p>
@@ -765,6 +767,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <!-- chrome:foot:end -->
 </div>
 <script type="module" src="/vault/unlock.js"></script>
-<script type="module" src="/vault/app.js?cb=fdb021bd"></script>
+<script type="module" src="/vault/app.js?cb=05e43e7e"></script>
 </body>
 </html>

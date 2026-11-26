@@ -14,7 +14,7 @@ const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 const NOW = 1_700_000_100;
 
 // A pool that holds `free` notes of the swaps' size; `prepare` models the adapter: it cuts one only when none is free.
-function lp() {
+function lp(policy = { minCsv: 72, minClaimSecs: 3600, buildRetrySecs: 30, buildRetryMaxSecs: 600 }) {
   const pool = { free: 0, cuts: 0, locks: 0 }, calls = [], clk = { t: NOW };
   let expected = null;
   const evm = {
@@ -27,7 +27,7 @@ function lp() {
   };
   const recs = new Map();
   const store = { get: async (id) => recs.get(id) || null, put: async (r) => { recs.set(r.id, r); } };
-  const el = makeEthereumLocker({ seed: new Uint8Array(32), store, policy: { minCsv: 72, minClaimSecs: 3600, buildRetrySecs: 30, buildRetryMaxSecs: 600 }, quotes: { get: async () => null }, btc: {}, evm, counter: {}, now: () => clk.t });
+  const el = makeEthereumLocker({ seed: new Uint8Array(32), store, policy, quotes: { get: async () => null }, btc: {}, evm, counter: {}, now: () => clk.t });
   const swap = (n) => {
     const rec = { id: String(n).repeat(72).slice(0, 72), role: 'el', phase: 'locking', created: NOW - 600, deadline: NOW + 4 * 3600, prepared: true, csvBlocks: 144,
       offer: { T: hex(T.toRawBytes(true)), btc: {}, evm: { asset: '0x' + 'f0'.repeat(32), amount: '99690000000', recipient: '0x' + '07'.repeat(32), rOut: '0x' + '09'.repeat(32) } } };
@@ -113,6 +113,26 @@ test('a swap that ends without a lock keeps its last error: it says why', async 
   const r2 = await w.el.step(a);
   assert.equal(r2.phase, 'aborted');
   assert.match(r2.lastError, /no single note covers/, 'the reason it could not lock stays on the record');
+});
+
+test('a pool read that keeps failing in locking is tried again within a minute (the default back-off is capped at 60 s), and the card does not say it is sending', async () => {
+  const w = lp({ minCsv: 72, minClaimSecs: 3600 });
+  let fail = true;
+  const lock = w.evm.lockOp;
+  w.evm.lockOp = async (a) => { if (fail) throw new Error('no node answered the pool read'); return lock(a); };
+  w.pool.free = 1;
+  const a = w.swap(7);
+  for (let i = 0; i < 8; i++) { await w.el.step(a); w.advance(61); }
+  const cur = w.recs.get(a.id);
+  assert.match(cur.lastError, /no node answered/);
+  assert.ok(cur.buildFailures >= 6);
+  assert.ok(cur.buildRetryAt - (NOW + 61 * 7) <= 61, 'after many failures the next try is still within about a minute');
+  const { describeRev } = await import('../dapp/fastbridge-pair.js');
+  const said = describeRev({ ...cur, offer: undefined }, () => NOW);
+  assert.match(said.detail, /Nothing has been sent yet/);
+  assert.doesNotMatch(said.detail, /is going to the pool/);
+  fail = false; w.advance(61);
+  assert.ok((await w.el.step(cur)).lock, 'the next try builds the lock');
 });
 
 let passed = 0;

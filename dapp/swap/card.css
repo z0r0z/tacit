@@ -56,6 +56,7 @@
 .swc .snt.atm .stp li.done, .swc .snt.atm .stp li.active { color: var(--ink); } .swc .snt.atm .stp li.done i { background: var(--ok); }
 .swc .snt.atm .stp li.active i { background: var(--orange); animation: swc-snt-pulse 1.8s ease-in-out infinite; }
 @media (max-width: 420px) { .swc .snt.atm .stp { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 420px) { .swc .snt.atm .stp.s5 { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; } .swc .snt.atm .stp.s5 li { font-size: 10.5px; overflow-wrap: anywhere; } }
 @media (prefers-reduced-motion: reduce) { .swc .snt.atm .stp li.active i { animation: none; } }
 /* an amount before the wallet is open is an estimate at the market, set apart from a quote; the line that says when to be back is read first */
 .swc #atomic .big.est { color: var(--mute); font-size: 34px; }
@@ -491,6 +492,9 @@ html:not([data-page="spx"]) {
   & .swc .rcpt:not(.hx-pts .rcpt) > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
   & .swc .rcpt:not(.hx-pts .rcpt) dt { font-size: 11.5px; line-height: 1.2; color: var(--faint, var(--mute)); white-space: normal; }
   & .swc .rcpt:not(.hx-pts .rcpt) dd { text-align: left; font-size: 13.5px; font-weight: 500; line-height: 1.3; }
+  & .swc .rcpt:not(.hx-pts .rcpt) > .total dd { font-size: 15px; font-weight: 650; }
+  & .swc .rcpt:not(.hx-pts .rcpt) > .sub { padding: 2px 12px; background: none; }
+  & .swc .rcpt:not(.hx-pts .rcpt) > .sub dd { font-size: 12px; font-weight: 400; color: var(--mute); }
   & .swc .go { border-radius: 12px; font-size: 15.5px; }
   & .swc .go:disabled { color: var(--faint, var(--mute)); background: var(--field); border-color: transparent; }
   & .swc .to input { border-radius: 10px; border-color: var(--hair); background: var(--card); }

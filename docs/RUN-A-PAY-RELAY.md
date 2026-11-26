@@ -125,8 +125,8 @@ relay priced close to the gas cost is used most. A relay that has not answered a
 
 ```
 cd worker-relay && npm ci
-RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/evm-pool/keeper --owner 0x<an address of yours>            # every check, nothing sent
-RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/evm-pool/keeper --owner 0x<an address of yours> --send     # list the relay
+RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/1/evm-pool/keeper --owner 0x<an address of yours>            # every check, nothing sent
+RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/1/evm-pool/keeper --owner 0x<an address of yours> --send     # list the relay
 ```
 
 It is one transaction: the relay's key permits the registry to take the stake and lists the relay in the same call (`--two-step` approves first and lists after).
@@ -152,6 +152,17 @@ ending `/evm-pool/keeper` on a public name, one entry for each relay), draws a f
 all), and asks each for a quote, through the private route: a forwarder fetches each relay's key document, the wallet checks its signature against the address
 the registry lists, and seals the request to that key. A relay is used only if its quote names the address it was listed under and its fee is within what the user was shown.
 Nothing else about a relay is trusted, and the page does not rank relays: price does. The page that lives on chain as `anon.wei` does not read the registry.
+
+For a token pool, the page takes the chain's registry entry and puts the pool's ID in place of the chain ID: `/1/evm-pool/keeper` becomes `/1-tac/evm-pool/keeper`
+for TAC and `/1-xa0b86991c6/evm-pool/keeper` for USDC. A dynamic pool's ID is exactly `<chain>-x` plus the first 10 hex digits of the token address, in lower case.
+The projected route is pinned to the entry's relayer address, so there is nothing to register per token. The relay has to serve and quote that pool itself; a route it
+does not serve is left out.
+
+On the multi-keeper, a pool named in `EVM_POOL_CHAINS` (`1-tac`, `1-xa0b86991c6`) does not inherit `EVM_POOL_KEEPER_PRIV` or `EVM_POOL_KEEPER_PRIV_1`. Set the
+key you registered again for each one (`EVM_POOL_KEEPER_PRIV_1_TAC`, `EVM_POOL_KEEPER_PRIV_1_XA0B86991C6`, and so on): without it the pool does not start, and with
+any other key its quotes name an address the page has not pinned, so they are refused. Pools served through `EVM_POOL_TOKEN_POOLS_1` sign with the chain's key.
+
+Token pools only show on the Pay page with `?chains=all`.
 
 ## Keeping it
 

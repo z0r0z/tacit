@@ -215,8 +215,25 @@ export function makeBurnDepositUx(deps) {
   const BEFORE_BURN = new Set(['migrate-signed', 'migrate-sent', 'migrate-confirmed', 'traced']);
   const moveChangeOf = (rec) => (rec.migrate && rec.migrate.revealTxid && BEFORE_BURN.has(rec.stage) ? recordId(rec.migrate.revealTxid, 1) : null);
   const heldBurn = (rec) => (rec && rec.checkWait && rec.checkWait.burn && now() - Number(rec.checkWait.burn.at || 0) < CHECK_HOLD_MS ? rec.checkWait.burn : null);
+  // A fast bridge in this browser holds the notes it locks and the plain coins that pay its fees until it ends; a bridge started on the same coin would have
+  // one of the two end in a refusal, so those coins are reserved here as the other bridges' are.
+  const FAST_ENDED = new Set(['done', 'refunded', 'counter-took', 'aborted']);
+  function heldByFast(op) {
+    const len = storage.length;
+    if (typeof len !== 'number' || typeof storage.key !== 'function') return false;
+    for (let i = 0; i < len; i++) {
+      const k = storage.key(i);
+      if (!k || !k.startsWith('tacit-fastbridge-v1:')) continue;
+      let r = null;
+      try { r = JSON.parse(storage.getItem(k)); } catch { continue; }
+      if (!r || r.role !== 'bl' || FAST_ENDED.has(r.phase)) continue;
+      for (const u of [...(r.noteInputs || []), ...(r.feeInputs || [])]) if (u && u.txid != null && recordId(u.txid, u.vout) === op) return true;
+    }
+    return false;
+  }
   function isReserved(txid, vout, except = null) {
     const op = recordId(txid, vout);
+    if (heldByFast(op)) return true;
     for (const rec of allRecordsAnyWallet()) {
       if (except && rec.id === except) continue;
       if (rec.stage === 'reclaim-sent') { const u = rec.reclaim && rec.reclaim.fundingUtxo; if (u && recordId(u.txid, u.vout) === op) return true; continue; }
@@ -522,6 +539,7 @@ export function makeBurnDepositUx(deps) {
     const id = recordId(note.txid, note.vout);
     if (getRecord(walletPub, id)) throw new Error('burndep-ux: a bridge already exists for this note');
     if (isReserved(note.txid, note.vout)) throw new Error('burndep-ux: this note is already reserved by another bridge in progress');
+    await refuseSpentNote(note);
     if (BigInt(note.amount) > NOTE_MAX_RAW) throw new Error('burndep-ux: more than one bridge carries');
 
     const sourcePriv = note.stealthTweakedSk ? hexToBytesLocal(stripHex(note.stealthTweakedSk)) : null;
@@ -558,6 +576,7 @@ export function makeBurnDepositUx(deps) {
     const id = recordId(note.txid, note.vout);
     if (getRecord(walletPub, id)) throw new Error('burndep-ux: a bridge already exists for this note');
     if (isReserved(note.txid, note.vout)) throw new Error('burndep-ux: this note is already reserved by another bridge in progress');
+    await refuseSpentNote(note);
     const asset = assetOf(note.assetId || tacAssetId);
     if (!asset) throw new Error('burndep-ux: this asset cannot be sent back to Ethereum here');
     if (BigInt(note.amount) > asset.capRaw) throw new Error('burndep-ux: more than one bridge carries');
@@ -1039,7 +1058,75 @@ export function makeBurnDepositUx(deps) {
     } catch { return 'unknown'; }
   }
 
-  async function cancelSigned(walletPub, id) {
+  // Whether a coin is spent on Bitcoin, and by which transaction. The service answers first (what it says of a confirmed spend never changes), then the explorers
+  // directly, as the service keeps a "not spent" answer for up to an hour.
+  const COIN_GONE = /missingorspent|missing-inputs|inputs-missing|bad-txns-inputs|already spent|txn-mempool-conflict/i;
+  async function outspendOf(txid, vout) {
+    const id = stripHex(txid), read = (j) => (j && typeof j.spent === 'boolean' ? { spent: j.spent, confirmed: !!(j.status && j.status.confirmed), by: j.txid || null } : null);
+    let seen = null, failure = null;
+    try { seen = read(await fetchChainJson(`/tx/${id}/outspend/${vout}`)); } catch (e) { failure = e; }
+    if (seen && seen.spent && seen.confirmed) return seen;
+    const f = fetchImpl || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+    for (const base of f ? DIRECT_EXPLORERS : []) {
+      try {
+        const res = await f(`${base}/tx/${id}/outspend/${vout}`);
+        if (!res.ok) { failure = failure || new Error(`${base} answered ${res.status}`); continue; }
+        const got = read(await res.json().catch(() => null));
+        if (got) return got;
+      } catch (e) { failure = failure || e; }
+    }
+    if (seen) return seen;
+    throw Object.assign(new Error(`burndep-ux: could not read Bitcoin from this page just now (${String((failure && failure.message) || 'no answer').slice(0, 80)}); try again in a minute`), { status: 503 });
+  }
+
+  // A note Bitcoin shows already spent (a fast bridge locking it from another tab or device, say) cannot be moved or burned here: the bridge would be sent, and
+  // stay at its first transaction for good. A read that fails does not stop a bridge.
+  async function refuseSpentNote(note) {
+    let o = null;
+    try { o = await outspendOf(note.txid, note.vout); } catch { return; }
+    if (o && o.spent) throw new Error('burndep-ux: Bitcoin shows this note already spent by another transaction, so it cannot be bridged here');
+  }
+
+  // The coin a bridge's second transaction spends besides its first transaction's output, when Bitcoin has already confirmed it spent by another transaction: that
+  // second transaction can never be mined.
+  async function spentElsewhere(signed) {
+    const commitId = lc(stripHex(signed.commitTxid));
+    for (const c of reveal.spentBy(signed.hex || signed.revealHex)) {
+      if (lc(c.txid) === commitId && c.vout === 0) continue;
+      const o = await outspendOf(c.txid, c.vout);
+      if (o.spent && o.confirmed) return { txid: c.txid, vout: c.vout, by: o.by };
+    }
+    return null;
+  }
+
+  // A bridge that can never finish: its first transaction's output goes back to the key's address and the bridge leaves the page, with its signed
+  // transactions kept on the side first (a sweep that fails, or that is never mined, can be made again from them).
+  async function giveUp(walletPub, rec, signed, { walletPriv, feeRate, spent }) {
+    if (!walletPriv) throw new Error('burndep-ux: this bridge can never finish, and cancelling it needs the wallet key to bring its bitcoin back');
+    const key = `${JOURNAL_PREFIX}-left:${network}:${stripHex(signed.commitTxid)}`;
+    const keep = (extra) => storage.setItem(key, serializeRecord([{ ...rec, gaveUpAt: now(), spentBy: spent.by, ...extra }]));
+    try { keep({}); } catch { throw new Error('burndep-ux: this browser could not keep the bridge’s transactions on the side, so it was not cancelled'); }
+    const out = { gaveUp: true, spent, swept: null, held: null };
+    const held = await outspendOf(signed.commitTxid, 0);
+    if (held.spent) out.moved = held.by;
+    else {
+      const rate = Number(feeRate != null ? feeRate : await chain.getFeeRate('priority'));
+      try {
+        const built = await reveal.buildSweepTx({ prims: freshPrims(walletPriv), commitHex: signed.commitHex, revealHex: signed.hex || signed.revealHex, walletPriv, feeRate: rate });
+        const swept = { txid: built.txid, hex: built.hex, sats: built.value, fee: built.fee, feeRate: built.feeRate, at: now() };
+        keep({ sweep: swept });
+        await chain.broadcastWithRetry(built.hex);
+        out.swept = { txid: swept.txid, sats: swept.sats, fee: swept.fee };
+      } catch (e) {
+        if (!(e && e.code === 'small')) throw new Error(`burndep-ux: this bridge can never finish, and Bitcoin did not take the transaction that brings its bitcoin back: ${String((e && e.message) || e)}`);
+        out.held = Number(e.commitValue);
+      }
+    }
+    abandon(walletPub, rec.id);
+    return out;
+  }
+
+  async function cancelSigned(walletPub, id, { walletPriv = null, feeRate = null } = {}) {
     if (!getRecord(walletPub, id)) return null;
     if (inFlight.has(id)) throw new Error('burndep-ux: this bridge is being advanced in this page right now');
     if (!tryAcquireLease(id)) throw new Error('burndep-ux: this bridge is being advanced in another tab right now');
@@ -1052,9 +1139,14 @@ export function makeBurnDepositUx(deps) {
       const [commit, reveal] = await Promise.all([chainTxState(signed.commitTxid), chainTxState(signed.txid || signed.revealTxid)]);
       if (reveal === 'present') return putRecord({ ...rec, stage: burn ? 'rburn-sent' : 'migrate-sent', sentAt: rec.sentAt || now(), lastError: null, errorCount: 0 });
       if (commit === 'present') {
-        try { await chain.broadcastWithRetry(signed.hex || signed.revealHex); }
-        catch (e) { throw new Error(`burndep-ux: the first of its two transactions is on Bitcoin, so it was not cancelled, and Bitcoin refused the second: ${String((e && e.message) || e)}`); }
-        return putRecord({ ...rec, stage: burn ? 'rburn-sent' : 'migrate-sent', sentAt: rec.sentAt || now(), lastError: null, errorCount: 0 });
+        let refused = null;
+        try { await chain.broadcastWithRetry(signed.hex || signed.revealHex); } catch (e) { refused = String((e && e.message) || e); }
+        if (refused == null) return putRecord({ ...rec, stage: burn ? 'rburn-sent' : 'migrate-sent', sentAt: rec.sentAt || now(), lastError: null, errorCount: 0 });
+        if (COIN_GONE.test(refused) && await chainTxState(signed.txid || signed.revealTxid) === 'absent') {
+          const spent = await spentElsewhere(signed);
+          if (spent) return giveUp(walletPub, rec, signed, { walletPriv, feeRate, spent });
+        }
+        throw new Error(`burndep-ux: the first of its two transactions is on Bitcoin, so it was not cancelled, and Bitcoin refused the second: ${refused}`);
       }
       if (commit !== 'absent' || reveal !== 'absent') throw new Error('burndep-ux: Bitcoin could not be asked about its transactions just now, so it was not cancelled; try again in a minute');
       abandon(walletPub, id);

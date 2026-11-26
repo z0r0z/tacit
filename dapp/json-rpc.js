@@ -6,6 +6,15 @@ import { pace } from './rpc-pace.js';
 // gets `timeoutMs` to answer before the next is tried, so one that stops responding cannot stall every read behind it,
 // and the next call starts after it even when none of the others answered either, so a retry does not wait on it again.
 // `rpc.node` is the URL that answered last.
+// A node that fails to answer at all (a 429 or 5xx, a CORS block that hides one, a refused connection) is rested for every reader of it and not asked again while another
+// node can be: a minute the first time, twice as long for each failure in a row, at most ten minutes, and an answer clears the count (a good node that blinked once is
+// back in a minute: the log scans that need it cannot be left to nodes that read a few hundred blocks). A timeout or a node's own error is not a rest: it may be this
+// call. When every node is resting they are all asked, as before.
+const RESTED = new Map(), STRIKES = new Map(), REST_BASE = 60e3, REST_MAX = 600e3;
+export const restedUntil = (url) => RESTED.get(url) || 0;
+export const forgetRests = () => { RESTED.clear(); STRIKES.clear(); };
+const down = (e) => e?.name === 'TypeError' || /^http (429|5\d\d)$/.test(e?.message || '');
+const rest = (url, e) => { if (!down(e)) return; const n = (STRIKES.get(url) || 0) + 1; STRIKES.set(url, n); RESTED.set(url, Date.now() + Math.min(REST_MAX, REST_BASE * 2 ** (n - 1))); };
 export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { timeoutMs = 25_000 } = {}) {
   const list = Array.isArray(urls) ? urls : [urls];
   let id = 0, first = 0, head = list[0];
@@ -17,21 +26,23 @@ export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { t
   const single = async (method, params = [], { found = false } = {}) => {
     const all = [], start = begin(); let none = false;
     // a node known to refuse this read (eth-nodes.js) is not asked while there is another to ask, and is when it is all there is
-    const turn = list.map((_, k) => (start + k) % list.length), refused = (i) => refuses(list[i], method, params), fine = turn.filter((i) => !refused(i));
+    const turn = list.map((_, k) => (start + k) % list.length), refused = (i) => refuses(list[i], method, params), fine0 = turn.filter((i) => !refused(i)), calm = fine0.filter((i) => restedUntil(list[i]) <= Date.now()), fine = calm.length ? calm : fine0;
     for (const at of fine.length ? fine : turn) {
       const url = list[at];
       try {
         const signal = AbortSignal.timeout?.(timeoutMs);
         const r = await pace(url, method, () => fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal }), signal);
+        if (r.status === 429 || r.status >= 500) throw new Error(`http ${r.status}`);
         const j = await r.json();
         if (j.error) throw Object.assign(new Error(j.error.message || 'rpc error'), { rpc: j.error });
         if (j.result === undefined) throw new Error(`rpc: no result (HTTP ${r.status})`);
         if (found && j.result == null) { none = true; continue; }
-        first = at; single.node = url;
+        first = at; single.node = url; STRIKES.delete(url);
         return j.result;
       } catch (e) {
         if (e.rpc && /revert/i.test(e.message) && (method === 'eth_call' || method === 'eth_estimateGas')) throw e;
         if (timedOut(e)) first = (at + 1) % list.length;
+        rest(url, e);
         all.push(e);
       }
     }
@@ -46,12 +57,14 @@ export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { t
   const noBatch = new Set();
   single.batch = async (calls) => {
     const all = [], start = begin();
-    for (let k = 0; k < list.length; k++) {
-      const at = (start + k) % list.length, url = list[at];
+    const order = Array.from({ length: list.length }, (_, k) => (start + k) % list.length), calm = order.filter((i) => restedUntil(list[i]) <= Date.now());
+    for (const at of calm.length ? calm : order) {
+      const url = list[at];
       if (noBatch.has(url)) continue;
       try {
         const base = id; id += calls.length;
         const r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(calls.map((c, i) => ({ jsonrpc: '2.0', id: base + i + 1, method: c.method, params: c.params ?? [] }))), signal: AbortSignal.timeout?.(timeoutMs) });
+        if (r.status === 429 || r.status >= 500) throw new Error(`http ${r.status}`);
         const j = await r.json();
         if (!Array.isArray(j)) {
           const err = j?.error, why = String(err?.message || j?.message || ''), status = r.status ?? 200;
@@ -65,9 +78,9 @@ export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { t
           return !x ? new Error('no answer') : x.error ? Object.assign(new Error(x.error.message || 'rpc error'), { rpc: x.error }) : x.result;
         });
         if (calls.length && out.every((x) => x instanceof Error)) throw out[0];
-        first = at; single.node = url;
+        first = at; single.node = url; STRIKES.delete(url);
         return out;
-      } catch (e) { if (timedOut(e)) first = (at + 1) % list.length; all.push(e); }
+      } catch (e) { if (timedOut(e)) first = (at + 1) % list.length; rest(url, e); all.push(e); }
     }
     throw Object.assign(all[all.length - 1] || new Error('no node takes batches'), { all });
   };

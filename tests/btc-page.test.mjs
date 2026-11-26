@@ -68,9 +68,9 @@ const chainlink = (data) => {
 const BTC_STUB = `
 const W = window.__btc = { unlocked: false, signIns: 0, funds: 0, fundAsk: null, mode: 'eth' };
 const T = { wallet: { priv: new Uint8Array(32).fill(7), address: () => 'bc1qtestaddress0000000000000000000000000' } };
-const session = { get unlocked() { return W.unlocked; }, get key() { return W.unlocked ? { pubHex: '02' + 'ab'.repeat(32), mode: W.mode, address: W.mode === 'eth' ? '0x' + '12'.repeat(20) : undefined } : null; }, get T() { return T; }, load: async () => T, turn: async (fn) => fn() };
+const session = { get unlocked() { return W.unlocked; }, get key() { return W.unlocked ? { pubHex: '02' + 'ab'.repeat(32), mode: W.mode, address: W.mode === 'eth' ? '0x' + '12'.repeat(20) : undefined } : null; }, get T() { return T; }, get address() { return W.unlocked ? 'bc1qtestaddress0000000000000000000000000' : null; }, load: async () => T, turn: async (fn) => fn() };
 // (a Bitcoin wallet in the browser when W.canSend: its payment to the key's address is recorded, or declined with W.declineSend)
-export function makeBitcoin({ onChange }) { W.change = onChange; return { session, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: (o) => { W.funds++; W.fundAsk = o || null; },
+export function makeBitcoin({ onChange }) { W.change = onChange; return { session, lock: () => { W.unlocked = false; W.locks = (W.locks || 0) + 1; onChange?.(); }, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: (o) => { W.funds++; W.fundAsk = o || null; },
   // (as trade/btc.js sendIn: a wallet whose coins may carry TAC, or that could not be checked, is never asked; W.asked counts the wallet's prompts)
   canSendIn: () => !!W.canSend, sendIn: async (sats) => {
     if (W.carriers) throw Object.assign(new Error('Your Bitcoin wallet holds TAC on some of its coins.'), { carriers: 1 });
@@ -117,7 +117,7 @@ const A = window.__add;
 export class UserStopped extends Error { constructor() { super('Nothing was sent.'); this.userStopped = true; } }
 export function makeWallet() {
   const state = { account: null };
-  return { state, restore: async () => false, available: () => (A.noWallet ? [] : [{ info: { name: 'Test wallet', uuid: 'w1' }, provider: {} }]),
+  return { state, restore: async () => { if (A.restored) { state.account = A.account; return true; } return false; }, available: () => (A.noWallet ? [] : [{ info: { name: 'Test wallet', uuid: 'w1' }, provider: {} }]),
     connect: async () => { state.account = A.account; A.connects++; return true; },
     sendTx: async (tx) => { A.asked.push({ to: tx.to, value: String(tx.value), from: tx.from }); if (A.reject) throw new UserStopped(); return '0x' + 'ab'.repeat(32); },
     receipt: async (h) => { if (A.holdReceipt) await new Promise((r) => { A.mine = r; }); return { status: '0x1', transactionHash: h }; } };
@@ -269,12 +269,15 @@ const hex = (v) => '0x' + BigInt(v).toString(16);
 // the house provider's /info, with what its upkeep adds (fastbridge-lp/lib/automation.mjs): null answers 404, as a provider without it does
 const HOUSE = 'https://tacit-fastbridge-pair-lp.onrender.com';
 let houseInfo = { v: 1, stats: { since: 1795608000, swaps: 4, reinvestedEth: '1234567', netEth: '1234567', capacity: { eth: '320000000', sats: '1500000', valueEth: '365000000' } }, target: { eth: '1000000000', btcAsEth: '1000000000', reached: false }, skewBps: 0, buyback: { on: false, startedAt: null, routedEth: '0', tacBought: '0', sends: 0 } };
+const BAD = [], FLAKY = { on: false, asked: [] };
 // the network: the board and the public nodes are answered here, everything else off the machine is refused
 async function wire(page, { ads, boardDelayMs = 0 }) {
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const req = route.request(), url = req.url();
     if (url === `${HOUSE}/info`) return houseInfo ? route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(houseInfo) }) : route.fulfill({ status: 404, body: '{}' });
     if (url === `${BOARD}/ads`) { if (boardDelayMs) await sleep(boardDelayMs); return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ ads }) }).catch(() => {}); }
+    // nodes that answer a browser with a 429 that carries no CORS headers (a CORS block, a console line for each request): the page must never ask them. FLAKY: publicnode refuses like that when a test sets it
+    if (/mevblocker|buidlguidl/.test(url) || (FLAKY.on && /publicnode/.test(url))) { (/publicnode/.test(url) ? FLAKY.asked : BAD).push(url); return route.abort('failed'); }
     if (req.method() === 'POST' && /publicnode|drpc|1rpc|tenderly|mevblocker|blastapi|buidlguidl|thirdweb|stakely|nodereal|flashbots|tacit-node-gw/.test(url)) {
       let body = {}; try { body = JSON.parse(req.postData() || '{}'); } catch { /* not JSON */ }
       const answer = { eth_getBalance: () => hex(RPCV.balance), eth_gasPrice: () => hex(10n ** 9n), eth_estimateGas: () => hex(120000n), eth_getTransactionReceipt: () => RPCV.receipt, eth_getTransactionByHash: () => ({ hash: '0x' }), eth_blockNumber: () => '0x1500000' };
@@ -353,6 +356,18 @@ console.log('the page: the marks, the line, the lane');
 
   console.log('the wallet opens: the swaps');
   ok(/Sign in above/.test(await text(page, '#mine-say')) && await page.isHidden('#mine-keep'), `before: the swaps section says how to see them (${await text(page, '#mine-say')}, ${await page.isHidden('#mine-keep')})`);
+  ok(/^Sign in$/.test(await text(page, '#wallet')) && await page.isVisible('#wallet') && !(await page.$eval('#wallet-dot', (e) => e.classList.contains('on'))), 'the header has a Sign in chip while no wallet is open');
+  await page.click('#wallet');
+  await page.waitForFunction(() => window.__btc.unlocked && /tacit1/.test(document.querySelector('#wallet').textContent), null, { timeout: 15000 });
+  ok((await atom(page, '0') , await page.$eval('#wallet-dot', (e) => e.classList.contains('on'))) && (await page.evaluate(() => window.__btc.signIns)) === 1, 'the chip opens the same sign-in, and then shows the wallet with its dot on');
+  await page.waitForFunction(() => !/Sign in to swap/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(!/Sign in to swap/.test(await text(page, '#a-go')), 'the card reflects the same signed-in state');
+  await page.click('#wallet');
+  ok(/^tacit1\w{10}…\w{6}$/.test(await text(page, '#wallet-label')) && /^tacit1/.test(await text(page, '#acct-tacit')) && /^bc1q/.test(await text(page, '#acct-id')) && /lands here/.test(await text(page, '#acct-pop')) && (await page.$$('#acct-pop [data-copy]')).length === 2, 'the chip names the key by its tacit1 address; the menu lists it and the Bitcoin address, each with Copy');
+  await SHOT(page, 'chip-open', false);
+  await page.click('#acct-pop [data-acct=out]');
+  await page.waitForFunction(() => /^Sign in$/.test(document.querySelector('#wallet').textContent) && /Sign in to swap/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(true, 'Sign out from the chip locks it: the chip and the card both ask to sign in again');
   await page.click('#a-go');
   await page.waitForFunction(() => window.__btc.unlocked && !document.querySelector('#mine-list').hidden, null, { timeout: 30000 });
   ok(await page.isHidden('#a-sent') && (await page.$$('#mine-list > div')).length === 2, 'the swaps are listed in their own section, not under the lane');
@@ -362,7 +377,7 @@ console.log('the page: the marks, the line, the lane');
   ok(/If it stops, your BTC returns in 2\d h/.test(mine) && /Done/.test(await text(page, '#mine-list .ok')), 'its refund time, and a finished swap marked done');
   ok(await page.isVisible('#keep-save') && (await text(page, '#mine-say')) === '', 'a copy of the swaps can be saved');
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 8000 }).catch(() => null), page.click('#keep-save')]);
-  ok(!!dl && /^tacit-btc-eth-swaps-\d{4}-\d\d-\d\d\.json$/.test(dl.suggestedFilename()), `Save a copy downloads the swaps (${dl && dl.suggestedFilename()})`);
+  ok(!!dl && /^tacit-btc-eth-swaps-\d{4}-\d\d-\d\d\.json$/.test(dl.suggestedFilename()), `Back up downloads the swaps (${dl && dl.suggestedFilename()})`);
   await page.waitForFunction(() => /Balance 0\.5 BTC/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
   await page.fill('#a-amt', '0.02');
   await page.waitForFunction(() => /^Swap BTC → ETH$/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
@@ -485,6 +500,27 @@ for (const scheme of ['light', 'dark']) {
   if (scheme === 'dark') { await page.setViewportSize({ width: 1200, height: 1000 }); await SHOT(page, 'desktop-dark'); }
   ok(errs.length === 0 && csp.length === 0, `${scheme}: no page errors or CSP violations (${errs.concat(csp).join(' | ')})`);
   await page.close();
+}
+
+console.log('One press: the connected wallet\u2019s own ETH is shown, counted by Max, and checked');
+{
+  RPCV.balance = 14n * 10n ** 15n;
+  const { page, errs } = await fresh({ path: '/btc/?dir=e2b', init: 'window.__add.restored = true; window.__atom.bal.eth = 0n;' });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /Balance 0 ETH private · 0\.014 ETH in your wallet/.test(document.querySelector('#a-bal').textContent), null, { timeout: 15000 });
+  ok(true, 'the From box says what is private and what the wallet holds');
+  await page.click('#a-quick [data-quick]:last-child');
+  const mx = await page.inputValue('#a-amt');
+  ok(mx === '0.011', `Max is the wallet\u2019s ETH less the 0.003 kept for gas and fees (${mx})`);
+  await page.waitForFunction(() => /^Swap 0\.011 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  await SHOT(page, 'w-1280-light'); await page.emulateMedia({ colorScheme: 'dark' }); await SHOT(page, 'w-1280-dark'); await page.setViewportSize({ width: 390, height: 900 }); await SHOT(page, 'w-390-dark'); await page.emulateMedia({ colorScheme: 'light' }); await SHOT(page, 'w-390-light'); await page.setViewportSize({ width: 1200, height: 1000 });
+  ok(/^Adds 0\.011 ETH from your wallet first, then swaps\./.test(await text(page, '#a-q')), 'the note says the press adds ETH from the wallet first');
+  await page.fill('#a-amt', '0.013'); await page.dispatchEvent('#a-amt', 'input');
+  await page.waitForFunction(() => /^Not enough ETH: you have 0\.014 in your wallet and 0 private; need 0\.016 including fees$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  ok(await page.$eval('#a-go', (e) => e.disabled), 'too little ETH in the wallet says so, with the numbers');
+  ok(errs.length === 0, `no page errors (${errs.join(' | ')})`);
+  await page.close();
+  RPCV.balance = 10n ** 18n;
 }
 
 console.log('One press: a swap of ETH the private balance is short of (the ETH made private first, then swapped)');
@@ -953,7 +989,7 @@ console.log('the sections under the tile: closed lines that open (disclosures)')
   ok(!(await page.$eval('#mybtc', (e) => e.open)) && !(await page.$eval('#myeth', (e) => e.open)), 'a swap under way opens Your swaps; the wallet panels stay closed');
   await page.waitForFunction(() => /0\.5 BTC/.test(document.querySelector('#yb-sum').textContent) && /private/.test(document.querySelector('#ye-sum').textContent), null, { timeout: 15000 });
   ok(/^1 in progress · 1 done$/.test(await raw(page, '#mine-sum')) && (await raw(page, '#yb-sum')) === '0.5 BTC' && (await raw(page, '#ye-sum')) === '4 private', `the lines say it: ${await raw(page, '#mine-sum')}, ${await raw(page, '#yb-sum')}, ${await raw(page, '#ye-sum')}`);
-  ok(/Read only a copy you saved yourself/.test(await text(page, '#mine-keep')) && await page.isVisible('#mine-list [data-rec="sw1"] .stay'), 'the warning and the swap\'s "keep this page open" are in the open section, in view');
+  ok(/restore one you made yourself/.test(await text(page, '#mine-keep')) && await page.isVisible('#mine-list [data-rec="sw1"] .stay'), 'the warning and the swap\'s "keep this page open" are in the open section, in view');
   await page.click('#mine > summary');
   await sleep(150);
   ok(!(await page.$eval('#mine', (e) => e.open)), 'Your swaps closes when the visitor closes it');
@@ -975,6 +1011,23 @@ console.log('the sections under the tile: closed lines that open (disclosures)')
 {
   const html = readFileSync(new URL('../dapp/btc/index.html', import.meta.url), 'utf8');
   ok(/Running a node also helps:[^<]*<a href="\/nodes\/">\/nodes\/<\/a> and ranked by uptime and accuracy/.test(html), 'the provider area points at /nodes/');
+}
+
+console.log('the console stays clean: nodes that refuse a browser are not asked');
+{
+  BAD.length = 0; FLAKY.on = true;
+  const { page, errs } = await fresh();
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__btc.unlocked, null, { timeout: 30000 });
+  await page.fill('#a-amt', '0.01');
+  await sleep(4000);
+  await page.fill('#a-amt', '0.02');
+  await sleep(4000);
+  FLAKY.on = false;
+  ok(BAD.length === 0, `mevblocker and BuidlGuidl are not asked on load, sign-in or a quote (${BAD.join(' ')})`);
+  ok(FLAKY.asked.length <= 2, `a node that refused is not asked again in the page (${FLAKY.asked.length} asks)`);
+  ok(errs.length === 0, `no page errors (${errs.join(' | ')})`);
+  await page.close();
 }
 
 await b.close();

@@ -2,9 +2,9 @@
 // kept for the life of the page. The swap card shows its third mode only when this says yes, so a page with no such provider is the page it was.
 //
 // A provider of this pair has an ad whose Bitcoin side is plain sats, the asset id of 64 zeros (adaptor-xswap.js SATS_ASSET), against the pool's ETH (kept here as
-// literals so the card does not load those modules to ask). The common answer is no, and it costs two small reads and no code: the boards' ad lists are looked at as data first, and
-// only a list that names the pair is passed through the code that checks each ad's signature (fastbridge-mailbox.js readProviders, on the ads already read), so an ad
-// no key signed does not open the mode.
+// literals so the card does not load those modules to ask). The boards are read first, and their ad lists are looked at as data: only a list that names the pair is passed
+// through the code that checks each ad's signature (fastbridge-mailbox.js readProviders, on the ads already read), so an ad no key signed does not open the mode. A provider's own
+// address is read only when no board names the pair: a provider that is restarting answers a browser with an error no page can hide, and the board has already said what is needed.
 //
 //   probeAtomic({ fetchImpl, lists, now })  ->  Promise<boolean>        never rejects: a read that fails is a no
 
@@ -21,28 +21,23 @@ export async function probeAtomic({ fetchImpl = (...a) => fetch(...a), lists = n
     const boards = (Array.isArray(l?.boards) ? l.boards : []).filter(onlyHttps).slice(0, 4);
     const servers = (Array.isArray(l?.providers) ? l.providers : []).map((p) => p && p.base).filter(onlyHttps).slice(0, 4);
     const get = (url) => fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-    const [boardHits, serverHits] = await Promise.all([
-      Promise.all(boards.map(async (base) => {
-        const j = await get(`${base.replace(/\/$/, '')}/ads`);
-        return Array.isArray(j?.ads) && j.ads.some(ofPair) ? j.ads : null;
-      })),
-      Promise.all(servers.map(async (base) => {
-        const j = await get(`${base.replace(/\/$/, '')}/info`);
-        return ofPair(j);
-      })),
-    ]);
-    // a provider that serves its own HTTP is asked directly, as the bridge page does: its terms are what its key signs for
-    if (serverHits.some(Boolean)) return true;
+    const boardHits = await Promise.all(boards.map(async (base) => {
+      const j = await get(`${base.replace(/\/$/, '')}/ads`);
+      return Array.isArray(j?.ads) && j.ads.some(ofPair) ? j.ads : null;
+    }));
     const named = boardHits.filter(Boolean);
-    if (!named.length) return false;
-    // the ads already read are the ones checked: the board is not asked again
-    const mailbox = await import('/fastbridge-mailbox.js?cb=4c2ccb36');
-    for (const ads of named) {
-      try {
-        const ps = await mailbox.readProviders({ board: { ads: async () => ads }, now });
-        if (ps.some((p) => ofPair(p.ad))) return true;
-      } catch { /* a list that cannot be checked offers nothing here */ }
+    if (named.length) {
+      // the ads already read are the ones checked: the board is not asked again
+      const mailbox = await import('/fastbridge-mailbox.js?cb=4c2ccb36');
+      for (const ads of named) {
+        try {
+          const ps = await mailbox.readProviders({ board: { ads: async () => ads }, now });
+          if (ps.some((p) => ofPair(p.ad))) return true;
+        } catch { /* a list that cannot be checked offers nothing here */ }
+      }
     }
-    return false;
+    // no board names the pair (or none could be checked): a provider that serves its own HTTP is asked directly, as the bridge page does: its terms are what its key signs for
+    const serverHits = await Promise.all(servers.map(async (base) => ofPair(await get(`${base.replace(/\/$/, '')}/info`))));
+    return serverHits.some(Boolean);
   } catch { return false; }
 }

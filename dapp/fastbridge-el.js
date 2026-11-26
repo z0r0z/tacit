@@ -4,6 +4,7 @@ import * as adaptor from './adaptor-signature.js';
 import { deriveLock, claimSecret } from './adaptor-btc-lock.js';
 import { secp, bytesToHex, hexToBytes, hmac, sha256 } from './vendor/tacit-deps.min.js';
 import { pedersenCommit } from './bulletproofs.js';
+import * as TP from './take-presig.js';
 
 const hx = bytesToHex;
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
@@ -263,6 +264,32 @@ export function makeEthereumLocker(ctx) {
     return rec;
   }
 
+  // ── the take, signed ahead for anyone to finish (dapp/take-presig.js) ──
+  // Once the pool offer is out, the user (this side, with `ctx.takePresig`) signs the take of the provider's lock except for t, and publishes that where a watcher can read it
+  // whatever the provider does. A watcher that sees the provider's claim reads t out of it and finishes the take to the user's own address. This only adds a way to the
+  // BTC: nothing waits on it, a failure leaves the swap as it was, and the page says the BTC is protected only when the publish was answered. Plain sats only.
+  async function protect(rec) {
+    try {
+      const tp = ctx.takePresig;
+      if (!tp || !rec.evmOffer || !rec.lock || !X.isSats(rec.offer.btc.asset) || (rec.presig && (rec.presig.published || (rec.presig.tries || 0) >= (policy.presigTries ?? 8) || (rec.presig.nextAt || 0) > ctx.now()))) return rec;
+      const tries = ((rec.presig && rec.presig.tries) || 0) + 1, retry = ctx.now() + Math.min(900, 30 * tries);
+      try {
+        const own = btc.prims.p2wpkhScript(btc.wallet.pub);
+        const rate = Math.max(2, Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.2)));
+        const fee = TP.takeFee({ dest: own, feeRate: rate, lockValue: rec.lockValue });
+        if (!(rec.lockValue - fee >= TP.MIN_OUT)) return save(rec, { presig: { published: false, tries: 99, why: 'the lock is too small to pre-sign a take' } });
+        const p = TP.makePresig({
+          dUser: btc.wallet.priv, claimerPub: btc.wallet.pub, T: secretsOf(rec).T, lockerXonly: strip(rec.offer.btc.lockerXonly), csvBlocks: rec.csvBlocks,
+          lockOut: { txid: rec.lockTxid, vout: rec.lockVout, value: rec.lockValue }, dest: own, fee, sTilde: rec.evmOffer.presign.sTilde, lockNu: rec.lock.lockNu, deadline: rec.deadline,
+        });
+        const v = TP.verifyPresig(p);
+        if (!v.ok || (rec.lockSpk && v.spk !== strip(rec.lockSpk))) return save(rec, { presig: { published: false, tries: 99, why: 'the pre-signature does not match the lock' } });
+        const ok = (await tp.publish(p)) === true;
+        return save(rec, { presig: { published: ok, tries, at: ctx.now(), fee, nextAt: ok ? null : retry, sighash: hx(v.sighash) } });
+      } catch (e) { return save(rec, { presig: { published: false, tries, nextAt: retry, why: String((e && e.message) || e).slice(0, 120) } }); }
+    } catch { return rec; }
+  }
+
   async function advance(rec) {
     if (rec.lock && (rec.phase === 'locking' || rec.phase === 'locked') && (await evm.now()) > rec.deadline) {
       return save(rec, { phase: 'offered', noOffer: !rec.evmOffer });
@@ -339,7 +366,7 @@ export function makeEthereumLocker(ctx) {
           if (deadline - nowSecs >= (policy.minClaimSecs ?? 1800)) return rec;
           return save(rec, { phase: 'aborted', why: bad.join('; ') });
         }
-        return save(rec, { phase: 'locking', deadline, lockHeight: height });
+        return save(rec, { phase: 'locking', deadline, lockHeight: height, lockingAt: ctx.now() });
       }
       case 'locking': {
         const { T, rEvmLock } = secretsOf(rec);
@@ -357,7 +384,7 @@ export function makeEthereumLocker(ctx) {
           if (rec.deadline - nowSecs < policy.minClaimSecs) return save(rec, { phase: 'aborted', why: 'too late to lock' });
           const args = { rec, rEvmLock, T, deadline: rec.deadline, recipient: rec.offer.evm.recipient, refundXonly: refund.xonly, prefer: rec.lockNote || null };
           const failures = rec.buildFailures || 0;
-          const next = { buildRetryAt: ctx.now() + Math.min(policy.buildRetryMaxSecs ?? 600, (policy.buildRetrySecs ?? 30) * 2 ** Math.min(failures, 10)), buildFailures: failures + 1 };
+          const next = { buildRetryAt: ctx.now() + Math.min(policy.buildRetryMaxSecs ?? 60, (policy.buildRetrySecs ?? 30) * 2 ** Math.min(failures, 10)), buildFailures: failures + 1 };
           let built;
           try {
             built = await evm.lockOp(args);
@@ -406,9 +433,10 @@ export function makeEthereumLocker(ctx) {
         });
         if (strip(evmOffer.lockLeaf) !== strip(rec.lock.lockLeaf)) return save(rec, { phase: 'aborted', why: 'the offer and the lock disagree' });
         await counter.publishEvmOffer(rec.id, evmOffer);
-        return save(rec, { phase: 'offered', evmOffer });
+        return protect(await save(rec, { phase: 'offered', evmOffer }));
       }
       case 'offered': {
+        rec = await protect(rec);
         if (waiting(rec)) return rec;
         // (nodes that do not agree hold no swap past its deadline: the refund that follows is what the pool decides on)
         let r = null, held = null;
@@ -435,7 +463,7 @@ export function makeEthereumLocker(ctx) {
         // (a take a block went by without is replaced only when the next block's rate has caught up with it: one that is still above it missed by chance)
         const missedBlock = async (t) => t.tip != null && ctx.now() - t.at >= (policy.takeMissMinSecs ?? 120) && (await tipNow()) >= t.tip + (policy.takeMissBlocks ?? 1) && Math.ceil(await btc.feeRate()) >= Number(t.feeRate || 0);
         if (satsTake && !rec.take) {
-          const feeRate = Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5));
+          const feeRate = Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.2));
           const pair = await buildSatsTake(feeRate);
           await save(rec, { take: takeRecord(pair, feeRate, 0, await tipNow()), takes: [pair.revealTxid] });
         }
@@ -447,7 +475,12 @@ export function makeEthereumLocker(ctx) {
             // another page or an earlier visit, which this record never saw. The swap is done.
             const tx = btc.fetchTx ? await btc.fetchTx(spent).catch(() => null) : null;
             const input = tx && (tx.vin || []).find((i) => i.txid === rec.lockTxid && Number(i.vout) === Number(rec.lockVout));
-            if (input && input.sequence != null && Number(input.sequence) !== Number(rec.csvBlocks)) return save(rec, { phase: 'done', takenBy: spent });
+            if (input && input.sequence != null && Number(input.sequence) !== Number(rec.csvBlocks)) {
+              // (what reached this key's address, for the page's words: the take's outputs to it, which is the lock less the fee the other page or the watcher paid)
+              let paid = 0n;
+              try { const own = hx(btc.prims.p2wpkhScript(btc.wallet.pub)); for (const o of tx.vout || []) if (strip(String(o.scriptpubkey || '')).toLowerCase() === own) paid += BigInt(o.value); } catch { paid = 0n; }
+              return save(rec, { phase: 'done', takenBy: spent, ...(paid > 0n ? { takenGot: String(paid) } : {}) });
+            }
             return save(rec, { phase: 'lost', why: 'the lock was spent by another transaction (its refund, once the timelock had run) before a take confirmed' });
           }
         }
@@ -459,7 +492,7 @@ export function makeEthereumLocker(ctx) {
           const sk = claimSecret({ dClaimer: btc.wallet.priv, t: BigInt(rec.t), lock });
           const sweepAt = (feeRate) => btc.tx.claimSats({ lockOut: { txid: rec.lockTxid, vout: rec.takeVout, value: rec.takeValue }, lock, sk, feeRate, maxFee: Math.floor(rec.takeValue * (policy.sweepMaxFeeShare ?? 0.5)) });
           if (!rec.sweep) {
-            const feeRate = Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5));
+            const feeRate = Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.2));
             let pair = null;
             try { pair = sweepAt(feeRate); } catch (err) { if (!/does not cover the fee|no spendable amount/.test(String((err && err.message) || err))) throw err; }
             if (!pair) return save(rec, { sweepSkipped: true });

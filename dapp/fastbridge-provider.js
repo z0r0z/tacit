@@ -23,9 +23,11 @@ const WIDTHS = [8, 8, 8, 16, 32];                                     // created
 // `macKey`: the key a quote's id is sealed with (makeLpService derives it from the seed); without one every quote is stored when it is given
 export function makeQuoter({ store, now, params, macKey = null }) {
   const p = params;
-  const min = BigInt(p.minAmount), max = BigInt(p.maxAmount), flat = BigInt(p.flatFee ?? 0), bps = BigInt(p.feeBps ?? 0);
+  const min = BigInt(p.minAmount), max = BigInt(p.maxAmount), bps = BigInt(p.feeBps ?? 0);
   // `rate` is { num, den } (what the provider's side pays for one unit of what it takes), or a function that gives that now (dapp/fastbridge-rate.js feed.rate):
   // a price that moves with the market. A function that has none (its sources are down or disagree) means no quote, and the page is told to ask again.
+  // the flat part of the fee: a number, or a function that gives it now (a provider whose flat part follows its own costs); read per quote, so a quote given keeps what it was priced at
+  const flatNow = () => BigInt((typeof p.flatFee === 'function' ? p.flatFee() : p.flatFee) ?? 0);
   const rateNow = () => {
     const r = typeof p.rate === 'function' ? p.rate() : p.rate;
     if (typeof p.rate === 'function' && !r) throw Object.assign(new Error('the provider has no price for this pair right now'), { status: 503, retry: true });
@@ -36,7 +38,7 @@ export function makeQuoter({ store, now, params, macKey = null }) {
     const a = BigInt(amount);
     if (a < min || a > max) throw Object.assign(new Error(`the amount must be between ${min} and ${max}`), { status: 400 });
     const { num, den } = rateNow();
-    const fee = (a * bps) / 10000n + flat;
+    const fee = (a * bps) / 10000n + flatNow();
     const out = ((a - fee) * num) / den;
     if (a <= fee || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
     return { btcValue: a, evmAmount: out, fee };
@@ -64,6 +66,7 @@ export function makeQuoter({ store, now, params, macKey = null }) {
       evmWindowSecs: p.evmWindowSecs, minConfs: p.minConfsFor(btcValue), takeSats: Number(takeSats), created: Number(created), validUntil: Number(validUntil),
     };
     if (inLock(q.takeSats)) q.takeInLock = true;
+    q.legVouts = 1;      // (as the quote given says)
     return q;
   }
 
@@ -99,7 +102,7 @@ export function makeQuoter({ store, now, params, macKey = null }) {
     const q = unseal(id);
     return q ? (await store.get(id)) || q : null;
   };
-  return { price, quote, get, maxAmountFor, sealed: (id) => !!unseal(id) };
+  return { price, quote, get, maxAmountFor, flat: flatNow, sealed: (id) => !!unseal(id) };
 }
 
 const TERMINAL = new Set(['done', 'refunded', 'rejected', 'aborted', 'lost']);
@@ -448,7 +451,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (method === 'GET' && path === '/health') return reply({ ok: health.ok, lastTick: health.lastTick, error: health.lastError }, health.ok ? 200 : 503);
       if (method === 'GET' && path === '/info') {
         const q = config.quote, a = await availableAmount();
-        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false });
+        return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(quoter.flat()), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false });
       }
       if (method === 'POST' && path === '/quote') {
         if (!body || !amountOk(body.amount)) return reply({ error: 'amount must be a whole number' }, 400);
@@ -587,9 +590,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (method === 'GET' && m) {
         if (m[2]) {
           const rec = await swaps.get(m[1]);
-          if (rec && (rec.phase === 'locked' || rec.phase === 'offered') && !(await lockStands(rec))) return reply({ error: 'no offer yet' }, 404);
+          if (rec && (rec.phase === 'locked' || rec.phase === 'offered') && !(await lockStands(rec))) return reply({ offer: null });
           const o = await offerOf(m[1]);
-          return o ? reply(o) : reply({ error: 'no offer yet' }, 404);
+          return o ? reply(o) : reply({ offer: null });
         }
         const rec = await swaps.get(m[1]);
         return rec ? reply({ phase: rec.phase, why: rec.why || null }) : reply({ error: 'unknown swap' }, 404);

@@ -80,6 +80,66 @@ func TestTrickleUploadIsDropped(t *testing.T) {
 	}
 }
 
+// A chunked upload that at its pace cannot finish inside the slot is dropped once its pace is known; one that will finish is kept.
+func TestUploadThatCannotFinishIsDropped(t *testing.T) {
+	oldB := floorBytes
+	floorBytes = 10
+	defer func() { floorBytes = oldB }()
+	f := newFixture(t)
+	c := f.chain(t)
+	clk := withClock(c)
+	c.PerIP = -1
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	in := filepath.Join(f.dir, "in")
+	_ = copyFile(c.path(17), in)
+	out := filepath.Join(f.dir, "out")
+	if _, err := Contribute(in, out); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(out)
+	pollFor := func(tok string, d time.Duration) error {
+		for el := time.Duration(0); el < d; el += 30 * time.Second {
+			clk.add(30 * time.Second)
+			if _, err := c.Poll(tok); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	// a twentieth of the file in the first minutes: the whole would take over five hours
+	slow := joinHTTP(t, srv, "slow")
+	call(t, srv, "POST", "/api/claim", slow, nil, -1)
+	if r := putPart(t, srv, slow, 0, data[:len(data)/20]); r.Code != 200 {
+		t.Fatalf("a part: %d %v", r.Code, r.Body)
+	}
+	if err := pollFor(slow, paceWindow-time.Minute); err != nil {
+		t.Fatalf("its pace is not judged before it has one: %v", err)
+	}
+	if err := pollFor(slow, 2*time.Minute); err == nil {
+		t.Fatal("an upload that would end past the slot's cap is dropped once its pace is known")
+	}
+	// half the file in the same time: it will finish in about half an hour, so it is kept
+	steady := joinHTTP(t, srv, "steady")
+	call(t, srv, "POST", "/api/claim", steady, nil, -1)
+	if r := putPart(t, srv, steady, 0, data[:len(data)/2]); r.Code != 200 {
+		t.Fatalf("a part: %d %v", r.Code, r.Body)
+	}
+	if err := pollFor(steady, 40*time.Minute); err != nil {
+		t.Fatalf("an upload that will finish inside the slot is kept: %v", err)
+	}
+	// and one that is slow but will still just make it is kept too: a fifth in a quarter hour is an hour and a quarter in all
+	call(t, srv, "DELETE", "/api/leave", steady, nil, -1)
+	late := joinHTTP(t, srv, "late")
+	call(t, srv, "POST", "/api/claim", late, nil, -1)
+	if r := putPart(t, srv, late, 0, data[:len(data)/5]); r.Code != 200 {
+		t.Fatalf("a part: %d %v", r.Code, r.Body)
+	}
+	if err := pollFor(late, paceWindow+5*time.Minute); err != nil {
+		t.Fatalf("a slow upload that will still make the slot is kept: %v", err)
+	}
+}
+
 // A single-request upload that trickles is cut once it is clearly too slow, and one that moves is not.
 func TestFloorReader(t *testing.T) {
 	oldW, oldB := floorWindow, floorBytes
@@ -97,6 +157,26 @@ func TestFloorReader(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	if _, err := ok.Read(buf); err != nil {
 		t.Fatalf("a body that moved enough is not: %v", err)
+	}
+}
+
+// A single-request upload that is moving but would end past the slot is cut once its pace is known; one that will finish in time is not.
+func TestFloorReaderPace(t *testing.T) {
+	oldW, oldB, oldP := floorWindow, floorBytes, paceWindow
+	floorWindow, floorBytes, paceWindow = time.Hour, 1, 40*time.Millisecond
+	defer func() { floorWindow, floorBytes, paceWindow = oldW, oldB, oldP }()
+	buf := make([]byte, 1)
+	slow := &floorReader{r: bytes.NewReader(make([]byte, 1000)), t0: time.Now(), size: 1000, limit: time.Now().Add(150 * time.Millisecond)}
+	slow.Read(make([]byte, 10))
+	time.Sleep(60 * time.Millisecond)
+	if _, err := slow.Read(buf); err != errTooSlow {
+		t.Fatalf("a body that would end far past the limit is cut: %v", err)
+	}
+	ok := &floorReader{r: bytes.NewReader(make([]byte, 1000)), t0: time.Now(), size: 1000, limit: time.Now().Add(time.Second)}
+	ok.Read(make([]byte, 500))
+	time.Sleep(60 * time.Millisecond)
+	if _, err := ok.Read(buf); err != nil {
+		t.Fatalf("a body that will end in time is not: %v", err)
 	}
 }
 

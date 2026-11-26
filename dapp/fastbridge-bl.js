@@ -330,7 +330,18 @@ export function makeBitcoinLocker(ctx) {
         return save(rec, { phase: 'offered', offeredAt: ctx.now(), offerWhy: null });
       }
       case 'offered': {
+        // A lock found again from the key: the provider is asked for its offer with a growing gap (a minute, doubling to a quarter hour), not at every pass, and with none
+        // seen after twenty minutes it is not coming: the swap goes to the refund. Until an offer is seen, the page says nothing of the provider sending anything.
+        const fromKey = !!rec.claimFromKey && !rec.offerSeen, looks = rec.offerLooks || 0;
+        if (fromKey && rec.offerLookAt && ctx.now() - rec.offerLookAt < Math.min(60 * 2 ** Math.min(looks, 4), 900)) return rec;
         const evmOffer = await counter.getEvmOffer(rec.id);
+        if (fromKey) {
+          if (!evmOffer) {
+            if (ctx.now() - rec.offeredAt > Math.min(policy.offerWaitSecs, 1200)) return save(rec, { phase: 'refund-wait', why: 'the provider sent no offer for it' });
+            return save(rec, { offerLookAt: ctx.now(), offerLooks: looks + 1 });
+          }
+          rec = await save(rec, { offerSeen: true });
+        }
         if (evmOffer && !/^[0-9a-f]{64}$/.test(strip(evmOffer.lockLeaf || ''))) return save(rec, { phase: 'refund-wait', why: 'offer: malformed lock leaf' });
         // An offer whose lock the pool does not show yet is waited for, not refused: the lock may still be landing.
         const position = evmOffer ? await evm.lockPosition(evmOffer.lockLeaf) : null;
@@ -340,13 +351,23 @@ export function makeBitcoinLocker(ctx) {
         }
         const chainNow = await evm.now(), nowSecs = Math.max(chainNow, Math.floor(Number(ctx.now())));   // (claimClock: the later of the two decides)
         const sec = secrets(rec), recipient = await evm.recipient(rec.id);
+        // A swap found again from the key knows the lock's sats but not the ETH quoted for it (that was only in the lost record, and in the provider's quote). The
+        // provider's offer is then taken only at no less than the market floor (ctx.recoverFloor, a share under the market price); with no floor to judge by it waits
+        // (the timelock still returns the BTC), and an offer under it ends in the refund. The amount it is taken at is kept.
+        let wantEvm = BigInt(rec.evmAmount);
+        if (rec.recovered && wantEvm === 0n) {
+          const floor = ctx.recoverFloor ? await ctx.recoverFloor(rec) : null;
+          if (floor == null) return rec;
+          if (BigInt(evmOffer.amount) < BigInt(floor)) return save(rec, { phase: 'refund-wait', why: 'offer: less ETH than the market price allows for these sats' });
+          wantEvm = BigInt(evmOffer.amount);
+        }
         const v = X.verifyEvmOffer(evmOffer, {
           mine: { T: sec.T, recipient: hx(recipient.xonly), rOut: sec.rOut },
-          expect: { evmAsset: rec.evmAsset, evmAmount: BigInt(rec.evmAmount) }, inLockSet: true, nowSecs, minClaimSecs: policy.minClaimSecs,
+          expect: { evmAsset: rec.evmAsset, evmAmount: wantEvm }, inLockSet: true, nowSecs, minClaimSecs: policy.minClaimSecs,
         });
         if (!v.ok) return save(rec, { phase: 'refund-wait', why: 'offer: ' + v.reasons.join('; ') });
         if (evmOffer.deadline - nowSecs > policy.maxEvmWindowSecs) return save(rec, { phase: 'refund-wait', why: 'offer: the deadline is further out than this side accepts' });
-        return save(rec, { phase: 'claiming', evmOffer, position, claimStartedAt: chainNow });
+        return save(rec, { phase: 'claiming', evmOffer, position, claimStartedAt: chainNow, evmAmount: String(wantEvm) });
       }
       case 'claiming': {
         // Held back near the deadline, a claim keeps t to this side. Once the lock is spent t is out already, so the claim is sent while any time is left.

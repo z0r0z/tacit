@@ -5,7 +5,7 @@ import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vaul
 import { makeFeed } from '/vault/feed.js?cb=bd584ab8';
 import { makePools } from '/vault/pools.js?cb=32f5128e';
 import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=9a968a9d';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=41394526';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=514272b7';
 import { tabKeyRead } from '/tab-key.js?cb=e90d6a31';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
 
@@ -461,7 +461,7 @@ let mineP = null;
 function openMine(press, btn = null) {
   if (mineP) return;
   if (btn) { btn.textContent = 'Opening…'; btn.disabled = true; }
-  mineP = import('/vault/mine.js?cb=0a825c45').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectSaying }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
+  mineP = import('/vault/mine.js?cb=95a22b76').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectSaying }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
     .catch((err) => { mineP = null; if (btn) { btn.textContent = 'Could not load. Try again'; btn.disabled = false; } console.warn('your position:', err?.message || err); });
 }
 $('#btc').addEventListener('click', (e) => {
@@ -474,6 +474,12 @@ const refresh = () => load().catch((e) => { console.warn('vault read:', e?.messa
 $('#pick').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (!b || S.busy || b.dataset.v === S.v) return; S.v = b.dataset.v; S.pre = S.t === 'borrow'; S.amt = ''; $('#amt').value = ''; say('', ''); keepInHash(); renderAll(); });
 $('#acts').addEventListener('click', (e) => { const b = e.target.closest('[data-t]'); if (!b || S.busy || b.dataset.t === S.t) return; S.t = b.dataset.t; S.pre = S.t === 'borrow'; S.amt = ''; $('#amt').value = ''; say('', ''); keepInHash(); renderTicket(); });
 $('#amt').addEventListener('input', (e) => { S.pre = false; S.amt = e.target.value; if ($('#status').dataset.kind === 'trade') say('', ''); renderTicket(); });
+// The mobile help bubble is useful below the form, but a fixed 52 px control over this dense ticket can cover
+// the amount field or its primary action. Hide only the closed launcher while the ticket is in view; opening
+// help or scrolling to the position/status brings the normal widget back.
+if ('IntersectionObserver' in window) new IntersectionObserver(([e]) => {
+  document.documentElement.classList.toggle('vault-ticket-in-view', !!e?.isIntersecting);
+}, { threshold: 0.12 }).observe($('#ticket'));
 $('#amt').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('#go').disabled) $('#go').click(); });
 $('#chips').addEventListener('click', (e) => { const b = e.target.closest('[data-pct]'); if (b && !S.busy) setAmount(Number(b.dataset.pct)); });
 $('#bal').addEventListener('click', () => { if (!S.busy) setAmount(100); });

@@ -22,4 +22,12 @@ for (const page of PAGES) {
   assert.deepEqual(missing, [], `${page} leaves out ${missing.join(', ')}`);
   console.log(`  ok - ${page}: all ${nodes.length} node hosts`); n++;
 }
+// the Bitcoin page reads Ethereum only (the price and the pool): every node of the Ethereum list, which its market price is read from
+{
+  const html = readFileSync(new URL('../dapp/btc/index.html', import.meta.url), 'utf8');
+  const connect = (html.match(/Content-Security-Policy" content="[^"]*?connect-src([^;]*)/)?.[1] || '').split(/\s+/).filter(Boolean);
+  const missing = [...new Set(ETH_NODES.map(origin))].filter((o) => !connect.includes(o));
+  assert.deepEqual(missing, [], `btc/index.html leaves out ${missing.join(', ')}`);
+  console.log('  ok - btc/index.html: every Ethereum node host'); n++;
+}
 console.log(`csp-rpc-nodes: ${n} pages ok`);

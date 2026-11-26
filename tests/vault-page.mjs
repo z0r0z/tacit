@@ -1099,12 +1099,19 @@ try {
     }
   }
 
-  // ── the order the page is read in: a phone puts the ticket before the figures, a wide screen keeps it beside them ──
+  // ── the order the page is read in: a phone leads from the vault picker to the ticket, then the position and figures; a wide screen keeps it beside them ──
   for (const [width, phone] of [[390, true], [1280, false]]) {
     const x = await openPage({ viewport: { width, height: 900 }, who: 'user' });
     await connect(x.page); await until(x.page, () => /Borrowing is open/.test(document.querySelector('#board')?.textContent || ''));
     const at = await x.page.evaluate(() => Object.fromEntries(['#pos', '#ticket', '#board'].map((q) => { const r = document.querySelector(q).getBoundingClientRect(); return [q, { top: r.top + scrollY, left: r.left, right: r.right }]; })));
-    ok(phone ? at['#ticket'].top < at['#board'].top && at['#pos'].top < at['#ticket'].top : at['#ticket'].left >= at['#board'].right, phone ? 'on a phone the vault and the ticket come before the board' : 'on a wide screen the ticket sits beside the board');
+    ok(phone ? at['#ticket'].top < at['#pos'].top && at['#pos'].top < at['#board'].top : at['#ticket'].left >= at['#board'].right, phone ? 'on a phone the ticket comes before the position and the board' : 'on a wide screen the ticket sits beside the board');
+    if (phone) {
+      const priority = await x.page.evaluate(() => {
+        document.querySelector('#pos').classList.add('first');
+        return Object.fromEntries(['#pos', '#ticket'].map((q) => [q, document.querySelector(q).getBoundingClientRect().top + scrollY]));
+      });
+      ok(priority['#pos'] < priority['#ticket'], 'a position at risk keeps its warning and recovery controls before the ticket on a phone');
+    }
     await closeAll(x);
   }
 

@@ -106,7 +106,7 @@ test('malformed and unknown requests are answered with a reason and change nothi
     ['POST', '/offer', {}, 400, /quoteId and offer/],
     ['POST', '/offer', { quoteId: 'x', offer: 'no' }, 400, /quoteId and offer/],
     ['GET', `/swap/${id}`, undefined, 404, /unknown swap/],
-    ['GET', `/swap/${id}/offer`, undefined, 404, /no offer yet/],
+    ['GET', `/swap/${id}/offer`, undefined, 200, /"offer":null/],
     ['GET', '/swap/xyz', undefined, 404, /not found/],
     ['GET', `/swap/${id}/extra`, undefined, 404, /not found/],
     ['POST', `/swap/${id}`, {}, 404, /not found/],
@@ -118,7 +118,7 @@ test('malformed and unknown requests are answered with a reason and change nothi
       ? await realFetch(s.base + path, { method, headers: { 'content-type': 'application/json' }, body }).then(async (x) => ({ status: x.status, body: await x.json() }))
       : await call(s.base, method, path, body);
     assert.equal(r.status, status, `${method} ${path}`);
-    assert.match(r.body.error, re, `${method} ${path}`);
+    assert.match(r.body.error ?? JSON.stringify(r.body), re, `${method} ${path}`);
   }
   // an offer the checks cannot read is an answer, not a server error
   for (const offer of [{}, { swapId: 'zz' }, { swapId: '0'.repeat(72) }, { swapId: '0'.repeat(72), btc: {}, evm: {} }]) {

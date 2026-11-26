@@ -16,7 +16,9 @@ try {
 } catch { }
 
 const API = 'https://api.tacit.finance';
-const ESPLORA = 'https://mempool.space/api';
+// Bitcoin reads: mempool.space first; the next explorer is asked beside it when it has not answered in 2.5 s, and the first good answer wins
+// (all are in this page's connect-src; /v1 paths exist only on mempool's software, so Blockstream is left out of those)
+const EXPLORERS = ['https://mempool.space/api', 'https://mempool.emzy.de/api', 'https://blockstream.info/api', 'https://mempool.bitaroo.net/api'];
 const RPC = 'https://ethereum-rpc.publicnode.com';
 const TAC_ERC20 = '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279';
 const $ = (s, r = document) => r.querySelector(s);
@@ -37,6 +39,23 @@ async function getJson(url, ms = 15e3) {
   if (!r.ok) throw new Error(String(r.status));
   return r.json();
 }
+function esplora(path, ms = 15e3) {
+  const bases = EXPLORERS.filter((b) => !(path.startsWith('/v1/') && b.includes('blockstream')));
+  return new Promise((resolve, reject) => {
+    let started = 0, failed = 0, over = false, timer = null;
+    const finish = (fn, v) => { over = true; clearTimeout(timer); fn(v); };
+    const ask = () => {
+      if (over || started >= bases.length) return;
+      const base = bases[started++];
+      clearTimeout(timer); timer = setTimeout(ask, 2500);
+      getJson(base + path, ms).then(
+        (v) => { if (!over) finish(resolve, v); },
+        () => { if (over) return; if (++failed >= bases.length) finish(reject, new Error('no Bitcoin explorer answered')); else ask(); },
+      );
+    };
+    ask();
+  });
+}
 const ago = (t) => {
   const s = Math.max(0, (Date.now() - t) / 1e3);
   return s < 90 ? 'just now' : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
@@ -55,7 +74,7 @@ async function readProofs() {
     }),
     read(`${API}/reflection/eth-state/covers?network=mainnet&block=1`, (c) => { if (Number.isInteger(c.bestBlock)) LIVE.ethCovered = c.bestBlock; }),
     rpc('eth_blockNumber', []).then((h) => { LIVE.ethHead = Number(BigInt(h)); paintProofs(); }).catch(() => {}),
-    read(`${ESPLORA}/blocks/tip/height`, (h) => { if (Number.isInteger(h)) LIVE.btcTip = h; }),
+    esplora('/blocks/tip/height').then((h) => { if (Number.isInteger(h)) LIVE.btcTip = h; paintProofs(); }).catch(() => {}),
     ...(Date.now() - LIVE.cadenceAt > 10 * 60e3 ? [read(`${API}/flow`, (f) => { LIVE.cadenceAt = Date.now(); const m = medianGapMin(f?.events?.attests); if (m) LIVE.cadence = m; if (Number.isInteger(f?.now?.btc)) LIVE.btcTipApi = f.now.btc; })] : []),
   ]);
   LIVE.at = Date.now();
@@ -113,11 +132,11 @@ async function readCosts() {
   const feed = (k) => rpc('eth_call', [{ to: FEEDS[k], data: '0xfeaf968c' }, 'latest']).then((h) => { const v = Number(BigInt('0x' + h.slice(66, 130))) / 1e8; if (v > 0) COST[k] = v; }).catch(() => {});
   const floor = (asset, k) => getJson(`${API}/confidential/quote?asset=${asset}`).then((q) => { const u = BigInt(q.gasAwareFloorUnits ?? q.staticFloorUnits ?? 0); if (u > 0n) COST.relay[k] = u; }).catch(() => {});
   await Promise.all([
-    getJson(`${ESPLORA}/v1/fees/recommended`).then(async (f) => {
+    esplora('/v1/fees/recommended').then(async (f) => {
       if (Number(f.fastestFee) > 0) COST.satvb = Number(f.fastestFee);
       // the recommended fee stops at 1 sat/vB: when it is at that floor, the blocks and Core's fractional estimate say what the network is really taking (fee-floor.js)
       if (COST.satvb > 0 && COST.satvb <= 1) {
-        const [est, blocks] = await Promise.all([getJson(`${ESPLORA}/fee-estimates`).catch(() => null), getJson(`${ESPLORA}/v1/blocks`).catch(() => null)]);
+        const [est, blocks] = await Promise.all([esplora('/fee-estimates').catch(() => null), esplora('/v1/blocks').catch(() => null)]);
         const r = priorityRate({ recommended: f, estimates: est, floor: floorFromBlocks(blocks) });
         if (r != null && r < 1) COST.satvb = r;
       }
@@ -138,7 +157,7 @@ async function readTxs(rows) {
   const want = rows.filter((r) => r.btcTx && !r.done && !r.back && !(LIVE.txs.get(r.btcTx) || {}).confirmed).map((r) => r.btcTx).slice(0, 8);
   await Promise.all(want.map(async (id) => {
     try {
-      const s = await getJson(`${ESPLORA}/tx/${id}/status`, 12e3);
+      const s = await esplora(`/tx/${id}/status`, 12e3);
       LIVE.txs.set(id, { confirmed: !!s.confirmed, height: s.block_height ?? null });
     } catch { }
   }));
@@ -415,7 +434,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=07117f83').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=d401760e').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });

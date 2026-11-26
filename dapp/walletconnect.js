@@ -12,7 +12,9 @@ function holds(session, chainId) {
   return Object.entries(session?.namespaces || {}).some(([k, ns]) => /^eip155(:|$)/.test(k)
     && [...(ns.chains || []), ...(ns.accounts || []).map((a) => String(a).split(':').slice(0, 2).join(':'))].includes(want));
 }
-const SITE_RPC = { 1: 'https://ethereum-rpc.publicnode.com', 8453: 'https://mainnet.base.org', 4663: 'https://rpc.mainnet.chain.robinhood.com' };
+import { ETH_NODES } from './eth-nodes.js';
+
+const SITE_RPC = { 1: ETH_NODES[0], 8453: 'https://mainnet.base.org', 4663: 'https://rpc.mainnet.chain.robinhood.com' };
 const LOAD_MS = 20_000;
 const NOT_LOADED = 'WalletConnect did not load. Check your connection and try again.';
 const within = (work, ms) => {

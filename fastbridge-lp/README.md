@@ -291,6 +291,15 @@ own; the TAC provider is not changed by it.
   RPC) and public exchange tickers, which must agree within `rate.maxSpreadBps`; the fee is on top. With no price (sources down or disagreeing) the provider quotes
   nothing and alerts, and a page checks every quote against its own reading of the market, so a mispriced provider is blocked by the page as well.
 - A swap's take comes out of the lock itself, and a take that is slow is replaced by one that pays more (`policy.takeFeeFactor`, `takeBumpSecs`, `takeMaxFeeShare`).
+- **A flat fee that follows costs** (`FB_LP_DYNAMIC_FEE=on`, off unless set; `lib/flatfee.mjs`). Off, each direction's flat part is its configured number
+  (`FB_LP_FLAT_FEE`, `FB_LP_REVERSE_FLAT_FEE`). On, each is `FB_LP_FEE_SUBSIDY` (0 to 1, 0.5 unless set; 1 recovers the whole cost) of the provider's own estimated
+  network cost per swap, read every 30 s: forward (sats) = 160 vB x the fee estimate (sat/vB) the provider already warms + the relay's fee for a pool note valued
+  in sats at the current rate; reverse (pool units) = 160 vB x the fee estimate valued in pool units + the relay's fee for the claim. `FB_LP_FEE_SUBSIDY_UNTIL`
+  (unix seconds or a date) ends the intro: from then the share is 1. The cost is smoothed (an exponential average) and the figure moves only when it is 10% off the one in
+  use, then is held to `FB_LP_FLAT_FEE_MIN` / `_MAX` (`FB_LP_REVERSE_FLAT_FEE_MIN` / `_MAX`; 100 sats and 2000 units unless set) and never over 1.5% of the
+  direction's least amount (nor over the 2.5% less the rate part), so the least swap stays under the page's 3% guard. With no fee estimate, relay fee or price for
+  half an hour the configured flat fees apply again. A quote given is sealed with its amounts and never changes. `/info` carries `feeModel` (`dynamic`, `live`,
+  `subsidy`, `costSats`, `costEthUnits`, `feeRate`, `flatFeeSats`, `reverseFlatFeeUnits`, `limits`), and `flatFee` in `/info` and on the board's ad is the figure in use.
 - `--dry-run` answers `/info` and `/quote` and checks offers, sends nothing.
 
 ### Upkeep (pair mode)
@@ -323,6 +332,26 @@ everything it does is logged; a failure is alerted (at most hourly per kind).
   contract's keeper buys TAC with it for the reserve in its own small, spaced buys. `/info` `buyback: { on, to, startedAt, owedEth, routedEth, feesEth, sends, tacBought, lastTx, lastAt }`:
   `routedEth` is what reached the contract, `tacBought` (TAC wei) the provider's share of the contract's buys since its first send, pro rata to its part of the
   contract's ETH at each buy.
+- **Rebalancing its two sides** (`lib/rebalance.mjs`; off unless `FB_LP_REBALANCE=dry` or `on`). Every ETH-for-BTC swap drains Bitcoin and every BTC-for-ETH swap drains ETH, so one side accrues. When the ETH share of what it holds (private notes, public ETH above the gas reserve, and its Bitcoin at the market) leaves a band around half (`FB_LP_REBALANCE_BAND_BPS`, 1500: outside 35 to 65 percent), it swaps the surplus toward the middle on the cheaper of THORChain and MAYAChain (native ETH and BTC, no wrapped tokens): it unshields the ETH it needs from its own notes, sends it from its own address to the venue's vault with the quote's memo, and the BTC lands at its own reverse address. A swap pays a fixed outbound fee, so small ones are dear: it swaps at least `FB_LP_REBALANCE_MIN_ETH` (0.15), at most `FB_LP_REBALANCE_MAX_ETH` (0.3) at a time and `FB_LP_REBALANCE_MAX_DAY_ETH` (0.6) a day, and takes no quote that costs over `FB_LP_REBALANCE_MAX_COST_BPS` (120) against the market. Nothing is sent to an address one source gave: the vault must be the same at two or more nodes (`FB_LP_REBALANCE_NODES_THORCHAIN` / `_MAYACHAIN` set the lists), trading on both chains open, and the memo a plain swap to its own address. One swap at a time, each step kept before it is done; a restart never sends twice, and one that may have gone out stops it and alerts. A venue that is halted (THORChain halts a chain while its blocks stall) is skipped and the other is used. Start with `dry`: it logs and alerts what it would do. Selling BTC for ETH is planned and alerted but not sent yet (the Bitcoin send is not wired).
+- **Shielding its own ETH** (`lib/shield.mjs`; off unless `FB_LP_AUTO_SHIELD=on`). ETH sent to the pool account (`poolAccount`, the Ethereum address of the key) is plain
+  ETH until it is deposited into the pool as private notes; with this on the provider does that itself, the step `tools/fastbridge-lp-shield.mjs <ETH> --eth --send` is by
+  hand (the tool and the daemon share `lib/shield-core.mjs`). `FB_LP_SHIELD_RESERVE_ETH` (0.02, at least 0.0005) is the public ETH it never touches, for gas;
+  `FB_LP_SHIELD_MIN_ETH` (0.02) the smallest deposit; `FB_LP_SHIELD_EVERY_SECS` (600) the least gap between deposits. It deposits the balance less the reserve (whole 1e-8 units),
+  only while nothing is under way on the forward side (no open swap, hold or promise), one deposit at a time. Its state is `dataDir/upkeep/shield.json`
+  (`nextIndex`, and `pending` with the index, amount, account nonce and transaction): the pending deposit is written before it is sent, so a restart waits for it and settles it, and
+  never sends it again. The key's next wrap index is kept there; it is read from the pool's history (minutes) only when none is kept, once. Each deposit is first run as a call:
+  one that would revert is not sent, and a used index (`DepositExists`) stops auto-shield with an alert, to read the history again at the next start. A deposit whose settle fails, or
+  that reverted, also stops it with an alert (the deposit is on the chain, the restart settles it). ETH that falls by 0.01 or more with nothing of the provider's under way is alerted
+  and skipped. One log line per action (`auto-shield: ...`); `/info` `refill.autoShield: { on, halted, pending, shielded }`.
+- **Low-balance alerts** (always on; `lib/refill-watch.mjs`). Each goes through the alert (webhook, below), is said when it begins and again every four hours while it lasts, and
+  once more, as an info, when it ends:
+  `private ETH to lend is low` (free pool ETH under `FB_LP_ALERT_LOW_ETH`, 0.05: send ETH to `poolAccount`), `Bitcoin is low` (sats at the main and reverse addresses under
+  `FB_LP_ALERT_LOW_SATS`, 100000: send BTC to the address named), `the pool account is under its gas reserve` (public ETH under the reserve: send ETH to `poolAccount`) and
+  `ETH ... has sat unshielded` (public ETH over the reserve and the smallest deposit for 30 minutes with auto-shield off: run the tool or switch it on). `/info` shows the same
+  as `refill: { poolAccount, btcAddresses, freeEth, lowEth, sats, lowSats, publicEth, gasReserveEth, minChunkEth, alerting, autoShield }` (ETH in ETH, no secrets).
+
+To turn it on, the owner sets `FB_LP_AUTO_SHIELD=on` and `FB_LP_ALERT_WEBHOOK=<a Slack or Discord incoming-webhook URL>` in the service's environment on Render (a redeploy
+applies them). With no webhook the alerts are in the log only.
 
 ## Watching it
 
@@ -377,6 +406,7 @@ node tests/fastbridge-lp.test.mjs       # this service: API, quotes, store, expl
 node tests/fastbridge-reverse-service.test.mjs   # the reverse side: its service and the user's client over the same machines
 node tests/fastbridge-lp-reverse.test.mjs      # what the process puts around it: its key, options, notes and routing
 node tests/fastbridge-lp-upkeep.test.mjs       # a pair provider's upkeep: coin moves, accounting, the lean, note merges, buybacks
+node tests/fastbridge-lp-rebalance.test.mjs    # the rebalancing: when it swaps, which venue, and that nothing goes to an address the nodes do not agree on
 node tests/fastbridge-fork.mjs          # the Ethereum side against the live pool on a mainnet fork (needs anvil, FORK, EXEC)
 ```
 

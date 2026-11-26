@@ -32,6 +32,8 @@ or attestor set signs a bridge message.
 - **How the pools trade:** [`docs/AMM.md`](./docs/AMM.md), public and private swaps and liquidity on one set of reserves
 - **Tacit chain:** [tacit.finance/docs/chain](https://tacit.finance/docs/chain/), private TAC payments; the spec is
   [`docs/TACIT-BLOCKS.md`](./docs/TACIT-BLOCKS.md)
+- **BTC ⇄ ETH swap:** [tacit.finance/docs/btc](https://tacit.finance/docs/btc/), direct swaps with a provider; the spec is
+  [`docs/FAST-BRIDGE.md`](./docs/FAST-BRIDGE.md)
 - **Verify it yourself:** [`docs/VERIFY-LIVE.md`](./docs/VERIFY-LIVE.md), `node tools/verify-live.mjs` checks the
   live deployment against this repository
 - **Build on it:** [tacit.finance/build](https://tacit.finance/build/) maps every path on one page;

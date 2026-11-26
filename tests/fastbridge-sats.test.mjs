@@ -118,7 +118,7 @@ test('sats for a pool asset: the user ends with the pool note and the LP with th
   // Bitcoin: the LP's take is one key-path spend of the lock, paying its own address the sats less its fee
   assert.equal(lp.take.commitTxid, null);
   assert.equal(lp.take.bumps, 0, 'a take that confirms is never replaced');
-  assert.equal(lp.take.feeRate, Math.ceil(3 * 1.5), 'and it starts above the explorers\' estimate, which is 3 sat/vB here');
+  assert.equal(lp.take.feeRate, Math.ceil(3 * 1.2), 'and it starts a little above the explorers\' estimate, which is 3 sat/vB here');
   assert.equal(user.takenBy, lp.take.txid, 'the user saw the LP take the lock');
   assert.equal(w.btc.spends.get(`${rec.lock.txid}:0`), lp.take.txid);
   const take = await w.btc.fetchTx(lp.take.txid);

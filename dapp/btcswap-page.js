@@ -8,8 +8,8 @@
 
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
-import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=7410374b';
-import { makeLocalStore } from '/fastbridge-client.js?cb=f7c9b0ec';
+import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=82196961';
+import { makeLocalStore } from '/fastbridge-client.js?cb=09a13249';
 import { makeBtcSwapHolder, holderDone } from '/btcswap-holder.js?cb=ec8dc7eb';
 import { deskClient } from '/btcswap-desk.js?cb=f389b7aa';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
@@ -18,7 +18,7 @@ import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.m
 // page's origin, including when a later visit resumes a swap without the parameter.
 const deskPath = '/btcswap-desk';
 export const DESK = new URLSearchParams(globalThis.location?.search).get('desk') === '1' ? deskPath : null;
-const EXPLORERS = ['https://mempool.space/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api', 'https://mempool.ninja/api', 'https://btcscan.org/api', 'https://blockstream.info/api'];
+const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.bitaroo.net/api', 'https://mempool.ninja/api', 'https://btcscan.org/api', 'https://mempool.emzy.de/api'];
 const enc = new TextEncoder();
 
 export function openBtcSwap({ T, withKey, ux, priv, pubHex, desk = DESK || deskPath, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc' }) {

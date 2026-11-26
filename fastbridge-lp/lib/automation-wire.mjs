@@ -7,6 +7,8 @@
 //   FB_LP_NOTES_MERGE=off   stop merging small ETH notes (on by default)
 //   FB_LP_BUYBACK=on        past the target, send what the provider nets to TacBuyback (off unless set)
 //   FB_LP_TARGET_ETH=<eth>  the target: this much pool ETH and Bitcoin worth as much (10 unless set; the config's `target` sets the two apart)
+//   FB_LP_REBALANCE=dry|on  swap the surplus side on the best venue (THORChain or MAYAChain) when ETH and BTC drift apart (lib/rebalance.mjs; off unless set)
+//   FB_LP_AUTO_SHIELD=on    shield the public ETH of the pool account into private notes (lib/shield.mjs; off unless set); the low-balance alerts are always on (lib/refill-watch.mjs)
 
 import { resolve } from 'node:path';
 import { makeFileStore } from './store.mjs';
@@ -15,12 +17,15 @@ import { skewConfig, feeAtMinBps } from './skew.mjs';
 import { notesConfig } from './notes.mjs';
 import { buybackConfig, targetConfig, buybackTopic } from './buyback.mjs';
 import { makeAutomation } from './automation.mjs';
+import { shieldConfig, makeShield } from './shield.mjs';
+import { watchConfig, makeRefillWatch } from './refill-watch.mjs';
+import { rebalanceConfig, makeRebalancer } from './rebalance.mjs';
 
 const hex = (b) => Buffer.from(b).toString('hex');
 const lc = (h) => String(h || '').toLowerCase();
 const FWD_TERMINAL = new Set(['done', 'refunded', 'rejected', 'aborted', 'lost']);
 
-export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, service, swapStore, quoteStore, rside, rateFeed, poolTurn, data, keccak256, log, alert, setLean, env = process.env }) {
+export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, service, swapStore, quoteStore, rside, rateFeed, poolTurn, turn = (fn) => fn(), data, keccak256, log, alert, setLean, env = process.env }) {
   const cfg = { recycle: recycleConfig(C, env), skew: skewConfig(C, env), notes: notesConfig(C, env), buyback: buybackConfig(C, env), target: targetConfig(C, env) };
   if (!rside) { cfg.recycle.enabled = false; cfg.skew.enabled = false; }
   const kv = makeFileStore(resolve(data, 'upkeep'));
@@ -87,16 +92,94 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
     feeAtMin: { fwd: feeAtMinBps(C.quote.minAmount, C.quote.feeBps, C.quote.flatFee), rev: R.enabled ? feeAtMinBps(R.minAmount, R.feeBps, R.flatFee) : Infinity },
     log, alert,
   });
+
+  // the public ETH of the pool account: shielded into private notes (off unless FB_LP_AUTO_SHIELD=on), and the alerts for what the provider needs
+  let shield = null, watch = null, rebalancer = null;
+  if (typeof ux.account === 'function' && typeof ux.rpc === 'function') {
+    const address = ux.account(key).address, sc = shieldConfig(env);
+    shield = makeShield({ cfg: sc, ux, key, address, quiet: async () => !(rebalancer && rebalancer.holding()) && (await quiet()), turn, load: () => kv.get('shield'), save: (r) => kv.put(r), log, alert });
+    const sats = async () => {
+      const a = [btc, rside && rside.btc].filter((b) => b && typeof b.satsUtxos === 'function');
+      if (!a.length) return null;
+      let t = 0n; for (const b of a) t += (await b.satsUtxos()).reduce((x, c) => x + BigInt(c.value), 0n);
+      return t;
+    };
+    watch = makeRefillWatch({
+      cfg: watchConfig(env), shield: sc, shieldInfo: () => shield.info(), autoShield: sc.enabled, freeEth: () => service.free(), sats, poolAccount: address,
+      btcAddresses: [btc.address, rside && rside.btc && rside.btc.address].filter(Boolean),
+      publicEth: async () => BigInt(await ux.rpc('eth_getBalance', [address, 'latest'])), alert,
+    });
+    if (sc.enabled) {
+      let sbusy = false;
+      setInterval(() => { if (sbusy) return; sbusy = true; shield.step().catch(() => {}).finally(() => { sbusy = false; }); }, 60000).unref();
+      log({ level: 'info', msg: 'auto-shield is on: ETH sent to the pool account is shielded', address, reserveEth: Number(sc.reserveWei / 10n ** 10n) / 1e8, everySecs: sc.everySecs });
+    }
+  }
+  // the surplus side swapped on the best venue (off unless FB_LP_REBALANCE is dry or on): the ETH is unshielded from the provider's own notes, sent from its own address, and the
+  // other side lands at its own reverse Bitcoin address
+  if (rside && typeof ux.account === 'function' && typeof ux.rpc === 'function') {
+    const rc = rebalanceConfig(env);
+    if (rc.mode !== 'off') {
+      const acct = ux.account(key), address = acct.address, sc = shieldConfig(env);
+      const { secp: sp } = await import('../../dapp/vendor/tacit-deps.min.js');
+      const { makeEvmTx } = await import('../../dapp/evm-tx.js');
+      const evmTx = makeEvmTx({ secp: sp, keccak256 });
+      const UNITW = 10n ** 10n, rpc = (m, p) => ux.rpc(m, p);
+      const satsAll = async () => { let t = 0n; for (const b of [btc, rside.btc]) if (b && typeof b.satsUtxos === 'function') t += (await b.satsUtxos()).reduce((x, c) => x + BigInt(c.value), 0n); return t; };
+      const publicWei = async () => BigInt(await rpc('eth_getBalance', [address, 'latest']));
+      const ethPerBtc = () => { const r = Number(rateFeed && rateFeed.rate()); return r > 0 ? (r < 1 ? 1 / r : r) : null; };
+      rebalancer = makeRebalancer({
+        cfg: rc, rate: async () => ethPerBtc(), quiet, gate: poolTurn, turn,
+        inventory: async () => {
+          const notes = await ethNotes(), pub = await publicWei();
+          const priv = notes.reduce((t, n) => t + BigInt(n.value), 0n) * UNITW, spare = pub > sc.reserveWei ? pub - sc.reserveWei : 0n;
+          return { ethWei: priv + spare, sats: Number(await satsAll()) };
+        },
+        unshield: async ({ units }) => {
+          const want = BigInt(units), note = (await ethNotes()).filter((n) => BigInt(n.value) >= want).sort((a, b) => (BigInt(a.value) < BigInt(b.value) ? -1 : 1))[0];
+          if (!note) throw new Error(`no single private note covers ${want} pool units`);
+          const r = await ux.sendUnwrap({ note, walletPriv: key, recipient: address, amount: want });
+          notesLast = null;
+          return r;
+        },
+        ethBalance: publicWei,
+        ethNonce: () => rpc('eth_getTransactionCount', [address, 'pending']),
+        ethReceipt: (tx) => rpc('eth_getTransactionReceipt', [tx]).catch(() => null),
+        sendEth: async ({ to, value, memo }) => {
+          // the send is a plain transfer from this address to the venue's vault with the memo as its data; the amount can never exceed the swap limit, nor the vault be this address
+          if (!/^0x[0-9a-fA-F]{40}$/.test(to) || lc(to) === lc(address)) throw new Error('the vault address is not usable: nothing sent');
+          if (BigInt(value) > rc.maxSwapWei) throw new Error('the amount is over the swap limit: nothing sent');
+          if (!/^[\x20-\x7e]{1,120}$/.test(memo)) throw new Error('the memo is not plain text: nothing sent');
+          const data = '0x' + Buffer.from(memo, 'utf8').toString('hex');
+          const nonce = BigInt(await rpc('eth_getTransactionCount', [address, 'pending'])), base = BigInt(await rpc('eth_gasPrice', [])), tip = 1_500_000_000n;
+          const est = BigInt(await rpc('eth_estimateGas', [{ from: address, to, value: '0x' + BigInt(value).toString(16), data }]));
+          const gasLimit = est * 13n / 10n;
+          if (gasLimit > 120000n) throw new Error('the transfer needs more gas than a plain transfer with a memo should: nothing sent');
+          const signed = evmTx.signEip1559({ chainId: 1n, nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip, gasLimit, to, value: BigInt(value), data }, acct.priv);
+          return rpc('eth_sendRawTransaction', [signed.raw]);
+        },
+        address, btcDestination: rside.btc.address, gasReserveWei: sc.reserveWei,
+        load: () => kv.get('rebalance'), save: (r) => kv.put(r), log, alert,
+      });
+      let rbusy = false;
+      setInterval(() => { if (rbusy) return; rbusy = true; rebalancer.step().catch(() => {}).finally(() => { rbusy = false; }); }, 60000).unref();
+      log({ level: 'info', msg: `rebalance is ${rc.mode}`, venues: rc.venues, bandBps: rc.bandBps, minEth: Number(rc.minSwapWei / UNITW) / 1e8, maxEth: Number(rc.maxSwapWei / UNITW) / 1e8, maxDayEth: Number(rc.maxPerDayWei / UNITW) / 1e8, maxCostBps: rc.maxCostBps });
+    }
+  }
   const tickSecs = Math.max(30, Number((C.upkeep && C.upkeep.tickSecs) || 120));
   let busy = false;
-  const go = async () => { if (busy) return; busy = true; try { await auto.tick(); setLean(auto.skew()); } catch (e) { log({ level: 'error', msg: 'upkeep: a look failed', error: String((e && e.message) || e).slice(0, 200) }); } finally { busy = false; } };
+  const go = async () => { if (busy) return; busy = true; try { await auto.tick(); setLean(auto.skew()); if (watch) await watch.check(); } catch (e) { log({ level: 'error', msg: 'upkeep: a look failed', error: String((e && e.message) || e).slice(0, 200) }); } finally { busy = false; } };
   setTimeout(go, 20000).unref();
   setInterval(go, tickSecs * 1000).unref();
   log({ level: 'info', msg: 'upkeep is on', recycle: cfg.recycle.enabled, skew: cfg.skew.enabled ? cfg.skew.maxBps : 0, notesMerge: cfg.notes.enabled, buyback: cfg.buyback.enabled, targetEth: String(cfg.target.eth), tickSecs });
-  // /info carries the totals, the target, the lean and the buybacks
+  // /info carries the totals, the target, the lean, the buybacks and what the provider needs (refill)
   const wrap = (handle) => async (req) => {
     const r = await handle(req);
-    if (req && req.method === 'GET' && req.path === '/info' && r && r.status === 200 && r.body && typeof r.body === 'object') { const x = auto.info(); if (x) return { ...r, body: { ...r.body, ...x } }; }
+    if (req && req.method === 'GET' && req.path === '/info' && r && r.status === 200 && r.body && typeof r.body === 'object') {
+      // the extras are the upkeep's own view: when one cannot be built, /info is the terms alone, and still answers
+      try { const x = auto.info(); if (x) return { ...r, body: { ...r.body, ...x, ...(watch ? { refill: watch.info() } : {}), ...(rebalancer ? { rebalance: rebalancer.info() } : {}) } }; }
+      catch (e) { log({ level: 'error', msg: '/info: the upkeep part could not be read', error: String((e && e.message) || e).slice(0, 160) }); }
+    }
     return r;
   };
   return { auto, wrap, cfg };

@@ -336,9 +336,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // key's swaps reads the ~380 lock transactions and a window of settles: one request each took 12 to 14 s from the public nodes, batches of 25 take about 2 s
   // (measured from a browser's network, 2026-11-25).
   const TX_BATCH_AT_ONCE = 3, TX_BATCH_MS = 12e3, TX_SINGLE_AT_ONCE = 6;
+  // A transaction found does not change, so a later look at the same hashes (a swap list is read again on every sign-in, quote and reload of its page) is answered from here, not from the nodes.
+  const _txSeen = new Map();
   async function readTxs(hashes) {
-    const want = [...new Set((hashes || []).map((h) => String(h).toLowerCase()).filter((h) => /^0x[0-9a-f]{64}$/.test(h)))];
+    const all = [...new Set((hashes || []).map((h) => String(h).toLowerCase()).filter((h) => /^0x[0-9a-f]{64}$/.test(h)))];
     const out = new Map();
+    for (const h of all) if (_txSeen.has(h)) out.set(h, _txSeen.get(h));
+    const want = all.filter((h) => !out.has(h));
     const batchOf = (u) => Number(ethNodes.batchSize?.(u)) || 0;
     const nodes = want.length > 1 && _fetch ? (cfg.rpcs || []).filter((u) => typeof u === 'string' && batchOf(u) > 1) : [];
     if (nodes.length) {
@@ -378,6 +382,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         try { const t = await rpc('eth_getTransactionByHash', [h]); out.set(h, t && typeof t.input === 'string' ? { hash: h, input: t.input, to: t.to == null ? null : String(t.to).toLowerCase() } : null); } catch { /* left out: the caller reads it again */ }
       }
     }));
+    for (const [h, t] of out) if (t) _txSeen.set(h, t);
     return out;
   }
 
@@ -399,7 +404,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       for (let pass = 0; pass < 2 && !got; pass++) {
         if (pass > 0) await new Promise((res) => setTimeout(res, 400));
         const narrow = (e) => e.span < 5000;
-        const wide = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (narrow(a) - narrow(b)) || (isShared(a.url) - isShared(b.url)) || (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
+        const last = (e) => !!ethNodes.lastResort?.(e.url), wide = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (last(a) - last(b)) || (narrow(a) - narrow(b)) || (isShared(a.url) - isShared(b.url)) || (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
         const byUrl = new Map(wide.map((e) => [e.url, e]));
         const ordered = _logHealth.order(wide.map((e) => e.url)).map((u) => byUrl.get(u));
         const refused = (ep) => refuses(ep.url, 'eth_getLogs', [{ fromBlock: '0x' + start.toString(16), toBlock: '0x' + Math.min(to, start + Math.min(ep.span, to - start + 1) - 1).toString(16) }], to);
@@ -2858,6 +2863,32 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const LOCK_COUNT_SLOT = '0x54';
   const LOCK_ROOT_SLOT = '0x55';
   const _txInputs = new Map();
+  // The lock transactions' inputs are kept across visits: a transaction does not change, and a returning page read all of them again from the nodes (about 420 requests on every
+  // load, 2026-11-26). They are held only as what the nodes said, with a digest that tells a copy cut short or damaged in storage from a whole one (which is then read from the
+  // nodes again and replaced), and the lock scan below still checks the set it builds against the lock tree's count and root on chain.
+  const _inputsKey = () => `lockinputs|${cfg.chainId}|${String(cfg.pool).toLowerCase()}`;
+  const _digestOf = (items) => _hex(sha256(new TextEncoder().encode(items.map(([h, i]) => `${h}:${i}`).join(','))));
+  let _inputsLoaded = null, _inputsSavedAt = 0, _inputsSavedN = 0;
+  function _loadTxInputs() {
+    return _inputsLoaded ||= (async () => {
+      if (!_kept) return;
+      try {
+        const rec = await _kept.get(_inputsKey());
+        if (rec && rec.v === 1 && Array.isArray(rec.items) && rec.d === _digestOf(rec.items)) {
+          for (const it of rec.items) {
+            const h = Array.isArray(it) ? it[0] : null, i = Array.isArray(it) ? it[1] : null;
+            if (typeof h === 'string' && /^0x[0-9a-f]{64}$/.test(h) && typeof i === 'string' && /^0x[0-9a-f]*$/i.test(i) && !_txInputs.has(h)) _txInputs.set(h, i);
+          }
+        }
+      } catch { /* read from the nodes, as before */ }
+      _inputsSavedN = _txInputs.size;
+    })();
+  }
+  function _keepTxInputs() {
+    if (!_kept || _txInputs.size <= _inputsSavedN || Date.now() - _inputsSavedAt < 20000) return;
+    _inputsSavedAt = Date.now(); _inputsSavedN = _txInputs.size;
+    Promise.resolve().then(() => { const items = [..._txInputs]; return _kept.put(_inputsKey(), { v: 1, d: _digestOf(items), items }); }).catch(() => {});
+  }
   let _lockSetAt = null;
   async function scanLockSet(opts = {}) {
     const requested = opts && opts.toBlock;
@@ -2871,6 +2902,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return p;
   }
   async function _readLockSet(opts, head) {
+    await _loadTxInputs();
     const events = (opts && opts.events) || await fetchEvents({ ...opts, toBlock: head });
     // the lock transactions not held yet (from the snapshot, or an earlier scan) are read together first, so the scan below finds them all here
     const need = [...new Set(events.filter((e) => e && e.type === 'LockLeavesInserted' && e.txHash).map((e) => String(e.txHash).toLowerCase()))].filter((h) => !_txInputs.has(h));
@@ -2890,7 +2922,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       ]);
       return { count, root };
     };
-    return _lockScan.scanLockLeaves({ events, getTxInput, getLockState, strict: true });
+    const set = await _lockScan.scanLockLeaves({ events, getTxInput, getLockState, strict: true });
+    _keepTxInputs();
+    return set;
   }
 
   async function scanStealthLocks({ walletPriv, opts } = {}) {
