@@ -289,7 +289,7 @@ else if (ropts) {
     if (srOn) {
       const recycler = makeStuckRecycler({
         tacit, withWallet: withTacitWallet, mainPriv: key, mainPub: prims.wallet.pub, reversePubHex: Buffer.from(rprims.wallet.pub).toString('hex'), assetIdHex: C.btcAsset,
-        swaps: swapStore, store: makeFileStore(resolve(data, 'stuck-recycle')), btc, maxPerTick: srCfg.maxPerTick ?? 1, log, alert,
+        swaps: swapStore, reverseSwaps: rswaps, store: makeFileStore(resolve(data, 'stuck-recycle')), btc, maxPerTick: srCfg.maxPerTick ?? 1, log, alert,
       });
       let sbuzy = false;
       setInterval(async () => { if (sbuzy) return; sbuzy = true; try { await recycler.tick(); } catch (e) { log({ level: 'error', msg: 'stuck recycle tick failed', error: String((e && e.message) || e).slice(0, 200) }); } finally { sbuzy = false; } }, (srCfg.tickSecs ?? 120) * 1000).unref();

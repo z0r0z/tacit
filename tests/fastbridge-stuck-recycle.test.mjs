@@ -8,7 +8,8 @@ const swap = (id, cls, txid = T1, amount = '2500000000') => ({
   id, phase: 'done', lineageClass: cls, take: { txid }, offer: { btc: { value: amount } },
 });
 const note = (txid = T1, amount = 2500000000n) => ({ utxo: { txid, vout: 0, value: 330, status: { confirmed: true } }, amount, blinding: 7n });
-const mk = ({ records, scanNote = note(), statuses = {} }) => {
+const recStore = (records) => { const m = new Map(records.map((r) => [r.id, { ...r }])); return { get: async (id) => m.get(id), put: async (r) => { m.set(r.id, { ...r }); }, list: async () => [...m.values()], map: m }; };
+const mk = ({ records, scanNote = note(), statuses = {}, reverse = [] }) => {
   const sent = [], scans = [];
   const tacit = {
     wallet: { priv: Uint8Array.of(1), pub: Uint8Array.of(2) },
@@ -19,7 +20,7 @@ const mk = ({ records, scanNote = note(), statuses = {} }) => {
   const store = memStore();
   const rec = makeStuckRecycler({
     tacit, withWallet: makeTacitWalletSwitch({ tacit }), mainPriv: Uint8Array.of(1), mainPub: Uint8Array.of(2), reversePubHex: REVPUB, assetIdHex: A,
-    swaps: { list: async () => records }, store, btc: { status: async (txid) => ({ confirmations: statuses[txid] || 0 }) }, now: () => 100,
+    swaps: recStore(records), reverseSwaps: { list: async () => reverse }, store, btc: { status: async (txid) => ({ confirmations: statuses[txid] || 0 }) }, now: () => 100,
   });
   return { rec, sent, scans, store };
 };
@@ -90,4 +91,32 @@ test('a broadcast failure is recorded and not retried automatically', async () =
   assert.match(r.state.bySwap.s2.error, /relay rejected/);
   const again = await failing.rec.tick();
   assert.equal(again.state.bySwap.s2.status, 'error');
+});
+
+
+test('cap release waits for a completed reverse sale of the exact recycled output', async () => {
+  const forward = swap('s1', 'pool-exit');
+  const store = recStore([forward]);
+  const sent = [];
+  const tacit = {
+    wallet: { priv: Uint8Array.of(1), pub: Uint8Array.of(2) }, invalidateHoldingsCache() {},
+    async scanHoldings() { return new Map([[A, { utxos: [note()] }]]); },
+    async buildAndBroadcastCXferMulti(args) { sent.push(args); return { commitTxid: 'c'.repeat(64), revealTxid: T2 }; },
+  };
+  let revs = [];
+  const rec = makeStuckRecycler({
+    tacit, withWallet: (priv, pub, fn) => fn(), mainPriv: Uint8Array.of(1), mainPub: Uint8Array.of(2), reversePubHex: REVPUB, assetIdHex: A,
+    swaps: store, reverseSwaps: { list: async () => revs }, store: memStore(), btc: { status: async () => ({ confirmations: 2 }) }, now: () => 100,
+  });
+  await rec.tick(); await rec.tick(); await rec.tick();
+  const inInventory = await store.get('s1');
+  assert.equal(inInventory.stuckInventoryAt, 100);
+  assert.equal(inInventory.stuckRecoveredAt, undefined, 'inventory alone does not release the exposure cap');
+  revs = [{ id: 'r1', phase: 'done', noteInputs: [{ txid: T2, vout: 0 }] }];
+  await rec.tick();
+  const sold = await store.get('s1');
+  assert.equal(sold.stuckRecoveredAt, 100);
+  assert.equal(sold.stuckReverseSwapId, 'r1');
+  revs = [{ id: 'r2', phase: 'done', noteInputs: [{ txid: T2, vout: 1 }] }];
+  assert.equal((await store.get('s1')).stuckReverseSwapId, 'r1', 'a sale of another output is ignored');
 });

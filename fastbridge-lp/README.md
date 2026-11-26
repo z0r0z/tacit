@@ -272,6 +272,7 @@ The provider's ad on the board carries a `reverse` member with the terms of this
 `evmWindowSecs`, read from `/reverse/info` every time the ad is posted; a provider with the side off posts the ad it always did), and the /fast/ page shows a "Send TAC to
 Bitcoin" panel only when a provider's ad has one. Requests for it reach the provider through the board like the others. The TAC it sells is what sits at that address, so TAC
 that came out of the Bitcoin shielded pool and could not be bridged home is sold on as it is (`anyTac`, as in the forward terms); the panel says so.
+When lineage pricing records a forward take as `long` or `pool-exit`, the daemon recycles that exact take output here (`stuckRecycle`, on by default when this side is on; `FB_LP_STUCK_RECYCLE=off` disables it). It first logs a dry run, then transfers only `<take txid>:0` from the main key to the reverse key. A confirmed move is reverse inventory (`stuckInventoryAt`); when a completed reverse sale spends that exact output the forward swap becomes `stuckRecoveredAt` and stops counting against the lineage caps. A failed broadcast is not retried automatically.
 `--dry-run` leaves it off (the log says so).
 
 ## A provider of Bitcoin for ETH (pair mode)

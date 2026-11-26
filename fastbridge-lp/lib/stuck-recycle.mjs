@@ -35,7 +35,7 @@ export function makeTacitWalletSwitch({ tacit, lock = (fn) => fn() }) {
 }
 
 export function makeStuckRecycler({
-  tacit, withWallet, mainPriv, mainPub, reversePubHex, assetIdHex, swaps, store, btc,
+  tacit, withWallet, mainPriv, mainPub, reversePubHex, assetIdHex, swaps, reverseSwaps = null, store, btc,
   now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {}, maxPerTick = 1,
 }) {
   const idOf = (c) => c.swapId;
@@ -80,9 +80,24 @@ export function makeStuckRecycler({
         changed = true;
         if (typeof swaps.get === 'function' && typeof swaps.put === 'function') {
           const rec = await swaps.get(sid).catch(() => null);
-          if (rec && !rec.stuckRecoveredAt) await swaps.put({ ...rec, stuckRecoveredAt: now(), stuckRecycleTxid: r.revealTxid });
+          if (rec && rec.stuckInventoryAt == null && rec.stuckRecoveredAt == null) await swaps.put({ ...rec, stuckInventoryAt: now(), stuckRecycleTxid: r.revealTxid });
         }
         log({ level: 'info', msg: 'stuck recycle: the moved note is confirmed at the reverse address', id: sid, txid: r.revealTxid, amount: r.amount });
+      }
+    }
+    // A note in reverse inventory is saleable but not yet recovered. The cap is released when a completed reverse
+    // sale has spent the exact recycled output (`revealTxid:0`) and the provider has claimed pool TAC on Ethereum.
+    if (reverseSwaps && typeof reverseSwaps.list === 'function' && typeof swaps.get === 'function' && typeof swaps.put === 'function') {
+      const revs = await reverseSwaps.list().catch(() => []);
+      for (const [sid, r] of Object.entries(state.bySwap)) {
+        if (r.status !== 'done' || !r.revealTxid) continue;
+        const rec = await swaps.get(sid).catch(() => null);
+        if (!rec || rec.stuckRecoveredAt != null) continue;
+        const sold = revs.find((x) => x && x.phase === 'done' && Array.isArray(x.noteInputs) && x.noteInputs.some((i) => i.txid === r.revealTxid && Number(i.vout) === 0));
+        if (sold) {
+          await swaps.put({ ...rec, stuckRecoveredAt: now(), stuckRecycleTxid: r.revealTxid, stuckReverseSwapId: sold.id });
+          log({ level: 'info', msg: 'stuck recycle: the recycled note was sold through the reverse side', id: sid, reverseSwapId: sold.id, amount: r.amount });
+        }
       }
     }
     const candidates = stuckRecycleCandidates(await swaps.list());
