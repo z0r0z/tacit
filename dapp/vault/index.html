@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /vault/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/vault/app.js?cb=05e43e7e">
+<link rel="modulepreload" href="/vault/app.js?cb=cc1919b6">
 <link rel="modulepreload" href="/vault/deployments.js?cb=02c84743">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
 <link rel="modulepreload" href="/vault/math.js?cb=ac1ed53e">
@@ -35,7 +35,7 @@
 <link rel="modulepreload" href="/vault/pools.js?cb=32f5128e">
 <link rel="modulepreload" href="/vault/batch.js?cb=4beda57b">
 <link rel="modulepreload" href="/vault/reopen.js?cb=40aab9d5">
-<link rel="modulepreload" href="/vault/engine.js?cb=9a968a9d">
+<link rel="modulepreload" href="/vault/engine.js?cb=c6d26f51">
 <link rel="modulepreload" href="/vault/router.js?cb=21df6509">
 <link rel="modulepreload" href="/trade/connect.js?cb=514272b7">
 <link rel="modulepreload" href="/walletconnect.js?cb=4740866f">
@@ -86,8 +86,8 @@
 html { -webkit-text-size-adjust: 100%; }
 html, body { margin: 0; background: var(--paper); color: var(--ink); }
 body {
-  font: 14px/1.6 var(--mono); letter-spacing: -.01em; overflow-x: hidden;
-  background-image: radial-gradient(var(--hair) 1px, transparent 1px); background-size: 24px 24px;
+  font: 14px/1.55 var(--sans, var(--mono)); letter-spacing: 0; overflow-x: hidden;
+  background-image: radial-gradient(color-mix(in srgb, var(--hair) 55%, transparent) .75px, transparent .75px); background-size: 24px 24px;
   padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
 }
 a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
@@ -95,7 +95,7 @@ a:hover { text-decoration-thickness: 2px; }
 button, select, input { font: inherit; color: inherit; letter-spacing: inherit; }
 :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 [hidden] { display: none !important; }
-.num { font-variant-numeric: tabular-nums; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
 .mute { color: var(--mute); }
 .err { color: var(--err); }
 .ok { color: var(--ok); }
@@ -171,8 +171,8 @@ h1 .s-tac { display: contents; }
 
 /* the page */
 .pick { max-width: none; }
-.grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 14px 16px; align-items: start; }
-.col { display: grid; gap: 14px; min-width: 0; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 18px 20px; align-items: start; }
+.col { display: grid; gap: 18px; min-width: 0; }
 /* The right column reads in the order of use: the vault, the ticket, then what is in the vault; a vault in an auction or under its liquidation line comes first. */
 #pick-w { order: 1; } #ticket { order: 2; } #pos { order: 3; } .btc-l { order: 4; }
 @media (min-width: 901px) { #pos.first { order: 0; } }
@@ -184,7 +184,7 @@ h1 .s-tac { display: contents; }
   #pick-w { order: 1; } #ticket { order: 2; } #pos { order: 3; } #board { order: 4; } #feed { order: 5; } #pools { order: 6; } .btc-l { order: 7; }
   #pos.first { order: 2; } #pos.first + #ticket { order: 3; }
   #btc-pos { order: 1; } #btc-ticket { order: 2; } #btc-board { order: 3; } #btc-how { order: 4; } .tac-l { order: 5; }}
-.panel { background: var(--card); border: 1px solid var(--hair); border-radius: 18px; padding: 22px; min-width: 0; }
+.panel { background: color-mix(in srgb, var(--card) 96%, var(--paper)); border: 1px solid var(--hair); border-radius: 22px; padding: 22px; min-width: 0; box-shadow: 0 16px 40px -36px color-mix(in srgb, var(--ink) 45%, transparent); }
 @media (max-width: 480px) { .panel { padding: 18px 14px; } }
 .eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
 .eyebrow .who { letter-spacing: 0; text-transform: none; font-size: 11.5px; }
@@ -214,19 +214,20 @@ h1 .s-tac { display: contents; }
 .sk { display: grid; gap: 14px; margin: 26px 0 0; } .sk i { display: block; height: 18px; border-radius: 6px; background: var(--field); animation: sk 1.6s ease-in-out infinite; } .sk i:nth-child(3n + 1) { width: 72%; } .sk i:nth-child(3n) { width: 48%; }
 @keyframes sk { 50% { opacity: .45; } }
 main { min-height: calc(100svh - 100px); }                          /* the footer starts below the first screen, so what arrives above it moves nothing in view */
-.verdict { display: flex; align-items: center; gap: 12px; margin: 0; font: 400 clamp(26px, 4vw, 36px)/1.1 var(--serif); letter-spacing: -.02em; }
+.verdict { display: flex; align-items: center; gap: 10px; margin: 0; font: 400 clamp(25px, 3.2vw, 32px)/1.1 var(--serif); letter-spacing: -.02em; }
 .sd { flex: none; display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--amber); }
 .verdict.on .sd, .st.s-open .sd { background: var(--green); }
 .verdict.wait .sd, .st.s-wait .sd { background: var(--mute); animation: sk 1.6s ease-in-out infinite; }
 .verdict.wait { color: var(--mute); }
 .needs.wait li { border-left-color: var(--hair); }
 .verdict .sd { width: 12px; height: 12px; }
-.needs { margin: 14px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 12.5px; color: var(--mute); }
-.needs li { padding: 9px 12px; background: var(--field); border-left: 2px solid var(--amber); border-radius: 0 10px 10px 0; }
+.needs { margin: 16px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-size: 12.5px; line-height: 1.5; color: var(--mute); }
+.needs li { padding: 12px 13px; background: color-mix(in srgb, var(--field) 78%, transparent); border: 1px solid var(--hair); border-radius: 12px; }
+.needs li:only-child { grid-column: 1 / -1; }
 .needs b { font-weight: 500; color: var(--ink); } .needs a { color: var(--ink); }
-.bt-wrap { margin: 16px 0 0; }
+.bt-wrap { margin: 16px 0 0; padding: 4px 14px; background: color-mix(in srgb, var(--field) 62%, transparent); border: 1px solid var(--hair); border-radius: 14px; }
 .bt { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12.5px; }
-.bt th, .bt td { padding: 7px 0 7px 10px; text-align: right; vertical-align: top; border-top: 1px solid var(--hair); font-weight: 400; overflow-wrap: anywhere; }
+.bt th, .bt td { padding: 9px 0 9px 12px; text-align: right; vertical-align: top; border-top: 1px solid var(--hair); font-weight: 400; overflow-wrap: anywhere; }
 .bt thead th, .bt thead td { border-top: 0; padding-top: 0; font-weight: 500; color: var(--ink); }
 .bt tbody th { width: 36%; padding-left: 0; text-align: left; color: var(--mute); }
 .bt td b { font-weight: 500; }
@@ -239,7 +240,8 @@ main { min-height: calc(100svh - 100px); }                          /* the foote
 .st { display: inline-flex; align-items: center; gap: 7px; }
 .verdict.off { color: var(--ink); }
 .pick-l { margin: 0 0 8px; font-size: 12px; color: var(--mute); }
-.more { display: block; margin: 12px 0 0; }
+.more { display: inline-flex; align-items: center; min-height: 34px; margin: 12px 0 0; padding: 4px 11px; border: 1px solid var(--hair-2); border-radius: 10px; text-decoration: none; color: var(--ink); }
+.more::after { content: ' ↓'; margin-left: 5px; } .more[aria-expanded="true"]::after { content: ' ↑'; }
 .kv { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 12.5px; color: var(--mute); padding: 5px 0; }
 .kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
 .kv b small { display: block; font-size: 11.5px; color: var(--mute); }
@@ -321,6 +323,9 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .hint { margin: 12px 0 0; font-size: 12.5px; color: var(--mute); }
 .hint.err { color: var(--err); } .hint:empty { display: none; }
 .hint .linkbtn { color: var(--ink); font-size: inherit; }
+.p-ticket.unavailable .amt, .p-ticket.unavailable .chips { opacity: .48; }
+.p-ticket.unavailable .amt { background: color-mix(in srgb, var(--field) 55%, transparent); }
+.p-ticket.unavailable .hint { padding: 10px 12px; color: var(--mute); background: color-mix(in srgb, var(--field) 72%, transparent); border: 1px solid var(--hair); border-radius: 12px; }
 .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 52px; margin-top: 16px; padding: 10px 16px; font-weight: 500; text-decoration: none;
   color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 14px; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s, transform .1s; }
 @media (hover: hover) { .btn:hover:not(:disabled) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 22%, transparent); } }
@@ -337,6 +342,28 @@ input::placeholder { color: var(--mute); opacity: .7; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (pointer: coarse) { .sel select { font-size: 16px; } }
+@media (max-width: 640px) {
+  .needs { grid-template-columns: minmax(0, 1fr); }
+  .needs li:only-child { grid-column: auto; }
+  .bt-wrap { padding-inline: 10px; }
+}
+@media (max-width: 539px) {
+  /* Keep the fixed helper from covering the amount, explanation or primary action. It returns as soon as the
+     ticket leaves the viewport, and an already-open help panel is never hidden. */
+  html.vault-ticket-in-view #hw:not(:has(#hw-p:not([hidden]))) { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .15s, visibility 0s .15s; }
+}
+@media (max-width: 520px) {
+  /* On the vault route the transaction ticket is the primary task. Compress repeated orientation so the
+     selector and most of the ticket arrive in the first screen, above the fixed bottom navigation. */
+  html[data-sec^="borrow"] .sh { margin: 10px auto 12px; }
+  html[data-sec^="borrow"] .sh h1 { font-size: 38px; }
+  html[data-sec^="borrow"] .sh > p:first-of-type { margin-top: 5px; font-size: 13px; }
+  html[data-sec^="borrow"] .sh-t { margin-top: 12px; }
+  html[data-sec^="borrow"] .sh p.sh-n { display: none; }
+  html[data-sec^="borrow"] .hero { padding: 0 0 12px; }
+  html[data-sec^="borrow"] .promo { margin-top: 0; }
+  html[data-sec^="borrow"] .how { margin-top: 10px; }
+}
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -767,6 +794,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <!-- chrome:foot:end -->
 </div>
 <script type="module" src="/vault/unlock.js"></script>
-<script type="module" src="/vault/app.js?cb=05e43e7e"></script>
+<script type="module" src="/vault/app.js?cb=cc1919b6"></script>
 </body>
 </html>
