@@ -22,7 +22,7 @@ const DIR = join(homedir(), '.tacit-validation');
 const KEY_FILE = process.env.FB_RECYCLE_KEY_FILE || join(DIR, 'signet-recycle.json');
 const STATE = process.env.FB_RECYCLE_STATE || join(DIR, 'fastbridge-signet-recycle-state.json');
 const BASES = ['https://mempool.space/signet/api', 'https://blockstream.info/signet/api'];
-const FEE_RATE = 2, NOTE = 5_000n, DUST = 546, POLL_MS = 30_000;
+const FEE_RATE = 2, NOTE = 5_000n, DUST = 546, POLL_MS = 30_000, RESERVE_SATS = 15_000;
 const te = (s) => new TextEncoder().encode(s);
 const log = (msg, o = {}) => console.log(JSON.stringify({ ts: new Date().toISOString(), msg, ...o }));
 const later = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -89,7 +89,7 @@ const note = { utxo: { txid: S.etch.revealTxid, vout: 0, value: DUST, status: { 
 if (!S.recycle) {
   tacit.wallet.priv = mainPriv; tacit.wallet.pub = main.wallet.pub;
   try { if (typeof tacit.invalidateHoldingsCache === 'function') tacit.invalidateHoldingsCache(); } catch { /* no cache yet */ }
-  const r = await tacit.buildAndBroadcastCXferMulti({ assetIdHex, recipients: [{ pubHex: bytesToHex(reverse.wallet.pub), amount: NOTE }], forceUtxos: [note] });
+  const r = await tacit.buildAndBroadcastCXferMulti({ assetIdHex, recipients: [{ pubHex: bytesToHex(reverse.wallet.pub), amount: NOTE }], forceUtxos: [note], satsChangeReserve: RESERVE_SATS });
   S.recycle = { commitTxid: r.commitTxid, revealTxid: r.revealTxid, amount: String(NOTE), assetIdHex };
   keep();
 }
@@ -104,5 +104,11 @@ const got = ((holdings instanceof Map ? holdings.get(assetIdHex) : null) || {}).
 const found = got.find((x) => x.utxo && x.utxo.txid === S.recycle.revealTxid && x.utxo.vout === 0 && BigInt(x.amount) === NOTE && !x.stealthTweakedSk);
 assert.ok(found, 'the reverse key did not scan the recycled output at vout 0');
 S.verified = { txid: S.recycle.revealTxid, vout: 0, amount: String(found.amount), assetIdHex, mainAddress: main.wallet.address(), reverseAddress: reverse.wallet.address() };
+const rtx = await esplora(`/tx/${S.recycle.revealTxid}`).catch(() => null);
+if (rtx) {
+  const reserveOut = (rtx.vout || []).find((x, i) => i !== 0 && Number(x.value) >= RESERVE_SATS && x.scriptpubkey_address === S.verified.mainAddress);
+  assert.ok(reserveOut, 'the recycle reveal did not carry its sats-change reserve at the main key');
+  S.verified.reserveSats = Number(reserveOut.value);
+}
 keep();
 log('verified', { ...S.verified, mempool: `https://mempool.space/signet/tx/${S.recycle.revealTxid}` });

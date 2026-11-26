@@ -287,9 +287,15 @@ else if (ropts) {
     const srCfg = C.stuckRecycle && typeof C.stuckRecycle === 'object' ? C.stuckRecycle : {};
     const srOn = srEnv ? srEnv === 'on' : (C.stuckRecycle !== false && srCfg.enabled !== false);
     if (srOn) {
+      const srCpfp = srCfg.cpfp === false ? { enabled: false } : { ...(srCfg.cpfp || {}) };
+      const srReserve = srCpfp.enabled === false ? 0 : (srCfg.bumpReserveSats ?? 15000);
       const recycler = makeStuckRecycler({
         tacit, withWallet: withTacitWallet, mainPriv: key, mainPub: prims.wallet.pub, reversePubHex: Buffer.from(rprims.wallet.pub).toString('hex'), assetIdHex: C.btcAsset,
-        swaps: swapStore, reverseSwaps: rswaps, store: makeFileStore(resolve(data, 'stuck-recycle')), btc, maxPerTick: srCfg.maxPerTick ?? 1, log, alert,
+        swaps: swapStore, reverseSwaps: rswaps, store: makeFileStore(resolve(data, 'stuck-recycle')), btc, maxPerTick: srCfg.maxPerTick ?? 1,
+        satsChangeReserve: srReserve, cpfp: srCpfp, mainSpk: Buffer.from(prims.p2wpkhScript(prims.wallet.pub)).toString('hex'),
+        sign: (tx, i, value) => tacit.signP2wpkhInputWithKey(tx, i, value, key, prims.wallet.pub),
+        serialize: (tx) => Buffer.from(tacit.serializeTx(tx)).toString('hex'), txidOf: (tx) => tacit.txid(tx),
+        log, alert,
       });
       let sbuzy = false;
       setInterval(async () => { if (sbuzy) return; sbuzy = true; try { await recycler.tick(); } catch (e) { log({ level: 'error', msg: 'stuck recycle tick failed', error: String((e && e.message) || e).slice(0, 200) }); } finally { sbuzy = false; } }, (srCfg.tickSecs ?? 120) * 1000).unref();

@@ -33,7 +33,7 @@
     }
   },
   "recoveredSwaps": [],
-  "stuckRecycle": { "enabled": true, "maxPerTick": 1, "tickSecs": 120 },
+  "stuckRecycle": { "enabled": true, "maxPerTick": 1, "tickSecs": 120, "bumpReserveSats": 15000, "cpfp": { "enabled": true, "afterSecs": 21600, "maxBumps": 2, "maxFeeRate": 25, "feeFactor": 2 } },
   "policy": {
     "minCsv": 72,
     "evmWindowSecs": 14400,

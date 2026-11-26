@@ -63,6 +63,7 @@ Safety properties:
 - the transfer is forced to the exact take note, so market-maker stock or clean proceeds at the same address are not spent;
 - clean-class proceeds are ignored;
 - a broadcast error is recorded and not retried automatically, because the failure may be after a relay accepted the reveal; the operator inspects that swap before touching it;
+- new recycle transfers reserve `stuckRecycle.bumpReserveSats` (15,000 in the example config) as ordinary sats change. Those sats still belong to the provider when the transfer confirms; if the commit or reveal stalls past `stuckRecycle.cpfp.afterSecs`, the daemon spends only that change output in a replaceable package-aware CPFP child back to the same main key (while both transactions wait, the child covers the whole commit→reveal chain when explorer data gives it). It never spends the confidential note output for a fee bump, and a transfer without a usable change output is reported rather than guessed;
 - when the move confirms the forward swap record is marked `stuckInventoryAt`; reverse sales are attributed without guessing input ownership: a sale made only from tracked recycled notes reduces the corresponding recovered amount, a partial sale of one tracked note is followed through its deterministic change output, and a partial sale mixed with untracked inventory stays as exposure. The record is marked `stuckRecoveredAt` and stops counting against lineage caps only when the whole original amount has been sold back for pool TAC;
 
 The Bitcoin-side move is rehearsed on public signet by `tests/fastbridge-signet-recycle.mjs`: a small stand-in note was etched at a
@@ -73,7 +74,7 @@ and the 5,000-unit recycle reveal
 [`699884f8...d3104868`](https://mempool.space/signet/tx/699884f8bbf2eed4fe538138c3f390b3177972f8023a954d3c4880f4d3104868).
 This proves the real broadcast/scan path for the exact note movement; it is not a TAC pool-liquidity proof and the reverse sale itself
 remains machine-tested offline.
-- `stuckRecycle.enabled` defaults on only when the reverse side is on, and can be disabled in config or with `FB_LP_STUCK_RECYCLE=off`. Manual `recoveredSwaps` / `FB_LP_RECOVERED_SWAPS` remains available for notes recovered outside this loop.
+- `stuckRecycle.enabled` defaults on only when the reverse side is on, and can be disabled in config or with `FB_LP_STUCK_RECYCLE=off`. `stuckRecycle.cpfp.enabled` controls only the stalled-transfer CPFP child; `bumpReserveSats` is reserve liquidity returned as change unless a bump is needed. Manual `recoveredSwaps` / `FB_LP_RECOVERED_SWAPS` remains available for notes recovered outside this loop.
 
 ## Numbers
 
@@ -126,7 +127,7 @@ while that mistake is being corrected.
 
 Offline tests cover class reduction, unread/retry behavior, quote math, exact-outpoint binding and rejection, exposure-cap intake,
 `/info` publication, environment overrides, provider-side enforcement before a pool lock, page quote hints with exact inputs,
-candidate selection, dry-run/send/confirm behavior, exact forced-outpoint movement, clean-note exclusion, failure non-retry, and
+candidate selection, dry-run/send/confirm behavior, exact forced-outpoint movement, clean-note exclusion, failure non-retry, CPFP anchor selection, fee-preserving bump construction, and
 the numeric tables above. `tests/fastbridge-reverse-service.test.mjs` also includes an offline end-to-end reverse-machine scenario:
 a 5,000-unit recycled note is sold in a 2,791-unit reverse swap, its deterministic 2,209-unit change output is sold in a second
 reverse swap, and the accounting releases exactly the whole original amount only after both machine-completed sales:
@@ -142,4 +143,4 @@ node tests/fastbridge-wire.test.mjs
 node tests/fastbridge-lp-env.test.mjs
 ```
 
-Not tested: a live mainnet or signet fast-bridge swap, a real reverse sale of a recycled note, fee bumping of a stuck recycle transfer (a stalled move alerts rather than replaces itself), the real reflection service's latency on a maximally long history, browser UI copy, and market measurement of actual haircuts. No contracts, keys, pool parameters or deployed services change.
+Not tested: a live mainnet or signet fast-bridge swap, a real reverse sale of a recycled note, a live fee-market CPFP of a stalled recycle transfer (the construction and anchor selection are machine-tested), the real reflection service's latency on a maximally long history, browser UI copy, and market measurement of actual haircuts. No contracts, keys, pool parameters or deployed services change.

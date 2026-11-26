@@ -24052,7 +24052,7 @@ async function tacPickCandidates(assetIdHex, sorted, amount) {
 // The reflection folds it for any asset, its notes go back to Ethereum by the bridge, and a note at a P2WPKH address (every output here) has no
 // Taproot key, so the fast lane can never spend it and its receiver holds it once Bitcoin confirms, as with TAC.
 async function buildAndBroadcastCXferMulti(args) { return _buildAndBroadcastCXferMulti(args); }
-async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = bppEnabled(), assetSigner = null }) {
+async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = bppEnabled(), assetSigner = null, satsChangeReserve = 0 }) {
   await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   if (!Array.isArray(recipients) || recipients.length === 0) {
@@ -24283,12 +24283,18 @@ async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos
   const totalOutputDust = DUST * m;
   const assetInputTotal = pickedAssetUtxos.reduce((s, u) => s + u.utxo.value, 0);
 
+  const reserveSats = Math.floor(Number(satsChangeReserve));
+  if (!Number.isSafeInteger(reserveSats) || reserveSats < 0 || reserveSats > 100000000 || (reserveSats > 0 && reserveSats < DUST)) throw new Error(`satsChangeReserve must be 0 or a whole number of sats from ${DUST} to 100000000`);
   let satsChange = 0;
   let commitValue = totalOutputDust + revealFee - assetInputTotal;
   if (commitValue < DUST) {
     commitValue = DUST + revealFee;
     satsChange = commitValue + assetInputTotal - totalOutputDust - revealFee;
   }
+  // A caller that may have to CPFP the reveal can reserve some of its own sats as an explicit change output. The sats
+  // are still its change when the transfer confirms; they are only spent if a later bump transaction needs them.
+  commitValue += reserveSats;
+  satsChange += reserveSats;
   if (satsChange < DUST) satsChange = 0;
 
   const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
