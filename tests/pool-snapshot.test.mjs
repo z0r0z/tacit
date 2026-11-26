@@ -149,7 +149,7 @@ test('the record is read from the WNS text record', () => {
 
 // The page, its nodes and gateways stood in for. `chain`: every log on chain; `snap`: what the snapshot holds (up to snapTo); `storage`: the pool's words.
 // A JSON-RPC batch is answered item by item (`batches` counts them); `swap(h)` → the transaction a lying node hands back in a batch in place of h.
-function page({ chain, head, snap, snapTo, storage, lie = false, txs = null, swap = null }) {
+function page({ chain, head, snap, snapTo, storage, lie = false, txs = null, swap = null, logStore = null }) {
   const asked = [], txAsked = [], batches = [];
   const record = snap ? (() => { const v = enc.encode(JSON.stringify({ v: 1, cid: snap.cid, to: snapTo })); return '0x' + W(32) + W(v.length) + hex(v).padEnd(Math.ceil(v.length / 32) * 64, '0'); })() : '0x' + W(32) + W(0);
   const node = (method, params) => {
@@ -179,7 +179,7 @@ function page({ chain, head, snap, snapTo, storage, lie = false, txs = null, swa
     const out = node(method, params);
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: out }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
-  const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet', fetchImpl, logStore: null, snapshotOpts: { auditMs: 0 } });
+  const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet', fetchImpl, logStore, snapshotOpts: { auditMs: 0 } });
   return { ux, asked, txAsked, batches };
 }
 const settle = () => new Promise((r) => setTimeout(r, 50));
@@ -534,6 +534,36 @@ test('the lock transactions are read in JSON-RPC batches; an answer that names a
   const set = await p.ux.scanLockSet();
   assert.equal(set.lockLeaves.length, chain.filter((l) => l.topics[0] === T.LockLeavesInserted).length, 'the lock set checks out against the pool');
   assert.ok(p.txAsked.length - asked <= 4, `the lock set takes the transactions already read from memory, not the nodes (${p.txAsked.length - asked} asked, ${p.batches.length - before} batches)`);
+});
+
+test('a returning page takes the lock transactions it read on an earlier visit from its store, not from the nodes; a kept copy that was damaged is read from the nodes again and replaced', async () => {
+  mem.clear();
+  const chain = history(150), head = Number(BigInt(chain[chain.length - 1].blockNumber)) + 500, all = lockTxs(chain);
+  const kept = new Map();
+  const store = () => ({ get: async (k) => (kept.has(k) ? structuredClone(kept.get(k)) : null), put: async (k, v) => { kept.set(k, structuredClone(v)); }, del: async (k) => { kept.delete(k); } });
+  const first = page({ chain, head, snap: null, snapTo: 0, storage: storageFor(treesFor(chain)), txs: inputFor, logStore: store() });
+  const set1 = await first.ux.scanLockSet();
+  await settle();
+  assert.ok(new Set(first.txAsked).size >= all.length, `the first visit read every lock transaction (${new Set(first.txAsked).size} of ${all.length})`);
+  const key = [...kept.keys()].find((k) => k.startsWith('lockinputs|'));
+  assert.ok(key && kept.get(key).items.length >= all.length, 'and kept them');
+  mem.clear();
+  const again = page({ chain, head, snap: null, snapTo: 0, storage: storageFor(treesFor(chain)), txs: inputFor, logStore: store() });
+  const set2 = await again.ux.scanLockSet();
+  assert.deepEqual(set2.lockLeaves, set1.lockLeaves, 'the same lock set');
+  assert.equal(again.txAsked.length, 0, `a returning page asks the nodes for none of them (${again.txAsked.length})`);
+  // a kept copy with one input changed (damaged in storage): its digest does not match, so it is not used, the nodes are asked for all of them, and the copy is replaced
+  const bad = structuredClone(kept.get(key));
+  const at = bad.items.findIndex(([h]) => all.includes(h));
+  bad.items[at][1] = '0x' + '00'.repeat(40);
+  kept.set(key, bad);
+  mem.clear();
+  const third = page({ chain, head, snap: null, snapTo: 0, storage: storageFor(treesFor(chain)), txs: inputFor, logStore: store() });
+  const set3 = await third.ux.scanLockSet();
+  await settle();
+  assert.deepEqual(set3.lockLeaves, set1.lockLeaves, 'the right lock set, from the nodes');
+  assert.ok(new Set(third.txAsked).size >= all.length, `every lock transaction was read again (${new Set(third.txAsked).size} of ${all.length})`);
+  assert.ok(kept.has(key) && !kept.get(key).items.some(([h, i]) => i === '0x' + '00'.repeat(40)), 'and what is kept now is the nodes\' answer');
 });
 
 test('the own-lock finder reads the pool module\'s lock set: a snapshot\'s inputs are taken after the spot check, only the later ones reach the nodes, and they come in batches', async () => {
