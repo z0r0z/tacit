@@ -16,6 +16,7 @@
 // The key is read from the environment and is never printed. Node 22; run from the repository root.
 
 import { makeFileStorage } from '../fastbridge-lp/lib/storage.mjs';
+import { GAS_KEPT, parseAmount, checkDeposit, sendDeposit, waitMined, settleDeposit } from '../fastbridge-lp/lib/shield-core.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -24,7 +25,6 @@ const SEND = args.includes('--send');
 const ETH = args.includes('--eth');
 const UNIT = ETH ? 'ETH' : 'TAC';
 const TICKER = ETH ? 'cETH' : 'TAC';
-const GAS_KEPT = 5n * 10n ** 14n;                                              // an ETH deposit leaves at least this much for the deposit's gas and a settle
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
 const amountText = args.find((a) => /^\d+(\.\d{1,8})?$/.test(a));
 const die = (m) => { console.error(m); process.exit(1); };
@@ -35,9 +35,7 @@ if (!amountText) die('usage: FB_LP_KEY=<64 hex> node tools/fastbridge-lp-shield.
 const indexArg = flag('--index');
 if (indexArg != null && !/^\d+$/.test(indexArg)) die('--index must be a whole number');
 const FORK = process.env.FORK || null;
-const [whole, frac = ''] = amountText.split('.');
-const notes8 = BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0'));          // the pool's units (8 places)
-const amountWei = notes8 * 10n ** 10n;                                          // the token's (18 places)
+const { notes8, amountWei } = parseAmount(amountText);                          // the pool's units (8 places) and the token's (18)
 if (notes8 <= 0n) die('the amount must be more than zero');
 
 // the pool module is a browser module: it keeps hints in a localStorage, here a file in the temp directory
@@ -76,34 +74,19 @@ console.log(`holds ${ETH ? '' : show(tac) + ' and '}${(Number(eth) / 1e18).toFix
 if (tac < amountWei + (ETH ? GAS_KEPT : 0n)) die(`the address holds ${show(tac)}, short of the ${amountText} ${UNIT} asked${ETH ? ` and ${show(GAS_KEPT)} for gas` : ''}: nothing was done`);
 
 const index = indexArg != null ? BigInt(indexArg) : undefined;
-const built = await ux.buildRouterWrap({ walletPriv: key, amountWei, ticker: TICKER, ...(index != null ? { index } : {}) });
+const { built } = await checkDeposit({ ux, key, address: acct.address, amountWei, ticker: TICKER, index }).catch((e) => die(String((e && e.message) || e)));
 console.log(JSON.stringify({ permit: built.permitType, router: built.to, index: String(built.index ?? index ?? ''), needsPermit2Approval: !!built.needsPermit2Approval, calldataBytes: built.calldata ? (built.calldata.length - 2) / 2 : 0 }));
-if (!built.needsPermit2Approval) {
-  const call = { from: acct.address, to: built.to, value: hexq(built.value || 0), data: built.calldata };
-  try { await ux.rpc('eth_call', [call, 'latest']); console.log('the deposit runs as a call: it would not revert'); }
-  catch (e) { die(`the deposit would revert, so nothing was sent: ${String((e && e.message) || e).slice(0, 200)}`); }
-}
+if (!built.needsPermit2Approval) console.log('the deposit runs as a call: it would not revert');
 if (!SEND) { console.log('checked only; add --send to send it'); process.exit(0); }
 
-const sent = await ux.routerWrap({ walletPriv: key, amountWei, ticker: TICKER, ...(index != null ? { index } : {}) });
+const sent = await sendDeposit({ ux, key, amountWei, ticker: TICKER, index });
 console.log('deposit sent:', sent.txHash);
-let receipt = null;
-for (let i = 0; i < 90 && !receipt; i++) { receipt = await ux.rpc('eth_getTransactionReceipt', [sent.txHash]).catch(() => null); if (!receipt) await new Promise((r) => setTimeout(r, 4000)); }
+const receipt = await waitMined(ux, sent.txHash);
 if (!receipt || receipt.status !== '0x1') die(`the deposit did not succeed (${receipt ? 'reverted' : 'no receipt in 6 minutes'}): ${sent.txHash}`);
 console.log(`deposit mined in block ${Number(receipt.blockNumber)}; the address now holds ${show(await tacOf(acct.address))}${ETH ? ' (the rest of it is for gas)' : ''}`);
 if (FORK) { console.log('fork: the relay is not asked, so the notes are not settled here'); process.exit(0); }
 
-// A relay that is not sending settles (its sender is under its gas floor) only proves: this address then sends the settle itself, as
-// the provider does for its own locks, after a call that shows the pool would take it. The deposit is on the chain either way.
-const relayState = await ux.relay.state().then((s) => (s && s.state) || null).catch(() => null);
-const own = relayState != null && relayState !== 'ok';
-const selfSettle = own ? async (x) => {
-  if (!x || !x.publicValues || !x.proof) throw new Error('there is no proof to send');
-  await ux.rpc('eth_call', [{ from: acct.address, to: ux.cfg.pool, data: ux.settleCalldata(x) }, 'latest']);
-  return ux.settleFromAccount({ settlerPriv: key, publicValues: x.publicValues, proof: x.proof, memos: x.memos || [] });
-} : null;
-console.log(own ? `the relay is ${relayState}: it proves, and this address sends the settle…` : 'asking the relay to settle it into private notes…');
-const settled = await ux.submitWrapSettle({ built: sent, depositTx: sent.txHash, ...(selfSettle ? { selfSettle } : {}) }).catch((e) => die(`the deposit is on the chain (${sent.txHash}, index ${String(sent.index ?? index ?? '')}) but its settle did not go through: ${String((e && e.message) || e).slice(0, 300)}`));
+const settled = await settleDeposit({ ux, key, address: acct.address, sent, say: console.log }).catch((e) => die(`the deposit is on the chain (${sent.txHash}, index ${String(sent.index ?? index ?? '')}) but its settle did not go through: ${String((e && e.message) || e).slice(0, 300)}`));
 console.log('settle:', settled.status, settled.txHash || settled.jobId || '');
 const bal = await ux.balance(key);
 const idTail = ETH ? String(meta.assetId).toLowerCase().replace(/^0x/, '').slice(-64) : 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';

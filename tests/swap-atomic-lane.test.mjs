@@ -74,6 +74,7 @@ const FAKE = `
     balances: async () => { calls.balances++; return { sats: S.bal.sats, eth: S.bal.eth, ethHeld: S.bal.ethHeld, pendingSats: S.bal.pendingSats }; },
     quote: async ({ dir, amount }) => {
       calls.quote.push({ dir, amount: String(amount) });
+      if (S.failN > 0) { S.failN--; throw new TypeError('Failed to fetch'); }
       if (S.mode === 'none') throw new Error('No provider can take that amount.');
       const b2e = dir === 'b2e', blocked = S.mode === 'blocked';
       const q = { dir, provider: { id: 'p1', name: 'Test provider' }, pay: amount, get: ((b2e ? (amount * 304n) / 10n : (amount * 10n) / 304n) * (S.cut ? 99n : 100n)) / 100n, rate: blocked ? 29.4 : 30.4, market: 30.62, vsMarketBps: blocked ? -410 : -72, feeBps: 40, etaSecs: 780,
@@ -201,8 +202,8 @@ console.log('a provider: the switch appears, and the lane opens');
   const q = (await atom(page, 'A.calls.quote')).at(-1);
   ok(q.dir === 'b2e' && q.amount === '1000000', `the quote was asked for b2e and 1,000,000 sats (${JSON.stringify(q)})`);
   const r = await text(page, '#a-rcpt');
-  ok(/Price\s*1 BTC = 30\.4 ETH/.test(r) && /Market\s*1 BTC = 30\.62 ETH/.test(r) && /You get\s*0\.72% less than the market price/.test(r), `the price, the market and the comparison are shown (${r.slice(0, 200)})`);
-  ok(/Provider\s*Test provider(?!,)/.test(r) && /Network fee\s*≈ 1,200 sats/.test(r) && /Time\s*about 13 min/.test(r) && /If it stops\s*BTC returns/.test(r), 'the provider and fee, the Bitcoin fee, the time and what happens if it stops');
+  ok(/Market rate\s*1 BTC = 30\.62 ETH/.test(r) && /Fee\s*0\.00220467 ETH · 0\.72%/.test(r) && /You receive\s*0\.304 ETH/.test(r) && /Effective rate\s*1 BTC = 30\.364 ETH/.test(r) && !(await page.$('#a-rcpt dd.warn')), `the market, the fee, the network fee and what arrives are shown (${r.slice(0, 200)})`);
+  ok(/Provider\s*Test provider(?!,)/.test(r) && /Bitcoin network fee\s*≈ 1,200 sats/.test(r) && /Time\s*about 13 min/.test(r) && /If it stops\s*BTC returns/.test(r), 'the provider and fee, the Bitcoin fee, the time and what happens if it stops');
   ok(/^Swap BTC → ETH$/.test(await text(page, '#a-go')) && !(await page.$eval('#a-go', (e) => e.disabled)), 'the button says what it does');
   await SHOT(page, 'lane-quote');
   await atom(page, '(A.mode = "blocked", 0)');
@@ -220,13 +221,30 @@ console.log('a provider: the switch appears, and the lane opens');
   ok(/Note\s*The provider holds less than this right now\./.test(await text(page, '#a-rcpt')) && !(await page.$eval('#a-go', (e) => e.disabled)), 'a note from the provider is shown and does not stop the swap');
   await atom(page, '(A.warn = false, 0)');
 
+  console.log('the lane: a quote that cannot be read is tried again by itself');
+  const goText = () => text(page, '#a-go');
+  await atom(page, '(A.failN = 2, A.calls.quote.length = 0, 0)');
+  await page.fill('#a-amt', '0.014');
+  await sleep(700);
+  ok(/Getting a quote/.test(await goText()) && !(await text(page, '#a-q')).trim(), 'a first miss says it is getting a quote, with no error text');
+  await page.waitForFunction(() => /^Swap /.test(document.querySelector('#a-go').textContent), null, { timeout: 12000 });
+  ok(!(await text(page, '#a-q')).trim() && (await atom(page, 'A.calls.quote.length')) === 3 && !(await page.$eval('#a-go', (e) => e.disabled)), 'two misses, then the quote is shown with no error and no press');
+  await atom(page, '(A.failN = 999, 0)');
+  await page.fill('#a-amt', '0.0141');
+  await page.waitForFunction(() => /^Try again$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  ok(/Can't reach the provider right now/.test(await text(page, '#a-q')) && !/No quote/.test(await goText()), 'a persistent miss ends with the plain line and a Try again button');
+  await atom(page, '(A.failN = 0, 0)');
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Swap /.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
+  ok(!(await text(page, '#a-q')).trim(), 'Try again asks at once and the quote is shown');
+
   console.log('the lane: a swap that several providers fill');
   await atom(page, '(A.mode = "split", 0)');
   await type(page, '0.015');
   await page.waitForFunction(() => /Best price across 3 providers/.test(document.querySelector('#a-rcpt').textContent), null, { timeout: 5000 });
   const sr = await text(page, '#a-rcpt');
   ok(/Providers\s*Best price across 3 providers/.test(sr) && /Alpha\s*0\.005 BTC → 0\.152 ETH/.test(sr) && /Charlie\s*0\.005 BTC → 0\.152 ETH/.test(sr), `the plan is shown before the press: each provider, what it is given and what it pays out (${sr.slice(0, 260)})`);
-  ok(/One provider\s*none can take this much/.test(sr) && /Network fee\s*≈ 1,200 sats for all parts/.test(sr), 'and that no one provider takes it, and one fee for the one transaction');
+  ok(/One provider\s*none can take this much/.test(sr) && /Bitcoin network fee\s*≈ 1,200 sats for all parts/.test(sr), 'and that no one provider takes it, and one fee for the one transaction');
   ok(/^Swap BTC → ETH$/.test(await text(page, '#a-go')) && !(await page.$eval('#a-go', (e) => e.disabled)), 'the button is as it is for one provider');
   await SHOT(page, 'lane-split-quote');
   await page.click('#a-go');
@@ -262,7 +280,7 @@ console.log('a provider: the switch appears, and the lane opens');
   await type(page, '1');
   const q2 = (await atom(page, 'A.calls.quote')).at(-1);
   ok(q2.dir === 'e2b' && q2.amount === '100000000', `a quote for e2b is asked in pool units (1 ETH = 100,000,000) (${JSON.stringify(q2)})`);
-  ok(/Price\s*1 ETH = 0\.032895 BTC/.test(await text(page, '#a-rcpt')) && /If it stops\s*ETH returns/.test(await text(page, '#a-rcpt')) && /Network fee\s*≈ 500 sats, taken from your BTC/.test(await text(page, '#a-rcpt')), 'ETH to BTC is priced per ETH, says where the ETH goes if it stops, and names the fee of taking the Bitcoin');
+  ok(/Effective rate\s*1 ETH = 0\.03289 BTC/.test(await text(page, '#a-rcpt')) && /If it stops\s*ETH returns/.test(await text(page, '#a-rcpt')) && /Bitcoin network fee\s*≈ 500 sats, taken from your BTC/.test(await text(page, '#a-rcpt')), 'ETH to BTC is priced per ETH, says where the ETH goes if it stops, and names the fee of taking the Bitcoin');
   const getNow = parseFloat(await text(page, '#a-out')), want = Number((await atom(page, 'A.calls.quotes.at(-1).get')) - 500n) / 1e8;
   ok(Math.abs(getNow - want) < 1e-9, `the amount shown is what arrives, the lock less the fee of taking it (${getNow} = ${want})`);
   await type(page, '5');

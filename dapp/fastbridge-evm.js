@@ -106,11 +106,27 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     if (!blocks.has(n)) { blocks.set(n, parseInt((await rpc('eth_getBlockByNumber', ['0x' + n.toString(16), false])).timestamp, 16)); cap(blocks, 4096); }
     return blocks.get(n);
   }
+  // The first block at or after `ts`: the guess is the head less the seconds back at 12 s a block, and each block read moves the guess by the time still missing, so it
+  // settles in a few reads where a binary search over every block took about 25 (and a window is asked for more than once). `lo`/`hi` keep it a search: the answer is
+  // always between them, and each read closes one end.
   async function blockAtOrAfter(ts) {
-    let lo = 0, hi = parseInt(await rpc('eth_blockNumber', []), 16);
-    while (lo < hi) { const mid = Math.floor((lo + hi) / 2); if ((await blockTs(mid)) < ts) lo = mid + 1; else hi = mid; }
+    const head = parseInt(await rpc('eth_blockNumber', []), 16);
+    let lo = 0, hi = head, g = head;
+    const hts = await blockTs(head);
+    if (ts >= hts) return head;
+    g = Math.max(0, head - Math.ceil((hts - ts) / 12));
+    while (lo < hi) {
+      g = Math.min(Math.max(g, lo), hi - 1);
+      const t = await blockTs(g);
+      if (t < ts) lo = g + 1; else hi = g;
+      g += Math.trunc((ts - t) / 12) || (t < ts ? 1 : -1);
+    }
     return lo;
   }
+  // Windows that start at different times are cut at the same blocks (a multiple of WINDOW_STEP below the start), so the pool's events for them are one read that every
+  // swap's scan takes from the cache instead of one read each (a few swaps' scans each fetched ~600k blocks of logs, overlapping, from a node that takes 45k at a time).
+  const WINDOW_STEP = 100_000;
+  const windowFrom = async (secs) => Math.floor((await blockAtOrAfter(Math.max(0, secs - 3600))) / WINDOW_STEP) * WINDOW_STEP;
   const inputs = new Map();
   async function txOf(h) {
     // (a transaction a node does not have yet is not kept as one that is not there: only what was read is kept, and a miss is asked again next time)
@@ -277,7 +293,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const known = claims.get(key);
     if (known) { const j = judge(known); if (j !== undefined) return out(j, known.src); }
     const keep = (r, src) => { claims.set(key, { s: r.s, mixed: r.mixed, src }); cap(claims, 1024); };
-    const events = await ux.fetchEvents({ fromBlock: sinceSecs ? await blockAtOrAfter(Math.max(0, sinceSecs - 3600)) : undefined, toBlock: 'latest' });
+    const events = await ux.fetchEvents({ fromBlock: sinceSecs ? await windowFrom(sinceSecs) : undefined, toBlock: 'latest' });
     // The window's transactions are read a few at a time before they are walked in order: a swap found again from the key a day after its lock has a day of the pool's
     // settles to read, one request each, which one at a time took over a minute (2026-11-25). A read that fails here is made again in the walk, as before.
     const hashes = [...new Set(events.filter((e) => e.txHash && (e.type === 'LeavesInserted' || e.type === 'NullifiersSpent')).map((e) => e.txHash))];

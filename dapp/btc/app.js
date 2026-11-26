@@ -2,12 +2,12 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=e4b23e80';
-import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=412e6669';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=edd331fc';
+import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=3d3aa9b4';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
-import { makeAddEth } from '/btc/add-eth.js?cb=eae599fd';
+import { makeAddEth } from '/btc/add-eth.js?cb=d423798a';
 import { mountSendPanel } from '/btc/panel.js?cb=4e01aedd';
 import { makePayout } from '/btc/payout.js?cb=3b028d52';
 
@@ -97,7 +97,7 @@ function paintProviders(m) {
   list.innerHTML = ps.length ? ps.map((p) => `<li data-pv="${esc(p.id)}"><span class="nm"><b>${esc(p.name)}</b><span class="num">${esc(String(p.id).slice(0, 10))}…</span></span>${side(p.b2e, 'b2e')}${side(p.e2b, 'e2b')}</li>`).join('') : '';
   // the line at the top: each part kept whole (the line breaks between them), and what can be swapped now to two figures, rounded down
   const bits = [];
-  if (m.rate) bits.push(`<b class="num">1 BTC = ${esc(m.rate.toLocaleString('en-US', { maximumFractionDigits: m.rate >= 100 ? 1 : 3 }))} ETH</b>`);
+  if (m.rate) bits.push(`<b class="num">1 BTC = ${esc(m.rate.toLocaleString('en-US', { maximumFractionDigits: m.rate >= 100 ? 1 : 3 }))} ETH</b>${m.rateAt ? ` <span class="mute">(price from ${Math.max(1, Math.round((Date.now() / 1000 - m.rateAt) / 60))} min ago)</span>` : ''}`);
   bits.push(ps.length ? `${ps.length} provider${ps.length === 1 ? '' : 's'} online` : 'no provider online');
   const upB = tb && tb.now > 0n ? `${twoFigures(tb.now)} BTC` : null, upE = te && te.now > 0n ? `${twoFigures(te.now)} ETH` : null;
   if (upB || upE) bits.push(`up to ${[upB, upE].filter(Boolean).map(esc).join(' or ')} now`);
@@ -210,6 +210,7 @@ const lane = makeAtomicLane({
   host: $('atomic'), recsHost: $('mine-list'), notify, wallet: () => null, provider: () => connectedInjected(), getUx, market, dir: first.dir,
   shield: makeAddEth({ getUx }), payout,
   onState: () => follow(lane.state()),
+  onKey: () => paintChip(),
   onRecs: (recs) => { titleFor(recs); for (const r of recs) recDir.set(r.id, r.dir); paintMine(recs); panel?.paint(); paintEth(); },
   onBal: () => { panel?.paint(); paintEth(); },
   onOpen: () => { panel?.paint(); paintEth(); },
@@ -217,6 +218,25 @@ const lane = makeAtomicLane({
   // and a finished swap of BTC's "Send to an Ethereum address": where, and the relay's fee, asked first
   onNext: ({ act, sats, id, units }) => { if (act === 'send') { ddOpen('mybtc'); panel?.openSend({ sats }); } else if (act === 'withdraw') withdraw({ id, units }).catch(() => {}); },
 });
+// the header chip: the same sign-in as the card's button; once open, the wallet's address and a way to lock it
+let tacitOf = null, tacitAsked = false;
+function paintChip() {
+  const on = lane.unlocked, a = lane.address;
+  $('wallet-dot').className = `dot${on ? ' on' : ''}`;
+  $('acct-id').textContent = a || '';
+  // the chip names the key by its tacit1 address, as the front page does (its first 16 characters and last 6)
+  if (!on) { $('acct-tacit').textContent = ''; tacitOf = null; tacitAsked = false; }
+  else if (!tacitAsked) { tacitAsked = true; Promise.resolve(lane.tacitAddress?.()).then((t) => { tacitOf = t; if (t) { $('acct-tacit').textContent = t; $('wallet-label').textContent = `${t.slice(0, 16)}…${t.slice(-6)}`; } }, () => {}); }
+  $('wallet-label').textContent = on ? (tacitOf ? `${tacitOf.slice(0, 16)}…${tacitOf.slice(-6)}` : a ? `${a.slice(0, 6)}…${a.slice(-4)}` : 'Signed in') : 'Sign in';
+  if (!on) { $('acct-pop').hidden = true; $('wallet').setAttribute('aria-expanded', 'false'); }
+}
+$('wallet').addEventListener('click', () => {
+  if (!lane.unlocked) { lane.signIn().then(paintChip, paintChip); return; }
+  const pop = $('acct-pop'); pop.hidden = !pop.hidden; $('wallet').setAttribute('aria-expanded', String(!pop.hidden));
+});
+$('acct-pop').addEventListener('click', (e) => { const c = e.target.closest('[data-copy]'); if (c) { try { navigator.clipboard.writeText($(c.dataset.copy).textContent).then(() => { c.textContent = 'Copied'; setTimeout(() => { c.textContent = 'Copy'; }, 1500); }, () => {}); } catch { /* no clipboard */ } return; } if (e.target.closest('[data-acct="out"]')) { $('acct-pop').hidden = true; lane.lock(); paintChip(); } });
+document.addEventListener('click', (e) => { if (!e.target.closest('#acct')) { $('acct-pop').hidden = true; $('wallet').setAttribute('aria-expanded', 'false'); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('acct-pop').hidden = true; $('wallet').setAttribute('aria-expanded', 'false'); } });
 panel = mountSendPanel({ host: $('yb'), lane, notify });
 // what the lane reads once the key opens is read ahead as soon as the visitor shows an interest in it (a link that names an amount, a hover, a tap): the
 // signature then has less to wait on. Signing in does the same.
@@ -333,3 +353,4 @@ ddWatch();
 if (first.amt) lane.set({ amt: first.amt });
 market().catch(() => {});
 lane.show();
+paintChip();

@@ -12,17 +12,20 @@
 
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
-import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=7410374b';
-import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=d115e531';
-import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=0635460a';
+import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=82196961';
+import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=c56d5cfe';
+import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=1e46a17b';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=da2bd2bf';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
 import { makeLocalStore } from '/fastbridge-client.js?cb=f3f78bdd';
-import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=fcdca510';
-import { makeRateFeed, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
+import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=9025e9d8';
+import { makeRateFeed, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=3bc6995c';
+import { ETH_NODES, batchSize } from '/eth-nodes.js';
+import { guardedStorage } from '/safe-storage.js';
+import { bodyType } from '/rpc-body.js';
 import { discoverProviders } from '/fast/discover.js?cb=b4b5333e';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=14b4e932';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=055ebdac';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();
@@ -37,7 +40,7 @@ export async function loadLists(fetchImpl = (...a) => fetch(...a)) {
   } catch { return { providers: [], boards: [] }; }
 }
 
-export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, lists = null, storage = globalThis.localStorage, discover: discoverO = null, feed: feedO = null, priceNodes = PRICE_NODES, log = () => {}, presigBase = 'https://api.tacit.finance' }) {
+export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, lists = null, storage = globalThis.localStorage, discover: discoverO = null, feed: feedO = null, priceNodes = null, log = () => {}, presigBase = 'https://api.tacit.finance' }) {
   const { prims } = makeBtcWallet({ priv, hrp, fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
   // the lock spends the wallet's own coins: tacit.js and this must name the same address
   if (T && prims.wallet.address() !== T.wallet.address()) throw new Error('The Bitcoin address of this key is not the one the wallet reads. Nothing was done.');
@@ -56,12 +59,15 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   // the page's own reading of the market: Chainlink's ETH / BTC aggregator (it updates on a half-percent move or once a day, which is why a quote is only blocked a good deal
   // under it; none of the exchanges' tickers is on the page's CSP), read at one block from nodes of separate operators, and taken only when two or more answer and all that
   // answer agree. The pair client then refuses a reading that rests on fewer than two.
-  const feed = feedO || makeRateFeed({ sources: chainlinkNodes({ nodes: priceNodes, fetchImpl, ...(now ? { now } : {}) }), minSources: 2, maxSpreadBps: 1, unanimous: true, maxAgeSecs: 600, ...(now ? { now } : {}) });
+  const feed = feedO || makeRateFeed({ sources: [chainlinkQuorum({ nodes: priceNodes ? () => priceNodes : () => ETH_NODES, fetchImpl, bodyOf: bodyType, batchOf: (u) => batchSize(u) > 1, ...(now ? { now } : {}) })], counted: true, minSources: 2, maxSpreadBps: 1, unanimous: true, maxAgeSecs: 600, ...(now ? { now } : {}) });
 
   const prefix = `tacit-fastbridge-pair-v1:mainnet:${pubHex}:`;
   // the page's own storage is copied to IndexedDB as it is written, and what was lost is put back (fast/pair-keep.js): a swap of ETH for BTC is not found again from the key
+  // (a full or blocked storage never stops a quote or a press: writes that fail are kept for this visit, after what can be made again is cleared; swap records are never cleared)
+  const wasLocal = !!storage && storage === globalThis.localStorage;
+  if (storage) storage = guardedStorage(storage, { regenerable: ['tacit-pair-market-v1', 'tacit-pair-provider-strikes-v1', 'tacit-market-last-v1', 'tacit-pool-rpc-', `${prefix}providers:`, (k, v) => k.startsWith(prefix) && k.includes(':quotes:') && !/"(swapId|startedAt)"/.test(v)] });
   const plainStorage = storage;
-  if (storage && storage === globalThis.localStorage) storage = await keptStorage(prefix, storage);
+  if (wasLocal) storage = await keptStorage(prefix, storage);
   const stores = { fwd: makeLocalStore(`${prefix}fwd:`, storage), index: makeLocalStore(`${prefix}providers:`, storage), swaps: (id) => makeLocalStore(`${prefix}${id}:swaps:`, storage), quotes: (id) => makeLocalStore(`${prefix}${id}:quotes:`, storage) };
   // (`timeoutMs`: how long a call waits for its answer, for a quote that is not waited on for longer than the quote's own wait)
   const reverseCallFor = (ref, o = {}) => (ref && ref.kind === 'mailbox'

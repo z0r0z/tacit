@@ -6,6 +6,7 @@
 //   FB_LP_KEY=<64 hex>        the LP's key: its Bitcoin wallet, its pool identity, the root of its swap seed. Env only.
 //   FB_LP_CONFIG=<path>       the config file (README.md). Default ./fastbridge-lp/config.json
 //   FB_LP_ALERT_WEBHOOK=<url> optional: alerts are POSTed there as JSON as well as logged
+//   FB_LP_AUTO_SHIELD=on      a pair provider shields the ETH sent to its pool account (FB_LP_SHIELD_RESERVE_ETH, _MIN_ETH, _EVERY_SECS; FB_LP_ALERT_LOW_ETH, _LOW_SATS: lib/shield.mjs, lib/refill-watch.mjs)
 //   FB_LP_TRACE_RPCS=<urls>   the nodes that trace a transaction (comma separated, an own archive node first): how a claim sent through another contract is read
 //   PORT, FB_LP_DATA_DIR, FB_LP_NAME, FB_LP_BOARDS, FB_LP_MIN_AMOUNT, FB_LP_MAX_AMOUNT, FB_LP_FEE_BPS, FB_LP_FLAT_FEE   optional: set over the config (lib/env-config.mjs)
 //   node fastbridge-lp/server.mjs [--dry-run]     (Node 22; run from the repository root)
@@ -125,6 +126,29 @@ const withMkt = (store) => (PAIR ? { ...store, put: async (rec) => { if (rec && 
 const poolTurn = makeSerial();
 if (PAIR) for (const k of ['prepare', 'lockOp']) { const f = evm[k]; if (typeof f === 'function') evm[k] = (...a) => poolTurn(() => f(...a)); }
 
+// The flat part of the fee following the provider's own network cost (lib/flatfee.mjs): off unless FB_LP_DYNAMIC_FEE=on. Reads the fee estimate the provider already
+// warms and the relay's fee for a pool note, every 30 s; a read that fails keeps the last good one for a while, then the configured flat fees apply.
+let flat = null;
+if (PAIR && C.feeModel && C.feeModel.dynamic === true) {
+  const { makeFlatFee } = await import('./lib/flatfee.mjs');
+  const fm = C.feeModel, fwdM = fm.fwd || {}, revM = fm.rev || {}, RC = C.reverse && C.reverse.enabled ? C.reverse : null;
+  const got = { feeRate: null, feeAt: -Infinity, relay: null, relayAt: -Infinity };
+  const fresh = (t) => Date.now() / 1000 - t <= 1800;
+  flat = makeFlatFee({
+    dynamic: true, subsidy: fm.subsidy ?? 0.5, subsidyUntil: fm.subsidyUntil ?? null,
+    fwd: { flat: C.quote.flatFee, min: fwdM.min ?? '100', max: fwdM.max ?? null, minAmount: C.quote.minAmount, feeBps: C.quote.feeBps },
+    rev: RC ? { flat: RC.flatFee, min: revM.min ?? '2000', max: revM.max ?? null, minAmount: RC.minAmount, feeBps: RC.feeBps } : null,
+    read: () => (fresh(got.feeAt) && fresh(got.relayAt) ? { feeRate: got.feeRate, relayEth: got.relay, rate: rateFeed.rate() } : null),
+  });
+  const lookCosts = async () => {
+    try { const r = Number(await btc.feeRate(30000)); if (r > 0) { got.feeRate = r; got.feeAt = Date.now() / 1000; } } catch { /* the last good one stands for a while */ }
+    try { got.relay = await evm.cutReserve(10n ** 10n); got.relayAt = Date.now() / 1000; } catch { /* as above */ }
+    if (flat.update()) log({ level: 'info', msg: 'flat fee follows cost', ...flat.view() });
+  };
+  setTimeout(lookCosts, 5000).unref(); setInterval(lookCosts, 30000).unref();
+  log({ level: 'info', msg: 'dynamic flat fee is on', subsidy: fm.subsidy ?? 0.5, limits: flat.view().limits });
+}
+
 const confs = (C.policy.confs || [['0', 1]]).map(([from, n]) => [BigInt(from), n]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
 // TAC with up to 8 places, as the pool's units (8 places) and as the token's wei (18)
 const tacUnits = (t) => { const [whole, frac = ''] = String(t).split('.'); return BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8)); };
@@ -132,7 +156,7 @@ const config = {
   claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
   lowFree: (PAIR ? C.lowFreeEth : C.lowFreeTac) != null ? tacUnits(PAIR ? C.lowFreeEth : C.lowFreeTac) : null,    // what is left to lend, an amount with up to 8 places (TAC, or ETH for a pair provider)
   lowEth: C.lowEth != null ? tacUnits(C.lowEth) * 10n ** 10n : null,        // an ETH amount ("0.002") in wei: the units helper reads up to 8 places
-  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(lineageFees ? { lineageFees } : {}), ...(PAIR ? { rate: () => quoteRate() } : {}) },
+  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(lineageFees ? { lineageFees } : {}), ...(PAIR ? { rate: () => quoteRate() } : {}), ...(flat ? { flatFee: () => flat.fwd() } : {}) },
   anyTac: C.anyTac !== false,
   policy: {
     minCsv: C.policy.minCsv ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, minClaimSecs: C.policy.minClaimSecs ?? 3600, claimSlackSecs: C.policy.claimSlackSecs ?? 7200,
@@ -224,7 +248,7 @@ if (C.refill !== false && !DRY) {
 // is this provider's own, so what users send for it lands where the forward side lends from.
 let handle = service.handle;
 const { reverseOptions } = await import('./lib/reverse.mjs');
-const ropts = PAIR ? pairLib.pairReverseOptions(C, { rate: () => quoteRate() }) : reverseOptions(C);
+const ropts = PAIR ? pairLib.pairReverseOptions(C, { rate: () => quoteRate() }, flat ? () => flat.rev() : null) : reverseOptions(C);
 let rside = null;
 if (ropts && DRY) log({ level: 'info', msg: 'dry run: the reverse side is not started' });
 else if (ropts) {
@@ -254,9 +278,11 @@ else if (ropts) {
 }
 if (PAIR && !DRY) {
   const { wireAutomation } = await import('./lib/automation-wire.mjs');
-  const auto = await wireAutomation({ C, key, prims, btc, tacit, ux, evm, service, swapStore, quoteStore, rside, rateFeed, poolTurn, data, keccak256: keccak_256, log, alert, setLean: (b) => { leanBps = b; } });
+  const auto = await wireAutomation({ C, key, prims, btc, tacit, ux, evm, service, swapStore, quoteStore, rside, rateFeed, poolTurn, turn, data, keccak256: keccak_256, log, alert, setLean: (b) => { leanBps = b; } });
   if (auto) handle = auto.wrap(handle);
 }
+// /info says what the flat fees follow
+if (flat) { const inner = handle; handle = async (req) => { const r = await inner(req); return req && req.method === 'GET' && req.path === '/info' && r && r.status === 200 && r.body && typeof r.body === 'object' ? { ...r, body: { ...r.body, feeModel: flat.view() } } : r; }; }
 const server = makeHttpServer({ handle, origins: C.origins || [], trustProxy: !!C.trustProxy, clientIp: C.clientIp || null });
 server.listen(C.port ?? 8787, () => log({ level: 'info', msg: 'listening', port: C.port ?? 8787 }));
 

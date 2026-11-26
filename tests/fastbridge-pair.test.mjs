@@ -161,14 +161,15 @@ test('a market price far from the last good one is not used until it holds: the 
   assert.equal(near.blocked, null, 'a move of about one percent is taken');
 });
 
-test('a quote between 1% and 3% under the market is allowed with a warning that says how far', async () => {
-  const w = pairWorld({ providerMarket: 35.0, clientMarket: 35.6 });    // 1.7% under, and 0.8% more of fees
+test('a quote under 2.5% under the market is allowed with no warning (it is the fee), and between 2.5% and 3% with one that says how far', async () => {
+  const w = pairWorld({ providerMarket: 35.0, clientMarket: 35.6 });    // about 2.5% under, with the fees
   await w.ready();
   w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
   const q = await w.pair.quote({ dir: 'b2e', amount: SATS });
   assert.equal(q.blocked, null);
-  assert.equal(q.warnings.length, 1);
-  assert.match(q.warnings[0], /^this is 2\.\d% worse than the market price$/);
+  assert.ok(q.vsMarketBps < -100 && q.vsMarketBps > -300);
+  assert.equal(q.warnings.length, q.vsMarketBps < -250 ? 1 : 0);
+  if (q.warnings.length) assert.match(q.warnings[0], /^this is 2\.\d% worse than the market price$/);
 });
 
 test('when the page cannot read the market it says so and blocks: a price nobody can check is not shown as fair', async () => {
