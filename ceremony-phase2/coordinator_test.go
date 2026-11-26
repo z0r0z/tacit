@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -588,6 +589,64 @@ func TestQueueKeptAcrossRestart(t *testing.T) {
 	}
 	if st, err := c2.Poll(b); err != nil || st.Ahead != 1 {
 		t.Fatalf("and the place behind it: %+v %v", st, err)
+	}
+}
+
+// One network cannot fill the queue: places per /24 and per /16 are limited, other networks are not affected, and turning the limits on
+// trims a queue that one network already fills, keeping its earliest places and a claimed slot.
+func TestPerNetworkLimitsAndTrim(t *testing.T) {
+	f := newFixture(t)
+	c := f.chain(t)
+	c.PerIP = -1
+	c.PerNet24, c.PerNet16 = 2, 3
+	join := func(ip string) error { _, _, err := c.Join("n", "", ip); return err }
+	if join("192.0.2.1") != nil || join("192.0.2.2") != nil {
+		t.Fatal("two places from a /24 are fine")
+	}
+	if err := join("192.0.2.3"); err == nil {
+		t.Fatal("a third place from one /24 is refused")
+	}
+	if join("192.0.3.1") != nil {
+		t.Fatal("another /24 in the same /16 is fine")
+	}
+	if err := join("192.0.4.1"); err == nil {
+		t.Fatal("a fourth place from one /16 is refused")
+	}
+	if join("198.51.100.1") != nil {
+		t.Fatal("another network is not affected")
+	}
+	if join("2001:db8:1::1") != nil || join("2001:db8:2::1") != nil {
+		t.Fatal("IPv6 places are counted by network too")
+	}
+
+	// the limits turned on after the queue filled
+	g := newFixture(t)
+	d := g.chain(t)
+	d.PerIP = -1
+	var first string
+	for i := 1; i <= 6; i++ {
+		tok, _, err := d.Join("n", "", fmt.Sprintf("192.0.2.%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 1 {
+			first = tok
+		}
+	}
+	d.Join("o", "", "198.51.100.9")
+	if _, err := d.Claim(first); err != nil {
+		t.Fatal(err)
+	}
+	d.PerNet24 = 2
+	if n := d.TrimNetworks(); n != 4 {
+		t.Fatalf("four places beyond the limit are dropped: %d", n)
+	}
+	q := d.Queue()
+	if len(q) != 3 || q[0].IP != "192.0.2.1" || q[1].IP != "192.0.2.2" || q[2].IP != "198.51.100.9" {
+		t.Fatalf("the earliest places of the network and the other network stay: %+v", q)
+	}
+	if d.Queue()[0].Claimed == "" {
+		t.Fatal("the claimed slot is kept")
 	}
 }
 
