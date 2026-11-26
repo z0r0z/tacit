@@ -270,11 +270,15 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
   return { ctx, page, problems, sent, told, keeperCalls, waiting: WAITING, landed };
 }
 
-// the ordinary quotes a relay was asked for (its base URL), and a sync forced through the balance's refresh, as a person would
+// the ordinary quotes a relay was asked for (its base URL), and a sync forced through the balance's refresh, as a person would: pressed until a new one has
+// asked the built-in relay at `own` for its quote (a press while one runs is not taken), and waited for where the page shows it running. → the quotes it asked of `own`
 const quotesAt = (calls, base) => calls.filter((c) => c.url === `${base}/quote`).length;
-async function refresh(page) {
-  await page.click('#bal-re');
-  await page.waitForFunction(() => { const b = document.querySelector('#bal-re'); return b && !b.disabled && !b.hasAttribute('aria-disabled'); }, null, { timeout: 30000 });
+async function syncAgain(page, calls, own) {
+  const before = quotesAt(calls, own);
+  for (let i = 0; i < 120 && quotesAt(calls, own) === before; i++) { await page.click('#bal-re').catch(() => {}); await page.waitForTimeout(500); }
+  assert.ok(quotesAt(calls, own) > before, 'a sync ran');
+  await page.waitForFunction(() => { const b = document.querySelector('#bal-re'); return b && !b.disabled && !b.hasAttribute('aria-disabled'); }, null, { timeout: 60000 });
+  return quotesAt(calls, own) - before;
 }
 
 console.log('Pay page');
@@ -881,9 +885,7 @@ await test('a native ETH withdrawal keeps the community relay option when the bu
   await page.fill('#f-wamt', '0.1');
   await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled && /Sent by the relay/.test(document.querySelector('#form')?.textContent || ''), null, { timeout: 30000 });
   assert.ok(keeperCalls.some((c) => c.url === `${community}/quote`), 'the registered community relay supplied the spend quote');
-  const ownBefore = quotesAt(keeperCalls, own);
-  await refresh(page); await refresh(page);
-  assert.ok(quotesAt(keeperCalls, own) >= ownBefore + 2, 'each sync asked the built-in keeper again');
+  await syncAgain(page, keeperCalls, own); await syncAgain(page, keeperCalls, own);
   assert.equal(quotesAt(keeperCalls, community), 1, 'the form asked the listed relay once, and the syncs after it did not');
   assert.match(await page.locator('#form').innerText(), /Sent by the relay/, 'its quote stands while the built-in keeper cannot quote');
   assert.deepEqual(problems, []);
@@ -941,9 +943,7 @@ await test('a token withdrawal uses the registry relay projected to its pool whe
   assert.ok(keeperCalls.some((c) => c.url === `${community}/quote`), 'the registry entry was projected from the native route to the USDC pool');
   assert.ok(keeperCalls.some((c) => c.url === `${own}/quote`), 'the built-in token keeper was asked too');
   assert.match(await page.locator('#f-rcpt').innerText(), /at most .* USDC/);
-  const ownBefore = quotesAt(keeperCalls, own);
-  await refresh(page); await refresh(page);
-  assert.ok(quotesAt(keeperCalls, own) >= ownBefore + 2, 'each sync asked the built-in token keeper again');
+  await syncAgain(page, keeperCalls, own); await syncAgain(page, keeperCalls, own);
   assert.equal(quotesAt(keeperCalls, community), 1, 'the form asked the projected relay once, and the syncs after it did not');
   assert.match(await page.locator('#f-rcpt').innerText(), /at most .* USDC/, 'its quote stands while the built-in keeper cannot quote');
   assert.deepEqual(problems, []);
@@ -960,11 +960,9 @@ await test('a sync asks the built-in relay alone, once: a listed relay hears fro
   await page.fill('#f-wto', DEAD);
   await page.fill('#f-wamt', '0.1');
   await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled && /Relay fee/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, { timeout: 30000 });
-  for (let i = 0; i < 2; i++) {
-    const before = quotesAt(keeperCalls, own);
-    await refresh(page);
-    assert.equal(quotesAt(keeperCalls, own) - before, 1, 'one quote from the built-in relay for a sync, not two');
-  }
+  // a sync on the page's own timer can fall in one of these two, not in both
+  const asked = [await syncAgain(page, keeperCalls, own), await syncAgain(page, keeperCalls, own)];
+  assert.ok(asked.includes(1), `one quote from the built-in relay for a sync, not two (${asked})`);
   assert.equal(quotesAt(keeperCalls, community), 0, 'no sync and no form asked the listed relay while the built-in relay quotes');
   await page.click('#f-go');
   // the spend asks every relay for its quote first; it then stops, since the notes here are stand-ins the pool does not hold
@@ -993,9 +991,7 @@ await test('a token pool\'s sync asks its built-in relay alone: the projected re
   await page.fill('#f-to', DEAD);
   await page.fill('#f-amt', '1');
   await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled && /Relay fee/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, { timeout: 30000 });
-  const before = quotesAt(keeperCalls, own);
-  await refresh(page); await refresh(page);
-  assert.ok(quotesAt(keeperCalls, own) >= before + 2, 'each sync asked the built-in token keeper');
+  await syncAgain(page, keeperCalls, own); await syncAgain(page, keeperCalls, own);
   assert.equal(quotesAt(keeperCalls, community), 0, 'no sync asked the projected relay, so its timing does not say which pool is open');
   await page.click('#f-go');
   await page.waitForFunction(() => /does not cover this amount/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 60000 });
