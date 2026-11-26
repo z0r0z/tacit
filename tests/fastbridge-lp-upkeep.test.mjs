@@ -92,6 +92,7 @@ test('the fee rate: the median of two or more explorers that agree; too few, a d
   const fx = (vals) => async (u) => { const v = vals[u.split('/fee-estimates')[0]]; if (v == null) throw new Error('down'); return { ok: true, json: async () => ({ 6: v }) }; };
   assert.equal(await agreedFeeRate({ bases: ['a', 'b', 'c'], fetchImpl: fx({ a: 3.2, b: 4.1, c: 5 }) }), 5);
   assert.equal(await agreedFeeRate({ bases: ['a', 'b'], fetchImpl: fx({ a: 2, b: 3 }) }), 3);
+  assert.equal(await agreedFeeRate({ bases: ['a', 'b'], fetchImpl: fx({ a: 0.124, b: 1 }) }), 1, 'estimates under the 1 sat/vB floor count as the floor, so 0.124 against 1 agrees');
   await assert.rejects(() => agreedFeeRate({ bases: ['a', 'b'], fetchImpl: fx({ a: 2 }) }), (e) => e.wait && /1 explorer gave/.test(e.message));
   await assert.rejects(() => agreedFeeRate({ bases: ['a', 'b'], fetchImpl: fx({ a: 2, b: 30 }) }), (e) => e.wait && /disagree/.test(e.message));
   await assert.rejects(() => agreedFeeRate({ bases: ['a', 'b'], fetchImpl: fx({ a: 40, b: 50 }), cap: 25 }), (e) => e.wait && /over the 25/.test(e.message));

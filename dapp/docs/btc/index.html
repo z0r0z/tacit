@@ -657,7 +657,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <h3>What a swap costs</h3>
   <ul>
     <li><b>The provider’s fee.</b> A share of the amount, 0.20% at the provider Tacit runs, plus a flat part that covers its own Bitcoin costs. Each provider sets its own, and the page asks the cheapest first.</li>
-    <li><b>A lean.</b> A provider that holds too much of one side moves its price a little to attract the other. By default that is at most 0.15%, and never so far that the quote falls near the page’s 3% limit.</li>
+    <li><b>A lean.</b> A provider that holds too much of one side moves its price a little to attract the other. The provider program allows up to 0.15% by default, and the one Tacit runs is set to up to 0.40%; it is never so far that the quote falls near the page’s 3% limit.</li>
     <li><b>The Bitcoin network fee.</b> In BTC to ETH, the fee of your lock transaction. In ETH to BTC, the fee of your take, which comes out of the BTC you receive. It is a few hundred sats at typical fee rates, about 500, and the quote shows it.</li>
   </ul>
   <p>Fixed parts weigh most on small swaps. These figures are illustrative: they use the Tacit provider’s terms (0.20%, a flat 400 sats from BTC to ETH and 0.0001 ETH from ETH to BTC) and a network fee of about 500 sats, and take 30 ETH to a BTC. Real quotes differ.</p>
