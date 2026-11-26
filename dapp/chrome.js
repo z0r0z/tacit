@@ -159,7 +159,7 @@
       ["stake", "Stake", "/tac/?v=stake#private", "Stake TAC on the Tacit chain: it earns a share of every payment, with no lock."]]],
     "chains": ["Chains", "Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.", [
       ["move", "Move", "/#/chains/move", "Make it private, or take it back out: pick what and where it goes. ↕ flips to withdraw."],
-      ["btc", "BTC ⇄ ETH", "/btc/", "Swap Bitcoin and ETH directly, either way: your ETH arrives private, your BTC lands in your Tacit wallet."],
+      ["btc", "BTC ⇄ ETH", "/btc/", "Swap Bitcoin and ETH directly. Your ETH arrives private."],
       ["bridge", "Bridge", "/#/chains/bridge", "TAC between Bitcoin and Ethereum, either way, with the steps, fee and time up front."],
       ["fast", "Fast bridge", "/fast/", "TAC from Bitcoin in minutes, paid out by a provider for a fee; or be a provider."],
       ["notes", "Notes", "/tac/?v=notes#bridge", "Your TAC notes on Bitcoin: merge, split, bridge them all; and everything getting ready or on the way."]]],

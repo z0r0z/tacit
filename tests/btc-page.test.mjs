@@ -377,7 +377,7 @@ console.log('the page: the marks, the line, the lane');
   ok(/If it stops, your BTC returns in 2\d h/.test(mine) && /Done/.test(await text(page, '#mine-list .ok')), 'its refund time, and a finished swap marked done');
   ok(await page.isVisible('#keep-save') && (await text(page, '#mine-say')) === '', 'a copy of the swaps can be saved');
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 8000 }).catch(() => null), page.click('#keep-save')]);
-  ok(!!dl && /^tacit-btc-eth-swaps-\d{4}-\d\d-\d\d\.json$/.test(dl.suggestedFilename()), `Save a copy downloads the swaps (${dl && dl.suggestedFilename()})`);
+  ok(!!dl && /^tacit-btc-eth-swaps-\d{4}-\d\d-\d\d\.json$/.test(dl.suggestedFilename()), `Back up downloads the swaps (${dl && dl.suggestedFilename()})`);
   await page.waitForFunction(() => /Balance 0\.5 BTC/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
   await page.fill('#a-amt', '0.02');
   await page.waitForFunction(() => /^Swap BTC → ETH$/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
@@ -989,7 +989,7 @@ console.log('the sections under the tile: closed lines that open (disclosures)')
   ok(!(await page.$eval('#mybtc', (e) => e.open)) && !(await page.$eval('#myeth', (e) => e.open)), 'a swap under way opens Your swaps; the wallet panels stay closed');
   await page.waitForFunction(() => /0\.5 BTC/.test(document.querySelector('#yb-sum').textContent) && /private/.test(document.querySelector('#ye-sum').textContent), null, { timeout: 15000 });
   ok(/^1 in progress · 1 done$/.test(await raw(page, '#mine-sum')) && (await raw(page, '#yb-sum')) === '0.5 BTC' && (await raw(page, '#ye-sum')) === '4 private', `the lines say it: ${await raw(page, '#mine-sum')}, ${await raw(page, '#yb-sum')}, ${await raw(page, '#ye-sum')}`);
-  ok(/Read only a copy you saved yourself/.test(await text(page, '#mine-keep')) && await page.isVisible('#mine-list [data-rec="sw1"] .stay'), 'the warning and the swap\'s "keep this page open" are in the open section, in view');
+  ok(/restore one you made yourself/.test(await text(page, '#mine-keep')) && await page.isVisible('#mine-list [data-rec="sw1"] .stay'), 'the warning and the swap\'s "keep this page open" are in the open section, in view');
   await page.click('#mine > summary');
   await sleep(150);
   ok(!(await page.$eval('#mine', (e) => e.open)), 'Your swaps closes when the visitor closes it');
