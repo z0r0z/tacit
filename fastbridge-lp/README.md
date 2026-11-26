@@ -291,6 +291,15 @@ own; the TAC provider is not changed by it.
   RPC) and public exchange tickers, which must agree within `rate.maxSpreadBps`; the fee is on top. With no price (sources down or disagreeing) the provider quotes
   nothing and alerts, and a page checks every quote against its own reading of the market, so a mispriced provider is blocked by the page as well.
 - A swap's take comes out of the lock itself, and a take that is slow is replaced by one that pays more (`policy.takeFeeFactor`, `takeBumpSecs`, `takeMaxFeeShare`).
+- **A flat fee that follows costs** (`FB_LP_DYNAMIC_FEE=on`, off unless set; `lib/flatfee.mjs`). Off, each direction's flat part is its configured number
+  (`FB_LP_FLAT_FEE`, `FB_LP_REVERSE_FLAT_FEE`). On, each is `FB_LP_FEE_SUBSIDY` (0 to 1, 0.5 unless set; 1 recovers the whole cost) of the provider's own estimated
+  network cost per swap, read every 30 s: forward (sats) = 160 vB x the fee estimate (sat/vB) the provider already warms + the relay's fee for a pool note valued
+  in sats at the current rate; reverse (pool units) = 160 vB x the fee estimate valued in pool units + the relay's fee for the claim. `FB_LP_FEE_SUBSIDY_UNTIL`
+  (unix seconds or a date) ends the intro: from then the share is 1. The cost is smoothed (an exponential average) and the figure moves only when it is 10% off the one in
+  use, then is held to `FB_LP_FLAT_FEE_MIN` / `_MAX` (`FB_LP_REVERSE_FLAT_FEE_MIN` / `_MAX`; 100 sats and 2000 units unless set) and never over 1.5% of the
+  direction's least amount (nor over the 2.5% less the rate part), so the least swap stays under the page's 3% guard. With no fee estimate, relay fee or price for
+  half an hour the configured flat fees apply again. A quote given is sealed with its amounts and never changes. `/info` carries `feeModel` (`dynamic`, `live`,
+  `subsidy`, `costSats`, `costEthUnits`, `feeRate`, `flatFeeSats`, `reverseFlatFeeUnits`, `limits`), and `flatFee` in `/info` and on the board's ad is the figure in use.
 - `--dry-run` answers `/info` and `/quote` and checks offers, sends nothing.
 
 ### Upkeep (pair mode)

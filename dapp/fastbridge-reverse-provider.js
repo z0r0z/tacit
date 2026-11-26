@@ -75,11 +75,13 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
   let chain = Promise.resolve();
   const exclusive = (fn) => { const run = chain.then(fn, fn); chain = run.catch(() => {}); return run; };
 
+  // the flat part of the fee: a number, or a function that gives it now (a provider whose flat part follows its own costs)
+  const flatNow = () => BigInt((typeof q.flatFee === 'function' ? q.flatFee() : q.flatFee) ?? 0);
   // what a pool amount the user locks becomes: the Bitcoin note it gets is that less the provider's fee (a rate on the amount, and a flat part)
   function price(amount) {
     const a = BigInt(amount);
     if (a < min || a > max) throw Object.assign(new Error(`the amount must be between ${min} and ${max}`), { status: 400 });
-    const fee = feeOf(q, a);
+    const fee = feeOf({ ...q, flatFee: flatNow() }, a);
     let out = a - fee;
     if (sats && out > 0n) { const { num, den } = rateNow(); out = (out * den) / num; }   // the fee is in pool units; what is left buys sats at the rate
     if (a - fee <= 0n || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
@@ -150,7 +152,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     const p = await picture().catch(() => null), a = await availableAmount();
     return {
       v: 1, direction: 'out', lockerPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(min), maxAmount: String(max), available: a == null ? null : String(a),
-      feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks ?? 96, evmWindowSecs: config.evmWindowSecs, minClaimSecs: pol.minClaimSecs ?? 3600,
+      feeBps: q.feeBps, flatFee: String(flatNow()), csvBlocks: config.csvBlocks ?? 96, evmWindowSecs: config.evmWindowSecs, minClaimSecs: pol.minClaimSecs ?? 3600,
       maxOpen, open: p ? p.open : null, anyTac: config.anyTac !== false,
     };
   }

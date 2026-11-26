@@ -6,6 +6,9 @@ import { readFileSync } from 'node:fs';
 import { pairConfig, pairFeed, satsConfsFor, pairReverseOptions, satsInventory, isPair, PAIR } from '../fastbridge-lp/lib/pair.mjs';
 import { applyEnv } from '../fastbridge-lp/lib/env-config.mjs';
 import { SATS_ASSET, ETH_ASSET } from '../dapp/fastbridge-pair.js';
+import { makeFlatFee, flatCeiling } from '../fastbridge-lp/lib/flatfee.mjs';
+import { makeQuoter } from '../dapp/fastbridge-provider.js';
+import { memStore } from './lib/fastbridge-world.mjs';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -120,6 +123,102 @@ test('the environment can switch pair mode on or off and cap what the reverse si
   assert.throws(() => applyEnv({}, { FB_LP_PAIR: 'tac-tac' }), /FB_LP_PAIR must be btc-eth or off/);
   assert.equal(applyEnv({ reverse: { enabled: true } }, { FB_LP_REVERSE_MAX_SATS: '2500000' }).reverse.maxSats, '2500000');
   assert.throws(() => applyEnv({}, { FB_LP_REVERSE_MAX_SATS: '2.5' }), /whole number/);
+});
+// ── the flat part of the fee following the provider's cost (lib/flatfee.mjs) ──
+const RATE = { num: 3550n, den: 100n };                                    // 35.5 pool units per sat
+const mkFlat = (o = {}) => {
+  const env = { feeRate: 3, relayEth: 20000n, rate: RATE, ok: true };
+  const f = makeFlatFee({
+    dynamic: true, subsidy: 1, now: () => env.t ?? 1000, alpha: 1,
+    fwd: { flat: '400', min: '100', max: '5000', minAmount: '1000000', feeBps: 20 }, rev: { flat: '10000', min: '2000', max: '10000000', minAmount: '40000000', feeBps: 20 },
+    read: () => (env.ok ? { feeRate: env.feeRate, relayEth: env.relayEth, rate: RATE } : null), ...o,
+  });
+  return { f, env };
+};
+test('the flat part follows the cost at the current feerate, within its limits', () => {
+  const { f, env } = mkFlat();
+  assert.equal(f.update(), true);
+  // forward: 160 vB x 3 + 20000 units / 35.5 = 480 + 563; reverse: 160 x 3 x 35.5 + 20000
+  assert.equal(f.fwd(), 1043n);
+  assert.equal(f.rev(), 37040n);
+  env.feeRate = 30; f.update();
+  assert.equal(f.fwd(), 4800n + 563n > 5000n ? 5000n : 4800n + 563n, 'the max holds');
+  assert.equal(f.rev(), 170400n + 20000n);
+  env.feeRate = 0.0001; env.relayEth = 0n; f.update();
+  assert.equal(f.fwd(), 100n, 'the min holds');
+  assert.equal(f.rev(), 2000n);
+  assert.equal(f.view().dynamic, true);
+  assert.equal(f.view().costSats, 0);
+});
+test('the subsidy is the share of the cost the flat part covers, and 1 from the subsidy date on', () => {
+  const { f, env } = mkFlat({ subsidy: 0.5, subsidyUntil: 5000 });
+  f.update();
+  assert.equal(f.fwd(), 522n);
+  assert.equal(f.rev(), 18520n);
+  env.t = 6000; f.update();
+  assert.equal(f.fwd(), 1043n, 'after the intro the whole cost');
+  assert.equal(f.view().subsidy, 1);
+});
+test('the smallest swap stays well under the pages\' 3% guard: the flat part is capped at 1.5% of the least amount, and the guard less the rate part', () => {
+  const { f, env } = mkFlat({ fwd: { flat: '400', min: '100', max: null, minAmount: '25000', feeBps: 20 }, rev: { flat: '10000', min: '2000', max: null, minAmount: '800000', feeBps: 20 } });
+  env.feeRate = 500; f.update();
+  assert.equal(f.fwd(), 375n);
+  assert.equal(f.rev(), 12000n);
+  assert.ok((Number(f.fwd()) / 25000 + 0.002) < 0.03 && (Number(f.rev()) / 800000 + 0.002) < 0.03);
+  // an explicit max over the cap does not lift it; the guard trims a big rate part
+  assert.equal(flatCeiling({ minAmount: '25000', feeBps: 20, max: '99999' }), 375n);
+  assert.equal(flatCeiling({ minAmount: '10000', feeBps: 200 }), 50n, 'a 2% rate leaves 0.5% of the 2.5% guard');
+});
+test('the figure moves only when it is 10% off, and an unreadable estimate keeps the figure, then falls back to the configured fee', () => {
+  const { f, env } = mkFlat({ alpha: 1, hysteresis: 0.1 });
+  f.update(); const first = f.fwd();
+  env.relayEth = 20000n; env.feeRate = 3.1; f.update();
+  assert.equal(f.fwd(), first, 'a 3% move is not followed');
+  env.feeRate = 4; f.update();
+  assert.ok(f.fwd() > first);
+  const kept = f.fwd();
+  env.ok = false; env.t = 1000 + 600; assert.equal(f.update(), false);
+  assert.equal(f.fwd(), kept, 'a read that fails keeps the last figure for a while');
+  env.t = 1000 + 3600;
+  assert.equal(f.fwd(), 400n, 'then the configured one'); assert.equal(f.rev(), 10000n);
+  assert.equal(f.view().live, false);
+  const never = mkFlat(); never.env.ok = false;
+  assert.equal(never.f.update(), false); assert.equal(never.f.fwd(), 400n);
+  const off = makeFlatFee({ dynamic: false, fwd: { flat: '400', minAmount: '1000000', feeBps: 20 }, read: () => ({ feeRate: 50, relayEth: 1n, rate: RATE }) });
+  assert.equal(off.update(), false); assert.equal(off.fwd(), 400n, 'off: the configured fee');
+});
+test('a quote already given is sealed with its amounts, so it does not change when the flat part moves; off, the quote is the static one', async () => {
+  const { f, env } = mkFlat();
+  f.update();
+  const mk = (flatFee) => makeQuoter({ store: memStore(), now: () => 1_800_000_000, macKey: new Uint8Array(32).fill(7), params: { btcAsset: SATS_ASSET, evmAsset: ETH_ASSET, minAmount: 25000, maxAmount: 1_000_000, feeBps: 20, flatFee, rate: RATE, claimPub: '02' + 'aa'.repeat(32), csvBlocks: 144, evmWindowSecs: 14400, minConfsFor: () => 1, takeSats: null } });
+  const dyn = mk(() => f.fwd()), stat = mk('400');
+  const q = await dyn.quote(200000);
+  assert.equal(BigInt(q.evmAmount), ((200000n - (200000n * 20n) / 10000n - 1043n) * 3550n) / 100n);
+  env.feeRate = 20; f.update();
+  assert.ok(f.fwd() > 1043n);
+  const again = await dyn.get(q.id);
+  assert.equal(again.evmAmount, q.evmAmount, 'the sealed quote reads back as it was given');
+  assert.equal(again.btcValue, q.btcValue);
+  assert.notEqual((await dyn.quote(200000)).evmAmount, q.evmAmount, 'a new quote follows');
+  assert.equal(BigInt((await stat.quote(200000)).evmAmount), ((200000n - 400n - 400n) * 3550n) / 100n, 'a static number is what it was');
+  assert.equal(dyn.flat(), f.fwd()); assert.equal(stat.flat(), 400n);
+});
+test('the environment: the dynamic fee is off unless set, and every value that is set is checked', () => {
+  assert.equal(applyEnv({ pair: 'btc-eth' }, {}).feeModel, undefined);
+  const C = applyEnv({}, { FB_LP_DYNAMIC_FEE: 'on', FB_LP_FEE_SUBSIDY: '0.25', FB_LP_FEE_SUBSIDY_UNTIL: '2026-12-31', FB_LP_FLAT_FEE_MIN: '100', FB_LP_FLAT_FEE_MAX: '900', FB_LP_REVERSE_FLAT_FEE_MIN: '2000', FB_LP_REVERSE_FLAT_FEE_MAX: '50000' }).feeModel;
+  assert.deepEqual([C.dynamic, C.subsidy, C.fwd.min, C.fwd.max, C.rev.min, C.rev.max], [true, 0.25, '100', '900', '2000', '50000']);
+  assert.equal(C.subsidyUntil, Math.floor(Date.parse('2026-12-31') / 1000));
+  assert.equal(applyEnv({}, { FB_LP_DYNAMIC_FEE: 'off' }).feeModel.dynamic, false);
+  assert.throws(() => applyEnv({}, { FB_LP_DYNAMIC_FEE: 'yes' }), /on or off/);
+  assert.throws(() => applyEnv({}, { FB_LP_FEE_SUBSIDY: '1.5' }), /0 to 1/);
+  assert.throws(() => applyEnv({}, { FB_LP_FLAT_FEE_MAX: '1.5' }), /whole number/);
+  assert.throws(() => applyEnv({}, { FB_LP_FEE_SUBSIDY_UNTIL: 'soon' }), /unix seconds or a date/);
+});
+test('the reverse options carry the flat fee as a function when one is given', () => {
+  const R = JSON.parse(readFileSync(new URL('../fastbridge-lp/config.btc-eth.render.json', import.meta.url), 'utf8'));
+  const C = pairConfig({ ...R, reverse: { ...R.reverse, enabled: true } });
+  assert.equal(pairReverseOptions(C, { rate: () => RATE }).quote.flatFee, '30000');
+  assert.equal(pairReverseOptions(C, { rate: () => RATE }, () => 777n).quote.flatFee(), 777n);
 });
 
 let passed = 0;
