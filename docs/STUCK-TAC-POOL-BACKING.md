@@ -411,9 +411,11 @@ What *is* additive is the state, not the digest: the ledger is a new field, and 
 already exist in the reflection. That is what makes the change reviewable — but reviewable is not
 digest-compatible.
 
-## 8. What the 28 tests cover
+## 8. What the 29 tests cover
 
 All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, no pool).
+
+Line counts: 3 054 lines of Rust (1 099 `lib.rs`, 1 955 `tests.rs`).
 
 | Test | What it pins |
 | --- | --- |
@@ -422,6 +424,7 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 | `the_same_exit_cannot_back_two_debits` | re-folding the same exit books nothing the second time |
 | `ledger_fund_saturates_and_value_zero_is_never_an_anchor` | `u128` saturation; a zero-value exit is not an anchor |
 | `shield_parse_reads_the_layout_and_refuses_non_canonical_shapes` | §3 shield layout field by field; wrong opcode, `n_in`/`n_out` out of range, every truncation, trailing bytes |
+| `read_shield_authenticates_the_carrier_before_crediting` | a shield must ride a real input of a confirmed transaction whose merkle path reaches the attested block, and the carrier must hold `n_in + 1` inputs; a re-fold credits nothing |
 | `credit_shield_requires_a_matching_boundary` | a shield that moved nothing, of another asset, whose pool proof failed, or whose boundary does not open, credits nothing — and re-folding it mints nothing |
 | `credit_shield_dedups_on_the_shield_body_not_a_caller_key` | one verified shield body credits once whatever the caller passes, so a fresh key cannot re-mint; the ledger can only be credited through a shield |
 | `boundary_parse_rejects_every_wrong_length` | 824 and 826 bytes are refused |
@@ -447,7 +450,7 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 | `spend_parse_is_panic_free_on_a_hostile_corpus` | 4 000 pseudo-random payloads, runaway `n_in` |
 
 Run: `cd contracts/sp1/confidential/provenance-anchor && cargo +stable test --offline`
-Result: `test result: ok. 26 passed; 0 failed`.
+Result: `test result: ok. 29 passed; 0 failed`.
 
 ## 9. What this does not do
 

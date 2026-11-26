@@ -678,61 +678,6 @@ fn credit_shield_requires_a_matching_boundary() {
     assert_eq!(l.funded, 500, "and credited nothing the second time");
 }
 
-/// A shield body credits once. The ledger's dedup key is `sha256` of the canonical parsed body, so a caller
-/// cannot re-mint by passing a fresh value in place of the carrier txid it used to supply.
-#[test]
-fn credit_shield_dedups_on_the_shield_body_not_a_caller_key() {
-    let asset = ASSET;
-    let c_secp = c_secp_of(500, &[0x0Fu8; 32]);
-    let boundary = boundary_bytes(&c_secp, &[0x0Eu8; 32]);
-    let mut b = vec![T_BTC_SHIELD];
-    b.extend_from_slice(&asset);
-    b.push(1);
-    b.push(1);
-    b.extend_from_slice(&[0x01; POOL_OUTPUT_LEN]);
-    b.extend_from_slice(&boundary);
-    b.extend_from_slice(&[0x09; KERNEL_SIG_LEN]);
-    b.extend_from_slice(&0u16.to_le_bytes());
-    let body = ShieldBody::parse(&b).expect("canonical shield");
-    let root = [0x42u8; 32];
-    let blind = [0x0Fu8; 32];
-
-    let mut l = BackingLedger::default();
-    assert_eq!(
-        credit_shield(
-            &mut l,
-            &asset,
-            &body,
-            500,
-            &blind,
-            &root,
-            &|_, _| true,
-            &|_, _, _| true
-        ),
-        Some(())
-    );
-    assert_eq!(l.funded(), 500);
-    assert_eq!(l.shield_count(), 1);
-
-    // Same shield body again: no caller-supplied key exists to vary, so it cannot credit twice.
-    assert_eq!(
-        credit_shield(
-            &mut l,
-            &asset,
-            &body,
-            500,
-            &blind,
-            &root,
-            &|_, _| true,
-            &|_, _, _| true
-        ),
-        None,
-        "the same shield body cannot credit twice"
-    );
-    assert_eq!(l.funded(), 500, "and credited nothing the second time");
-    assert_eq!(l.shield_count(), 1);
-}
-
 /// The three checks that make `read_exit` agree with the pool's `acceptSpend`: the witness shape it reads, an
 /// unsatisfied `want`, and the `h_anchor` window. Each is a way to anchor an exit riding a spend the live pool
 /// rejects, which would count one pool note twice.
@@ -812,6 +757,178 @@ fn read_exit_refuses_a_spend_the_live_pool_would_reject() {
     let mut w_fresh = stale.w.clone();
     w_fresh.confirmed_block_height = h + 1;
     assert!(read_exit(&w_fresh, &ASSET, &pool_ok, &opens).is_some());
+}
+
+/// A shield cannot be credited from caller bytes alone: it must ride a real input of a confirmed transaction,
+/// the carrier must hold at least `n_in + 1` inputs the way the pool requires, and the merkle path must reach
+/// the block the caller attests. `credit_shield` keeps its shape for the folded path; `read_shield` is the
+/// authenticated entry point.
+#[test]
+fn read_shield_authenticates_the_carrier_before_crediting() {
+    let value = 500u64;
+    let blind = [0x0Fu8; 32];
+    let c_secp = c_secp_of(value, &blind);
+    let boundary = boundary_bytes(&c_secp, &[0x0Eu8; 32]);
+
+    // Two carried inputs so a `n_in = 1` shield has the `inputs[1..]` the pool resolves.
+    let mut b = vec![T_BTC_SHIELD];
+    b.extend_from_slice(&ASSET);
+    b.push(1); // n_in
+    b.push(1); // n_out
+    b.extend_from_slice(&[0x01; POOL_OUTPUT_LEN]);
+    b.extend_from_slice(&boundary);
+    b.extend_from_slice(&[0x09; KERNEL_SIG_LEN]);
+    b.extend_from_slice(&0u16.to_le_bytes());
+    let body = ShieldBody::parse(&b).expect("canonical shield");
+    assert_eq!(body.n_in, 1);
+
+    // The carrier carries vin[0] (its own coin) plus the shielded note, which is what `n_in = 1` requires.
+    let outs: Vec<(u64, Vec<u8>)> = vec![(0u64, p2tr_script(&[0x50u8; 32]))];
+    let tx = segwit_tx_multi(
+        &[
+            ([0x11u8; 32], 0, env_stack(&b)),
+            (
+                [0x12u8; 32],
+                1,
+                vec![vec![0xFFu8; 32], vec![0x00u8; 8], vec![0x20u8; 33]],
+            ),
+        ],
+        &outs,
+    );
+
+    let mk = |tx: &[u8], index: u32, root: [u8; 32]| {
+        let cb = coinbase_for(tx);
+        let cb_txid = cxfer_core::bitcoin::compute_txid(&cb).unwrap();
+        let txid = cxfer_core::bitcoin::compute_txid(tx).unwrap();
+        ShieldWitness {
+            tx: tx.to_vec(),
+            vin: 0,
+            wtxid_siblings: vec![[0u8; 32]],
+            coinbase: cb,
+            coinbase_txid_siblings: vec![txid],
+            merkle_index: index,
+            merkle_siblings: vec![cb_txid],
+            confirmed_block_root: root,
+            pool_root: [0x42u8; 32],
+            value,
+        }
+    };
+
+    let txid = cxfer_core::bitcoin::compute_txid(&tx).unwrap();
+    let cb_txid = cxfer_core::bitcoin::compute_txid(&coinbase_for(&tx)).unwrap();
+    let real_root = cxfer_core::bitcoin::compute_merkle_root(&[cb_txid, txid]);
+
+    let mut l = BackingLedger::default();
+    let w = mk(&tx, 1, real_root);
+    let credited = read_shield(
+        &w,
+        &ASSET,
+        &mut l,
+        &blind,
+        &[0x42u8; 32],
+        &|_, _| true,
+        &|_, _, _| true,
+    );
+    assert_eq!(
+        credited,
+        Some(value),
+        "an authenticated shield credits its value"
+    );
+    assert_eq!(l.available(), value as u128);
+
+    // The same shield again: one body, one credit, whatever the caller supplies.
+    let mut l2 = BackingLedger::default();
+    let w2 = mk(&tx, 1, real_root);
+    assert_eq!(
+        read_shield(
+            &w2,
+            &ASSET,
+            &mut l2,
+            &blind,
+            &[0x42u8; 32],
+            &|_, _| true,
+            &|_, _, _| true
+        ),
+        Some(value)
+    );
+    assert_eq!(
+        read_shield(
+            &w2,
+            &ASSET,
+            &mut l2,
+            &blind,
+            &[0x42u8; 32],
+            &|_, _| true,
+            &|_, _, _| true
+        ),
+        None
+    );
+    assert_eq!(l2.available(), value as u128, "a re-fold does not mint");
+
+    // A block root the merkle path does not reach is refused.
+    let mut bad_root = BackingLedger::default();
+    let w_bad = mk(&tx, 1, [0x77u8; 32]);
+    assert_eq!(
+        read_shield(
+            &w_bad,
+            &ASSET,
+            &mut bad_root,
+            &blind,
+            &[0x42u8; 32],
+            &|_, _| true,
+            &|_, _, _| true
+        ),
+        None
+    );
+    assert_eq!(bad_root.available(), 0);
+
+    // A carrier with fewer inputs than `n_in + 1` is a shield the pool never accepts.
+    let mut l_noin = BackingLedger::default();
+    let mut b_big = vec![T_BTC_SHIELD];
+    b_big.extend_from_slice(&ASSET);
+    b_big.push(3); // n_in = 3, but the carrier carries two inputs
+    b_big.push(1);
+    b_big.extend_from_slice(&[0x01; POOL_OUTPUT_LEN]);
+    b_big.extend_from_slice(&boundary);
+    b_big.extend_from_slice(&[0x09; KERNEL_SIG_LEN]);
+    b_big.extend_from_slice(&0u16.to_le_bytes());
+    let tx_big = segwit_tx_multi(
+        &[
+            ([0x11u8; 32], 0, env_stack(&b_big)),
+            ([0x12u8; 32], 1, vec![vec![0xFFu8; 32]]),
+        ],
+        &outs,
+    );
+    let cb_big = coinbase_for(&tx_big);
+    let cb_big_txid = cxfer_core::bitcoin::compute_txid(&cb_big).unwrap();
+    let tx_big_txid = cxfer_core::bitcoin::compute_txid(&tx_big).unwrap();
+    let root_big = cxfer_core::bitcoin::compute_merkle_root(&[cb_big_txid, tx_big_txid]);
+    let w_big = ShieldWitness {
+        tx: tx_big.clone(),
+        vin: 0,
+        wtxid_siblings: vec![[0u8; 32]],
+        coinbase: cb_big,
+        coinbase_txid_siblings: vec![tx_big_txid],
+        merkle_index: 1,
+        merkle_siblings: vec![cb_big_txid],
+        confirmed_block_root: root_big,
+        pool_root: [0x42u8; 32],
+        value,
+    };
+    assert_eq!(
+        read_shield(
+            &w_big,
+            &ASSET,
+            &mut l_noin,
+            &blind,
+            &[0x42u8; 32],
+            &|_, _| true,
+            &|_, _, _| true
+        ),
+        None,
+        "a shield claiming more notes than the carrier carries never lands"
+    );
+    assert_eq!(l_noin.available(), 0);
 }
 
 #[test]
@@ -1381,7 +1498,7 @@ fn no_path_credits_backing_without_a_shield() {
             &yes
         ),
         None,
-        "the same carrier cannot credit twice"
+        "the same shield body cannot credit twice"
     );
     // And the value credited is the caller's claim, not the boundary's: this is §10's assumption, so a
     // lying `boundary_ok` does mint. Pinned here so the limitation is visible in the test suite.
@@ -1435,9 +1552,27 @@ fn read_exit_binds_vout_to_a_real_output_and_its_script() {
         "dest_spk_hash must be the hash of the script at exit_vout"
     );
 
-    // vout 9 on a three-output carrier: no such output.
+    // vout 9 on a three-output carrier: no such output. The body itself names 9, so `parse_tx_output` is what
+    // refuses it — not the script-hash check that caught the case above.
     let mut no_output = exit_fixture(value, blind, h, 9);
-    no_output.w = wrong_index.w.clone();
+    let body9 = spend_with_exit(
+        &ASSET,
+        h,
+        &[[0xA1u8; 32], [0xA2u8; 32]],
+        9,
+        &c_secp,
+        &cxfer_core::bitcoin::sha256_once(&p2tr_script(&[0x44u8; 32])),
+        &boundary_bytes(&c_secp, &[0x66u8; 32]),
+    );
+    let tx9 = segwit_tx(
+        &env_stack(&body9),
+        &[
+            (0u64, p2tr_script(&[0x50u8; 32])),
+            (0u64, p2tr_script(&[0x51u8; 32])),
+            (0u64, p2tr_script(&[0x44u8; 32])),
+        ],
+    );
+    no_output.w = witness_for(&tx9, [0x99u8; 32], value, blind);
     assert_eq!(
         read_exit(&no_output.w, &ASSET, &|_, _| true, &|_, _, _| true),
         None,
@@ -1696,18 +1831,7 @@ fn read_exit_refuses_a_carrier_that_already_claims_the_same_vout() {
         &boundary,
         None,
     );
-    let tx2 = segwit_tx_multi(
-        &[
-            ([0x11u8; 32], 0, env_stack(&a)),
-            ([0x12u8; 32], 1, env_stack(&c)),
-        ],
-        &outs,
-    );
-    let mut w2 = witness_for(&tx2, [0x99u8; 32], value, blind);
-    w2.vin = 1;
-    // vout 1 pays 0x51 not 0x44, so this one is refused on the script binding instead — the point is that the
-    // claim check did not fire, so the failure is a different one. Assert the reason by using a matching
-    // carrier: point the body at vout 1 and give vout 1 the exit script.
+    // Point the body at vout 1 and give vout 1 the exit script, so the only thing under test is the claim rule.
     let mut outs_ok = outs.clone();
     outs_ok[1] = (0u64, dest_spk.clone());
     let tx3 = segwit_tx_multi(

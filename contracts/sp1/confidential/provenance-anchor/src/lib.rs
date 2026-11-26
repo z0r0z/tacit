@@ -135,12 +135,10 @@ pub fn boundary_opens(boundary: &Boundary<'_>, value: u64, blinding: &[u8; 32]) 
     raw.extend_from_slice(&boundary.c_bjj);
     raw.extend_from_slice(boundary.proof);
     // sigma + range proof, in-crate: this is `dapp/btc-pool-zk-boundary.js` `verifyBoundary` in Rust.
-    let bjj = match btc_pool_zk_core::boundary::verify_bytes(&raw) {
-        Some(p) => p,
-        None => return false,
-    };
-    if btc_pool_zk_core::pt_eq(&bjj, &btc_pool_zk_core::identity()) {
-        return false; // an identity BabyJub point is a boundary the pool's own indexer rejects
+    // `btc_pool_zk_core::boundary::verify` already refuses an identity BabyJub point (`boundary.rs:41-43`),
+    // so a returned point is never the identity and there is nothing to re-check here.
+    if btc_pool_zk_core::boundary::verify_bytes(&raw).is_none() {
+        return false;
     }
     // The transparent half: `C_secp` must open to exactly the value and blinding being claimed, so a valid
     // boundary cannot be reused for a different amount. Without this, `value` would be a free witness.
@@ -164,7 +162,7 @@ pub fn boundary_opens(boundary: &Boundary<'_>, value: u64, blinding: &[u8; 32]) 
 pub struct BackingLedger {
     funded: u128,
     exited: u128,
-    /// Shield carrier txids already credited, and exit outpoints already debited.
+    /// `sha256` of each credited shield body, and exit outpoints already debited.
     ///
     /// Needed because the counters alone cannot tell a **re-folded** event from a **second** one. A resumed
     /// cycle that re-folds a block would credit the same shield twice (minting backing) or debit the same exit
@@ -234,6 +232,65 @@ impl BackingLedger {
         self.exited += v;
         Some(())
     }
+}
+
+/// Read a shield out of a confirmed transaction, the way [`read_exit`] reads an exit.
+///
+/// `credit_shield` used to take a `ShieldBody` parsed from caller bytes, with no carrier, no inclusion proof
+/// and no BIP141 authentication — so "value enters only through a proven shield" was true of the ledger's
+/// arithmetic and false of its inputs. This closes that: the body must ride a real input of a real
+/// transaction, that transaction must be in the block whose txid root the caller attests, and the pool's own
+/// preconditions on the carrier must hold.
+///
+/// What it still cannot check is the pool half — `resolveInput` of each shielded note and the `depC` relation
+/// against them — because that needs the live note tree. `pool_ok` carries it, exactly as in `read_exit`.
+pub fn read_shield(
+    w: &ShieldWitness,
+    asset: &[u8; 32],
+    ledger: &mut BackingLedger,
+    blinding: &[u8; 32],
+    pool_root: &[u8; 32],
+    pool_ok: ShieldProofCheck<'_>,
+    boundary_ok: BoundaryCheck<'_>,
+) -> Option<u64> {
+    let txid = cxfer_core::bitcoin::compute_txid(&w.tx)?;
+    if cxfer_core::bitcoin::verify_merkle_path(&txid, &w.merkle_siblings, w.merkle_index)
+        != w.confirmed_block_root
+    {
+        return None;
+    }
+    cxfer_core::bitcoin::verify_tx_witness_committed(
+        &w.tx,
+        w.merkle_index,
+        &w.wtxid_siblings,
+        &w.coinbase,
+        &w.coinbase_txid_siblings,
+        &w.confirmed_block_root,
+    )?;
+
+    let payload = envelope_of_input(&w.tx, w.vin)?;
+    let body = ShieldBody::parse(&payload)?;
+    if &body.asset != asset {
+        return None;
+    }
+    // The pool refuses a shield whose carrier has fewer than `n_in + 1` inputs: vin[0] is the carrier's own
+    // coin and the shielded notes are `inputs[1..1 + n_in]`. Without the inputs there is nothing to resolve,
+    // so a shield claiming more notes than the carrier carries never lands.
+    let inputs = cxfer_core::bitcoin::extract_inputs(&w.tx)?;
+    if inputs.len() < body.n_in + 1 {
+        return None;
+    }
+    credit_shield(
+        ledger,
+        asset,
+        &body,
+        w.value,
+        blinding,
+        pool_root,
+        pool_ok,
+        boundary_ok,
+    )?;
+    Some(w.value)
 }
 
 /// Credit one shield, after its pool proof and boundary check both said yes.
@@ -348,6 +405,10 @@ pub struct SpendBody<'a> {
 /// Layout (§3): `0x6C ‖ asset ‖ n_in ‖ n_out ‖ output×n_out ‖ boundary ‖ kernel_sig ‖ proof_len(2) ‖ proof`.
 pub struct ShieldBody<'a> {
     pub asset: [u8; 32],
+    /// How many of the carrier's inputs (after vin[0]) are the shielded notes. The pool's `acceptShield`
+    /// requires `carrier has too few inputs` to be false, i.e. `inputs.length >= n_in + 1`; keeping it here is
+    /// what lets the reader check that without re-parsing the payload.
+    pub n_in: usize,
     pub outputs: Vec<[u8; POOL_OUTPUT_LEN]>,
     pub boundary: Boundary<'a>,
     pub kernel_sig: [u8; KERNEL_SIG_LEN],
@@ -397,6 +458,7 @@ impl<'a> ShieldBody<'a> {
         }
         Some(Self {
             asset,
+            n_in,
             outputs,
             boundary,
             kernel_sig,
@@ -493,6 +555,29 @@ pub fn parse_spend(payload: &[u8]) -> Option<SpendBody<'_>> {
         proof,
         body,
     })
+}
+
+// ───────────────────────────── shields ─────────────────────────────
+
+/// One pool shield the fold is handed. Same discipline as [`ExitWitness`]: every field is read back out of the
+/// confirmed transaction, the caller's header chain, or the shield's public opening.
+#[derive(Clone, Debug)]
+pub struct ShieldWitness {
+    /// The carrier transaction holding the `T_BTC_SHIELD` envelope, full bytes with witness.
+    pub tx: Vec<u8>,
+    /// The input whose witness carries the envelope.
+    pub vin: usize,
+    /// BIP141 witness authentication, exactly as a provenance CXFER is authenticated.
+    pub wtxid_siblings: Vec<[u8; 32]>,
+    pub coinbase: Vec<u8>,
+    pub coinbase_txid_siblings: Vec<[u8; 32]>,
+    pub merkle_index: u32,
+    pub merkle_siblings: Vec<[u8; 32]>,
+    pub confirmed_block_root: [u8; 32],
+    /// The note-tree root the shield was proven against.
+    pub pool_root: [u8; 32],
+    /// The total the shielded notes commit to (`depC`). Its blinding is passed to [`read_shield`] itself.
+    pub value: u64,
 }
 
 // ───────────────────────────── exits ─────────────────────────────
