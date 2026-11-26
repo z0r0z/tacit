@@ -177,6 +177,15 @@ test('quorum: nodes that take batches get decimals and the round in one POST, on
   // first read: a height and one batch per node; the second: one height and one single-call batch per node
   assert.equal(first, 4); assert.equal(log.length - first, 4);
 });
+test('request budget: a market read over six nodes (one 429, one CORS) is at most 14 POSTs in all, and a second reader of the same page makes none', async () => {
+  fresh();
+  const modes = { [U(1)]: 'ok', [U(2)]: 'ok', [U(3)]: 'ok', [U(4)]: 'ok', [U(5)]: '429', [U(6)]: 'cors' };
+  const a = quorum(modes, { batchOf: () => true }), b = quorum(modes, { batchOf: () => true });
+  await a.q(); const used = a.log.length;
+  assert.ok(used <= 14, `a read used ${used} requests`);
+  await b.q(); assert.equal(b.log.length, 0);
+  assert.equal(restedNodes.size, 2);
+});
 test('a counted feed counts the quorum as its sources and keeps the last reading when too few answer', async () => {
   fresh();
   let ok = true; const t = { v: 5 };
