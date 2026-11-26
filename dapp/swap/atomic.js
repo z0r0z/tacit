@@ -25,7 +25,7 @@
 import { esc, fmtUnits, parseUnits, plain, E10 } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=1c98a946';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=7547ec30';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=c562ec81';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const NO_ANSWER = 'No answer just now. Nothing was sent. Try again soon.', RETRY_MS = [2000, 4000, 8000, 15000, 30000], RETRY_SHOWN = 3;
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
@@ -591,14 +591,14 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const shown = L.chain ? [pressCard(L.chain), ...recs] : recs;
     if (recsHost) $('a-sent').hidden = true;
     box.hidden = !shown.length;
-    onRecs(recs);
+    onRecs(recs, shown);
     box.innerHTML = shown.map((r) => {
       const cls = r.state === 'done' ? 'ok' : r.state === 'working' ? 'wait' : 'warn', [pk, gk] = SIDES[r.dir] || SIDES.b2e;
       // both sides, each way; a swap found again from the key, or one whose provider has not offered yet, may not know an amount: that side is named without one
       // (a swap of BTC found again from the key sees only its Bitcoin lock, so its ETH amount is not known)
       const side = (v, k) => (v > 0n ? `${fmt(v)} ${COINS[k].sym}` : COINS[k].sym);
       const got = r.state === 'done' && r.got != null && r.got > 0n ? r.got : r.get;
-      const what = r.pay > 0n || r.get > 0n ? `${side(r.pay, pk)} → ${r.pay > 0n && r.get > 0n && r.state !== 'done' ? 'about ' : ''}${side(got, gk)}` : '';
+      const what = r.pay > 0n || r.get > 0n ? `${side(r.pay, pk)} → ${r.pay > 0n && r.get > 0n && r.state !== 'done' ? 'about ' : ''}${side(got, gk)}${r.dir === 'e2b' && r.state !== 'done' && r.get > 0n ? ' before the Bitcoin fee' : ''}` : '';
       const eta = r.state === 'working' && r.etaSecs ? etaSpan(r.etaSecs) : '';
       const sure = lockedIn(r);
       // the Bitcoin lock under way, linked: the provider's (e2b, once it says its txid) or the user's own (b2e)

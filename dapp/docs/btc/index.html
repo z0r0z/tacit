@@ -469,7 +469,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <header class="hero">
       <h1 id="h">BTC <em>⇄</em> ETH</h1>
       <p class="lead">Swap Bitcoin for ETH, or ETH for Bitcoin, directly with a provider. Each side locks its coin and one secret opens both locks, so no one holds your funds in between. Your ETH arrives as a private balance on Tacit.</p>
-      <div class="callout"><b>Pilot</b>The code is new and has had no independent audit. Each swap is capped. Do not move more than you can afford to have delayed.</div>
+      <div class="callout"><b>Pilot</b>The code is new and has not been independently audited, and each swap is capped. Don’t move more than you can afford to have delayed.</div>
     </header>
 
     <div class="doc">
@@ -503,91 +503,91 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
 <section class="part" id="overview">
   <h2>Overview</h2>
-  <p>You swap with a provider: a program that takes the other side of your swap and earns a fee. You press Swap in your browser, and your browser does the signing and the checking. Your coins stay locked for the length of the swap and come back on their own if anything stops.</p>
+  <p>You swap with a provider, a program that takes the other side of your swap and earns a fee. You press Swap in your browser, and your browser does the signing and the checking itself. While the swap runs, your coins sit in locks, and they come back on their own if anything stops.</p>
   <dl class="gl">
     <dt>Swap</dt><dd>BTC for private ETH, or private ETH for BTC.</dd>
-    <dt>Time</dt><dd>BTC to ETH about 15–20 min. ETH to BTC about 20–30 min.</dd>
-    <dt>Cost</dt><dd>0.20% plus a flat part and the Bitcoin network fee, shown before you press.</dd>
+    <dt>Time</dt><dd>About 15–20 minutes for BTC to ETH, 20–30 for ETH to BTC.</dd>
+    <dt>Cost</dt><dd>0.20% of the amount, a flat fee and the Bitcoin network fee. The page shows the total before you press.</dd>
     <dt>Where</dt><dd><a href="/btc/">tacit.finance/btc</a></dd>
   </dl>
 </section>
 
 <section class="part" id="quickstart">
   <h2>Quickstart</h2>
-  <p>Go to <a href="/btc/">tacit.finance/btc</a> and sign in with your Ethereum wallet or a passkey. That opens your Tacit key, which holds your Bitcoin address and your private ETH. The same sign-in opens the same key on any device.</p>
-  <p>Pick a direction and an amount. The page shows a quote before you press: the rate, the fee, what you receive and the provider. It stands for about five minutes.</p>
+  <p>Go to <a href="/btc/">tacit.finance/btc</a> and sign in with your Ethereum wallet or a passkey. Signing in opens your Tacit key, which holds your Bitcoin address and your private ETH, and the same sign-in opens the same key on any device.</p>
+  <p>Pick a direction and an amount. Before you press, the page shows a quote with the rate, the fee, what you receive and which provider will do the swap. The quote holds for about five minutes.</p>
 
   <h3>Bitcoin to ETH</h3>
   <ol class="steps">
-    <li><b>Press Swap.</b> If a Bitcoin wallet is open in this browser, one payment from it starts the swap. If not, first send BTC to your Tacit Bitcoin address (in your account menu).</li>
-    <li><b>Wait for one Bitcoin block.</b> Your page locks the BTC. Then the provider locks the same value in ETH, and your page claims it. The provider then takes the BTC.</li>
-    <li><b>Done in about 15–20 minutes.</b> The ETH is in your private balance. Send it on from “Your ETH”.</li>
+    <li><b>Press Swap.</b> If a Bitcoin wallet is connected in this browser, a single payment from it starts the swap. If not, first send some BTC to your Tacit Bitcoin address (you’ll find it in your account menu).</li>
+    <li><b>Wait for one Bitcoin block.</b> Your page locks the BTC, the provider then locks the same value in ETH, and your page claims that ETH. Claiming reveals the secret the provider needs to take the BTC.</li>
+    <li><b>Done in about 15–20 minutes.</b> The ETH is in your private balance, and you can send it on from “Your ETH” whenever you like.</li>
   </ol>
 
   <h3>ETH to Bitcoin</h3>
   <ol class="steps">
-    <li><b>Press Swap.</b> If your private ETH is short, the page first adds ETH from your wallet with one transaction. That deposit is public, but not linked to the swap.</li>
-    <li><b>Wait for the provider’s BTC.</b> The provider locks its BTC first and the page waits for it to confirm: one block for smaller swaps, more for larger ones. Then the page locks your ETH, the provider claims it, and the page takes the BTC.</li>
-    <li><b>Done in about 20–30 minutes.</b> The BTC is at your Tacit Bitcoin address (bc1q…), less the fee of the take. Send it on to any wallet or exchange.</li>
+    <li><b>Press Swap.</b> If your private ETH balance is too small, the page first deposits ETH from your wallet in one transaction. The deposit is public, but nothing on chain links it to the swap.</li>
+    <li><b>Wait for the provider’s BTC.</b> The provider locks its BTC first, and the page waits for that lock to confirm: one block for smaller swaps, more for larger ones. Then the page locks your ETH, the provider claims it, and the page takes the BTC.</li>
+    <li><b>Done in about 20–30 minutes.</b> The BTC is at your Tacit Bitcoin address (bc1q…), minus the network fee of the take. Send it on to any wallet or exchange.</li>
   </ol>
 
-  <p><b>Keep the page open until it says Done.</b> Your browser does the signing. If you close it, see <a href="#recovery">If something goes wrong</a>.</p>
+  <p><b>Keep the page open until it says Done</b>, because your browser does the signing. If you close it, see <a href="#recovery">If something goes wrong</a>.</p>
 </section>
 
 <section class="part" id="concepts">
   <h2>Concepts</h2>
-  <p>A few words carry the whole swap.</p>
+  <p>These terms come up throughout the docs.</p>
   <dl class="gl">
-    <dt>Provider</dt><dd>The program that takes the other side of your swap and earns a fee. It never holds your funds: each swap locks both sides.</dd>
+    <dt>Provider</dt><dd>The program that takes the other side of your swap and earns a fee. It never has custody of your funds, because both sides stay locked until the swap completes or refunds.</dd>
     <dt>Lock</dt><dd>A coin set aside so that only this swap, or a refund after a timeout, can move it.</dd>
-    <dt>Claim and refund</dt><dd>A claim takes the lock meant for you. A refund takes back your own lock after the timeout. Claiming one lock shows the secret that opens the other.</dd>
+    <dt>Claim and refund</dt><dd>A claim takes the lock that is meant for you. A refund takes back your own lock after its timeout. Claiming one lock reveals the secret that opens the other.</dd>
     <dt>Your Tacit key</dt><dd>Signing in opens one key. It holds your Bitcoin address (bc1q…), where swapped BTC arrives, and your private ETH balance. The same sign-in opens the same key on any device.</dd>
-    <dt>Private balance</dt><dd>Your ETH inside Tacit’s pool, where amounts and owners are hidden. Send it to any Ethereum address when you want to use it.</dd>
+    <dt>Private balance</dt><dd>Your ETH inside Tacit’s pool, where amounts and owners are hidden. You can send it to any Ethereum address whenever you want to use it.</dd>
   </dl>
 </section>
 
 <section class="part" id="fees">
   <h2>Fees and limits</h2>
   <ul>
-    <li><b>Limits.</b> BTC to ETH: 0.00025 BTC to 0.01 BTC. ETH to BTC: from 0.008 ETH, up to the BTC the providers hold at that moment. A larger BTC to ETH swap may be split across up to four providers.</li>
-    <li><b>Provider fee.</b> 0.20% of the amount at the provider Tacit runs, plus a flat part: 400 sats (BTC to ETH) or 0.0001 ETH (ETH to BTC). Other providers set their own.</li>
-    <li><b>Lean.</b> A provider short of one side nudges its price to attract the other. Up to 0.15% by default, up to 0.40% at Tacit’s provider.</li>
-    <li><b>Bitcoin network fee.</b> About 500 sats. In BTC to ETH it is the fee of your lock. In ETH to BTC it comes out of the BTC you receive.</li>
-    <li><b>Price check.</b> The page blocks a quote more than 3% under the market price. It asks you to accept a Bitcoin fee above 2% of the amount.</li>
+    <li><b>Limits.</b> BTC to ETH: from 0.00025 BTC to 0.01 BTC, and a larger swap may be split across up to four providers. ETH to BTC: from 0.008 ETH, up to the BTC the providers hold at that moment.</li>
+    <li><b>Provider fee.</b> At the provider Tacit runs, 0.20% of the amount plus a flat fee of 400 sats (BTC to ETH) or 0.0001 ETH (ETH to BTC). Other providers set their own.</li>
+    <li><b>Price adjustment.</b> A provider running low on one side nudges its price to attract swaps that refill it: by up to 0.15% by default, and up to 0.40% at Tacit’s provider.</li>
+    <li><b>Bitcoin network fee.</b> About 500 sats. In BTC to ETH it is the fee on your lock transaction. In ETH to BTC it comes out of the BTC you receive.</li>
+    <li><b>Price check.</b> The page blocks any quote more than 3% under the market price, and asks you to confirm a Bitcoin fee above 2% of the amount.</li>
   </ul>
-  <p>The fixed parts weigh most on small swaps. At Tacit’s provider, without the lean, a BTC to ETH swap of 0.00025 BTC costs about 3.8% in all, 0.001 BTC about 1.1%, and 0.01 BTC about 0.3%.</p>
+  <p>The fixed parts weigh most on small swaps. At Tacit’s provider, before any price adjustment, a BTC to ETH swap of 0.00025 BTC costs about 3.8% in all, 0.001 BTC about 1.1%, and 0.01 BTC about 0.3%.</p>
 </section>
 
 <section class="part" id="recovery">
   <h2>If something goes wrong</h2>
-  <p><b>Closing a tab never gives anyone your funds.</b> Every lock refunds on its own clock. The worst case is that your coins come back after a timeout.</p>
+  <p><b>If a swap stops, your coins come back on their own.</b> Every lock has a timeout after which its owner can refund it, so closing a tab or losing your connection normally costs you time, not money. There is one exception, under ETH to BTC below.</p>
   <ul>
-    <li><b>You closed the page.</b> Reopen it in the same browser and it carries on. On another device, sign in again: the page finds the swap from your key while the provider still serves its offer.</li>
-    <li><b>BTC to ETH, the provider has not locked.</b> Your BTC returns to your address after 144 Bitcoin blocks, about a day.</li>
-    <li><b>BTC to ETH, the provider has locked its ETH.</b> Come back within about 4 hours of its lock. If you do not, its ETH goes back to it and your BTC returns after about a day.</li>
-    <li><b>ETH to BTC, you have locked your ETH.</b> If the provider does not claim, your ETH returns to your private balance after about 4 hours.</li>
-    <li><b>ETH to BTC, the provider has claimed.</b> The BTC is yours. Take it within about 16 hours of the provider’s lock confirming, before its refund opens. If you are away, a watcher can finish the take. It can pay only your own address. If you are offline past that time and no watcher takes, the provider can take its BTC back and keep your ETH. This is the one case where timing matters.</li>
-    <li><b>Bitcoin is slow.</b> After 15 minutes without a block, the page says so. Refunds count blocks, so they wait too. A quote with under two minutes left is refused: ask again.</li>
+    <li><b>You closed the page.</b> Reopen it in the same browser and the swap carries on. On another device, sign in again and the page finds the swap from your key, as long as the provider still serves its offer.</li>
+    <li><b>BTC to ETH, before the provider has locked.</b> Your BTC returns to your address after 144 Bitcoin blocks, about a day.</li>
+    <li><b>BTC to ETH, after the provider has locked its ETH.</b> Come back within about 4 hours of its lock. If you don’t, its ETH goes back to it and your BTC returns after about a day.</li>
+    <li><b>ETH to BTC, after you have locked your ETH.</b> If the provider doesn’t claim it, your ETH returns to your private balance after about 4 hours.</li>
+    <li><b>ETH to BTC, after the provider has claimed.</b> The BTC is now yours to take, and your page does it for you while it is open. The take has to happen within about 16 hours of the provider’s lock confirming, before the provider’s refund opens. If you are away, a watcher can finish the take for you, and it can pay only your own address. If you are offline past that time and no watcher has taken it, the provider can take its BTC back and keep your ETH. This is the only case where being late can cost you money and not just time.</li>
+    <li><b>Slow Bitcoin blocks.</b> If no block arrives for 15 minutes, the page says so. Refunds count blocks, so they wait too. A quote with under two minutes left is refused, so ask for a new one.</li>
   </ul>
 </section>
 
 <section class="part" id="security">
   <h2>Security</h2>
   <ul>
-    <li><b>It is a pilot.</b> The code is new and has had no independent audit. Swaps are capped. Do not move more than you can afford to have delayed.</li>
-    <li><b>Your browser checks both.</b> It verifies the provider’s offer before it reveals anything, and compares each quote with Chainlink’s ETH/BTC price.</li>
-    <li><b>Bitcoin stays public.</b> The ETH side is private. The BTC amount and its transactions are visible on Bitcoin, and your Bitcoin address receives the BTC.</li>
-    <li><b>ETH to BTC uses only providers the site names.</b> BTC to ETH can also use community providers.</li>
-    <li><b>Never sign the Tacit sign-in message on any other site.</b> It is not tied to a website. Anyone who holds that signature controls your Tacit funds, including your swaps.</li>
+    <li><b>This is a pilot.</b> The code is new and has not been independently audited, and swaps are capped. Don’t move more than you can afford to have delayed.</li>
+    <li><b>Your browser checks the provider.</b> It verifies the provider’s offer before revealing anything, and compares each quote with Chainlink’s ETH/BTC price.</li>
+    <li><b>Only the ETH side is private.</b> The BTC amount and its transactions are public on Bitcoin, and the BTC arrives at your Tacit Bitcoin address.</li>
+    <li><b>Which providers.</b> ETH to BTC uses only providers the site names. BTC to ETH can also use community providers.</li>
+    <li><b>Only sign the Tacit sign-in message on tacit.finance.</b> The message is not tied to a website, so anyone who gets that signature controls your Tacit funds, swaps included.</li>
   </ul>
 </section>
 
 <section class="part" id="how">
   <h2>How it works</h2>
-  <p>You do not need this part to swap. It is here so you can check the claims above.</p>
+  <p>The two locks are tied together by one secret. This section covers how that works, how the private pool fits in, and what stays public.</p>
 
   <h3>The swap</h3>
-  <p>It is an adaptor-signature atomic swap. An adaptor signature is a signature made incomplete on purpose. A secret <code>t</code> completes it, and the finished signature shows <code>t</code>.</p>
+  <p>The swap is an adaptor-signature atomic swap. An adaptor signature is a signature that is incomplete on purpose: a secret <code>t</code> completes it, and the finished signature reveals <code>t</code>.</p>
   <ul>
     <li><b>On Bitcoin,</b> the lock is a Taproot output. Taproot is Bitcoin’s address type that can hide a script. The output key is the claimer’s key plus <code>T = t·G</code>, so spending it needs both the claimer’s key and <code>t</code>. One script leaf lets the locker refund after a number of blocks (<code>CHECKSEQUENCEVERIFY</code>).</li>
     <li><b>On Ethereum,</b> the pool has three operations: <code>adaptorlock</code>, <code>adaptorclaim</code> and <code>adaptorrefund</code>. A lock holds a note of the exact amount under <code>(T, deadline, recipient)</code>. A claim needs a signature that is whole only with <code>t</code>. A refund returns the note to its owner after the deadline.</li>
@@ -599,12 +599,12 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <p>To spend a note you publish its nullifier, a tag only the owner can compute. It marks the note spent without saying which note it was. Each operation is proved with SP1 and wrapped in Groth16, so Ethereum checks it cheaply. A relay posts the proof. It sees proofs, not keys, and cannot move your funds. The proofs use pairings, so they are not post-quantum.</p>
 
   <h3>What is public</h3>
-  <p>On Bitcoin: your lock, with its amount, and the provider’s take, an ordinary Taproot key-path spend. In the pool: that a lock was added, claimed or refunded, and when, not the amount or owner. Adding ETH first shows your Ethereum address and the deposit, not the swap it was for.</p>
+  <p>On Bitcoin, the swap’s lock and its amount are public, and so is the take, which looks like an ordinary Taproot key-path spend. In the pool, anyone can see that a lock was added, claimed or refunded, and when, but not the amount or the owner. If the page first adds ETH, your Ethereum address and the deposit are visible, but not which swap the deposit was for.</p>
 </section>
 
 <section class="part" id="paths">
   <h2>The two directions</h2>
-  <p>The side that locks Bitcoin first is the one that holds <code>t</code>. The other side locks only after that lock confirms. The holder of <code>t</code> claims first on Ethereum, which shows <code>t</code>, and the other side uses it on Bitcoin.</p>
+  <p>The side that locks its Bitcoin first is the one that holds <code>t</code>. The other side locks only after that lock confirms. The holder of <code>t</code> then claims first on Ethereum, which reveals <code>t</code>, and the other side uses it to take the BTC.</p>
 
   <h3>Bitcoin to ETH</h3>
   <figure class="fig">
@@ -672,30 +672,30 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </ol>
 
   <h3>Why the order is safe</h3>
-  <p>The Bitcoin refund opens at least two hours after the Ethereum deadline. So whoever locks ETH has time to see <code>t</code> and take the BTC before the other side can refund. A claim that is sent but misses its deadline still shows <code>t</code>, so the page will not build a claim with less than an hour left.</p>
+  <p>The Bitcoin refund opens at least two hours after the Ethereum deadline, so whoever locks ETH has time to see <code>t</code> and take the BTC before the other side can refund. A claim that is sent but misses its deadline would still reveal <code>t</code>, so the page will not build a claim with less than an hour left.</p>
 </section>
 
 <section class="part" id="secrets">
   <h2>Secrets and recovery</h2>
-  <p>The secret, the note blindings and a sealed hint in the Bitcoin lock are all derived from your Tacit key and the lock’s outpoint. A swap can therefore be found again from your key and the chains alone. That is how another device, or a browser with cleared storage, picks one up.</p>
+  <p>The secret, the note blindings and a sealed hint in the Bitcoin lock are all derived from your Tacit key and the lock’s outpoint, so a swap can be found again from your key and the chains alone. That is how another device, or a browser with cleared storage, picks one up.</p>
 
   <h3>The take watcher</h3>
-  <p>In ETH to Bitcoin, your page signs the take ahead, except for the one number that needs <code>t</code>, and posts that pre-signature. It is useless without <code>t</code>, so publishing it is safe.</p>
-  <p>It is signed with <code>SIGHASH_SINGLE | ANYONECANPAY</code>. That fixes the lock as the input and your own address as the output, with the fee taken out. Anyone may add inputs to raise the fee, but no one can change where the sats go. After the provider claims, the watcher completes the signature with <code>t</code>. The API and the watcher both check it first.</p>
+  <p>In ETH to Bitcoin, your page signs the take ahead of time, leaving out only the one value that needs <code>t</code>, and posts that pre-signature so a watcher can use it. On its own it is useless without <code>t</code>, so publishing it is safe.</p>
+  <p>It is signed with <code>SIGHASH_SINGLE | ANYONECANPAY</code>, which fixes the lock as the input and your own address as the output, with the fee taken out. Anyone may add inputs to raise the fee, but no one can change where the sats go. After the provider claims, the watcher completes the signature with <code>t</code>. The API and the watcher both check the pre-signature first.</p>
 </section>
 
 <section class="part" id="price">
   <h2>The price check</h2>
-  <p>A provider quotes the market rate plus its fee. The page does not take that on trust. It reads Chainlink’s ETH/BTC price from at least two Ethereum nodes, asked at the same block, and uses it only while they agree and the reading is fresh. It warns on a quote 2.5% under that price and blocks one more than 3% under. If it cannot read the market, it blocks the quote.</p>
+  <p>A provider quotes the market rate plus its fee, and the page does not take that on trust. It reads Chainlink’s ETH/BTC price from at least two Ethereum nodes, asked at the same block, and uses it only while they agree and the reading is fresh. A quote 2.5% under that price gets a warning, and one more than 3% under is blocked. If the page cannot read the market price, it blocks the quote.</p>
 </section>
 
 <section class="part" id="provide">
   <h2>Run a provider</h2>
-  <p>A provider is a small process with its own key. It quotes the market price plus its fee. Each swap locks both sides, so it never holds anyone’s funds. You need a key (setup shows it once, so copy it offline), ETH shielded into the pool, optionally BTC at its own Bitcoin address, and a machine that stays on with Node 22 or Docker.</p>
+  <p>A provider is a small program with its own key. It quotes the market price plus its fee, and because each swap locks both sides, it never holds anyone’s funds. To run one you need a key (setup shows it once, so copy it somewhere offline), ETH shielded into the pool, optionally BTC at its own Bitcoin address, and a machine that stays on, with Node 22 or Docker.</p>
   <div class="code"><pre><code>git clone https://github.com/src-company/tacit &amp;&amp; cd tacit
 (cd worker-relay &amp;&amp; npm ci --omit=dev --ignore-scripts) &amp;&amp; (cd worker &amp;&amp; npm ci --omit=dev --ignore-scripts)
 node fastbridge-lp/setup.mjs</code></pre></div>
-  <p>Setup asks for a name and a fee (default 0.30% plus 1,000 sats), prints the two addresses to fund, checks the nodes and the price, and starts. The provider posts a signed ad to a board every minute, and the page checks each signature. You need no public address. You earn the fee. You risk capacity tied up while a swap is open, up to about 16 hours if a user disappears. Nothing here is a promise of income.</p>
+  <p>Setup asks for a name and a fee (default 0.30% plus 1,000 sats), prints the two addresses to fund, checks the nodes and the price, and starts. Once it is running, the provider posts a signed ad to a board every minute, and the page checks each signature. It needs no public address. The provider earns the fee on each swap; the cost is capital tied up while a swap is open, up to about 16 hours if a user disappears. None of this is a promise of income.</p>
   <div class="more">
     <a href="https://github.com/src-company/tacit/blob/main/fastbridge-lp/README.md" target="_blank" rel="noopener noreferrer">The provider’s guide<span>Setup, config and running it</span></a>
     <a href="/btc/#be">Run a provider<span>The same steps, on the swap page</span></a>
@@ -704,7 +704,7 @@ node fastbridge-lp/setup.mjs</code></pre></div>
 
 <section class="part" id="integrate">
   <h2>Integrate</h2>
-  <p>Providers answer over HTTP and through a board. Pages sign and prove on the user’s device.</p>
+  <p>Providers answer over HTTP and through a board, and pages sign and prove on the user’s device.</p>
   <div class="code"><pre><code>curl https://tacit-fast-board.onrender.com/ads   <span class="c"># providers' signed ads</span>
 curl https://api.tacit.finance/take-presig        <span class="c"># signed-ahead takes, for a watcher</span></code></pre></div>
   <ul>
@@ -723,13 +723,13 @@ curl https://api.tacit.finance/take-presig        <span class="c"># signed-ahead
 <section class="part" id="faq">
   <h2>FAQ</h2>
   <h3>Is my ETH wrapped?</h3>
-  <p>No. It is ETH in the pool, as private notes. You can send it to any Ethereum address.</p>
+  <p>No. It is ETH in the pool, held as private notes, and you can send it to any Ethereum address.</p>
   <h3>Can I get stuck?</h3>
-  <p>Your coins can be late, not lost. See <a href="#recovery">If something goes wrong</a>.</p>
+  <p>Usually the worst case is a delay, because every lock refunds after a timeout. The exception is an ETH to BTC swap after the provider has claimed, where the BTC has to be taken within about 16 hours. See <a href="#recovery">If something goes wrong</a>.</p>
   <h3>Why does a small swap cost so much?</h3>
-  <p>The network fee and the flat part are fixed, so near the minimum they are a large share.</p>
+  <p>The network fee and the flat fee are fixed amounts, so near the minimum they make up a large share.</p>
   <h3>Can I swap without a Bitcoin wallet?</h3>
-  <p>For ETH to BTC you need only ETH. For BTC to ETH you need BTC at your Tacit Bitcoin address, from any wallet or exchange.</p>
+  <p>For ETH to BTC you need only ETH. For BTC to ETH you need BTC at your Tacit Bitcoin address, which you can fund from any wallet or exchange.</p>
 </section>
 
 <section class="part" id="glossary">
