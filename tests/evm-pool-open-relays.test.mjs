@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { decodeList, readRegistry, drawRelays, openRelays, collectQuotes, RELAY_REGISTRY, MAX_RELAYS_ASKED, MAX_PAGES } from '../dapp/evm-pool-open-relays.js';
+import { decodeList, readRegistry, drawRelays, openRelays, keepersForPool, collectQuotes, RELAY_REGISTRY, MAX_RELAYS_ASKED, MAX_PAGES } from '../dapp/evm-pool-open-relays.js';
 import { relaysOf } from '../dapp/evm-pool-relays.js';
 import { encodeList } from './helpers/relay-registry-list.mjs';
 
@@ -150,6 +150,37 @@ await check('the built-in relay is the one at its URL: a listed entry for the sa
   assert.equal(r3.length, 2, 'with no built-in, two addresses at one listed url are both kept (the quote says which it is)');
 });
 
+console.log('projecting a chain\'s relays to a token pool');
+await check('native multi-keeper routes map to fixed and dynamic token pools without losing their signer or weight', () => {
+  const entries = [
+    { url: 'https://relay.example/1/evm-pool/keeper', relayer: A, weight: 3 },
+    { url: 'https://relay.example/8453/evm-pool/keeper/', relayer: B, weight: 2 },
+  ];
+  const before = structuredClone(entries);
+  assert.deepEqual(keepersForPool(entries, 1, '1-tac')[0], { url: 'https://relay.example/1-tac/evm-pool/keeper', relayer: A, weight: 3 });
+  assert.deepEqual(keepersForPool(entries, 1, '1-xa0b86991c6')[0].url, 'https://relay.example/1-xa0b86991c6/evm-pool/keeper');
+  assert.deepEqual(keepersForPool(entries, 8453, '8453-xdac17f958')[0], { url: 'https://relay.example/8453-xdac17f958/evm-pool/keeper', relayer: B, weight: 2 });
+  assert.deepEqual(entries, before, 'the registry entries are not changed');
+});
+await check('an already projected route is kept, while bare, unrelated, malformed and ambiguous routes are not guessed at', () => {
+  const projected = { url: 'https://relay.example/1-tac/evm-pool/keeper/', relayer: A };
+  assert.deepEqual(keepersForPool([projected], 1, '1-tac'), [{ url: projected.url.slice(0, -1), relayer: A }]);
+  const bad = [
+    'https://relay.example/evm-pool/keeper',
+    'https://relay.example/prefix/1/evm-pool/keeper',
+    'https://relay.example/1-xa0b86991c6/evm-pool/keeper',
+    'https://relay.example/8453/evm-pool/keeper',
+    'https://relay.example/1/evm-pool/keeper?pool=tac',
+    'https://relay.example/1/evm-pool/keeper#tac',
+    'https://user@relay.example/1/evm-pool/keeper',
+    'not a url',
+  ].map((url) => ({ url, relayer: A }));
+  assert.deepEqual(keepersForPool(bad, 1, '1-tac'), []);
+  assert.deepEqual(keepersForPool([{ url: U(1), relayer: A }], 1, '8453-tac'), []);
+  assert.deepEqual(keepersForPool([{ url: U(1), relayer: A }], 1, 'not-a-pool'), []);
+  assert.deepEqual(keepersForPool(null, 1, '1-tac'), []);
+});
+
 console.log('not waiting on the slowest');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const E = (n) => ({ url: U(n), relayer: A, weight: 1 });
@@ -186,6 +217,9 @@ await check('the Pay page reads the registry for each chain and lists what it fi
   const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8');
   assert.ok(/evm-pool-open-relays\.js/.test(page), 'the page imports the reader');
   assert.ok(/openRelays\(/.test(page), 'and uses it');
+  assert.ok(/keepersForPool\(t\.chain\.keepers, t\.chainId, t\.id\)/.test(page), 'token pools project the same registry entries to their own keeper ids');
+  assert.ok(/listRelays\(t\.chainId, keepers\)/.test(page), 'the private route accepts each projected token keeper');
+  assert.ok(/maxRelayFee: t\.maxRelayFee, keepers/.test(page), 'the token wallet receives the projected relays');
   const connect = /connect-src([^;"]*)/.exec(page)[1].split(/\s+/).filter(Boolean);
   assert.ok(!connect.includes('https:') && !connect.includes('*'), 'a registered relay is reached through the private route\'s forwarders: the policy stays closed to its host');
 });
