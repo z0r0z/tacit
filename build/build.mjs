@@ -207,7 +207,7 @@ const HELP_CB_FILES = ['help/ui.js', 'help/embed.js', 'help/app.js', 'help/index
 // dapp/nodes/ is the status page for the community nodes: the page logic, the shared document rules, then app.js and the page.
 const NODES_CB_FILES = ['nodes/ui.js', 'nodes-list.js', 'nodes/app.js', 'nodes/index.html'];
 // dapp/build/ is the page for builders and dapp/docs/ the docs pages, which share its one script: the script, then the pages.
-const BUILD_CB_FILES = ['build/app.js', 'build/index.html', 'docs/chain/index.html'];
+const BUILD_CB_FILES = ['build/app.js', 'build/index.html', 'docs/chain/index.html', 'docs/btc/index.html'];
 // dapp/assets/ lists Tacit's own assets and the farms under them: the farms' reading first, then app.js, then the page.
 const ASSETS_CB_FILES = ['assets/farms.js', 'assets/app.js', 'assets/index.html'];
 // dapp/etch/ makes an asset on Bitcoin and searches the ones that exist: its search first, then app.js, then the page (it loads /trade/btc.js, hashed with the trade page's).
