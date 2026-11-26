@@ -2,7 +2,7 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=015eef5d';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=81421947';
 import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=373a3165';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
@@ -219,18 +219,22 @@ const lane = makeAtomicLane({
   onNext: ({ act, sats, id, units }) => { if (act === 'send') { ddOpen('mybtc'); panel?.openSend({ sats }); } else if (act === 'withdraw') withdraw({ id, units }).catch(() => {}); },
 });
 // the header chip: the same sign-in as the card's button; once open, the wallet's address and a way to lock it
+let tacitOf = null, tacitAsked = false;
 function paintChip() {
   const on = lane.unlocked, a = lane.address;
   $('wallet-dot').className = `dot${on ? ' on' : ''}`;
-  $('wallet-label').textContent = on ? (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : 'Signed in') : 'Sign in';
   $('acct-id').textContent = a || '';
+  // the chip names the key by its tacit1 address, as the front page does (its first 16 characters and last 6)
+  if (!on) { $('acct-tacit').textContent = ''; tacitOf = null; tacitAsked = false; }
+  else if (!tacitAsked) { tacitAsked = true; Promise.resolve(lane.tacitAddress?.()).then((t) => { tacitOf = t; if (t) { $('acct-tacit').textContent = t; $('wallet-label').textContent = `${t.slice(0, 16)}…${t.slice(-6)}`; } }, () => {}); }
+  $('wallet-label').textContent = on ? (tacitOf ? `${tacitOf.slice(0, 16)}…${tacitOf.slice(-6)}` : a ? `${a.slice(0, 6)}…${a.slice(-4)}` : 'Signed in') : 'Sign in';
   if (!on) { $('acct-pop').hidden = true; $('wallet').setAttribute('aria-expanded', 'false'); }
 }
 $('wallet').addEventListener('click', () => {
   if (!lane.unlocked) { lane.signIn().then(paintChip, paintChip); return; }
   const pop = $('acct-pop'); pop.hidden = !pop.hidden; $('wallet').setAttribute('aria-expanded', String(!pop.hidden));
 });
-$('acct-pop').addEventListener('click', (e) => { if (e.target.closest('[data-acct="out"]')) { $('acct-pop').hidden = true; lane.lock(); paintChip(); } });
+$('acct-pop').addEventListener('click', (e) => { const c = e.target.closest('[data-copy]'); if (c) { try { navigator.clipboard.writeText($(c.dataset.copy).textContent).then(() => { c.textContent = 'Copied'; setTimeout(() => { c.textContent = 'Copy'; }, 1500); }, () => {}); } catch { /* no clipboard */ } return; } if (e.target.closest('[data-acct="out"]')) { $('acct-pop').hidden = true; lane.lock(); paintChip(); } });
 document.addEventListener('click', (e) => { if (!e.target.closest('#acct')) { $('acct-pop').hidden = true; $('wallet').setAttribute('aria-expanded', 'false'); } });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('acct-pop').hidden = true; $('wallet').setAttribute('aria-expanded', 'false'); } });
 panel = mountSendPanel({ host: $('yb'), lane, notify });

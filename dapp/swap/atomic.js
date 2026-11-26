@@ -140,6 +140,17 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange, busy = 
     async signIn() { await load(); await bitcoin.signIn(); },
     fund(o) { bitcoin?.fund(o); },
     get address() { return bitcoin?.session.unlocked ? bitcoin.session.address || null : null; },
+    // the key's tacit1 address, derived as the front page does (its tacit chain lane included); null while locked or if it cannot be made
+    async tacitAddress() {
+      try {
+        const priv = bitcoin?.session.unlocked ? T?.wallet?.priv : null;
+        if (!priv) return null;
+        const hex = typeof priv === 'string' ? priv : [...priv].map((b) => b.toString(16).padStart(2, '0')).join('');
+        const [u, l] = await Promise.all([import('/tacit-unified.js?cb=c268c3d8'), import('/tacit-chain-lane.js?cb=25b2f372').catch(() => null)]);
+        let lane; try { lane = l ? l.chainLane(hex) : undefined; } catch { lane = undefined; }
+        return u.unifiedAddress(hex, lane).address;
+      } catch { return null; }
+    },
     lock() { bitcoin?.lock?.(); },
     // a Bitcoin wallet in this browser pays sats to the key's own address, in one prompt of its own (trade/btc.js sendIn)
     canSendIn() { return !!(bitcoin?.session.unlocked && bitcoin.canSendIn?.()); },
@@ -1153,6 +1164,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     signIn: () => unlock(),
     lock: () => D.lock?.(),
     get address() { return D.address || null; },
+    tacitAddress: () => D.tacitAddress(),
     // which key is open (null when none): what a page shows of the key's own may stay up while its pair client is opened again for the same key
     get key() { return keyOf(); },
     // whether the swaps of an earlier visit are still being looked for: 'looking' from the key's opening until the look ends, 'failed' while one that failed waits
