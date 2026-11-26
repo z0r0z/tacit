@@ -269,12 +269,15 @@ const hex = (v) => '0x' + BigInt(v).toString(16);
 // the house provider's /info, with what its upkeep adds (fastbridge-lp/lib/automation.mjs): null answers 404, as a provider without it does
 const HOUSE = 'https://tacit-fastbridge-pair-lp.onrender.com';
 let houseInfo = { v: 1, stats: { since: 1795608000, swaps: 4, reinvestedEth: '1234567', netEth: '1234567', capacity: { eth: '320000000', sats: '1500000', valueEth: '365000000' } }, target: { eth: '1000000000', btcAsEth: '1000000000', reached: false }, skewBps: 0, buyback: { on: false, startedAt: null, routedEth: '0', tacBought: '0', sends: 0 } };
+const BAD = [], FLAKY = { on: false, asked: [] };
 // the network: the board and the public nodes are answered here, everything else off the machine is refused
 async function wire(page, { ads, boardDelayMs = 0 }) {
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const req = route.request(), url = req.url();
     if (url === `${HOUSE}/info`) return houseInfo ? route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(houseInfo) }) : route.fulfill({ status: 404, body: '{}' });
     if (url === `${BOARD}/ads`) { if (boardDelayMs) await sleep(boardDelayMs); return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ ads }) }).catch(() => {}); }
+    // nodes that answer a browser with a 429 that carries no CORS headers (a CORS block, a console line for each request): the page must never ask them. FLAKY: publicnode refuses like that when a test sets it
+    if (/mevblocker|buidlguidl/.test(url) || (FLAKY.on && /publicnode/.test(url))) { (/publicnode/.test(url) ? FLAKY.asked : BAD).push(url); return route.abort('failed'); }
     if (req.method() === 'POST' && /publicnode|drpc|1rpc|tenderly|mevblocker|blastapi|buidlguidl|thirdweb|stakely|nodereal|flashbots|tacit-node-gw/.test(url)) {
       let body = {}; try { body = JSON.parse(req.postData() || '{}'); } catch { /* not JSON */ }
       const answer = { eth_getBalance: () => hex(RPCV.balance), eth_gasPrice: () => hex(10n ** 9n), eth_estimateGas: () => hex(120000n), eth_getTransactionReceipt: () => RPCV.receipt, eth_getTransactionByHash: () => ({ hash: '0x' }), eth_blockNumber: () => '0x1500000' };
@@ -1008,6 +1011,23 @@ console.log('the sections under the tile: closed lines that open (disclosures)')
 {
   const html = readFileSync(new URL('../dapp/btc/index.html', import.meta.url), 'utf8');
   ok(/Running a node also helps:[^<]*<a href="\/nodes\/">\/nodes\/<\/a> and ranked by uptime and accuracy/.test(html), 'the provider area points at /nodes/');
+}
+
+console.log('the console stays clean: nodes that refuse a browser are not asked');
+{
+  BAD.length = 0; FLAKY.on = true;
+  const { page, errs } = await fresh();
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__btc.unlocked, null, { timeout: 30000 });
+  await page.fill('#a-amt', '0.01');
+  await sleep(4000);
+  await page.fill('#a-amt', '0.02');
+  await sleep(4000);
+  FLAKY.on = false;
+  ok(BAD.length === 0, `mevblocker and BuidlGuidl are not asked on load, sign-in or a quote (${BAD.join(' ')})`);
+  ok(FLAKY.asked.length <= 2, `a node that refused is not asked again in the page (${FLAKY.asked.length} asks)`);
+  ok(errs.length === 0, `no page errors (${errs.join(' | ')})`);
+  await page.close();
 }
 
 await b.close();

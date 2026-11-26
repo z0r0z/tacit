@@ -9,7 +9,7 @@
 //   estimate(m, dir, amount) -> { get, provider } | null       what the best provider would give for `amount`, before its own quote
 
 import { discoverProviders } from '/fast/discover.js?cb=08d71bf9';
-import { makeRateFeed, chainlinkEthBtc, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=3bc6995c';
+import { makeRateFeed, chainlinkEthBtc, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=b392f6cc';
 import { ETH_NODES, batchSize } from '/eth-nodes.js';
 import { bodyType } from '/rpc-body.js';
 import { SATS_ASSET_ID, ETH_ASSET_ID } from '/swap/atomic-probe.js?cb=c6d5d8e2';
@@ -38,7 +38,9 @@ export const priceNodes = () => {
   // from it: the page's own list and node are enough)
   return [...ETH_NODES];
 };
-export const priceSource = ({ fetchImpl, now, nodes = priceNodes } = {}) => chainlinkQuorum({ nodes, fetchImpl, bodyOf: bodyType, batchOf: (u) => batchSize(u) > 1, ...(now ? { now } : {}) });
+// a browser prints a console line for every failed request, so a price node that failed once is not asked again in this page, and two nodes are asked first (more only when they fail or disagree)
+const PAGE_REST_MS = 24 * 3600e3;
+export const priceSource = ({ fetchImpl, now, nodes = priceNodes } = {}) => chainlinkQuorum({ nodes, fetchImpl, bodyOf: bodyType, batchOf: (u) => batchSize(u) > 1, fan: 2, restMs: PAGE_REST_MS, ...(now ? { now } : {}) });
 const LAST = 'tacit-market-last-v1', LAST_MAX_SECS = 600;
 const lastGet = (nowS) => { try { const m = JSON.parse(localStorage.getItem(LAST)); return m && m.ethPerBtc > 0 && nowS - m.at <= LAST_MAX_SECS ? m : null; } catch { return null; } };
 const lastPut = (m) => { try { localStorage.setItem(LAST, JSON.stringify(m)); } catch { /* kept this visit only */ } };

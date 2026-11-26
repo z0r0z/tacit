@@ -32,7 +32,7 @@ const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_M
 // A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
 // one too near its end asks for a new one first
 const RENEW_SECS = 150, START_SECS = 125;
-const MARKET_MODULE = '/swap/atomic-market.js?cb=373a3165';
+const MARKET_MODULE = '/swap/atomic-market.js?cb=ccfdb3d0';
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
 // the most providers one BTC-for-ETH swap is split among (fastbridge-pair.js splitLegs)
@@ -395,7 +395,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       } catch (e) {
         if (my !== seq) return;
         const t = plainError(e);
-        try { console.warn('[swap] quote failed:', e && e.name, e && e.message, e); } catch { /* no console */ }
+        if (t === NO_ANSWER) { try { console.warn('[swap] quote failed:', e && e.name, e && e.message, e); } catch { /* no console */ } }   // (a provider's own sentence, such as an amount it does not take, is on the screen, not in the console)
         L.q = null;
         // a miss of something the quote reads (a node, a fee estimate, the provider, the price feed) is tried again by itself, the button saying it is getting a
         // quote; only the third miss says so, with a button to try at once (the tries go on). A provider's own sentence is shown as it is.

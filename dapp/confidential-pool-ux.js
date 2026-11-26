@@ -336,9 +336,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // key's swaps reads the ~380 lock transactions and a window of settles: one request each took 12 to 14 s from the public nodes, batches of 25 take about 2 s
   // (measured from a browser's network, 2026-11-25).
   const TX_BATCH_AT_ONCE = 3, TX_BATCH_MS = 12e3, TX_SINGLE_AT_ONCE = 6;
+  // A transaction found does not change, so a later look at the same hashes (a swap list is read again on every sign-in, quote and reload of its page) is answered from here, not from the nodes.
+  const _txSeen = new Map();
   async function readTxs(hashes) {
-    const want = [...new Set((hashes || []).map((h) => String(h).toLowerCase()).filter((h) => /^0x[0-9a-f]{64}$/.test(h)))];
+    const all = [...new Set((hashes || []).map((h) => String(h).toLowerCase()).filter((h) => /^0x[0-9a-f]{64}$/.test(h)))];
     const out = new Map();
+    for (const h of all) if (_txSeen.has(h)) out.set(h, _txSeen.get(h));
+    const want = all.filter((h) => !out.has(h));
     const batchOf = (u) => Number(ethNodes.batchSize?.(u)) || 0;
     const nodes = want.length > 1 && _fetch ? (cfg.rpcs || []).filter((u) => typeof u === 'string' && batchOf(u) > 1) : [];
     if (nodes.length) {
@@ -378,6 +382,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         try { const t = await rpc('eth_getTransactionByHash', [h]); out.set(h, t && typeof t.input === 'string' ? { hash: h, input: t.input, to: t.to == null ? null : String(t.to).toLowerCase() } : null); } catch { /* left out: the caller reads it again */ }
       }
     }));
+    for (const [h, t] of out) if (t) _txSeen.set(h, t);
     return out;
   }
 
@@ -399,7 +404,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       for (let pass = 0; pass < 2 && !got; pass++) {
         if (pass > 0) await new Promise((res) => setTimeout(res, 400));
         const narrow = (e) => e.span < 5000;
-        const wide = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (narrow(a) - narrow(b)) || (isShared(a.url) - isShared(b.url)) || (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
+        const last = (e) => !!ethNodes.lastResort?.(e.url), wide = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (last(a) - last(b)) || (narrow(a) - narrow(b)) || (isShared(a.url) - isShared(b.url)) || (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
         const byUrl = new Map(wide.map((e) => [e.url, e]));
         const ordered = _logHealth.order(wide.map((e) => e.url)).map((u) => byUrl.get(u));
         const refused = (ep) => refuses(ep.url, 'eth_getLogs', [{ fromBlock: '0x' + start.toString(16), toBlock: '0x' + Math.min(to, start + Math.min(ep.span, to - start + 1) - 1).toString(16) }], to);

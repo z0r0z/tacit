@@ -31,8 +31,8 @@ const wordAt = (h, i) => BigInt('0x' + (strip(h).slice(i * 64, (i + 1) * 64) || 
 const addrWord = (a) => strip(a).toLowerCase().padStart(64, '0');
 const lc = (a) => String(a).toLowerCase();
 
-const NODES = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://1.rpc.thirdweb.com', 'https://tacit-node-gw.onrender.com/eth'];
-const SCAN_NODES = ['https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://ethereum-rpc.publicnode.com'];
+const NODES = ['https://ethereum-rpc.publicnode.com', 'https://tacit-node-gw.onrender.com/eth', 'https://eth.drpc.org', 'https://1.rpc.thirdweb.com', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7'];
+const SCAN_NODES = ['https://ethereum-rpc.publicnode.com', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7'];
 const memory = (() => { try { return localStorage; } catch { return null; } })();
 const health = nodeHealth({ store: memory }), scanHealth = nodeHealth({ store: memory, key: 'tacit-rpc-rest-scan-v1', strict: true });
 const WALLET_READS = new Set(['eth_call', 'eth_getBalance', 'eth_gasPrice', 'eth_blockNumber', 'eth_getCode', 'eth_getTransactionReceipt']);
@@ -782,7 +782,7 @@ const PK = new Proxy({ teth: 'eth', [lc(R.TAC)]: 'tac', [lc(R.CUSD)]: 'cusd', [l
 const POOL_TK = new Proxy({ eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' }, { get: (o, k) => (k in o ? o[k] : ownPool(k)?.ticker) });
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=5a68acc2'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=58974caf'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));

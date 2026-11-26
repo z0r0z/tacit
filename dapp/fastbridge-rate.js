@@ -39,7 +39,7 @@ export function chainlinkEthBtc({ call, address = CHAINLINK_ETH_BTC, maxAgeSecs 
 }
 
 // Public nodes of separate operators that a page's CSP reaches, for reading the aggregator more than once (chainlinkNodes)
-export const PRICE_NODES = Object.freeze(['https://ethereum-rpc.publicnode.com', 'https://rpc.mevblocker.io', 'https://eth.drpc.org', 'https://eth-mainnet.public.blastapi.io', 'https://1rpc.io/eth']);
+export const PRICE_NODES = Object.freeze(['https://ethereum-rpc.publicnode.com', 'https://tacit-node-gw.onrender.com/eth', 'https://eth.drpc.org']);
 
 // The same aggregator read from several nodes, each one a source: a page with no exchange on its CSP still takes the price on more than one node's word. Every
 // node is asked at one block a little behind the tip (the median of the heights they give, less `behind`), so nodes that agree give the very same answer, and a

@@ -241,5 +241,25 @@ await test('the log decoder reads a log back as it was written, in lower or uppe
   assert.doesNotThrow(() => dec.decodeLog({ topics: [dec.TOPIC0.NullifiersSpent], data: '0x' }));
 });
 
+await test('the nodes a browser gets 429s from (no CORS headers, a console line each) are last resorts, and a node that fails once is not asked again for the life of the page', async () => {
+  const { lastResort } = await import('../dapp/eth-nodes.js');
+  const { jsonRpc, forgetRests } = await import('../dapp/json-rpc.js');
+  const BUIDLGUIDL = 'https://mainnet.rpc.buidlguidl.com';
+  for (const u of [MEV, 'https://rpc.mevblocker.io/fast', BUIDLGUIDL]) assert.equal(lastResort(u), true);
+  assert.equal(lastResort(PUBLIC), false);
+  for (const list of [ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES]) assert.ok(list.indexOf(PUBLIC) < 0 || list.indexOf(PUBLIC) < list.indexOf(MEV), 'publicnode is asked before mevblocker');
+  assert.ok(ETH_NODES.indexOf(MEV) > ETH_NODES.indexOf('https://tacit-node-gw.onrender.com/eth'), 'our own gateway comes before it');
+  forgetRests();
+  const asked = [], real = Date.now;
+  const f = async (url) => { asked.push(url); if (url === PUBLIC) throw new TypeError('Failed to fetch'); return { status: 200, json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x1' }) }; };
+  try {
+    const rpc = jsonRpc([PUBLIC, DRPC], f);
+    await rpc('eth_blockNumber', []);
+    Date.now = () => real() + 3600e3;
+    await rpc('eth_blockNumber', []); await rpc('eth_blockNumber', []);
+    assert.equal(asked.filter((u) => u === PUBLIC).length, 1, 'asked once, an hour later still not');
+  } finally { Date.now = real; forgetRests(); }
+});
+
 if (failed) { console.log(`\n${failed} failed`); process.exit(1); }
 console.log('\nall passed');

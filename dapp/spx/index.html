@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://rpc.mevblocker.io" crossorigin>
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=51f5d28b"></script>
-<script type="module" src="/px-strip.js?cb=9ec0c08d" async fetchpriority="high"></script>
+<script type="module" src="/px-strip.js?cb=274c032e" async fetchpriority="high"></script>
 <link rel="preload" href="/swap/card.css?cb=c6209d38" as="style">
 <link rel="preload" href="/fonts/newsreader-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/newsreader-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -3045,7 +3045,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 for (const u of ["/weld/stats/read.js?cb=1df039da","/trade/lp-campaign.js?cb=8da1c942","/trade/batch.js","/tacit-chain-config.js?cb=74171404"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
 // preload-later:end
 // preload-intent:begin
-const WARM_MODULES = ["/confidential-pool-ux.js?cb=5a68acc2","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/confidential-tree-core.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-memo-probe.js","/confidential-memo-workers.js","/worker-start.js","/confidential-bridge-workers.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-tree-workers-shared.js","/confidential-tree-workers.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-bridge-walk.js","/point-multiples.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
+const WARM_MODULES = ["/confidential-pool-ux.js?cb=58974caf","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/confidential-tree-core.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-memo-probe.js","/confidential-memo-workers.js","/worker-start.js","/confidential-bridge-workers.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-tree-workers-shared.js","/confidential-tree-workers.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-bridge-walk.js","/point-multiples.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
 // preload-intent:end
 import '/storage-fallback.js';
 import * as OWNNODE from '/own-node.js?cb=ed1de110';
@@ -3074,7 +3074,7 @@ import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { balanceRows } from '/wallet-balances.js?cb=1cd3e7a4';
 import { portfolio, byAsset } from '/portfolio.js?cb=fcadbdb8';
-import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=9ec0c08d';
+import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=274c032e';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapPlanExt, zapPlanExtFor, addRoute, zapWorth, foundingPlan, zapEntry, farmPick, offMarket, ackFor, pairCost, payback, streamDays } from '/lp-zap.js?cb=1cc6342a';
 import { newIntent, autoNext, afterStep, stageOf, autoLine } from '/lockmint-auto.js?cb=596b11e2';
 import { autoClaimPick, autoClaimOff, autoClaimSet, autoClaimHint, autoClaimHeldByFee, autoClaimFeeShare, AUTO_CLAIM_SHARE } from '/auto-claim.js?cb=85ec772b';
@@ -6180,7 +6180,7 @@ function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.oncl
 const warmPool = (() => { let on = false; return () => { if (on) return; on = true; for (const u of WARM_MODULES) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u })); }; })();
 const getUx = lazy(async () => {
   warmPool();
-  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=5a68acc2'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=58974caf'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   setExternalTacHolders(() => (S.wallet ? [S.wallet] : []));
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
@@ -9647,7 +9647,7 @@ async function openAddresses() {
     await sleep(100);
   }
 }
-const bswMod =lazy(() => import('/btcswap-page.js?cb=48573d6b'));
+const bswMod =lazy(() => import('/btcswap-page.js?cb=f25c5676'));
 const BSW = { pub: null, s: null, say: null, recs: [] };
 const bswHas = (pub) => { try { return Object.keys(localStorage).some((k) => k.startsWith(`tacit-btcswap-v1:mainnet:${pub}:`)); } catch { return false; } };
 async function bswOpen() {

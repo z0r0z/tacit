@@ -6,10 +6,10 @@ import { pace } from './rpc-pace.js';
 // gets `timeoutMs` to answer before the next is tried, so one that stops responding cannot stall every read behind it,
 // and the next call starts after it even when none of the others answered either, so a retry does not wait on it again.
 // `rpc.node` is the URL that answered last.
-// A node that fails to answer at all (a 429 or 5xx, a CORS block that hides one, a refused connection) is rested for a minute for every reader of the page and not asked
+// A node that fails to answer at all (a 429 or 5xx, a CORS block that hides one, a refused connection) is rested for the rest of the page's life for every reader of it and not asked
 // again while another node can be (a node asked again is another line of console errors and more load on a node that is already limiting us). A timeout or a node's own
 // error is not a rest: it may be this call. When every node is resting they are all asked, as before.
-const RESTED = new Map(), REST_MS = 60_000;
+const RESTED = new Map(), REST_MS = 24 * 3600e3;
 export const restedUntil = (url) => RESTED.get(url) || 0;
 export const forgetRests = () => RESTED.clear();
 const down = (e) => e?.name === 'TypeError' || /^http (429|5\d\d)$/.test(e?.message || '');

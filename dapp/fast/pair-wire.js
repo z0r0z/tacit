@@ -21,6 +21,7 @@ import { makeLocalStore } from '/fastbridge-client.js?cb=00d4b6bc';
 import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=bd88e8a7';
 import { makeRateFeed, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=3bc6995c';
 import { ETH_NODES, batchSize } from '/eth-nodes.js';
+import * as EN from '/eth-nodes.js';   // (a namespace: eth-nodes.js has no cache token)
 import { guardedStorage } from '/safe-storage.js';
 import { bodyType } from '/rpc-body.js';
 import { discoverProviders } from '/fast/discover.js?cb=08d71bf9';
@@ -48,7 +49,7 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   // the lock goes out for the next block or two and not under 2 sat/vB (see fastbridge-btc.js minFeeRate)
   const btc = makeEsploraBtcChain({ bases, prims, builder, fetchImpl, feeTarget: '1', minFeeRate: 2 });
   const seed = hmac(sha256, priv, enc.encode('tacit-fastbridge-user-pair-seed'));
-  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: ETH_ASSET, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)), pool: ux.cfg.pool }), quorum: makeNodeQuorum({ fetchImpl }) });   // (the nodes the page's CSP reaches)
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: ETH_ASSET, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)), pool: ux.cfg.pool }), quorum: makeNodeQuorum({ fetchImpl, nodes: EN.browserAgreeNodes?.() }) });   // (the nodes the page's CSP reaches)
   // an ETH-for-Bitcoin swap is found again from the key by its pool lock's memo (pair.recover)
   evm.findOwnLocks = makeOwnLockFinder({ ux, hmacSha256, walletPriv: priv });
 
@@ -59,7 +60,7 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   // the page's own reading of the market: Chainlink's ETH / BTC aggregator (it updates on a half-percent move or once a day, which is why a quote is only blocked a good deal
   // under it; none of the exchanges' tickers is on the page's CSP), read at one block from nodes of separate operators, and taken only when two or more answer and all that
   // answer agree. The pair client then refuses a reading that rests on fewer than two.
-  const feed = feedO || makeRateFeed({ sources: [chainlinkQuorum({ nodes: priceNodes ? () => priceNodes : () => ETH_NODES, fetchImpl, bodyOf: bodyType, batchOf: (u) => batchSize(u) > 1, ...(now ? { now } : {}) })], counted: true, minSources: 2, maxSpreadBps: 1, unanimous: true, maxAgeSecs: 600, ...(now ? { now } : {}) });
+  const feed = feedO || makeRateFeed({ sources: [chainlinkQuorum({ nodes: priceNodes ? () => priceNodes : () => ETH_NODES, fetchImpl, bodyOf: bodyType, batchOf: (u) => batchSize(u) > 1, fan: 2, restMs: 24 * 3600e3, ...(now ? { now } : {}) })], counted: true, minSources: 2, maxSpreadBps: 1, unanimous: true, maxAgeSecs: 600, ...(now ? { now } : {}) });
 
   const prefix = `tacit-fastbridge-pair-v1:mainnet:${pubHex}:`;
   // the page's own storage is copied to IndexedDB as it is written, and what was lost is put back (fast/pair-keep.js): a swap of ETH for BTC is not found again from the key

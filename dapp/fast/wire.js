@@ -14,6 +14,7 @@
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=82196961';
+import * as EN from '/eth-nodes.js';   // (a namespace: eth-nodes.js has no cache token)
 import { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=c56d5cfe';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=00d4b6bc';
@@ -32,7 +33,7 @@ export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=08d71
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 // four explorers, tried in turn: one busy or rate-limited explorer does not stop a swap (every page that uses this allows all four)
-export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api', 'https://mempool.ninja/api', 'https://btcscan.org/api'];
+export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.bitaroo.net/api', 'https://mempool.ninja/api', 'https://btcscan.org/api', 'https://mempool.emzy.de/api'];
 const enc = new TextEncoder();
 const hmacSha256 = (k, m) => hmac(sha256, k, m);
 const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
@@ -159,7 +160,7 @@ function sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag, forNotes, w
     ...(forNotes ? { tacit: T, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]), poolAddress: ux.cfg.pool, binding: ux.chainBindingHex(), keccak256: keccak_256, secp } : {}),
   });
   const seed = hmac(sha256, priv, enc.encode(seedTag));
-  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: asset.evmAsset, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)), pool: ux.cfg.pool }), quorum: makeNodeQuorum({ fetchImpl }) });
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: asset.evmAsset, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)), pool: ux.cfg.pool }), quorum: makeNodeQuorum({ fetchImpl, nodes: EN.browserAgreeNodes?.() }) });
   return { prims, btc, seed, evm };
 }
 
