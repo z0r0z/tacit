@@ -22,8 +22,8 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=f47fa569">
-<link rel="modulepreload" href="/swap/atomic.js?cb=54de2f21">
+<link rel="modulepreload" href="/btc/app.js?cb=217089e7">
+<link rel="modulepreload" href="/swap/atomic.js?cb=2cb69c41">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -323,6 +323,15 @@ details.by .box { padding: 4px 0 12px; background: none; border: 0; }
 .cmd button:hover { color: var(--ink); border-color: var(--hair-2); }
 #be code { font: 12px var(--mono); }
 #say { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); z-index: 50; transform: translateX(-50%); max-width: calc(100% - 32px); padding: 10px 14px; font-size: 13px; color: var(--paper); background: var(--ink); border-radius: 12px; box-shadow: var(--lift); }
+/* the header's account chip: signs in with the same sheet the swap card's button opens; once open it shows the wallet and a way to lock it */
+.acm { position: relative; display: flex; flex: 0 1 auto; min-width: 0; }
+.acm-p { position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box; width: max-content; min-width: 200px; max-width: calc(100vw - 32px); padding: 6px; background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px; box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06); }
+.acm-p[hidden] { display: none; }
+.acm-k { display: grid; gap: 4px; padding: 9px 12px 7px; font: 400 11px/1.2 var(--mono); color: var(--mute); }
+.acm-k b { font: 500 13px/1.2 var(--mono); color: var(--ink); }
+.acm-p button { display: flex; align-items: center; box-sizing: border-box; width: 100%; min-height: 42px; padding: 0 12px; border: 0; border-radius: 10px; background: none; color: var(--ink); font: 400 14px/1 var(--sans, var(--mono)); text-align: left; cursor: pointer; }
+.acm-p button:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+@media (hover: hover) { .acm-p button:hover { background: var(--hair); } }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -623,6 +632,13 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
           </details>
         </nav>
       <!-- chrome:nav:end -->
+      <div class="acm" id="acct">
+        <button class="chip" id="wallet" type="button" aria-haspopup="menu" aria-expanded="false"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Sign in</span></button>
+        <div class="acm-p" id="acct-pop" role="menu" aria-label="Your account" hidden>
+          <div class="acm-k"><span>Your Bitcoin address</span><b class="num" id="acct-id"></b></div>
+          <button type="button" role="menuitem" data-acct="out">Sign out</button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -771,6 +787,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/btc/app.js?cb=f47fa569"></script>
+<script type="module" src="/btc/app.js?cb=217089e7"></script>
 </body>
 </html>

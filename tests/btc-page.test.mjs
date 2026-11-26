@@ -68,9 +68,9 @@ const chainlink = (data) => {
 const BTC_STUB = `
 const W = window.__btc = { unlocked: false, signIns: 0, funds: 0, fundAsk: null, mode: 'eth' };
 const T = { wallet: { priv: new Uint8Array(32).fill(7), address: () => 'bc1qtestaddress0000000000000000000000000' } };
-const session = { get unlocked() { return W.unlocked; }, get key() { return W.unlocked ? { pubHex: '02' + 'ab'.repeat(32), mode: W.mode, address: W.mode === 'eth' ? '0x' + '12'.repeat(20) : undefined } : null; }, get T() { return T; }, load: async () => T, turn: async (fn) => fn() };
+const session = { get unlocked() { return W.unlocked; }, get key() { return W.unlocked ? { pubHex: '02' + 'ab'.repeat(32), mode: W.mode, address: W.mode === 'eth' ? '0x' + '12'.repeat(20) : undefined } : null; }, get T() { return T; }, get address() { return W.unlocked ? 'bc1qtestaddress0000000000000000000000000' : null; }, load: async () => T, turn: async (fn) => fn() };
 // (a Bitcoin wallet in the browser when W.canSend: its payment to the key's address is recorded, or declined with W.declineSend)
-export function makeBitcoin({ onChange }) { W.change = onChange; return { session, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: (o) => { W.funds++; W.fundAsk = o || null; },
+export function makeBitcoin({ onChange }) { W.change = onChange; return { session, lock: () => { W.unlocked = false; W.locks = (W.locks || 0) + 1; onChange?.(); }, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: (o) => { W.funds++; W.fundAsk = o || null; },
   // (as trade/btc.js sendIn: a wallet whose coins may carry TAC, or that could not be checked, is never asked; W.asked counts the wallet's prompts)
   canSendIn: () => !!W.canSend, sendIn: async (sats) => {
     if (W.carriers) throw Object.assign(new Error('Your Bitcoin wallet holds TAC on some of its coins.'), { carriers: 1 });
@@ -353,6 +353,15 @@ console.log('the page: the marks, the line, the lane');
 
   console.log('the wallet opens: the swaps');
   ok(/Sign in above/.test(await text(page, '#mine-say')) && await page.isHidden('#mine-keep'), `before: the swaps section says how to see them (${await text(page, '#mine-say')}, ${await page.isHidden('#mine-keep')})`);
+  ok(/^Sign in$/.test(await text(page, '#wallet')) && await page.isVisible('#wallet') && !(await page.$eval('#wallet-dot', (e) => e.classList.contains('on'))), 'the header has a Sign in chip while no wallet is open');
+  await page.click('#wallet');
+  await page.waitForFunction(() => window.__btc.unlocked && /bc1qte/.test(document.querySelector('#wallet').textContent), null, { timeout: 15000 });
+  ok((await atom(page, '0') , await page.$eval('#wallet-dot', (e) => e.classList.contains('on'))) && (await page.evaluate(() => window.__btc.signIns)) === 1, 'the chip opens the same sign-in, and then shows the wallet with its dot on');
+  await page.waitForFunction(() => !/Sign in to swap/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(!/Sign in to swap/.test(await text(page, '#a-go')), 'the card reflects the same signed-in state');
+  await page.click('#wallet'); await page.click('#acct-pop [data-acct=out]');
+  await page.waitForFunction(() => /^Sign in$/.test(document.querySelector('#wallet').textContent) && /Sign in to swap/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(true, 'Sign out from the chip locks it: the chip and the card both ask to sign in again');
   await page.click('#a-go');
   await page.waitForFunction(() => window.__btc.unlocked && !document.querySelector('#mine-list').hidden, null, { timeout: 30000 });
   ok(await page.isHidden('#a-sent') && (await page.$$('#mine-list > div')).length === 2, 'the swaps are listed in their own section, not under the lane');

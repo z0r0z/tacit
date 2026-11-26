@@ -74,6 +74,7 @@ const FAKE = `
     balances: async () => { calls.balances++; return { sats: S.bal.sats, eth: S.bal.eth, ethHeld: S.bal.ethHeld, pendingSats: S.bal.pendingSats }; },
     quote: async ({ dir, amount }) => {
       calls.quote.push({ dir, amount: String(amount) });
+      if (S.failN > 0) { S.failN--; throw new TypeError('Failed to fetch'); }
       if (S.mode === 'none') throw new Error('No provider can take that amount.');
       const b2e = dir === 'b2e', blocked = S.mode === 'blocked';
       const q = { dir, provider: { id: 'p1', name: 'Test provider' }, pay: amount, get: ((b2e ? (amount * 304n) / 10n : (amount * 10n) / 304n) * (S.cut ? 99n : 100n)) / 100n, rate: blocked ? 29.4 : 30.4, market: 30.62, vsMarketBps: blocked ? -410 : -72, feeBps: 40, etaSecs: 780,
@@ -219,6 +220,23 @@ console.log('a provider: the switch appears, and the lane opens');
   await type(page, '0.013');
   ok(/Note\s*The provider holds less than this right now\./.test(await text(page, '#a-rcpt')) && !(await page.$eval('#a-go', (e) => e.disabled)), 'a note from the provider is shown and does not stop the swap');
   await atom(page, '(A.warn = false, 0)');
+
+  console.log('the lane: a quote that cannot be read is tried again by itself');
+  const goText = () => text(page, '#a-go');
+  await atom(page, '(A.failN = 2, A.calls.quote.length = 0, 0)');
+  await page.fill('#a-amt', '0.014');
+  await sleep(700);
+  ok(/Getting a quote/.test(await goText()) && !(await text(page, '#a-q')).trim(), 'a first miss says it is getting a quote, with no error text');
+  await page.waitForFunction(() => /^Swap /.test(document.querySelector('#a-go').textContent), null, { timeout: 12000 });
+  ok(!(await text(page, '#a-q')).trim() && (await atom(page, 'A.calls.quote.length')) === 3 && !(await page.$eval('#a-go', (e) => e.disabled)), 'two misses, then the quote is shown with no error and no press');
+  await atom(page, '(A.failN = 999, 0)');
+  await page.fill('#a-amt', '0.0141');
+  await page.waitForFunction(() => /^Try again$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  ok(/Can't reach the provider right now/.test(await text(page, '#a-q')) && !/No quote/.test(await goText()), 'a persistent miss ends with the plain line and a Try again button');
+  await atom(page, '(A.failN = 0, 0)');
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Swap /.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
+  ok(!(await text(page, '#a-q')).trim(), 'Try again asks at once and the quote is shown');
 
   console.log('the lane: a swap that several providers fill');
   await atom(page, '(A.mode = "split", 0)');

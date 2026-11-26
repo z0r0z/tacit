@@ -2,7 +2,7 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=54de2f21';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=2cb69c41';
 import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=71b3b555';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
@@ -210,6 +210,7 @@ const lane = makeAtomicLane({
   host: $('atomic'), recsHost: $('mine-list'), notify, wallet: () => null, provider: () => connectedInjected(), getUx, market, dir: first.dir,
   shield: makeAddEth({ getUx }), payout,
   onState: () => follow(lane.state()),
+  onKey: () => paintChip(),
   onRecs: (recs) => { titleFor(recs); for (const r of recs) recDir.set(r.id, r.dir); paintMine(recs); panel?.paint(); paintEth(); },
   onBal: () => { panel?.paint(); paintEth(); },
   onOpen: () => { panel?.paint(); paintEth(); },
@@ -217,6 +218,21 @@ const lane = makeAtomicLane({
   // and a finished swap of BTC's "Send to an Ethereum address": where, and the relay's fee, asked first
   onNext: ({ act, sats, id, units }) => { if (act === 'send') { ddOpen('mybtc'); panel?.openSend({ sats }); } else if (act === 'withdraw') withdraw({ id, units }).catch(() => {}); },
 });
+// the header chip: the same sign-in as the card's button; once open, the wallet's address and a way to lock it
+function paintChip() {
+  const on = lane.unlocked, a = lane.address;
+  $('wallet-dot').className = `dot${on ? ' on' : ''}`;
+  $('wallet-label').textContent = on ? (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : 'Signed in') : 'Sign in';
+  $('acct-id').textContent = a || '';
+  if (!on) { $('acct-pop').hidden = true; $('wallet').setAttribute('aria-expanded', 'false'); }
+}
+$('wallet').addEventListener('click', () => {
+  if (!lane.unlocked) { lane.signIn().then(paintChip, paintChip); return; }
+  const pop = $('acct-pop'); pop.hidden = !pop.hidden; $('wallet').setAttribute('aria-expanded', String(!pop.hidden));
+});
+$('acct-pop').addEventListener('click', (e) => { if (e.target.closest('[data-acct="out"]')) { $('acct-pop').hidden = true; lane.lock(); paintChip(); } });
+document.addEventListener('click', (e) => { if (!e.target.closest('#acct')) { $('acct-pop').hidden = true; $('wallet').setAttribute('aria-expanded', 'false'); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('acct-pop').hidden = true; $('wallet').setAttribute('aria-expanded', 'false'); } });
 panel = mountSendPanel({ host: $('yb'), lane, notify });
 // what the lane reads once the key opens is read ahead as soon as the visitor shows an interest in it (a link that names an amount, a hover, a tap): the
 // signature then has less to wait on. Signing in does the same.
@@ -333,3 +349,4 @@ ddWatch();
 if (first.amt) lane.set({ amt: first.amt });
 market().catch(() => {});
 lane.show();
+paintChip();
