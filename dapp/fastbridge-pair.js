@@ -358,7 +358,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   async function recoverFloor(rec) {
     const market = await reference().catch(() => null);
     if (!market || unusable(market)) return null;
-    const sats = Number(rec.amount), bps = policy.recoverMaxDiscountBps ?? 1500;
+    const sats = Number(rec.amount), bps = policy.recoverMaxDiscountBps ?? 500;
     return BigInt(Math.floor(sats * market.ethPerBtc * (10000 - bps) / 10000));
   }
   const fwdBl = new Map();
