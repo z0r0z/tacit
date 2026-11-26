@@ -25,7 +25,9 @@ await test('drpc is known to refuse every eth_getLogs and nothing else; a node w
   assert.equal(refuses(DRPC, 'eth_call', [{ to: '0x00' }, hex(HEAD - 5000)]), false);
   assert.equal(refuses(DRPC, 'eth_blockNumber', []), false);
   for (const m of ['eth_getLogs', 'eth_call', 'eth_getBalance']) assert.equal(refuses('https://example.org', m, logs(1, HEAD)), false);
-  assert.equal(refuses('https://eth-mainnet.public.blastapi.io', 'eth_getLogs', logs(1, HEAD)), false);
+  assert.equal(refuses('https://eth-mainnet.public.blastapi.io', 'eth_getLogs', logs(1, HEAD)), true);
+  assert.equal(refuses('https://eth-mainnet.public.blastapi.io', 'eth_getLogs', logs(HEAD - 9, HEAD)), true);
+  assert.equal(refuses('https://eth-mainnet.public.blastapi.io', 'eth_call', [{ to: '0x00' }, 'latest']), false);
 });
 
 await test('publicnode serves logs for a span up to 9,999 blocks and only for recent blocks', () => {

@@ -57,6 +57,9 @@ type Config struct {
 	SlotCap     time.Duration // from the claim, the time to download, contribute and upload (2 h)
 	QueueCap    int           // places in the queue (100)
 	PerIP       int           // places one client address may hold (1; negative: no limit)
+	// PerNet24 and PerNet16: places one network may hold at once, an IPv4 /24 or /16 (an IPv6 /40 or /32); 0: no limit. One person with many
+	// addresses in one network, or one party filling the queue from a block, cannot crowd everyone else out.
+	PerNet24, PerNet16 int
 	// A claimed slot must show progress, so a place cannot be held by polling alone: from the claim, the head's
 	// download must start within DownloadStart (10 min) and be complete within DownloadBy (75 min), and the upload must
 	// start within UploadStart (105 min). An offline contributor, who uploads without downloading, starts the upload
@@ -405,6 +408,8 @@ func (c *Coordinator) slotOverL(t *ticket, now time.Time) string {
 	case t.uploadStarted || t.uploading:
 	case t.served == 0 && in > c.downloadStart():
 		return fmt.Sprintf("the head's download did not start within %s", c.downloadStart())
+	case t.served < c.headSize/4 && in > downloadFloorAfter:
+		return fmt.Sprintf("less than a quarter of the head was downloaded in %s", downloadFloorAfter)
 	case t.served < c.headSize && in > c.downloadBy():
 		return fmt.Sprintf("the head's download was not complete within %s", c.downloadBy())
 	case in > c.uploadStart():
@@ -426,6 +431,54 @@ func (c *Coordinator) cannotFinishL(t *ticket, now time.Time) bool {
 	}
 	end := t.uploadFirst.Add(time.Duration(float64(ran) * float64(c.headSize) / float64(t.partBytes)))
 	return end.After(t.Claimed.Add(c.slotCap() + c.slotCap()/8))
+}
+
+// netKey: the network of an address, its first bits4 bits (IPv4) or bits6 bits (IPv6) as a prefix.
+func netKey(ip string, bits4, bits6 int) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap()
+	bits := bits6
+	if a.Is4() {
+		bits = bits4
+	}
+	p, err := a.Prefix(bits)
+	if err != nil {
+		return ip
+	}
+	return p.String()
+}
+
+// TrimNetworks drops the places beyond PerNet24 and PerNet16 from one network, keeping the earliest in the queue and always a claimed slot.
+// For when the limits are turned on with a queue that one network's places already fill.
+func (c *Coordinator) TrimNetworks() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.PerNet24 <= 0 && c.PerNet16 <= 0 {
+		return 0
+	}
+	n24, n16 := map[string]int{}, map[string]int{}
+	kept := make([]*ticket, 0, len(c.queue))
+	dropped := 0
+	for _, t := range c.queue {
+		k24, k16 := netKey(t.IP, 24, 40), netKey(t.IP, 16, 32)
+		over := (c.PerNet24 > 0 && n24[k24] >= c.PerNet24) || (c.PerNet16 > 0 && n16[k16] >= c.PerNet16)
+		if over && t.Claimed.IsZero() {
+			dropped++
+			continue
+		}
+		n24[k24]++
+		n16[k16]++
+		kept = append(kept, t)
+	}
+	if dropped > 0 {
+		c.queue = kept
+		c.saveQueueL()
+		c.logf("queue: %d places beyond the per-network limits were dropped", dropped)
+	}
+	return dropped
 }
 
 func (c *Coordinator) findL(tok string) (*ticket, int) {
@@ -587,6 +640,20 @@ func (c *Coordinator) JoinLane(name, handle, ip, lane string) (string, Status, e
 	}
 	if len(c.queue) >= c.queueCap() {
 		return "", Status{}, refuse(429, "the queue is full; try again later", nil)
+	}
+	if c.PerNet24 > 0 || c.PerNet16 > 0 {
+		k24, k16, n24, n16 := netKey(ip, 24, 40), netKey(ip, 16, 32), 0, 0
+		for _, t := range c.queue {
+			if netKey(t.IP, 24, 40) == k24 {
+				n24++
+			}
+			if netKey(t.IP, 16, 32) == k16 {
+				n16++
+			}
+		}
+		if (c.PerNet24 > 0 && n24 >= c.PerNet24) || (c.PerNet16 > 0 && n16 >= c.PerNet16) {
+			return "", Status{}, refuse(429, "this network already holds several places in the queue; try again later", nil)
+		}
 	}
 	if lim := c.perIP(); lim > 0 {
 		k, n := ipKey(ip), 0

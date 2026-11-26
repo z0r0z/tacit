@@ -57,7 +57,8 @@ const LIMITS = {
   '1.rpc.thirdweb.com': { logs: 2000 },
   'ethereum-json-rpc.stakely.io': { logs: 25 },
   '1rpc.io/eth': { logs: 50, last: true },
-  'eth-mainnet.public.blastapi.io': { last: true },
+  // answers a log read of more than 10 blocks with a 400, so it is never asked one
+  'eth-mainnet.public.blastapi.io': { logs: 0, last: true },
   'base.drpc.org': { logs: 0 },
   'base-mainnet.public.blastapi.io': { logs: 0 },
   'robinhood.drpc.org': { logs: 0, state: true },
