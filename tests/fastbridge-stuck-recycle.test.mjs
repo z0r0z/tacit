@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stuckRecycleCandidates, makeStuckRecycler, makeTacitWalletSwitch } from '../fastbridge-lp/lib/stuck-recycle.mjs';
+import { stuckRecycleCandidates, makeStuckRecycler, makeTacitWalletSwitch, applyReverseSalesToRecycling } from '../fastbridge-lp/lib/stuck-recycle.mjs';
 
 const A = '11'.repeat(32), T1 = '22'.repeat(32), T2 = '33'.repeat(32), REVPUB = '02' + '44'.repeat(32);
 const memStore = () => { const m = new Map(); return { get: async (id) => m.get(id), put: async (r) => { m.set(r.id, { ...r }); }, list: async () => [...m.values()] }; };
@@ -112,11 +112,33 @@ test('cap release waits for a completed reverse sale of the exact recycled outpu
   const inInventory = await store.get('s1');
   assert.equal(inInventory.stuckInventoryAt, 100);
   assert.equal(inInventory.stuckRecoveredAt, undefined, 'inventory alone does not release the exposure cap');
-  revs = [{ id: 'r1', phase: 'done', noteInputs: [{ txid: T2, vout: 0 }] }];
+  revs = [{ id: 'r1', phase: 'done', amount: '2500000000', noteInputs: [{ txid: T2, vout: 0 }] }];
   await rec.tick();
   const sold = await store.get('s1');
   assert.equal(sold.stuckRecoveredAt, 100);
   assert.equal(sold.stuckReverseSwapId, 'r1');
   revs = [{ id: 'r2', phase: 'done', noteInputs: [{ txid: T2, vout: 1 }] }];
   assert.equal((await store.get('s1')).stuckReverseSwapId, 'r1', 'a sale of another output is ignored');
+});
+
+
+test('partial reverse sales are followed through the change output, and mixed inputs are not guessed', () => {
+  const state = { labels: { [`${T2}:0`]: { swapId: 's1', amount: '1000' } }, recovered: {}, processedReverse: {} };
+  const first = applyReverseSalesToRecycling(state, [
+    { id: 'ra', phase: 'done', amount: '400', lock: { txid: 'aa'.repeat(32) }, noteInputs: [{ txid: T2, vout: 0 }], updated: 1 },
+  ]);
+  assert.deepEqual(first, [{ reverseSwapId: 'ra', swapId: 's1', sold: '400', partial: true }]);
+  assert.equal(state.recovered.s1, '400');
+  assert.deepEqual(state.labels[`${'aa'.repeat(32)}:1`], { swapId: 's1', amount: '600' });
+  const second = applyReverseSalesToRecycling(state, [
+    { id: 'rb', phase: 'done', amount: '600', noteInputs: [{ txid: 'aa'.repeat(32), vout: 1 }], updated: 2 },
+  ]);
+  assert.equal(state.recovered.s1, '1000');
+  assert.equal(second[0].partial, false);
+
+  const mixed = { labels: { [`${T1}:0`]: { swapId: 's2', amount: '1000' } }, recovered: {}, processedReverse: {} };
+  applyReverseSalesToRecycling(mixed, [
+    { id: 'rc', phase: 'done', amount: '500', noteInputs: [{ txid: T1, vout: 0 }, { txid: 'ef'.repeat(32), vout: 2 }], updated: 3 },
+  ]);
+  assert.equal(mixed.recovered.s2, undefined, 'a sale with an untracked input is not attributed by guessing');
 });

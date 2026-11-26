@@ -63,7 +63,7 @@ Safety properties:
 - the transfer is forced to the exact take note, so market-maker stock or clean proceeds at the same address are not spent;
 - clean-class proceeds are ignored;
 - a broadcast error is recorded and not retried automatically, because the failure may be after a relay accepted the reveal; the operator inspects that swap before touching it;
-- when the move confirms the forward swap record is marked `stuckInventoryAt`; when a completed reverse sale spends that exact recycled output, the record is marked `stuckRecoveredAt` and stops counting against lineage caps. Caps therefore remain conservative while the note is merely sitting in reverse inventory, and release only once the provider has actually swapped it back for pool TAC;
+- when the move confirms the forward swap record is marked `stuckInventoryAt`; reverse sales are attributed without guessing input ownership: a sale made only from tracked recycled notes reduces the corresponding recovered amount, a partial sale of one tracked note is followed through its deterministic change output, and a partial sale mixed with untracked inventory stays as exposure. The record is marked `stuckRecoveredAt` and stops counting against lineage caps only when the whole original amount has been sold back for pool TAC;
 - `stuckRecycle.enabled` defaults on only when the reverse side is on, and can be disabled in config or with `FB_LP_STUCK_RECYCLE=off`. Manual `recoveredSwaps` / `FB_LP_RECOVERED_SWAPS` remains available for notes recovered outside this loop.
 
 ## Numbers
