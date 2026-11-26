@@ -1274,6 +1274,9 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     const [first, ...rest] = orderQuotes(cheap);
     return quoteOf(first.e, first.q, rest.map((x) => x.e), path, maxFee);
   }
+  // The ordinary quotes spendQuote gave, which a withdrawal or a send may be built for as they are (a copy has lost its relay, and is priced afresh).
+  const given = new WeakSet();
+  const spendWith = async (via, quote, maxFee) => (quote && via !== 'self' && given.has(quote) ? withinFee(quote, maxFee) : quoteFor(via, null, maxFee));
 
   // A spend is built for one relay's quote: its fee is in the spend's outputs. When that relay refuses it before sending anything, the spend ends with
   // `retryWith`, the next relay's quote, and is built again for that, with its own fee, notes and change, not handed on as it is.
@@ -1352,8 +1355,12 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     // history behind the point is still unread (so that is not known yet); null for the pool's first block.
     historyFrom: () => (saved.from ? { size: saved.from.size, block: saved.from.block, partial: true }
       : saved.pointed && saved.first !== undefined && (saved.first === null || saved.first >= saved.pointed.size) ? { size: saved.pointed.size, block: saved.pointed.block, partial: false } : null),
-    // The relayer's quote: priced for a spend that burns `gas` (withdrawAndCall, toV1) when given, else an ordinary one.
+    // The relayer's service quote: priced for a spend that burns `gas` (withdrawAndCall, toV1) when given, else an ordinary one.
     quote: (gas = null) => keeperGet(gas ? `/quote?gas=${gas}` : '/quote'),
+    // A spend's quote, asked of every relay the way a spend asks them (with several, a draw among the cheapest), unlike `quote`, which is the built-in
+    // relay's alone. A spend draws again, so it can go through another relay at another fee (within the caller's maxFee), unless it is given this quote
+    // (`quote`, an ordinary one, with no `gas`): it then goes through the relay that gave it, at its fee.
+    spendQuote: async (gas = null, maxFee = null) => { const q = await quoteFor('relay', gas, maxFee); if (q && gas == null) given.add(q); return q; },
     // The receive box at `index` (0 is the private ETH address; later ones are one-time addresses, e.g. per payment
     // request, found again from the seed within the same gap as refund boxes). → address
     receiveBoxAt: (index = RECEIVE_INDEX) => boxOf(index),
@@ -1362,12 +1369,12 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     // Asks the relayer to watch a receive box (and look now).
     watchReceive: (index = RECEIVE_INDEX) => keeperPost('/receive', { chainId: chain.chainId, npk: receiveKeys(zk, keys.zkWallet, index).npk.toString(), feeBps: RECEIVE_FEE_BPS }),
 
-    // Pays `amount` wei (or 'max') out of the pool to `to` (0x…). → tx hash.
-    async withdraw({ to, amount, via = null, maxFee = null, onStep = () => {}, onSend = null, onSent = null }) {
+    // Pays `amount` wei (or 'max') out of the pool to `to` (0x…). → tx hash. `quote`: one spendQuote gave, for the spend to go through that relay at that fee.
+    async withdraw({ to, amount, via = null, maxFee = null, quote = null, onStep = () => {}, onSend = null, onSent = null }) {
       if (!/^0x[0-9a-fA-F]{40}$/.test(String(to)) || BigInt(to) === 0n) throw new Error('enter a 0x address');
       if (amount !== 'max' && BigInt(amount) <= 0n) throw new Error('enter an amount');
       await sync();
-      return withRelays(await quoteFor(via, null, maxFee), async (q) => {
+      return withRelays(await spendWith(via, quote, maxFee), async (q) => {
         const fee = q ? BigInt(q.fee) : 0n, a = amount === 'max' ? maxOf(fee) : BigInt(amount);
         const ins = await prepare(a + fee, q, onStep);
         const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
@@ -1434,12 +1441,12 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       }, onStep);
     },
 
-    // Sends `amount` wei (or 'max') privately to a Secret Sats address. → tx hash.
-    async send({ to, amount, via = null, maxFee = null, onStep = () => {} }) {
+    // Sends `amount` wei (or 'max') privately to a Secret Sats address. → tx hash. `quote`: as for withdraw.
+    async send({ to, amount, via = null, maxFee = null, quote = null, onStep = () => {} }) {
       const recipient = recipientOf(keys, to);
       if (amount !== 'max' && BigInt(amount) <= 0n) throw new Error('enter an amount');
       await sync();
-      return withRelays(await quoteFor(via, null, maxFee), async (q) => {
+      return withRelays(await spendWith(via, quote, maxFee), async (q) => {
         const fee = q ? BigInt(q.fee) : 0n, a = amount === 'max' ? maxOf(fee) : BigInt(amount);
         const ins = await prepare(a + fee, q, onStep);
         const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;

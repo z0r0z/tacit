@@ -2347,7 +2347,7 @@ function fakeService({ perMin = 1000, big = 0 } = {}) {
   const limit = new Map();
   const serve = (req, res) => {
     const [path, query = ''] = req.url.split('?');
-    const m = /^\/(\d+(?:-x[0-9a-f]+)?)\/evm-pool\/keeper(\/.*)$/.exec(path);
+    const m = /^\/(\d+(?:-[a-z][a-z0-9]*)?)\/evm-pool\/keeper(\/.*)$/.exec(path);
     const send = (code, body, headers = {}) => { res.writeHead(code, { 'Content-Type': 'application/json', ...headers }); res.end(typeof body === 'string' ? body : JSON.stringify(body)); };
     if (!m) return send(404, { error: 'no such chain' });
     const [, id, route] = m;
@@ -2382,7 +2382,7 @@ async function serviceRoute({ perMin, big, forwarders = [], ratePerMin = 20, sfO
 await test('the service route carries any pool\'s routes, and a burst of reads for a dozen pools is a few envelopes, each answer its keeper\'s own', async () => {
   const r = await serviceRoute();
   try {
-    const ids = ['1', '8453', '4663', '1-xdac17f958d', '1-xa0b86991c6', '8453-x833589fcd6'];
+    const ids = ['1', '8453', '4663', '1-tac', '1-tacd', '1-xdac17f958d', '1-xa0b86991c6', '8453-x833589fcd6'];
     const paths = ids.flatMap((id) => [`/${id}/evm-pool/keeper/quote`, `/${id}/evm-pool/keeper/head`]);
     const answers = await Promise.all(paths.map((p) => r.sf(`${r.base}${p}`).then((x) => x.json())));
     assert.deepEqual(answers.map((a) => `/${a.id}/evm-pool/keeper${a.route}`), paths, 'each caller has its own pool\'s answer');

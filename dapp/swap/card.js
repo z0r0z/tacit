@@ -1629,7 +1629,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=b1983a53').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=80e55154').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
 const laterPair = (kind, pay = S.pay, get = S.get) => laterPay(pay)
   && (isEth(pay) ? kind === 'agg' || (kind === 'tac' && get === lc(R.TAC)) : (kind === 'agg' && get !== lc(R.WETH)) || kind === 'any' || kind === 'out' || kind === 'tac');
@@ -2923,7 +2923,7 @@ async function openAtomic() {
   try {
     // the same lane as /btc/, with the same two helpers: ETH added from the Ethereum wallet in one press, and "Receive as" (the ETH kept private or sent on).
     // The page's own panels (the Bitcoin send, the ETH send) are on /btc/, so a finished swap's next step opens them there.
-    atomicP ||= Promise.all([import('/swap/atomic.js?cb=432caf87'), import('/btc/add-eth.js?cb=d423798a'), import('/btc/payout.js?cb=3b028d52')]).then(([mod, ae, po]) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir ,
+    atomicP ||= Promise.all([import('/swap/atomic.js?cb=caf9904d'), import('/btc/add-eth.js?cb=d423798a'), import('/btc/payout.js?cb=3b028d52')]).then(([mod, ae, po]) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir ,
       shield: ae.makeAddEth({ getUx }), payout: po.makePayout({ getUx }),
       onNext: ({ act }) => { if (act === 'send') location.href = '/btc/?dir=e2b#mybtc'; else if (act === 'withdraw') location.href = '/btc/#myeth'; } })));
     await atomicP;
@@ -2955,7 +2955,7 @@ function probeAtomic() {
     if (yes && $('#atomic')) enterAtomic(atomicAsk(p)); else load(p, { fresh: true });
   };
   if (!$('.mode') || (typeof navigator !== 'undefined' && navigator.connection?.saveData)) { settle(false); return; }
-  ATOM.probing = import('/swap/atomic-probe.js?cb=c6d5d8e2').then((m) => m.probeAtomic()).catch(() => false).then(settle);
+  ATOM.probing = import('/swap/atomic-probe.js?cb=99f7488b').then((m) => m.probeAtomic()).catch(() => false).then(settle);
 }
 function arrows(box, attr) {
   box.addEventListener('keydown', (e) => {
