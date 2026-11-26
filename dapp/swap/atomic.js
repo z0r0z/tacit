@@ -25,7 +25,7 @@
 import { esc, fmtUnits, parseUnits, plain, E10 } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=e5b9b386';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=1c203d2b';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=d694802c';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const NO_ANSWER = 'No answer just now. Nothing was sent. Try again soon.', RETRY_MS = [2000, 4000, 8000, 15000, 30000], RETRY_SHOWN = 3;
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
@@ -336,6 +336,17 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   // A quote for the same swap that gives less than the one seen, or costs more on Bitcoin: never swapped on unseen (the button asks for it to be accepted)
   const worseThan = (was, q) => !!was && was.dir === q.dir && was.pay === q.pay && !q.blocked && (q.get < was.get || Number(q.networkFeeSats ?? 0) > Number(was.networkFeeSats ?? 0) * 1.1 + 100 || Number(q.takeFeeSats ?? 0) > Number(was.takeFeeSats ?? 0) * 1.1 + 100);
   // `keep` leaves the quote shown until the new one lands (the lane's own refresh); an amount, direction or provider change clears it
+  // Whether the private balance covers an amount, asked of the pool side (which reads the pool): an amount at or above one that was short is short, one at or below one that
+  // was covered is covered, so typing a few digits more or less does not read the pool again. Kept for the balance it was asked at, and for 60 s.
+  const cm = { eth: null, at: 0, yes: -1n, no: null };
+  async function coversMemo(amount) {
+    if (cm.eth !== L.bal.eth || Date.now() - cm.at > 60000) { cm.eth = L.bal.eth; cm.at = Date.now(); cm.yes = -1n; cm.no = null; }
+    if (amount <= cm.yes) return true;
+    if (cm.no != null && amount >= cm.no) return false;
+    const ok = await pair.covers(amount).catch(() => null);
+    if (ok === true && amount > cm.yes) cm.yes = amount; else if (ok === false && (cm.no == null || amount < cm.no)) cm.no = amount;
+    return !!ok;
+  }
   function requote(immediate = false, keep = false) {
     clearTimeout(qTimer);
     seq++;
@@ -348,7 +359,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       const my = ++seq, dirNow = L.dir;
       try {
         // more than `available` says (it keeps back the fee of a cut) can still be locked from a note of exactly the amount: asked of the pool side, not guessed
-        if (dirNow === 'e2b' && p.covers && L.bal.eth != null && amount > L.bal.eth) { const ok = await p.covers(amount).catch(() => false); if (my !== seq) return; L.fits = { amt: amount, ok: !!ok }; }
+        if (dirNow === 'e2b' && p.covers && L.bal.eth != null && amount > L.bal.eth) { const ok = await coversMemo(amount); if (my !== seq) return; L.fits = { amt: amount, ok: !!ok }; }
         const q = await p.quote({ dir: dirNow, amount });
         if (my !== seq) return;
         // a renewed quote that gives less than the one shown (or costs more on Bitcoin) is not swapped on unseen: the button asks for the new numbers to be accepted
@@ -484,7 +495,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const mk = marketText(q.vsMarketBps), rows0 = [
       ['Price', L.dir === 'b2e' ? rateText(q.rate) : `1 ETH = ${tidy((1 / q.rate).toFixed(6))} BTC`, ''],
       ['Market', q.market ? (L.dir === 'b2e' ? rateText(q.market) : `1 ETH = ${tidy((1 / q.market).toFixed(6))} BTC`) : 'not available', q.market ? '' : 'warn'],
-      ...(mk ? [['You get', mk, q.blocked ? 'err' : q.vsMarketBps < -100 ? 'warn' : '']] : []),
+      ...(mk ? [q.vsMarketBps <= -5 && !q.blocked ? ['Fee included', `${(-q.vsMarketBps / 100).toFixed(2)}% against the market price`, q.vsMarketBps < -250 ? 'warn' : ''] : ['You get', mk, q.blocked ? 'err' : '']] : []),
       // (what a quote costs against the market is the row above: the engine's feeBps is that, not a fee the provider named, so it is not called one here)
       ...(q.split ? splitRows(q) : [['Provider', q.provider?.name || 'Provider', '']]),
       ...(Number(q.networkFeeSats) > 0 ? [['Network fee', `≈ ${Number(q.networkFeeSats).toLocaleString('en-US')} sats${q.split ? ' for all parts' : ''}`, '']] : []),

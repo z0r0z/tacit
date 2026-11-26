@@ -18,7 +18,7 @@ import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=1e46a17b';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=4c2ccb36';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
 import { makeLocalStore } from '/fastbridge-client.js?cb=00d4b6bc';
-import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=fcdca510';
+import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=ec59d56a';
 import { makeRateFeed, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=3bc6995c';
 import { ETH_NODES, batchSize } from '/eth-nodes.js';
 import { guardedStorage } from '/safe-storage.js';

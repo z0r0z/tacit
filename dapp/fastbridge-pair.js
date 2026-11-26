@@ -45,7 +45,7 @@ export const ETH_ASSET = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d
 
 export const PAIR_POLICY = {
   csvBlocks: 144, minCsv: 72, maxCsv: 288, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600, quoteMarginSecs: 120,
-  askMs: 12000, warnWorseBps: 100, maxWorseBps: 300, referenceFreshSecs: 120,
+  askMs: 12000, warnWorseBps: 250, maxWorseBps: 300, referenceFreshSecs: 120,
   // the market reading a quote is judged against: from at least this many sources that agree, and no further than maxMarketJumpBps from the last good reading of
   // the past marketMemoSecs (ETH / BTC does not move that far in a day; a reading that does is taken for a wrong one until it holds for that long)
   minMarketSources: 2, maxMarketJumpBps: 1500, marketMemoSecs: 86400,
@@ -525,8 +525,9 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     if (dir !== 'b2e' && dir !== 'e2b') throw new Error('the direction is not one this page makes');
     const want = BigInt(amount);
     if (want <= 0n) throw new Error('enter an amount');
-    const market = await reference();
-    const all = await providers();
+    // the price and the providers are read together (and the Bitcoin fee estimate is started now, for the lock's cost below: it is kept for a minute, so typing more does not read it again)
+    try { btc.feeRate && btc.feeRate().catch(() => {}); } catch { /* read below */ }
+    const [market, all] = await Promise.all([reference(), providers()]);
     const can = all.filter((p) => eligible(dir, p, want));
     if (!all.length) throw new Error('no provider is offering Bitcoin for ETH right now');
     if (dir === 'e2b' && !all.some((p) => p.e2b)) throw new Error('no provider is offering ETH for Bitcoin right now');
