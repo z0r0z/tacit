@@ -11,3 +11,4 @@ edition = "2021"
 
 [dependencies]
 cxfer-core = { path = "../cxfer-core" }
+btc-pool-zk-core = { path = "../btc-pool-zk-core" }

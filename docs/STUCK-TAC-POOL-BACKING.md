@@ -3,7 +3,7 @@
 Status: design + tests. No deployed contract, verifying key or ELF changes. Entry for
 `docs/STUCK-TAC-BOUNTY.md` option D.
 
-- Code: `contracts/sp1/confidential/provenance-anchor/` (crate `provenance-anchor`, 22 offline tests)
+- Code: `contracts/sp1/confidential/provenance-anchor/` (crate `provenance-anchor`, 26 offline tests)
 - Read first: `docs/STUCK-TAC-BOUNTY.md` §1, `contracts/sp1/confidential/DESIGN-btc-shielded-pool.md` §3
 - Fold it changes: `contracts/sp1/confidential/cxfer-core/src/burn_deposit.rs`
   (`fold_burn_deposit`, the `ncx > 256` bound), `contracts/sp1/confidential/src/reflect.rs` step 4
@@ -21,11 +21,13 @@ the etch.
 a pool-membership leaf for exactly this reason, and this entry does not relax that — it supplies the missing
 backing instead.
 
-**What it assumes.** Three things, worst first. (1) The caller's `boundary_ok` closure really verifies the
-cross-curve sigma, the range proofs and the commitment opening; this crate cannot run curve math offline, so
-a permissive closure credits anything the caller names. (2) `verify_btc_pool_spend` is sound; if it is not,
-the ledger inherits that. (3) The wire layout is `DESIGN-btc-shielded-pool.md` §3 as read, not as parsed
-from a real mainnet transaction.
+**What it assumes.** Two things now, worst first. (1) `verify_btc_pool_spend` is sound — the pool half of
+every exit is still the extension's proof, and the ledger inherits whatever that proof fails to say. It used
+to assume a third thing, that the caller's `boundary_ok` closure really verified the cross-curve sigma, the
+range proof and the opening; that assumption is gone, because `boundary_opens` now runs
+`btc-pool-zk-core::boundary::verify` and `cxfer_core::verify_pedersen_opening` in-crate, and
+`boundary_opens_verifies_a_real_prover_output_and_refuses_a_doctored_one` pins it against a vector the dapp prover itself produced. (2) The
+wire layout is `DESIGN-btc-shielded-pool.md` §3 as read, not as parsed from a real mainnet transaction.
 
 **Numbers.** Out of 4,546 unspent notes, 230 (5.06%) are over the history limit, pool exits not counted.
 At 100 TAC per bridge with no screening, a provider's dead balance is `0.0506 · L` per bridge: 50.6 TAC at
@@ -33,22 +35,26 @@ At 100 TAC per bridge with no screening, a provider's dead balance is `0.0506 ·
 covered class and an anchor is in reach, so the table is a bound (`≤`), not a projection to zero. The 5.06%
 is a share of *notes*, valued at par — I did not measure the value split.
 
-**Risks.** The ledger trusts the seam above; the two idempotence sets grow without bound like the spent set
-does; `Lineage::Anchored` shortening is argued, not machine-checked; the crate is unwired, so no digest or
-ELF actually changes yet. Adding `backing` to the committed set is a hard fork when it is wired — §7 says so
+**Risks.** The ledger trusts the pool-proof seam above; the two idempotence sets grow without bound like the
+spent set does; `Lineage::Anchored` shortening is argued, not machine-checked; the crate is unwired, so no
+digest or ELF actually changes yet. Adding `backing` to the committed set is a hard fork when it is wired — §7 says so
 instead of claiming digest compatibility.
 
 **What I did not test.** No prover, no verifying key, no live pool, no signet round trip. The wire format is
-pinned by reading two sources, not by parsing a real transaction. Nothing calls `admit_exit`; the fold-side
+pinned by reading two sources, not by parsing a real transaction; the boundary is the one exception, now pinned
+against a real prover vector. Nothing calls `admit_exit`; the fold-side
 change in §7 is a description, not code. The §6 residual — a note past the cap with no anchor in reach — is
 unmeasured.
 
-**Where this sits against the brief.** Option D: a design with tests and no deploy. No dependency is added
-(`cxfer-core` is a path dep inside the same tree), nothing is minified, no deployed contract or verifying
-key moves, and the outside file it relies on for its wire assumptions
-(`worker/src/btc-shielded-pool.js`, 657 lines) was read in full. `read_exit` mirrors two of its checks —
-`exit_vout is not an output of the carrier` and `exit scriptPubKey does not match dest_spk_hash` — and
-deliberately does **not** mirror three others; §10 risk 7 lists them.
+**Where this sits against the brief.** Option D: a design with tests and no deploy. No dependency leaves the
+tree (`cxfer-core` and `btc-pool-zk-core` are both path deps beside it, and the latter is already what the
+pool's own indexer path compiles), nothing is minified, no deployed contract or verifying key moves, and the
+outside file it relies on for its wire assumptions (`worker/src/btc-shielded-pool.js`, 657 lines) was read in
+full. `read_exit` now mirrors five of that file's six carrier checks — `exit_vout is not an output of the
+carrier`, `exit scriptPubKey does not match dest_spk_hash`, `carrier does not spend the bound outpoint`,
+`exit in a carrier whose vin[0] holds a transparent Tacit op`, and `exit_vout already claimed by an earlier
+exit or want`. The sixth, `nullifier already spent`, is the one it cannot mirror alone: it needs the pool's
+whole spent set, which is §10 risk 6's residual.
 
 ## 1. The problem, stated as an accounting gap
 
@@ -178,10 +184,13 @@ byte-for-byte as it does today.
 ## 3. Reading an exit out of a confirmed transaction
 
 `read_exit` authenticates a `T_BTC_SPEND` carrying an exit all the way to a block's txid root. Every field
-it depends on is either read back out of the confirmed bytes or attested by the caller's header chain —
-with two exceptions the earlier draft claimed did not exist, now closed: `exit_vout` must name an output
-the carrier actually has, and `dest_spk_hash` must be that output's script hash (§3 step 9). `value` and
-`blinding` are still the caller's, bound only to the boundary (§10, risk 1).
+it depends on is either read back out of the confirmed bytes or attested by the caller's header chain. The
+free witnesses the earlier drafts left open are closed: `exit_vout` must name an output the carrier has,
+`dest_spk_hash` must be that output's script hash, `bind` must be an outpoint the carrier spends, no other
+envelope in the carrier may already claim the same vout, and vin[0] must not carry a transparent Tacit op.
+`value` and `blinding` are still the caller's, but they are no longer unbound: `boundary_ok` is called with
+them and `boundary_opens` is the in-crate implementation, so a caller that wants the real check has it
+(§10, risk 1 is now about the pool proof alone).
 
 ```rust
 pub fn read_exit(
@@ -205,17 +214,28 @@ Checks, in order, each returning `None` on failure:
 4. `parse_spend` accepts the payload as a canonical `T_BTC_SPEND` (the `DESIGN-btc-shielded-pool.md`
    §3 rules; §4 below records where `btc-pool-core` disagrees with them).
 5. `body.asset == asset` — a spend of another asset cannot back this fold.
-6. `value != 0`.
-7. `pool_ok(body, pool_root)` — the pool-side seam (Halo2/SP1 verification against the root the indexer
+6. `carrier_spends_bind(tx, body.bind)` — the carrier spends the outpoint the body binds, or the body binds
+   none. Mirrors `carrier does not spend the bound outpoint`.
+7. `!vin0_holds_a_transparent_op(tx)` — vin[0] carries no transparent Tacit op. Mirrors `exit in a carrier
+   whose vin[0] holds a transparent Tacit op`.
+8. `value != 0`.
+9. `pool_ok(body, pool_root)` — the pool-side seam (Halo2/SP1 verification against the root the indexer
    committed at `h_anchor`).
-8. `body.exit.is_some()` — a spend that creates no transparent note anchors nothing.
-9. `parse_tx_output(tx, exit.exit_vout)` returns an output, and `sha256(scriptPubKey)` equals
+10. `body.exit.is_some()` — a spend that creates no transparent note anchors nothing.
+11. No envelope in the carrier claims `exit.exit_vout`, as an exit or a want. Mirrors `exit_vout already
+    claimed by an earlier exit or want`.
+12. `parse_tx_output(tx, exit.exit_vout)` returns an output, and `sha256(scriptPubKey)` equals
    `exit.dest_spk_hash` — the exit names an output this carrier actually has, and pays the script the body
    committed to. Mirrors `worker/src/btc-shielded-pool.js` (`exit_vout is not an output of the carrier`,
    `exit scriptPubKey does not match dest_spk_hash`). Without it `exit_vout` is a free witness: one
    confirmed exit could be forked into unlimited anchors and each would debit the ledger.
-10. `boundary_ok(exit.boundary, value, blinding)` — the exit's commitment opens to the claimed value.
-11. `commitment_hash_compressed(exit.boundary.c_secp)` — the DAG's identity for the note is the same
+13. `boundary_ok(exit.boundary, value, blinding)` — the exit's commitment opens to the claimed value. The
+    crate ships `boundary_opens` as the honest implementation: it verifies the 169-byte cross-curve sigma and
+    the 591-byte Bulletproofs+ range proof through `btc-pool-zk-core::boundary::verify` (already in-tree, the
+    same code the pool's indexer path uses) and the opening through
+    `cxfer_core::verify_pedersen_opening`. The seam stays so a guest can supply a cheaper equivalent, but the
+    entry no longer depends on the caller telling the truth.
+14. `commitment_hash_compressed(exit.boundary.c_secp)` — the DAG's identity for the note is the same
     `commitment_hash` the reflection stores for a transparent note.
 
 The result:
@@ -380,7 +400,7 @@ What *is* additive is the state, not the digest: the ledger is a new field, and 
 already exist in the reflection. That is what makes the change reviewable — but reviewable is not
 digest-compatible.
 
-## 8. What the 22 tests cover
+## 8. What the 26 tests cover
 
 All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, no pool).
 
@@ -407,10 +427,14 @@ All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, n
 | `admit_exit_refuses_an_anchor_in_another_asset` | one asset's backing cannot pay another asset's exit |
 | `valid_leaves_adds_each_anchor_once` | dedupe; the base set is never re-pointed |
 | `witness_reading_is_panic_free_on_every_truncation` | every prefix of a carrier; missing `OP_ENDIF`; trailing bytes; foreign magic |
+| `boundary_opens_verifies_a_real_prover_output_and_refuses_a_doctored_one` | the JS prover's own 825-byte boundary, pinned: accepted for its value and blinding, refused for a different value, a different blinding, a zero value, one flipped byte in the range proof, one flipped byte in the sigma, and a one-byte-short proof |
+| `read_exit_refuses_a_carrier_whose_vin0_holds_a_transparent_op` | `ctx.vin0TacitOp`: a transparent `0x39` in vin[0] refuses the exit; a pool op in vin[0] does not |
+| `read_exit_refuses_a_carrier_that_does_not_spend_the_bound_outpoint` | `s.bind`: a bind the carrier spends is accepted, a bind it does not spend is refused |
+| `read_exit_refuses_a_carrier_that_already_claims_the_same_vout` | `claimed(vout)`: two exits naming one vout are both refused, two exits on two outputs both read |
 | `spend_parse_is_panic_free_on_a_hostile_corpus` | 4 000 pseudo-random payloads, runaway `n_in` |
 
 Run: `cd contracts/sp1/confidential/provenance-anchor && cargo +stable test --offline`
-Result: `test result: ok. 22 passed; 0 failed`.
+Result: `test result: ok. 26 passed; 0 failed`.
 
 ## 9. What this does not do
 
@@ -447,27 +471,32 @@ Stated the way the brief asks, worst first.
    unresolved outpoint is a dangling input the DAG already rejects. I believe the argument, but it is an
    argument, not a machine-checked proof, and the re-anchoring path is exercised only on synthetic
    lineages in this crate — not against the real DAG.
-5. **Scope.** 1 932 lines of Rust (749 `lib.rs`, 1 183 `tests.rs`) for a design entry is more than the
+5. **Scope.** 2 437 lines of Rust (888 `lib.rs`, 1 549 `tests.rs`) for a design entry is more than the
    brief needs. If a maintainer wants less surface to review, the survivable cut is the whole `Lineage`
    half (§5), leaving the ledger and the exit reader: that is the part that is specific to pool exits, and
    it stands alone.
-6. **Three worker checks are not mirrored, and that is a gap.** The live path
-   (`worker/src/btc-shielded-pool.js`) enforces, in the same block as the two that `read_exit` now mirrors:
-   - `if (ctx.vin0TacitOp) return reject('exit in a carrier whose vin[0] holds a transparent Tacit op')`
-     — the crate never looks at `vin[0]`, so it will read an exit out of a carrier the worker would refuse;
-   - `if (claimed(s.exit.exitVout)) return reject('exit_vout already claimed by an earlier exit or want')`
-     — the crate has no per-carrier claimed-vout set, so two exits naming the same vout both pass it (the
-     ledger's `exited_at` catches the *same outpoint* twice, not two bodies naming one vout);
-   - `if (s.bind && ...) return reject('carrier does not spend the bound outpoint')` — `parse_spend` reads
-     `bind` into `SpendBody.bind` and `read_exit` never consults it, so a spend whose bound outpoint the
-     carrier does not spend is accepted. The worker's `ctx.inputs` is what this crate would need.
+6. **Five of the worker's six carrier checks are now mirrored; the sixth cannot be, alone.** This revision
+   closed the three gaps the previous one admitted, and each has a test that fails if the check is removed
+   (verified by mutation: flipping any one of them reddens exactly one test).
+   - `if (ctx.vin0TacitOp) return reject(...)` — `read_exit` now refuses a carrier whose vin[0] holds a
+     transparent Tacit op, and accepts one whose vin[0] holds a pool op, which is the worker's rule exactly.
+   - `if (claimed(s.exit.exitVout)) return reject(...)` — `carrier_claims_vout` walks every envelope in the
+     carrier, so two exits naming one vout are both refused at the read step rather than one of them being
+     caught later by the ledger's `exited_at`. Note the worker's set also holds *wants*, which this crate does
+     not fold; a want-claimed vout is only visible to us when the want rides the same carrier, and that is the
+     case the scan covers.
+   - `if (s.bind && ...) return reject('carrier does not spend the bound outpoint')` — `carrier_spends_bind`
+     compares `bind` byte-exactly against `extract_inputs`.
 
-   None of these is an exploit on its own, and all three belong to the fold-side wiring (§7), which is a
-   description rather than code. But a reviewer should not read "mirrors the worker" as "checks everything
-   the worker checks".
+   **Still not mirrored: `if (this.nullifiers.has(nf)) return reject('nullifier already spent')`.** That is the
+   pool's cross-block spent set; this crate sees one carrier and cannot reach it. It does not need to for the
+   accounting rule to be sound — a nullifier the pool already spent would have been refused by the fold before
+   the carrier was ever confirmed, so `pool_ok` (which the caller wires to the pool's own verification) is
+   where that check belongs. But a reviewer should read this list as five of six, not six of six.
 7. **What I did not test.** No prover, no verifying key, no live pool, no signet round trip. The wire
    format is pinned to `DESIGN-btc-shielded-pool.md` §3 and `worker/src/btc-shielded-pool.js` by reading,
-   not by parsing a real mainnet transaction. The N-bridge numbers in §6 are derived from the bounty's own
+   not by parsing a real mainnet transaction — except the boundary, which is now pinned against a real prover
+   vector. The N-bridge numbers in §6 are derived from the bounty's own
    2026-11-22 count, not from a fresh scan, and the pool-exit class is not in that count. The residual in
    §6 — a note past the cap with no admitted anchor in reach — is not measured.
 

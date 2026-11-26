@@ -283,6 +283,81 @@ fn fund_via_shield(l: &mut BackingLedger, carrier: &[u8; 32], asset: &[u8; 32], 
     );
 }
 
+
+/// A SegWit transaction with many inputs, each carrying its own witness stack. `segwit_tx` above is the
+/// one-input shape every fixture used; the three checks added for §10 risk 6 are all about the *carrier*, so
+/// they need a carrier that can hold more than one envelope.
+fn segwit_tx_multi(
+    inputs: &[([u8; 32], u32, Vec<Vec<u8>>)],
+    outputs: &[(u64, Vec<u8>)],
+) -> Vec<u8> {
+    let mut t = vec![0x02u8, 0, 0, 0, 0x00, 0x01];
+    push_varint(&mut t, inputs.len());
+    for (txid, vout, _) in inputs {
+        t.extend_from_slice(txid);
+        t.extend_from_slice(&vout.to_le_bytes());
+        t.push(0x00); // scriptSig len
+        t.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+    }
+    push_varint(&mut t, outputs.len());
+    for (value, spk) in outputs {
+        t.extend_from_slice(&value.to_le_bytes());
+        push_varint(&mut t, spk.len());
+        t.extend_from_slice(spk);
+    }
+    for (_, _, witness) in inputs {
+        push_varint(&mut t, witness.len());
+        for item in witness {
+            push_varint(&mut t, item.len());
+            t.extend_from_slice(item);
+        }
+    }
+    t.extend_from_slice(&[0, 0, 0, 0]); // locktime
+    t
+}
+
+/// A `T_BTC_SPEND` payload with a caller-chosen `bind` and `want`, encoded exactly as §3 lays it out.
+#[allow(clippy::too_many_arguments)]
+fn spend_full(
+    asset: &[u8; 32],
+    h_anchor: u32,
+    bind: &[u8; BIND_LEN],
+    nf: &[[u8; 32]],
+    exit_vout: Option<u32>,
+    dest_spk_hash: &[u8; 32],
+    boundary: &[u8],
+    want: Option<&[u8; WANT_LEN]>,
+) -> Vec<u8> {
+    let mut b = vec![T_BTC_SPEND];
+    b.extend_from_slice(asset);
+    b.extend_from_slice(&h_anchor.to_le_bytes());
+    b.extend_from_slice(bind);
+    b.push(nf.len() as u8);
+    for n in nf {
+        b.extend_from_slice(n);
+    }
+    b.push(0); // n_out = 0
+    match exit_vout {
+        None => b.push(0),
+        Some(v) => {
+            b.push(1);
+            b.extend_from_slice(&v.to_le_bytes());
+            b.extend_from_slice(dest_spk_hash);
+            b.extend_from_slice(boundary);
+        }
+    }
+    match want {
+        None => b.push(0),
+        Some(w) => {
+            b.push(1);
+            b.extend_from_slice(w);
+        }
+    }
+    b.extend_from_slice(&64u16.to_le_bytes());
+    b.extend_from_slice(&[0x77u8; 64]);
+    b
+}
+
 // ───────────────────────────── the ledger ─────────────────────────────
 
 #[test]
@@ -1181,3 +1256,294 @@ fn admit_exit_refuses_an_anchor_in_another_asset() {
         Some(())
     );
 }
+
+// ─────────────── §10 risk 6: the three worker checks that are now mirrored ───────────────
+
+/// A carrier whose vin[0] holds a transparent Tacit op is one the live pool refuses to read an exit out of
+/// (`ctx.vin0TacitOp`). Before this check, `read_exit` read the exit anyway and booked backing for a note the
+/// pool's own fold never creates.
+#[test]
+fn read_exit_refuses_a_carrier_whose_vin0_holds_a_transparent_op() {
+    let blind = [0x11u8; 32];
+    let value = 900u64;
+    let h = 800_000u32;
+    let good = exit_fixture(value, blind, h, 2);
+
+    // Control: the untouched fixture reads, so the refusal below is the new check and not the fixture.
+    assert!(
+        read_exit(&good.w, &ASSET, &|_, _| true, &|_, _, _| true).is_some(),
+        "control: the fixture must read before the hostile reshape"
+    );
+
+    // Same carrier, but vin[0] now carries a transparent op. `0x39` is T_CXFER_BOUND; any non-pool opcode has
+    // the same effect, because the worker's `vin0TacitOp` is "an envelope that is not a pool op".
+    let exit_body = envelope_script(&spend_with_exit(
+        &ASSET,
+        h,
+        &[[0xA1u8; 32], [0xA2u8; 32]],
+        2,
+        &c_secp_of(value, &blind),
+        &cxfer_core::bitcoin::sha256_once(&p2tr_script(&[0x44u8; 32])),
+        &boundary_bytes(&c_secp_of(value, &blind), &[0x66u8; 32]),
+    ));
+    let transparent = envelope_script(&{
+        let mut op = vec![0x39u8];
+        op.extend_from_slice(&[0x05u8; 40]);
+        op
+    });
+    let outs: Vec<(u64, Vec<u8>)> = vec![
+        (0u64, p2tr_script(&[0x50u8; 32])),
+        (0u64, p2tr_script(&[0x51u8; 32])),
+        (0u64, p2tr_script(&[0x44u8; 32])),
+    ];
+    let tx = segwit_tx_multi(
+        &[
+            ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], transparent]),
+            ([0x12u8; 32], 1, vec![vec![0xFFu8; 32], exit_body.clone()]),
+        ],
+        &outs,
+    );
+    let mut w = witness_for(&tx, [0x99u8; 32], value, blind);
+    w.vin = 1; // the exit rides the second input, which is legal for a T_BTC_SPEND
+    assert_eq!(
+        read_exit(&w, &ASSET, &|_, _| true, &|_, _, _| true),
+        None,
+        "vin[0] holds a transparent Tacit op, so the pool never accepts this carrier's exit"
+    );
+
+    // And a pool op in vin[0] is fine: the refusal is about *transparent* ops, not about vin[0] being used.
+    let pool0 = envelope_script(&spend_without_exit(&ASSET, &[0xA9u8; 32]));
+    let tx2 = segwit_tx_multi(
+        &[
+            ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], pool0]),
+            ([0x12u8; 32], 1, vec![vec![0xFFu8; 32], exit_body.clone()]),
+        ],
+        &outs,
+    );
+    let mut w2 = witness_for(&tx2, [0x99u8; 32], value, blind);
+    w2.vin = 1;
+    assert!(
+        read_exit(&w2, &ASSET, &|_, _| true, &|_, _, _| true).is_some(),
+        "a pool op in vin[0] is exactly what the worker allows"
+    );
+}
+
+/// `bind` names an outpoint the carrier must spend. The worker rejects a carrier that does not spend it; the
+/// crate read `bind` into the body and never looked. Without the check, a relayer quote could be satisfied by a
+/// carrier funded from somewhere else entirely.
+#[test]
+fn read_exit_refuses_a_carrier_that_does_not_spend_the_bound_outpoint() {
+    let blind = [0x11u8; 32];
+    let value = 900u64;
+    let h = 800_000u32;
+    let dest_spk = p2tr_script(&[0x44u8; 32]);
+    let dest_h = cxfer_core::bitcoin::sha256_once(&dest_spk);
+    let c_secp = c_secp_of(value, &blind);
+    let boundary = boundary_bytes(&c_secp, &[0x66u8; 32]);
+    let outs: Vec<(u64, Vec<u8>)> = vec![
+        (0u64, p2tr_script(&[0x50u8; 32])),
+        (0u64, p2tr_script(&[0x51u8; 32])),
+        (0u64, dest_spk.clone()),
+    ];
+
+    // The carrier spends `[0x11; 32]:0`. A bind naming exactly that is satisfied.
+    let spent = ([0x11u8; 32], 0u32);
+    let mut bind_ok = [0u8; BIND_LEN];
+    bind_ok[..32].copy_from_slice(&spent.0);
+    bind_ok[32..].copy_from_slice(&spent.1.to_le_bytes());
+    let body = spend_full(
+        &ASSET, h, &bind_ok, &[[0xA1u8; 32]], Some(2), &dest_h, &boundary, None,
+    );
+    let tx = segwit_tx(&[vec![0xFFu8; 32], envelope_script(&body)], &outs);
+    let w = witness_for(&tx, [0x99u8; 32], value, blind);
+    assert!(
+        read_exit(&w, &ASSET, &|_, _| true, &|_, _, _| true).is_some(),
+        "a bind the carrier really spends must be accepted"
+    );
+
+    // The same body, binding an outpoint this carrier does not spend: refused.
+    let mut bind_bad = [0u8; BIND_LEN];
+    bind_bad[..32].copy_from_slice(&[0xCCu8; 32]);
+    bind_bad[32..].copy_from_slice(&7u32.to_le_bytes());
+    let body_bad = spend_full(
+        &ASSET, h, &bind_bad, &[[0xA1u8; 32]], Some(2), &dest_h, &boundary, None,
+    );
+    let tx_bad = segwit_tx(&[vec![0xFFu8; 32], envelope_script(&body_bad)], &outs);
+    let w_bad = witness_for(&tx_bad, [0x99u8; 32], value, blind);
+    assert_eq!(
+        read_exit(&w_bad, &ASSET, &|_, _| true, &|_, _, _| true),
+        None,
+        "a bind naming an outpoint the carrier does not spend must be refused"
+    );
+}
+
+/// Two exits in one carrier naming the same `exit_vout` both used to pass `read_exit`; only the ledger's
+/// outpoint set caught them, and only after both were admitted. The worker refuses both with `claimed(vout)`.
+#[test]
+fn read_exit_refuses_a_carrier_that_already_claims_the_same_vout() {
+    let blind = [0x11u8; 32];
+    let value = 900u64;
+    let h = 800_000u32;
+    let dest_spk = p2tr_script(&[0x44u8; 32]);
+    let dest_h = cxfer_core::bitcoin::sha256_once(&dest_spk);
+    let c_secp = c_secp_of(value, &blind);
+    let boundary = boundary_bytes(&c_secp, &[0x66u8; 32]);
+    let outs: Vec<(u64, Vec<u8>)> = vec![
+        (0u64, p2tr_script(&[0x50u8; 32])),
+        (0u64, p2tr_script(&[0x51u8; 32])),
+        (0u64, dest_spk.clone()),
+    ];
+
+    // Two distinct spends (distinct nullifiers, so the pool relation is satisfied for both) that both name
+    // vout 2 as their exit.
+    let a = spend_full(&ASSET, h, &[0u8; BIND_LEN], &[[0xA1u8; 32]], Some(2), &dest_h, &boundary, None);
+    let b = spend_full(&ASSET, h, &[0u8; BIND_LEN], &[[0xA2u8; 32]], Some(2), &dest_h, &boundary, None);
+    let tx = segwit_tx_multi(
+        &[
+            ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], envelope_script(&a)]),
+            ([0x12u8; 32], 1, vec![vec![0xFFu8; 32], envelope_script(&b)]),
+        ],
+        &outs,
+    );
+    let mut w = witness_for(&tx, [0x99u8; 32], value, blind);
+    w.vin = 1;
+    assert_eq!(
+        read_exit(&w, &ASSET, &|_, _| true, &|_, _, _| true),
+        None,
+        "another envelope already claims vout 2 as its exit"
+    );
+
+    // The same two envelopes, but the second one's output is its own: both are readable, which is what stops
+    // this from being a blanket refusal of multi-spend carriers.
+    let c = spend_full(&ASSET, h, &[0u8; BIND_LEN], &[[0xA2u8; 32]], Some(1), &dest_h, &boundary, None);
+    let tx2 = segwit_tx_multi(
+        &[
+            ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], envelope_script(&a)]),
+            ([0x12u8; 32], 1, vec![vec![0xFFu8; 32], envelope_script(&c)]),
+        ],
+        &outs,
+    );
+    let mut w2 = witness_for(&tx2, [0x99u8; 32], value, blind);
+    w2.vin = 1;
+    // vout 1 pays 0x51 not 0x44, so this one is refused on the script binding instead — the point is that the
+    // claim check did not fire, so the failure is a different one. Assert the reason by using a matching
+    // carrier: point the body at vout 1 and give vout 1 the exit script.
+    let mut outs_ok = outs.clone();
+    outs_ok[1] = (0u64, dest_spk.clone());
+    let tx3 = segwit_tx_multi(
+        &[
+            ([0x11u8; 32], 0, vec![vec![0xFFu8; 32], envelope_script(&a)]),
+            ([0x12u8; 32], 1, vec![vec![0xFFu8; 32], envelope_script(&c)]),
+        ],
+        &outs_ok,
+    );
+    let mut w3 = witness_for(&tx3, [0x99u8; 32], value, blind);
+    w3.vin = 1;
+    assert!(
+        read_exit(&w3, &ASSET, &|_, _| true, &|_, _, _| true).is_some(),
+        "two exits on two different outputs of one carrier are both legitimate"
+    );
+}
+
+/// The seam that mattered most: `boundary_ok` was the caller's, so a caller that said yes to everything could
+/// mint backing against a boundary that proves nothing. `boundary_opens` verifies the sigma, the range proof and
+/// the opening in-crate, and this vector is the real dapp prover's output, pinned byte-for-byte.
+#[test]
+fn boundary_opens_verifies_a_real_prover_output_and_refuses_a_doctored_one() {
+    // `dapp/btc-pool-zk-boundary.js` `proveBoundary({ v: 12345n, rSecp: 0x1234abcdn, rBjj: 0x5678ef01n })`
+    // with seedKey 0x0102..20. If the Rust verifier and the JS prover ever disagree, this is the test that says
+    // so — the pool's own indexer path verifies the same bytes through the same `btc-pool-zk-core::boundary`.
+    const C_SECP: &str = "037f4f02c895d266927f80ef72955fec7e97a4c72e7a9a466605a846d16730871b";
+    const C_BJJ: &str = "483769acfbab8344cca7721c4750dbf3ab2b8d30d366f1c00aab0dfb705c7b9a";
+    const SIGMA: &str = "03342073ede9da9d686e7490617fade3ceae52d656be53418c18f1544bafb17a55766c0eb02b3855b0fe661431e221b4a92591ae3cd9ec8ccc7de3c95cfb26faae2d2d0c2e4b3609fe76ef9da27a02969820f8e97dbd9e964b2ca727a26533174e0df108a7f027d0f0809a2ab56387ad770b4a142e2baa692cfba12cfd2a4451d403c2524a4e62528e03e9050050f1b54809900e923d016f259744ad25f47c8520ca75f6eb639fc4fb";
+    const BPP: &str = "029fcaa4c6b7f88ea22ed45c87c42eb04ec99a6f81ade9c592274d7ea7472acbbf033af0d70dab7b9f5bb9113f1ed491db9b0386a705d556a481197c4433721fa986037053444b0e48afcd4587b20bcd4d74ad262ec4be82dab7430da674a51ed7a0f0415283b10f81fc7eafff7972c3670fbfe9a0cf372d11135ab832c1917c104cb9d4d27b3614e943fac5077de0e096ed712a2fb8d86e273a2769b7e811a3447852784bca6a0f6579151677cefb62c6be184b7661f79e54a034b6a8cb45b870c44d022eb4af8dca078adbbf3f19ef040c90a6b50197315b5440841febea3f8872a207027e86b43c17436f61aa685825b943f1c1537d4e6a0e3ef3d04d76e59b8eabdd750277c6505f1834367a9a227f645ccd5db53bbc5aa9efb524012c52234d5aac1e27036bcc3d4134cedea9ce581ca2b1358f37c915d8a4ec12fde8ef1b6fa5e7f29ec90338b83a49ce18c0f14df8124baeff507afaace42363af900d86834cb51e62f77b02343279d9142478f458e3249923d43c4a03822b276594b96d5957288d9bfc00c4020db69290200f75afc9206c46faed1e57c17cc79d03dcad46d257386eb2a38edd0398435b3dde2fc14bdfcafa76560701cb2a3157df9e503bfec0165961539c49bf03ab5fba9c22c27b4b1c35de796d64dec8c945b7a5e87dc89ba9ca3f2f91aaa55703a2e758e95317d06fcf853308465e5f398de2e72f4d5a0d82495015df829862d103a66e6834962db03f0231ccd27a9ebff420205fe6be233312b51bf5004f9af464035786e013776dac0b0d5bcc9d072b88ed91b5b1246c0c5b30f105effea7acf03c";
+
+    let sigma = hex_bytes(SIGMA);
+    let bpp = hex_bytes(BPP);
+    assert_eq!(sigma.len(), 169, "sigma is 169 bytes");
+    assert_eq!(bpp.len(), 591, "bpp is 591 bytes");
+    let mut proof = sigma.clone();
+    proof.extend_from_slice(&bpp);
+
+    let boundary = Boundary {
+        c_secp: hex_arr::<33>(C_SECP),
+        c_bjj: hex_arr::<32>(C_BJJ),
+        proof: &proof,
+    };
+    // The vector's blinding, big-endian, and its value: the real prover's statement.
+    let blinding = be32(0x1234abcd);
+    assert!(
+        boundary_opens(&boundary, 12_345, &blinding),
+        "the crate must verify the prover's own boundary, or the two implementations disagree"
+    );
+
+    // Every rejection below is one an attacker would try, and each must fail for its own reason.
+    assert!(
+        !boundary_opens(&boundary, 12_346, &blinding),
+        "a boundary cannot be reused for a different value"
+    );
+    assert!(
+        !boundary_opens(&boundary, 0, &blinding),
+        "a zero value is never an anchor"
+    );
+    assert!(
+        !boundary_opens(&boundary, 12_345, &be32(0x1234abce)),
+        "a boundary cannot be reused with a different blinding"
+    );
+
+    // One flipped byte in the range proof: the sigma still parses, so this is the BP+ verifier talking.
+    let mut tampered_bpp = proof.clone();
+    tampered_bpp[300] ^= 0x01;
+    let bad_bpp = Boundary {
+        c_secp: boundary.c_secp,
+        c_bjj: boundary.c_bjj,
+        proof: &tampered_bpp,
+    };
+    assert!(
+        !boundary_opens(&bad_bpp, 12_345, &blinding),
+        "a tampered range proof must not verify"
+    );
+
+    // One flipped byte in the sigma: the cross-curve binding breaks.
+    let mut tampered_sigma = proof.clone();
+    tampered_sigma[40] ^= 0x01;
+    let bad_sigma = Boundary {
+        c_secp: boundary.c_secp,
+        c_bjj: boundary.c_bjj,
+        proof: &tampered_sigma,
+    };
+    assert!(
+        !boundary_opens(&bad_sigma, 12_345, &blinding),
+        "a tampered cross-curve sigma must not verify"
+    );
+
+    // A truncated proof is refused by length, not read as a shorter valid one.
+    let short = Boundary {
+        c_secp: boundary.c_secp,
+        c_bjj: boundary.c_bjj,
+        proof: &proof[..proof.len() - 1],
+    };
+    assert!(!boundary_opens(&short, 12_345, &blinding), "a short proof is not a valid proof");
+}
+
+fn hex_bytes(s: &str) -> Vec<u8> {
+    (0..s.len() / 2)
+        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap_or(0))
+        .collect()
+}
+
+fn hex_arr<const N: usize>(s: &str) -> [u8; N] {
+    let v = hex_bytes(s);
+    assert_eq!(v.len(), N, "vector length");
+    let mut out = [0u8; N];
+    out.copy_from_slice(&v);
+    out
+}
+
+/// A u32 as a 32-byte big-endian scalar, which is how a blinding is written on the wire.
+fn be32(v: u32) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[28..].copy_from_slice(&v.to_be_bytes());
+    out
+}
+

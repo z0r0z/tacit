@@ -110,6 +110,40 @@ pub type ShieldProofCheck<'a> = &'a dyn Fn(&ShieldBody<'_>, &[u8; 32]) -> bool;
 /// run the curve math, this crate only consumes the answer.
 pub type BoundaryCheck<'a> = &'a dyn Fn(&Boundary<'_>, u64, &[u8; 32]) -> bool;
 
+/// The boundary verification this crate can now do itself, with no seam and no caller-supplied closure.
+///
+/// Until this existed, `boundary_ok` was the whole trust surface: a caller that returned `true` unconditionally
+/// could mint backing out of a boundary that proves nothing. `btc-pool-zk-core::boundary::verify` already
+/// verifies the 169-byte cross-curve sigma and the 591-byte Bulletproofs+ range proof in this tree — it is the
+/// same code the pool's own indexer path uses — so the only thing that was ever missing here was the opening
+/// check against the transparent commitment, which `cxfer_core::verify_pedersen_opening` does.
+///
+/// Refuses a zero value for the same reason the ledger does: a value-0 boundary crossing proves nothing about
+/// value and would let a prover pad the anchor set at no cost.
+pub fn boundary_opens(boundary: &Boundary<'_>, value: u64, blinding: &[u8; 32]) -> bool {
+    if value == 0 {
+        return false;
+    }
+    let mut raw = Vec::with_capacity(BOUNDARY_LEN);
+    raw.extend_from_slice(&boundary.c_secp);
+    raw.extend_from_slice(&boundary.c_bjj);
+    raw.extend_from_slice(boundary.proof);
+    // sigma + range proof, in-crate: this is `dapp/btc-pool-zk-boundary.js` `verifyBoundary` in Rust.
+    let bjj = match btc_pool_zk_core::boundary::verify_bytes(&raw) {
+        Some(p) => p,
+        None => return false,
+    };
+    if btc_pool_zk_core::pt_eq(&bjj, &btc_pool_zk_core::identity()) {
+        return false; // an identity BabyJub point is a boundary the pool's own indexer rejects
+    }
+    // The transparent half: `C_secp` must open to exactly the value and blinding being claimed, so a valid
+    // boundary cannot be reused for a different amount. Without this, `value` would be a free witness.
+    match cxfer_core::decompress(&boundary.c_secp) {
+        Some(c) => cxfer_core::verify_pedersen_opening(&c, value, &cxfer_core::scalar_reduce_be(blinding)),
+        None => false,
+    }
+}
+
 // ───────────────────────────── the backing ledger ─────────────────────────────
 
 /// One asset's backing: what the shielded pool took custody of, and what it has already handed back out.
@@ -457,6 +491,85 @@ pub struct ExitWitness {
     pub blinding: [u8; 32],
 }
 
+/// Reject an exit the live pool would refuse inside a carrier whose first input holds a transparent Tacit
+/// operation.
+///
+/// Mirrors `worker/src/btc-shielded-pool.js`: `carrierPoolEnvelopes` classifies the vin[0] envelope, and
+/// `acceptSpend` refuses an exit when it is not itself a pool op (`T_BTC_SHIELD` or `T_BTC_SPEND`). A
+/// `T_BTC_AGG` on vin[0] counts as a foreign op there, so it counts as one here. Reading an exit out of such
+/// a carrier would book backing for a note the pool's own fold never creates.
+///
+/// Absent envelope means no transparent op, which is the common case: a pool spend rides any input and its
+/// carrier's first input is usually a plain fee coin.
+fn vin0_holds_a_transparent_op(tx: &[u8]) -> bool {
+    match envelope_of_input(tx, 0) {
+        None => false,
+        // An empty payload cannot be a pool op either; treat it as hostile rather than as absent.
+        Some(p) => !matches!(p.first(), Some(&T_BTC_SHIELD) | Some(&T_BTC_SPEND)),
+    }
+}
+
+/// Whether the carrier actually spends the outpoint the spend body binds, or the body binds none.
+///
+/// Mirrors `if (s.bind && !ctx.inputs.some(...)) return reject('carrier does not spend the bound outpoint')`.
+/// `bind` is written in the same byte order a prevout uses (`bindBytes` in `dapp/btc-shielded-pool.js`
+/// reverses the display txid), so the comparison is byte-exact against `extract_inputs`, with no hex
+/// round-trip and no endianness decision for the caller to get wrong. All-zero means "no bind"; a body that
+/// binds a txid the carrier does not spend is refused, because the binding is what lets a relayer's quote
+/// name the coin that must fund its own envelope.
+fn carrier_spends_bind(tx: &[u8], bind: &[u8; BIND_LEN]) -> bool {
+    if *bind == [0u8; BIND_LEN] {
+        return true;
+    }
+    let mut txid = [0u8; 32];
+    txid.copy_from_slice(&bind[..32]);
+    let vout = u32::from_le_bytes([bind[32], bind[33], bind[34], bind[35]]);
+    match cxfer_core::bitcoin::extract_inputs(tx) {
+        Some(inputs) => inputs.iter().any(|(t, v)| *t == txid && *v == vout),
+        None => false, // unparseable inputs: fail closed, the carrier is not authenticated
+    }
+}
+
+/// Whether any other envelope in this carrier already claims `vout`, as an exit or a want.
+///
+/// Mirrors the worker's `claimed(vout)` set, which is keyed on `(carrier txid, vout)` and is therefore
+/// same-carrier by construction: `this.exits` holds exits accepted from this txid and `b.wants` holds wants
+/// claimed in this txid. A want claimed by a *different* carrier lives under a different key there, so this
+/// scan is the whole of that rule and not a narrowing of it.
+///
+/// This is what `read_exit` could not do while it saw one body: two exits in one carrier naming the same
+/// `exit_vout` both parsed, and the ledger's outpoint set would only catch them after the fact. Checking the
+/// carrier refuses both, which is the worker's behaviour and fails closed at the read step.
+fn carrier_claims_vout(tx: &[u8], our_vin: usize, vout: u32) -> bool {
+    let inputs = match cxfer_core::bitcoin::extract_inputs(tx) {
+        Some(i) => i,
+        None => return true, // unparseable carrier: fail closed
+    };
+    for vin in 0..inputs.len() {
+        let payload = match envelope_of_input(tx, vin) {
+            Some(p) => p,
+            None => continue, // that input carries no Tacit op
+        };
+        let body = match parse_spend(&payload) {
+            Some(b) => b,
+            None => continue, // not a T_BTC_SPEND: it claims no outpoint of this carrier
+        };
+        if vin != our_vin {
+            if let Some(e) = body.exit {
+                if e.exit_vout == vout {
+                    return true; // another spend already names this output as its exit
+                }
+            }
+        }
+        if let Some(w) = body.want {
+            if u32::from_le_bytes([w[0], w[1], w[2], w[3]]) == vout {
+                return true; // a want names it, whether that want is ours or another input's
+            }
+        }
+    }
+    false
+}
+
 /// An exit the rules admitted: the transparent note the provenance DAG may bottom out at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExitAnchor {
@@ -506,6 +619,15 @@ pub fn read_exit(
     if &body.asset != asset {
         return None; // a spend of another asset cannot back this fold
     }
+    // The carrier must spend the coin the body binds, and must not carry a transparent Tacit op in vin[0].
+    // Both are checks the live pool makes in the same block as the two below; without them this crate would
+    // read an exit out of a transaction the pool's own fold refuses. See §10 risk 6.
+    if !carrier_spends_bind(&w.tx, &body.bind) {
+        return None; // the bound outpoint is not an input: the envelope names a carrier it does not ride
+    }
+    if vin0_holds_a_transparent_op(&w.tx) {
+        return None; // vin[0] is a foreign Tacit op, so the pool never accepts this carrier's exit
+    }
     if w.value == 0 {
         return None; // a zero-value exit backs nothing and would let a prover pad the anchor set
     }
@@ -514,6 +636,23 @@ pub fn read_exit(
     }
 
     let exit = body.exit?;
+    // An exit and a want naming the same output would give one UTXO two claims. The ledger catches the
+    // exit-versus-exit case (`exited_at` is keyed on the outpoint), but not this one, and the live pool
+    // refuses it explicitly: `want and exit name the same output`. Wants themselves are outside this crate —
+    // it folds no want set — so a cross-body collision between an exit and another spend's want is the
+    // residual §10 risk 6 still carries.
+    if let Some(want) = body.want {
+        let want_vout = u32::from_le_bytes([want[0], want[1], want[2], want[3]]);
+        if want_vout == exit.exit_vout {
+            return None;
+        }
+    }
+    // No other envelope in this carrier may already claim the same output, as an exit or a want. This is the
+    // worker's `claimed(vout)` rule and it is the check that catches two exits naming one vout — the ledger's
+    // `exited_at` set would only catch that after both were read.
+    if carrier_claims_vout(&w.tx, w.vin, exit.exit_vout) {
+        return None;
+    }
     // The exit must name a REAL output of this carrier, and that output's script must hash to
     // `dest_spk_hash`. Without these two checks `exit_vout` and `dest_spk_hash` would be free witnesses:
     // a prover could name vout 7 on a one-output carrier, or fork one confirmed exit into unlimited
