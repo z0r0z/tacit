@@ -8,7 +8,7 @@
 //   m.totals        { b2e: { min, max, now }, e2b: same } over every provider (null for a direction none offers): the least taken, the most asked, the most takeable now
 //   estimate(m, dir, amount) -> { get, provider } | null       what the best provider would give for `amount`, before its own quote
 
-import { discoverProviders } from '/fast/discover.js?cb=08d71bf9';
+import { discoverProviders } from '/fast/discover.js?cb=9b85f002';
 import { makeRateFeed, chainlinkEthBtc, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=b392f6cc';
 import { ETH_NODES, batchSize } from '/eth-nodes.js';
 import { bodyType } from '/rpc-body.js';

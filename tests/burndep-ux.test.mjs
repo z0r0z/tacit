@@ -13,7 +13,7 @@ import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeBurnDepositUx, NOTE_MAX_RAW } from '../dapp/burndep-ux.js';
-import { makeBurnDepositKit, classifyConfidentialTx } from '../dapp/burn-deposit-bitcoin.js';
+import { makeBurnDepositKit, classifyConfidentialTx, extractInputs } from '../dapp/burn-deposit-bitcoin.js';
 import { ripemd160 } from '../dapp/vendor/tacit-deps.min.js';
 import { verifySchnorr, signSchnorr as bpSignSchnorr, SECP_N } from '../dapp/bulletproofs.js';
 import { recoverClaimDigest } from '../dapp/bridge-recover.js';
@@ -1602,13 +1602,66 @@ async function atRburnSigned() {
   const r = await ux.startReflected({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
   return { ux, r, seen, world, store, commit: stripHex(r.burn.commitTxid).toLowerCase(), reveal: stripHex(r.burn.txid).toLowerCase() };
 }
+// A bridge whose second transaction can never be mined (a coin it spends was spent elsewhere): Cancel brings what the first transaction holds back.
+function withSpends(world, spends) {
+  return async (url, opts) => {
+    const m = new URL(url).pathname.match(/\/tx\/([0-9a-f]{64})\/outspend\/(\d+)$/);
+    if (!m) return world.fetchImpl(url, opts);
+    const s = spends.get(`${m[1]}:${m[2]}`);
+    if (!s) return { ok: false, status: 404, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => (s === 'unspent' ? { spent: false } : { spent: true, txid: s.by, vin: 0, status: { confirmed: s.confirmed !== false, block_height: 800000 } }) };
+  };
+}
+async function atMigrateSigned({ noteSats = NOTE_SATS, funding = 30_000 } = {}) {
+  const world = makeWorld(), spends = new Map(), store = makeMemStorage();
+  const ux = makeUx({ ...world, fetchImpl: withSpends(world, spends) }, store);
+  const r = await ux.start({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: noteSats, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, fundingUtxo: { txid: FUND_TXID_1, vout: 0, value: funding }, feeRate: BASE_RATE });
+  const commit = stripHex(r.migrate.commitTxid).toLowerCase();
+  world.setChainTx(commit, { confirmed: true, vout: [] });
+  const sent = [];
+  world.chain.broadcastWithRetry = async (hex) => { if (hex === r.migrate.revealHex) throw new Error('sendrawtransaction RPC error: bad-txns-inputs-missingorspent'); sent.push(hex); return 'txid'; };
+  return { ux, r, spends, store, world, commit, sent, noteOp: `${NOTE_TXID}:${NOTE_VOUT}` };
+}
+const BY = 'cc'.repeat(32);
 {
-  const { ux, r, seen, world, store, commit, reveal } = await atRburnSigned();
-  seen.set(commit, 'present'); seen.set(reveal, 'absent');
-  world.chain.broadcastWithRetry = async () => { throw new Error('sendrawtransaction RPC error: bad-txns-inputs-missingorspent'); };
-  ok(await ux.cancelSigned(r.walletPub, r.id) === null && ux.list(r.walletPub).length === 0, 'a commit Bitcoin has whose reveal can never go (its TAC coin was spent elsewhere) is given up, not stuck');
+  const { ux, r, spends, store, commit, sent, noteOp } = await atMigrateSigned();
+  const tryCancel = async (opts) => { try { return await ux.cancelSigned(r.walletPub, r.id, opts); } catch (e) { return e.message; } };
+  ok(/could not read Bitcoin/.test(await tryCancel({ walletPriv: WALLET_PRIV }) || '') && ux.list(r.walletPub).length === 1, 'a coin whose spend cannot be read keeps the bridge');
+  spends.set(noteOp, 'unspent');
+  ok(/refused the second/.test(await tryCancel({ walletPriv: WALLET_PRIV }) || '') && ux.list(r.walletPub).length === 1, 'a coin nothing has spent keeps the bridge: its second transaction may still go');
+  spends.set(noteOp, { by: BY, confirmed: false });
+  ok(/refused the second/.test(await tryCancel({ walletPriv: WALLET_PRIV }) || '') && ux.list(r.walletPub).length === 1, 'a coin spent by a transaction not yet confirmed keeps the bridge');
+  spends.set(noteOp, { by: BY });
+  ok(/needs the wallet key/.test(await tryCancel() || '') && ux.list(r.walletPub).length === 1 && sent.length === 0, 'without the key nothing is dropped or sent');
+  spends.set(`${commit}:0`, 'unspent');
+  const out = await tryCancel({ walletPriv: WALLET_PRIV });
+  ok(out && out.gaveUp && out.spent.by === BY && out.swept && out.swept.sats > 25_000 && out.swept.sats < 30_000 && out.held == null, 'a second transaction that can never go is given up, and its first transaction\'s bitcoin is sent back');
+  ok(sent.length === 1 && out.swept.txid && ux.list(r.walletPub).length === 0, 'one transaction went out and the bridge left the page');
+  const parsed = extractInputs('0x' + sent[0]);
+  ok(parsed.length === 1 && parsed[0].prevTxid.replace(/^0x/, '') === commit.match(/../g).reverse().join('') && parsed[0].prevVout === 0, 'it spends the first transaction\'s output');
   const left = Array.from(store._raw.entries()).filter(([k]) => k.includes('-left:'));
-  ok(left.length === 1 && left[0][1].includes(r.burn.hex), 'the given-up bridge keeps its signed transactions on the side, so the commit output can still be swept');
+  ok(left.length === 1 && left[0][1].includes(r.migrate.revealHex) && left[0][1].includes(out.swept.txid), 'the bridge\'s signed transactions and the sweep are kept on the side');
+}
+{
+  const { ux, r, spends, store, commit, sent, noteOp } = await atMigrateSigned();
+  spends.set(noteOp, { by: BY }); spends.set(`${commit}:0`, { by: 'dd'.repeat(32) });
+  const out = await ux.cancelSigned(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+  ok(out && out.gaveUp && out.moved === 'dd'.repeat(32) && !out.swept && sent.length === 0 && ux.list(r.walletPub).length === 0, 'a first transaction\'s output already spent (an earlier sweep) is not swept twice');
+}
+{
+  const { ux, r, spends, store, commit, sent, noteOp, world } = await atMigrateSigned({ noteSats: 6_000, funding: 1_300 });
+  spends.set(noteOp, { by: BY }); spends.set(`${commit}:0`, 'unspent');
+  const out = await ux.cancelSigned(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+  ok(out && out.gaveUp && !out.swept && out.held > 0 && out.held < 1_300 && sent.length === 0 && ux.list(r.walletPub).length === 0, 'a first transaction that holds too little to be worth moving is dropped with nothing sent, and says what it held');
+}
+{
+  const { ux, r, spends, store, commit, world, noteOp } = await atMigrateSigned();
+  spends.set(noteOp, { by: BY }); spends.set(`${commit}:0`, 'unspent');
+  world.chain.broadcastWithRetry = async () => { throw new Error('bad-txns-inputs-missingorspent'); };
+  let msg = null; try { await ux.cancelSigned(r.walletPub, r.id, { walletPriv: WALLET_PRIV }); } catch (e) { msg = e.message; }
+  const left = Array.from(store._raw.entries()).filter(([k]) => k.includes('-left:'));
+  ok(/did not take the transaction that brings its bitcoin back/.test(msg || '') && ux.list(r.walletPub).length === 1, 'a sweep Bitcoin refuses keeps the bridge on the page, to try again');
+  ok(left.length === 1 && /"sweep"/.test(left[0][1]), 'and its sweep is kept on the side');
 }
 {
   const { ux, r, seen, world, commit, reveal } = await atRburnSigned();
@@ -1636,6 +1689,35 @@ async function atRburnSigned() {
   seen.set(commit, 'absent'); seen.set(reveal, 'absent');
   const gone = await ux.cancelSigned(r.walletPub, r.id);
   ok(gone === null && ux.list(r.walletPub).length === 0, 'with neither transaction on Bitcoin the bridge is dropped');
+}
+
+// A fast bridge and a regular bridge never take the same coin.
+{
+  const world = makeWorld(), spends = new Map(), store = makeMemStorage();
+  const ux = makeUx({ ...world, fetchImpl: withSpends(world, spends) }, store);
+  const fastKey = 'tacit-fastbridge-v1:mainnet:02ab:swap1';
+  const fast = (phase) => JSON.stringify({ id: 'swap1', role: 'bl', phase, noteInputs: [{ txid: NOTE_TXID, vout: NOTE_VOUT }], feeInputs: [{ txid: FUND_TXID_1, vout: 0 }] });
+  const startIt = async () => { try { return await ux.start({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, fundingUtxo: { txid: FUND_TXID_1, vout: 0, value: 30_000 }, feeRate: BASE_RATE }); } catch (e) { return e.message; } };
+  ok(!ux.isReserved(NOTE_TXID, NOTE_VOUT), 'sanity: nothing holds the note');
+  store.setItem(fastKey, fast('broadcast'));
+  ok(ux.isReserved(NOTE_TXID, NOTE_VOUT) && ux.isReserved(FUND_TXID_1, 0) && !ux.isReserved(FUND_TXID_2, 0), 'a fast bridge in progress reserves its note and the coin that pays its fee');
+  for (const phase of ['done', 'refunded', 'counter-took', 'aborted']) { store.setItem(fastKey, fast(phase)); ok(!ux.isReserved(NOTE_TXID, NOTE_VOUT), `a fast bridge that ended (${phase}) holds nothing`); }
+  store.setItem(fastKey, JSON.stringify({ id: 'p', role: 'reverse', phase: 'broadcast', noteInputs: [{ txid: NOTE_TXID, vout: NOTE_VOUT }] }));
+  ok(!ux.isReserved(NOTE_TXID, NOTE_VOUT), 'only a fast bridge that locks the key\'s own notes holds them');
+  store.setItem(fastKey, fast('refund-wait'));
+  ok(/already reserved/.test(await startIt()), 'a regular bridge cannot start on a note a fast bridge holds');
+  store.removeItem(fastKey);
+  spends.set(`${NOTE_TXID}:${NOTE_VOUT}`, { by: BY, confirmed: false });
+  ok(/already spent by another transaction/.test(await startIt()), 'nor on a note Bitcoin shows spent, even by a transaction not yet confirmed');
+  spends.set(`${NOTE_TXID}:${NOTE_VOUT}`, 'unspent');
+  const made = await startIt();
+  ok(made && made.stage === 'migrate-signed', 'a note nothing has spent starts as before');
+}
+{
+  const world = makeWorld(), spends = new Map();
+  const ux = makeUx({ ...world, fetchImpl: withSpends(world, spends) }, makeMemStorage());
+  const made = await ux.start({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, fundingUtxo: { txid: FUND_TXID_1, vout: 0, value: 30_000 }, feeRate: BASE_RATE });
+  ok(made.stage === 'migrate-signed', 'a spend that cannot be read does not stop a bridge from starting');
 }
 
 // A note newer than the attested state is not judged yet: preflight asks to wait, and a bridge holds before its burn.

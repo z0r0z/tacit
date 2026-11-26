@@ -42,7 +42,7 @@ export function pickNotes(notes, amount) {
   return null;
 }
 
-export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, policy: policyIn = {}, provider = null, now = () => Math.floor(Date.now() / 1000) }) {
+export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, policy: policyIn = {}, provider = null, taken = null, now = () => Math.floor(Date.now() / 1000) }) {
   const policy = { ...DEFAULT_POLICY, ...policyIn };
   const counter = typeof lp === 'string' ? makeHttpCounter({ base: lp }) : lp;
   const bl = makeBitcoinLocker({ seed, now, policy, store, btc, evm, counter });
@@ -94,7 +94,9 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
   async function freeNotes(notes) {
     const held = new Set();
     for (const r of await store.list()) if (!TERMINAL.has(r.phase) && r.role === 'bl') for (const i of r.noteInputs || []) held.add(`${i.txid}:${i.vout}`);
-    return held.size ? notes.filter((n) => !held.has(`${n.txid}:${n.vout}`)) : notes;
+    const free = held.size ? notes.filter((n) => !held.has(`${n.txid}:${n.vout}`)) : notes;
+    // `taken(txid, vout)`: the note is held by a bridge of another kind in this browser (the regular bridge's own records)
+    return typeof taken === 'function' ? free.filter((n) => { try { return !taken(n.txid, n.vout); } catch { return true; } }) : free;
   }
 
   // `avoid` (a Set of "txid:vout") are coins this lock must not fund itself from: by default the notes given, which carry TAC. A part of a split

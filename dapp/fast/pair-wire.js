@@ -17,16 +17,16 @@ import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, makeNodeQuorum, TRA
 import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=ab82771e';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=4c2ccb36';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
-import { makeLocalStore } from '/fastbridge-client.js?cb=00d4b6bc';
+import { makeLocalStore } from '/fastbridge-client.js?cb=09a13249';
 import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=94234f9c';
 import { makeRateFeed, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=b392f6cc';
 import { ETH_NODES, batchSize } from '/eth-nodes.js';
 import * as EN from '/eth-nodes.js';   // (a namespace: eth-nodes.js has no cache token)
 import { guardedStorage } from '/safe-storage.js';
 import { bodyType } from '/rpc-body.js';
-import { discoverProviders } from '/fast/discover.js?cb=08d71bf9';
+import { discoverProviders } from '/fast/discover.js?cb=9b85f002';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=34d3d208';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=e180928d';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();
