@@ -332,6 +332,25 @@ everything it does is logged; a failure is alerted (at most hourly per kind).
   contract's keeper buys TAC with it for the reserve in its own small, spaced buys. `/info` `buyback: { on, to, startedAt, owedEth, routedEth, feesEth, sends, tacBought, lastTx, lastAt }`:
   `routedEth` is what reached the contract, `tacBought` (TAC wei) the provider's share of the contract's buys since its first send, pro rata to its part of the
   contract's ETH at each buy.
+- **Shielding its own ETH** (`lib/shield.mjs`; off unless `FB_LP_AUTO_SHIELD=on`). ETH sent to the pool account (`poolAccount`, the Ethereum address of the key) is plain
+  ETH until it is deposited into the pool as private notes; with this on the provider does that itself, the step `tools/fastbridge-lp-shield.mjs <ETH> --eth --send` is by
+  hand (the tool and the daemon share `lib/shield-core.mjs`). `FB_LP_SHIELD_RESERVE_ETH` (0.02, at least 0.0005) is the public ETH it never touches, for gas;
+  `FB_LP_SHIELD_MIN_ETH` (0.02) the smallest deposit; `FB_LP_SHIELD_EVERY_SECS` (600) the least gap between deposits. It deposits the balance less the reserve (whole 1e-8 units),
+  only while nothing is under way on the forward side (no open swap, hold or promise), one deposit at a time. Its state is `dataDir/upkeep/shield.json`
+  (`nextIndex`, and `pending` with the index, amount, account nonce and transaction): the pending deposit is written before it is sent, so a restart waits for it and settles it, and
+  never sends it again. The key's next wrap index is kept there; it is read from the pool's history (minutes) only when none is kept, once. Each deposit is first run as a call:
+  one that would revert is not sent, and a used index (`DepositExists`) stops auto-shield with an alert, to read the history again at the next start. A deposit whose settle fails, or
+  that reverted, also stops it with an alert (the deposit is on the chain, the restart settles it). ETH that falls by 0.01 or more with nothing of the provider's under way is alerted
+  and skipped. One log line per action (`auto-shield: ...`); `/info` `refill.autoShield: { on, halted, pending, shielded }`.
+- **Low-balance alerts** (always on; `lib/refill-watch.mjs`). Each goes through the alert (webhook, below), is said when it begins and again every four hours while it lasts, and
+  once more, as an info, when it ends:
+  `private ETH to lend is low` (free pool ETH under `FB_LP_ALERT_LOW_ETH`, 0.05: send ETH to `poolAccount`), `Bitcoin is low` (sats at the main and reverse addresses under
+  `FB_LP_ALERT_LOW_SATS`, 100000: send BTC to the address named), `the pool account is under its gas reserve` (public ETH under the reserve: send ETH to `poolAccount`) and
+  `ETH ... has sat unshielded` (public ETH over the reserve and the smallest deposit for 30 minutes with auto-shield off: run the tool or switch it on). `/info` shows the same
+  as `refill: { poolAccount, btcAddresses, freeEth, lowEth, sats, lowSats, publicEth, gasReserveEth, minChunkEth, alerting, autoShield }` (ETH in ETH, no secrets).
+
+To turn it on, the owner sets `FB_LP_AUTO_SHIELD=on` and `FB_LP_ALERT_WEBHOOK=<a Slack or Discord incoming-webhook URL>` in the service's environment on Render (a redeploy
+applies them). With no webhook the alerts are in the log only.
 
 ## Watching it
 

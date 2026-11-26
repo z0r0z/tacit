@@ -6,6 +6,7 @@
 //   FB_LP_KEY=<64 hex>        the LP's key: its Bitcoin wallet, its pool identity, the root of its swap seed. Env only.
 //   FB_LP_CONFIG=<path>       the config file (README.md). Default ./fastbridge-lp/config.json
 //   FB_LP_ALERT_WEBHOOK=<url> optional: alerts are POSTed there as JSON as well as logged
+//   FB_LP_AUTO_SHIELD=on      a pair provider shields the ETH sent to its pool account (FB_LP_SHIELD_RESERVE_ETH, _MIN_ETH, _EVERY_SECS; FB_LP_ALERT_LOW_ETH, _LOW_SATS: lib/shield.mjs, lib/refill-watch.mjs)
 //   FB_LP_TRACE_RPCS=<urls>   the nodes that trace a transaction (comma separated, an own archive node first): how a claim sent through another contract is read
 //   PORT, FB_LP_DATA_DIR, FB_LP_NAME, FB_LP_BOARDS, FB_LP_MIN_AMOUNT, FB_LP_MAX_AMOUNT, FB_LP_FEE_BPS, FB_LP_FLAT_FEE   optional: set over the config (lib/env-config.mjs)
 //   node fastbridge-lp/server.mjs [--dry-run]     (Node 22; run from the repository root)
@@ -270,7 +271,7 @@ else if (ropts) {
 }
 if (PAIR && !DRY) {
   const { wireAutomation } = await import('./lib/automation-wire.mjs');
-  const auto = await wireAutomation({ C, key, prims, btc, tacit, ux, evm, service, swapStore, quoteStore, rside, rateFeed, poolTurn, data, keccak256: keccak_256, log, alert, setLean: (b) => { leanBps = b; } });
+  const auto = await wireAutomation({ C, key, prims, btc, tacit, ux, evm, service, swapStore, quoteStore, rside, rateFeed, poolTurn, turn, data, keccak256: keccak_256, log, alert, setLean: (b) => { leanBps = b; } });
   if (auto) handle = auto.wrap(handle);
 }
 // /info says what the flat fees follow
