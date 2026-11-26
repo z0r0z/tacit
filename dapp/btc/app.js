@@ -2,7 +2,7 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=60514f49';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=c7da6709';
 import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=71b3b555';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
@@ -40,7 +40,14 @@ function notify(m) {
   clearTimeout(sayTimer); sayTimer = setTimeout(() => { el.hidden = true; }, 5000);
   if (document.hidden) document.title = `• ${m} · ${TITLE}`;
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden) document.title = TITLE; });
+// While a swap is under way the tab says so in its title, seen or hidden, so a tab among many is not closed by mistake; it is put back when none is left
+let underway = false;
+const UNDERWAY = 'Swap under way, keep open';
+function titleFor(recs) {
+  underway = recs.some((r) => r.state === 'working');
+  document.title = underway ? `${UNDERWAY} · ${TITLE}` : TITLE;
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) document.title = underway ? `${UNDERWAY} · ${TITLE}` : TITLE; });
 
 // ── the market: one read shared by the lane and the providers' list, again each minute while the page is seen ──
 let mkP = null, mkAt = 0;
@@ -203,7 +210,7 @@ const lane = makeAtomicLane({
   host: $('atomic'), recsHost: $('mine-list'), notify, wallet: () => null, provider: () => connectedInjected(), getUx, market, dir: first.dir,
   shield: makeAddEth({ getUx }), payout,
   onState: () => follow(lane.state()),
-  onRecs: (recs) => { for (const r of recs) recDir.set(r.id, r.dir); paintMine(recs); panel?.paint(); paintEth(); },
+  onRecs: (recs) => { titleFor(recs); for (const r of recs) recDir.set(r.id, r.dir); paintMine(recs); panel?.paint(); paintEth(); },
   onBal: () => { panel?.paint(); paintEth(); },
   onOpen: () => { panel?.paint(); paintEth(); },
   // a finished swap's "Send BTC": the panel's send, the amount that arrived filled in

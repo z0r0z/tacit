@@ -204,7 +204,16 @@ export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip 
     // the page has to be back by the pool deadline: a claim by the provider then gives the BTC, which must be taken before the provider's own refund opens (at least
     // claimSlackSecs after the deadline, checked when the ETH is locked); with no claim, the ETH comes back after it
     backBy: state === 'working' && rec.deadline ? rec.deadline : null,
+    // the hard limit: the provider's BTC returns to it once its timelock has run, and from then a claim it made on Ethereum leaves it both. Counted from the lock's
+    // block with blocks as fast as the lock check assumes (5 min), so the real time is later; with the block unknown, the deadline plus the slack the lock check demanded.
+    takeBy: state === 'working' && rec.deadline ? takeBy(rec, now(), tip) : null,
   };
+}
+const FAST_BLOCK_SECS = 300, CLAIM_SLACK_SECS = 7200;
+function takeBy(rec, nowSecs, tip) {
+  const h = Number(rec.lockHeight), csv = Number(rec.csvBlocks), tipH = tip && Number(tip.height);
+  if (h > 0 && csv > 0 && tipH > 0) return nowSecs + Math.max(0, h + csv - 1 - tipH) * FAST_BLOCK_SECS;
+  return Number(rec.deadline) + CLAIM_SLACK_SECS;
 }
 
 
