@@ -625,6 +625,8 @@ const PINNED_PAGES = [
   { name: 'admin/proof-market/index.html', file: join(DAPP_DIR, 'admin', 'proof-market', 'index.html'), script: INLINE_CLASSIC, ...HASH_ONLY },
   // the gas relay's deploy page: the same shape, for an ownerless contract with no arguments
   { name: 'admin/gas-relay/index.html', file: join(DAPP_DIR, 'admin', 'gas-relay', 'index.html'), script: INLINE_CLASSIC, ...HASH_ONLY },
+  // the small redirect pages and the chain admin page: each pins its one classic inline script the same way
+  ...['swap', 'trade/cbtc', 'trade/teth', 'admin/tacit-chain'].map((dir) => ({ name: `${dir}/index.html`, file: join(DAPP_DIR, ...dir.split('/'), 'index.html'), script: INLINE_CLASSIC, ...HASH_ONLY })),
 ];
 function updatePinnedCsp(page) {
   const htmlText = readFileSync(page.file).toString('utf8');
