@@ -54,6 +54,7 @@ async function untilConfirmed(txid, label) {
 }
 async function broadcastSaved(name, pair) {
   if (!S[name]) { S[name] = pair; keep(); }
+  if (await confirmed(S[name].revealTxid)) return;
   await chain.broadcast({ commitHex: S[name].commitHex, revealHex: S[name].revealHex });
   log('sent', { step: name, commit: S[name].commitTxid, reveal: S[name].revealTxid });
 }
@@ -114,7 +115,7 @@ const got = ((holdings instanceof Map ? holdings.get(assetIdHex) : null) || {}).
 const found = got.find((x) => x.utxo && x.utxo.txid === S.recycle.revealTxid && x.utxo.vout === 0 && BigInt(x.amount) === NOTE && !x.stealthTweakedSk);
 assert.ok(found, 'the reverse key did not scan the recycled output at vout 0');
 S.verified = { txid: S.recycle.revealTxid, vout: 0, amount: String(found.amount), assetIdHex, mainAddress: main.wallet.address(), reverseAddress: reverse.wallet.address() };
-const rtx = await esplora(`/tx/${S.recycle.revealTxid}`).catch(() => null);
+const rtx = await chain.fetchTx(S.recycle.revealTxid).catch(() => null);
 if (rtx) {
   const reserveOut = (rtx.vout || []).find((x, i) => i !== 0 && Number(x.value) >= RESERVE_SATS && x.scriptpubkey_address === S.verified.mainAddress);
   assert.ok(reserveOut, 'the recycle reveal did not carry its sats-change reserve at the main key');

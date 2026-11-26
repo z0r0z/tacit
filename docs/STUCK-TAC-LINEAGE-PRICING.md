@@ -74,6 +74,15 @@ and the 5,000-unit recycle reveal
 [`699884f8...d3104868`](https://mempool.space/signet/tx/699884f8bbf2eed4fe538138c3f390b3177972f8023a954d3c4880f4d3104868).
 This proves the real broadcast/scan path for the exact note movement; it is not a TAC pool-liquidity proof and the reverse sale itself
 remains machine-tested offline.
+
+A second public-signet drill exercises the reserve and CPFP path. The reserve-enabled recycle reveal
+[`0a609e66...e4c546f6`](https://mempool.space/signet/tx/0a609e66e1d5c6a239f391773c48fdd9ddbe61738279446e61010422e4c546f6)
+carried exactly 15,000 sats of ordinary main-key change at vout 1 beside the 5,000-unit confidential note at vout 0, and the note was
+then found by the reverse-key scan. The CPFP child
+[`cc774678...289ccd77`](https://mempool.space/signet/tx/cc774678e746c7dea84dd6a4edc5922a45d9f015ab78c6f9bffa8e20289ccd77)
+spent only that reveal reserve output, never the confidential note output, paid an 11,950-sat package-aware fee for the 556-vB
+commit+reveal package plus child at a 20 sat/vB target, and confirmed in the same block as its parents. This proves live construction,
+relay acceptance and confirmation of the bump path; it does not prove that a real fee market required that bump.
 - `stuckRecycle.enabled` defaults on only when the reverse side is on, and can be disabled in config or with `FB_LP_STUCK_RECYCLE=off`. `stuckRecycle.cpfp.enabled` controls only the stalled-transfer CPFP child; `bumpReserveSats` is reserve liquidity returned as change unless a bump is needed. Manual `recoveredSwaps` / `FB_LP_RECOVERED_SWAPS` remains available for notes recovered outside this loop.
 
 ## Numbers
@@ -137,10 +146,11 @@ node tests/fastbridge-lineage-pricing.test.mjs
 node tests/fastbridge-lineage-pricing-sim.test.mjs
 node tests/fastbridge-stuck-recycle.test.mjs
 node tests/fastbridge-reverse-service.test.mjs
-# live public-signet rehearsal, with a funded signet key file:
+# live public-signet rehearsals, with a funded signet key file:
 node tests/fastbridge-signet-recycle.mjs
+FB_CPFP_PARENT=<reveal-txid> node tests/fastbridge-signet-cpfp.mjs
 node tests/fastbridge-wire.test.mjs
 node tests/fastbridge-lp-env.test.mjs
 ```
 
-Not tested: a live mainnet or signet fast-bridge swap, a real reverse sale of a recycled note, a live fee-market CPFP of a stalled recycle transfer (the construction and anchor selection are machine-tested), the real reflection service's latency on a maximally long history, browser UI copy, and market measurement of actual haircuts. No contracts, keys, pool parameters or deployed services change.
+Not tested: a live mainnet or signet fast-bridge swap, a real reverse sale of a recycled note, a CPFP bump in a fee market that actually required it (the reveal-reserve child was broadcast and confirmed on public signet), the real reflection service's latency on a maximally long history, browser UI copy, and market measurement of actual haircuts. No contracts, keys, pool parameters or deployed services change.
