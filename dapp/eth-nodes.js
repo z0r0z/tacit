@@ -1,29 +1,25 @@
 // a namespace import, and `?.`: this file and wallet-prompts.js are served without a cache token, so for a few minutes after a change a visit can hold one of them new and the other old
 import * as prompts from './wallet-prompts.js';
 
-// BuidlGuidl sits last but the shared key: its cap is per ORIGIN (every visitor of tacit.finance together: 4,000 units an hour, then 40,000 a day), and it was
-// used up when read on 2026-11-14 and again on 2026-11-25 ("retry in 17997 s"), so each new browser met it as a failure before the health record learned it.
+// Keep retired or origin-blocked endpoints out of the browser retry set. A failed fallback still creates a failed-resource
+// console entry and spends time before the next healthy node is tried.
 export const ETH_NODES = [
   'https://ethereum-rpc.publicnode.com',
   'https://tacit-node-gw.onrender.com/eth',
   'https://eth.drpc.org',
   'https://1.rpc.thirdweb.com',
   'https://ethereum-json-rpc.stakely.io',
-  // Last resorts: they answer a browser with a 429 (no CORS headers, so the console shows a CORS block) or are capped per origin, and a browser prints a line for every failed request.
+  // Last resorts: they answer a browser with a 429 (no CORS headers, so the console shows a CORS block), and a browser prints a line for every failed request.
   'https://rpc.mevblocker.io',
   'https://eth-mainnet.public.blastapi.io',
-  'https://1rpc.io/eth',
-  'https://mainnet.rpc.buidlguidl.com',
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
 ];
 export const ETH_LOG_NODES = [
   'https://ethereum-rpc.publicnode.com',
   'https://tacit-node-gw.onrender.com/eth',
   'https://ethereum-json-rpc.stakely.io',
-  'https://1rpc.io/eth',
   'https://rpc.mevblocker.io',
   'https://rpc.mevblocker.io/fast',
-  'https://mainnet.rpc.buidlguidl.com',
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
 ];
 export const ETH_ARCHIVE_NODES = [
@@ -31,7 +27,6 @@ export const ETH_ARCHIVE_NODES = [
   'https://1.rpc.thirdweb.com',
   'https://rpc.mevblocker.io',
   'https://eth-mainnet.public.blastapi.io',
-  'https://mainnet.rpc.buidlguidl.com',
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
 ];
 

@@ -7,7 +7,6 @@ import assert from 'node:assert/strict';
 import { refuses, logSpan, isShared, batchSize, ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES, BASE_NODES, ROBINHOOD_NODES } from '../dapp/eth-nodes.js';
 import { hedgedRpc } from '../dapp/trade/rpc.js';
 import { jsonRpc } from '../dapp/evm-pool-wallet.js';
-import { bodyType } from '../dapp/rpc-body.js';
 import { makeConfidentialEvmLog } from '../dapp/confidential-evm-log.js';
 import { keccak_256 } from '@noble/hashes/sha3';
 
@@ -124,19 +123,10 @@ await test('the key every visitor shares is asked last: only nodereal is shared,
 
 const BUIDLGUIDL = 'https://mainnet.rpc.buidlguidl.com';
 
-await test('BuidlGuidl\'s node (measured: logs complete over 600,000 blocks in 10,000-block chunks, old state at every depth) sits in all three lists ahead of the shared key', () => {
-  assert.equal(logSpan(BUIDLGUIDL), 10_000);
-  assert.equal(refuses(BUIDLGUIDL, 'eth_getLogs', logs(HEAD - 9999, HEAD)), false, '10,000 blocks');
-  assert.equal(refuses(BUIDLGUIDL, 'eth_getLogs', logs(HEAD - 10_000, HEAD)), true, '10,001 blocks');
-  assert.equal(refuses(BUIDLGUIDL, 'eth_getLogs', logs(HEAD - 600_000, HEAD - 590_001), HEAD), false, 'an old chunk is served, unlike publicnode');
-  assert.equal(refuses(BUIDLGUIDL, 'eth_getBalance', ['0x00', hex(HEAD - 5_000_000)]), false, 'old state is served');
-  assert.equal(isShared(BUIDLGUIDL), false, 'its limit is per IP, not one quota for every visitor');
-  assert.equal(bodyType(BUIDLGUIDL), 'text/plain;charset=UTF-8', 'it takes a text/plain body, so a read needs no CORS preflight');
+await test('retired or origin-blocked mainnet endpoints stay out of the browser lists', () => {
   for (const list of [ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES]) {
-    assert.ok(list.includes(BUIDLGUIDL));
-    assert.ok(list.indexOf(BUIDLGUIDL) < list.indexOf(NODEREAL));
-    // its quota is the whole site's (per origin) and is used up for hours at a time: every node with a quota of its own is asked first
-    assert.equal(list.indexOf(BUIDLGUIDL), list.indexOf(NODEREAL) - 1, 'last but the shared key');
+    assert.ok(!list.includes(BUIDLGUIDL));
+    assert.ok(!list.includes(ONERPC));
   }
 });
 
