@@ -1,8 +1,10 @@
-# Stuck TAC: exact-note pricing with exposure caps
+# Stuck TAC: exact-note pricing, exposure caps and reverse recycling
 
-This entry is the pricing-and-policy rule of option C. It lets a fast-bridge provider take clean, long-history and pool-exit TAC at
-different fees, binds the quote to the exact Bitcoin note outpoints the lock must spend, and caps how much stuck face value the
-provider is willing to hold. The provider enforces all three before it locks anything in the pool.
+This is a mixed entry: the pricing-and-policy rule of option C plus the smallest useful part of option B. It lets a fast-bridge
+provider take clean, long-history and pool-exit TAC at different fees, binds the quote to the exact Bitcoin note outpoints the lock
+must spend, caps how much unsold stuck face value the provider is willing to hold, and moves completed stuck takes onto the reverse
+side's dedicated address so they can be sold back into pool TAC. The provider enforces the price, exact inputs and cap before it
+locks anything in the pool.
 
 ## What it does
 
@@ -43,10 +45,26 @@ checks the class cap. A cheaper clean quote cannot be spent as long or pool-exit
 is accepted if the cap has room. This happens before the provider's pool lock is built. With `anyTac: false`, pool-exit inputs are
 still refused outright, while long inputs can be priced rather than treated as a binary refusal.
 
-Caps count stuck face value in active reservations, in-flight swaps, and completed swaps not yet recovered. Refunded, rejected,
-aborted and lost swaps do not count because the provider did not keep the note. Since this entry does not implement a recovery
-loop, the operator marks a completed swap as recovered by adding its swap id to top-level `recoveredSwaps` in the config and
-restarting (or with comma-separated `FB_LP_RECOVERED_SWAPS`); until then a completed stuck note conservatively remains exposure. This is crude but cannot silently undercount.
+Caps count stuck face value in active reservations, in-flight swaps, and completed swaps not yet made saleable. Refunded, rejected,
+aborted and lost swaps do not count because the provider did not keep the note.
+
+### Reverse recycling loop
+
+When the daemon's reverse side is enabled, `fastbridge-lp/lib/stuck-recycle.mjs` watches completed forward swaps whose lock inputs
+were classed `long` or `pool-exit`. A completed take writes the acquired TAC as the first note output of the take transaction. The
+recycler selects exactly that outpoint (`<take txid>:0`), never arbitrary stock at the provider's main address, and transfers the
+whole note to the reverse side's derived Bitcoin public key. Once the transfer confirms, the reverse side's ordinary inventory scan
+sees the note and can sell it through `/reverse/...` like any other reverse inventory.
+
+Safety properties:
+
+- key separation is kept: the main key signs the transfer, the reverse key only receives the note, and neither side takes custody of user funds;
+- the first sighting after startup is a dry run and is only logged; a later tick sends at most `stuckRecycle.maxPerTick` (default 1);
+- the transfer is forced to the exact take note, so market-maker stock or clean proceeds at the same address are not spent;
+- clean-class proceeds are ignored;
+- a broadcast error is recorded and not retried automatically, because the failure may be after a relay accepted the reveal; the operator inspects that swap before touching it;
+- when the move confirms the forward swap record is marked `stuckRecoveredAt`, so the note stops counting against lineage caps. The cap therefore bounds stuck value that is not yet saleable as reverse inventory, while the reverse side's own `maxTac` bound governs what is locked in reverse sales;
+- `stuckRecycle.enabled` defaults on only when the reverse side is on, and can be disabled in config or with `FB_LP_STUCK_RECYCLE=off`. Manual `recoveredSwaps` / `FB_LP_RECOVERED_SWAPS` remains available for notes recovered outside this loop.
 
 ## Numbers
 
@@ -86,27 +104,28 @@ while that mistake is being corrected.
 
 ## Assumptions and risks
 
-- The operator can estimate a haircut for each class. There is no market oracle in this entry and no sale is attempted.
+- The operator can estimate a haircut for each class. The recycling loop provides a sale rail, but this entry still has no market oracle and does not promise a clearing price.
 - `pool-exit` is deliberately conservative for every proof-unfollowable history, not only opcode `0x6d` pool exits.
 - A multi-input lock is priced by its worst input. This is simple and safe, but one bad input makes the whole lock pay the worst class.
 - Exact-outpoint quotes are strict. The page's quote-time pick can change before the lock is built if notes are spent or locked by another tab. The provider-side offer check is authoritative, so a mismatch never prices stuck TAC as clean; it can still cost the user time and Bitcoin fees if an offer is refused after the lock confirms.
 - Classification adds lineage reads before quoting and again when the offer is checked. The UX cache reduces repeats, but a very long history can still be expensive to trace. A read failure means no hint at quote time and a retryable refusal at offer time.
-- Caps are an intake limiter, not a recovery mechanism. A cap reached means the provider refuses new stuck intake even when it would be profitable; that is the cost of bounding inventory risk. `recoveredSwaps` is manual and restart-based, so recovered capacity lags operations.
+- Caps are an intake limiter, not a guarantee of demand. A cap reached means the provider refuses new stuck intake even when it would be profitable; that is the cost of bounding inventory risk. The recycler makes acquired notes saleable, but if no reverse buyer appears the value still sits in reverse inventory.
 - Old clients are safe for the provider but may be quoted the conservative `pool-exit` default even for clean TAC. Operators that mostly serve old clients should understand this trade-off before opting in. Class-blind ad readers likewise see the worst-case fee, so a provider can look dearer before the class of the notes is known.
 - A class addition is capped at 9,000 bps, the page's existing hard fee ceiling. Very high additions are possible configuration, not a recommendation.
 
 ## Tests
 
 Offline tests cover class reduction, unread/retry behavior, quote math, exact-outpoint binding and rejection, exposure-cap intake,
-`/info` publication, environment overrides, provider-side enforcement before a pool lock, page quote hints with exact inputs, and
+`/info` publication, environment overrides, provider-side enforcement before a pool lock, page quote hints with exact inputs,
+candidate selection, dry-run/send/confirm behavior, exact forced-outpoint movement, clean-note exclusion, failure non-retry, and
 the numeric tables above:
 
 ```sh
 node tests/fastbridge-lineage-pricing.test.mjs
 node tests/fastbridge-lineage-pricing-sim.test.mjs
+node tests/fastbridge-stuck-recycle.test.mjs
 node tests/fastbridge-wire.test.mjs
 node tests/fastbridge-lp-env.test.mjs
 ```
 
-Not tested: a live mainnet or signet bridge, the real reflection service's latency on a maximally long history, browser UI copy,
-automatic recovery marking, and market measurement of actual haircuts. No contracts, keys, pool parameters or deployed services change.
+Not tested: a live mainnet or signet bridge, a real reverse sale of a recycled note, fee bumping of a stuck recycle transfer (a stalled move alerts rather than replaces itself), the real reflection service's latency on a maximally long history, browser UI copy, and market measurement of actual haircuts. No contracts, keys, pool parameters or deployed services change.

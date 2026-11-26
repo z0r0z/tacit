@@ -33,6 +33,7 @@
     }
   },
   "recoveredSwaps": [],
+  "stuckRecycle": { "enabled": true, "maxPerTick": 1, "tickSecs": 120 },
   "policy": {
     "minCsv": 72,
     "evmWindowSecs": 14400,

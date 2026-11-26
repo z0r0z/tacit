@@ -27,6 +27,9 @@ test('each knob sets its own field and no other', () => {
   assert.equal(applyEnv(BASE, { FB_LP_NAME: 'x'.repeat(80) }).name.length, 40, 'a name is kept to what the ad takes');
   assert.deepEqual(applyEnv(BASE, { FB_LP_RECOVERED_SWAPS: ' ' + 'ab'.repeat(36) + ' ,' + 'cd'.repeat(36) }).recoveredSwaps, ['ab'.repeat(36), 'cd'.repeat(36)]);
   assert.throws(() => applyEnv(BASE, { FB_LP_RECOVERED_SWAPS: 'xyz' }), /FB_LP_RECOVERED_SWAPS/);
+  assert.deepEqual(applyEnv(BASE, { FB_LP_STUCK_RECYCLE: 'off' }).stuckRecycle, { enabled: false });
+  assert.deepEqual(applyEnv({ ...BASE, stuckRecycle: { enabled: true, maxPerTick: 2 } }, { FB_LP_STUCK_RECYCLE: 'on' }).stuckRecycle, { enabled: true, maxPerTick: 2 });
+  assert.throws(() => applyEnv(BASE, { FB_LP_STUCK_RECYCLE: 'yes' }), /FB_LP_STUCK_RECYCLE/);
 });
 
 test('the switch: a most below the least is taken as it is (the provider then quotes nothing and finishes its open swaps)', () => {

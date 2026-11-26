@@ -179,6 +179,7 @@ export function makeEthereumLocker(ctx) {
       lockTxid: offer.btc.txid, lockVout: offer.btc.vout, lockValue: out.value, lockSpk: strip(out.scriptpubkey), csvBlocks: offer.btc.csvBlocks,
       ...(sats && lockTotalOf(tx) > out.value ? { lockTotal: lockTotalOf(tx) } : {}),
       ...(takeSats > 0 && !paidDirect ? { takeVout: lockedAt, takeValue: tx.vout[lockedAt].value } : {}),
+      ...(lineageClass ? { lineageClass } : {}),
       ...(st.confirmations > 0 ? {} : { early: true }),
     };
     rec.checked = checkedTag(seed, rec);

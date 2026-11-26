@@ -26,7 +26,7 @@ import { guardedStorage } from '/safe-storage.js';
 import { bodyType } from '/rpc-body.js';
 import { discoverProviders } from '/fast/discover.js?cb=f8f3075c';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=61f3112a';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=e07b6594';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();

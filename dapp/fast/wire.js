@@ -18,7 +18,7 @@ import * as EN from '/eth-nodes.js';   // (a namespace: eth-nodes.js has no cach
 import { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=c56d5cfe';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=c0a8aadb';
-import { makeLpService } from '/fastbridge-provider.js?cb=6612035f';
+import { makeLpService } from '/fastbridge-provider.js?cb=86303797';
 import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=da2bd2bf';
 import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=ab82771e';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';

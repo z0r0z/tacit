@@ -202,7 +202,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     }
     for (const rec of await swaps.list()) {
       if (['refunded', 'rejected', 'aborted', 'lost'].includes(rec.phase)) continue;
-      if (rec.phase === 'done' && recoveredSwaps.has(String(rec.id).toLowerCase())) continue;
+      if (rec.phase === 'done' && (recoveredSwaps.has(String(rec.id).toLowerCase()) || rec.stuckRecoveredAt != null)) continue;
       const q = rec.quoteId ? await quoter.get(rec.quoteId) : null;
       add(quoteClass(q), q ? q.btcValue : (rec.offer && rec.offer.btc && rec.offer.btc.value) || 0);
     }
