@@ -73,7 +73,7 @@ test('an exact note goes straight through, and a balance short of the loan is sa
   assert.deepEqual(r.log.cut, []); assert.deepEqual(r.log.burned, [cusd(6.11)]); assert.equal(r.log.proved, 1);
   const s = rig({ notes: [3.0, 2.0] });
   await s.press();
-  assert.equal(s.log.proved, 0); assert.match(s.log.err[0], /Repaying needs 6\.11 cUSD held privately; you hold 5\.00/);
+  assert.equal(s.log.proved, 0); assert.match(s.log.err[0], /A loan is repaid whole, and this one needs 6\.11 cUSD held privately\. You hold 5\.00: 1\.11 more is needed/);
 });
 
 test('with a note a hair over the loan and the cut dearer than the extra, only the band decides', async () => {

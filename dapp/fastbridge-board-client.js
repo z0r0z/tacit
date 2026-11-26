@@ -28,7 +28,7 @@ export function makeBoardClient({ base, fetchImpl = (...a) => fetch(...a), timeo
     async drop(id, sig) { return must(await call('PUT', `/d/${id}`, { sig }), 'the request was not set aside'); },
     async inbox(gateway, after = 0) {
       const r = must(await call('GET', `/m/${gateway}/${after}`), 'the inbox could not be read');
-      return { boot: r.boot, next: r.next, items: r.items.map((x) => ({ seq: x.seq, id: x.id, bytes: unb64(x.b) })) };
+      return { boot: r.boot, next: r.next, items: r.items.map((x) => ({ seq: x.seq, id: x.id, bytes: unb64(x.b), ...(typeof x.f === 'string' && /^[0-9a-f]{16}$/.test(x.f) ? { from: x.f } : {}) })) };
     },
     async putReply(id, bytes, sig) { return must(await call('PUT', `/r/${id}`, { b: b64(bytes), sig }), 'the answer was not taken'); },
     async reply(id) {

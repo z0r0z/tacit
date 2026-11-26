@@ -4,9 +4,9 @@
 //   const list = await discoverProviders({ providers, boards })                         who there is to bridge with
 
 import { makeHttpCounter } from '/fastbridge-http.js';
-import { termsOf } from '/fastbridge-client.js?cb=8b4b5fae';
-import { readProviders } from '/fastbridge-mailbox.js?cb=9003c49b';
-import { makeBoardClient } from '/fastbridge-board-client.js?cb=129356b4';
+import { termsOf } from '/fastbridge-client.js?cb=09a13249';
+import { readProviders } from '/fastbridge-mailbox.js?cb=4c2ccb36';
+import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
 
 // The terms of the other direction (private TAC sent for TAC on Bitcoin), from an ad that has them. A provider that sells only the one way has no `reverse`.
 export const reverseTermsOf = (r) => ({
@@ -30,11 +30,17 @@ export async function discoverProviders({ providers = [], boards = [], fetchImpl
   const out = [];
   await Promise.all(providers.map(async (p) => {
     try {
-      const i = await makeHttpCounter({ base: p.base, fetchImpl }).info();
+      // the other direction's terms, read beside the forward ones: a provider that sells only one way answers no /reverse/info, and is listed without them
+      const [i, ri] = await Promise.all([
+        makeHttpCounter({ base: p.base, fetchImpl }).info(),
+        fetchImpl(`${String(p.base).replace(/\/$/, '')}/reverse/info`, { signal: AbortSignal.timeout(15000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      ]);
       const claimPub = String(i.claimPub || '').toLowerCase(), a = assetsOf(i, assets);
       if (p.claimPub && p.claimPub.toLowerCase() !== claimPub) return;
       if (!a) return;
-      out.push({ id: claimPub, name: p.name || 'Provider', ref: { kind: 'http', base: p.base, claimPub }, terms: termsOf(i), assets: a, http: true });
+      let reverse = null;
+      try { if (ri && ri.direction === 'out' && bare(ri.btcAsset) === a.btcAsset && bare(ri.evmAsset) === a.evmAsset) reverse = reverseTermsOf(ri); } catch { reverse = null; }
+      out.push({ id: claimPub, name: p.name || 'Provider', ref: { kind: 'http', base: p.base, claimPub }, terms: termsOf(i), assets: a, http: true, ...(reverse ? { reverse } : {}) });
     } catch { /* a provider that does not answer is not listed */ }
   }));
   await Promise.all(boards.map(async (boardBase) => {

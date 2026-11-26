@@ -57,6 +57,9 @@ type Config struct {
 	SlotCap     time.Duration // from the claim, the time to download, contribute and upload (2 h)
 	QueueCap    int           // places in the queue (100)
 	PerIP       int           // places one client address may hold (1; negative: no limit)
+	// PerNet24 and PerNet16: places one network may hold at once, an IPv4 /24 or /16 (an IPv6 /40 or /32); 0: no limit. One person with many
+	// addresses in one network, or one party filling the queue from a block, cannot crowd everyone else out.
+	PerNet24, PerNet16 int
 	// A claimed slot must show progress, so a place cannot be held by polling alone: from the claim, the head's
 	// download must start within DownloadStart (10 min) and be complete within DownloadBy (75 min), and the upload must
 	// start within UploadStart (105 min). An offline contributor, who uploads without downloading, starts the upload
@@ -138,11 +141,14 @@ type ticket struct {
 	// Lane "pool": a machine of the prover pool that contributes when idle; it waits behind every person in the queue.
 	Lane      string `json:"lane,omitempty"`
 	lastSeen  time.Time
+	partBusy  bool // a part of a chunked upload is arriving (parts.go)
 	uploading bool // the upload's body is arriving
 	verifying bool // the whole body arrived and is being checked: the slot's cap waits (up to verifyGrace)
 	// progress of a claimed slot (restored as done after a restart, so a restart never drops a slot)
 	served        int64 // bytes of the head sent to this slot's token
 	uploadStarted bool
+	uploadFirst   time.Time // when the first part of a chunked upload arrived
+	partBytes     int64     // bytes of the chunked upload stored and confirmed
 	refused       int
 }
 
@@ -151,16 +157,17 @@ type ticket struct {
 type Coordinator struct {
 	Dir string
 	Config
-	mu       sync.Mutex
-	state    State
-	headSize int64
-	queue    []*ticket
-	bans     []netip.Prefix
-	accepted map[string]int // contributions accepted per client address key (accepted.json)
-	key      ed25519.PrivateKey
-	verifyMu sync.Mutex // one check of a contribution at a time (each holds several GB)
-	files    fileLimiter
-	now      func() time.Time
+	mu        sync.Mutex
+	state     State
+	headSize  int64
+	queue     []*ticket
+	bans      []netip.Prefix
+	accepted  map[string]int // contributions accepted per client address key (accepted.json)
+	key       ed25519.PrivateKey
+	finishRes map[string]*finishResult // the outcome of a finish call, by token (parts.go)
+	verifyMu  sync.Mutex               // one check of a contribution at a time (each holds several GB)
+	files     fileLimiter
+	now       func() time.Time
 	// tests: runs after an upload is verified and before it is committed
 	beforeCommit func()
 }
@@ -278,6 +285,25 @@ func open(dir string, now func() time.Time) (*Coordinator, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
+	// parts of a chunked upload that no claimed place owns (the holder's are kept: its client carries on from them)
+	keep := map[string]bool{}
+	for _, t := range c.queue {
+		if !t.Claimed.IsZero() {
+			keep[c.partPath(t.Token)] = true
+		}
+	}
+	if old, _ := filepath.Glob(filepath.Join(dir, "part-*")); len(old) > 0 {
+		n := 0
+		for _, p := range old {
+			if !keep[p] {
+				os.Remove(p)
+				n++
+			}
+		}
+		if n > 0 {
+			c.logf("removed %d stray part file(s)", n)
+		}
+	}
 	// uploads cut off by a crash or a restart
 	if old, _ := filepath.Glob(filepath.Join(dir, "upload-*")); len(old) > 0 {
 		for _, p := range old {
@@ -375,15 +401,84 @@ func (c *Coordinator) slotOverL(t *ticket, now time.Time) string {
 		}
 	case in > c.slotCap():
 		return fmt.Sprintf("slot ran past %s", c.slotCap())
+	case t.uploadStarted && !t.uploading && !t.uploadFirst.IsZero() && now.Sub(t.uploadFirst) > floorWindow && t.partBytes < floorBytes:
+		return "the upload is too slow to finish inside the slot"
+	case c.cannotFinishL(t, now):
+		return "at its pace the upload cannot finish inside the slot"
 	case t.uploadStarted || t.uploading:
 	case t.served == 0 && in > c.downloadStart():
 		return fmt.Sprintf("the head's download did not start within %s", c.downloadStart())
+	case t.served < c.headSize/4 && in > downloadFloorAfter:
+		return fmt.Sprintf("less than a quarter of the head was downloaded in %s", downloadFloorAfter)
 	case t.served < c.headSize && in > c.downloadBy():
 		return fmt.Sprintf("the head's download was not complete within %s", c.downloadBy())
 	case in > c.uploadStart():
 		return fmt.Sprintf("the upload did not start within %s", c.uploadStart())
 	}
 	return ""
+}
+
+// cannotFinishL: a chunked upload that, at the pace it has kept so far, would end well past the slot's cap. It is judged only once it has run
+// long enough to have a pace (paceWindow), and only when the projected end is clearly past the cap (by an eighth of it), so a slow machine
+// that will make it is kept and one that never could does not hold the line for the whole slot.
+func (c *Coordinator) cannotFinishL(t *ticket, now time.Time) bool {
+	if t.uploadFirst.IsZero() || t.uploading || t.verifying || t.partBytes <= 0 || t.partBytes >= c.headSize {
+		return false
+	}
+	ran := now.Sub(t.uploadFirst)
+	if ran < paceWindow {
+		return false
+	}
+	end := t.uploadFirst.Add(time.Duration(float64(ran) * float64(c.headSize) / float64(t.partBytes)))
+	return end.After(t.Claimed.Add(c.slotCap() + c.slotCap()/8))
+}
+
+// netKey: the network of an address, its first bits4 bits (IPv4) or bits6 bits (IPv6) as a prefix.
+func netKey(ip string, bits4, bits6 int) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap()
+	bits := bits6
+	if a.Is4() {
+		bits = bits4
+	}
+	p, err := a.Prefix(bits)
+	if err != nil {
+		return ip
+	}
+	return p.String()
+}
+
+// TrimNetworks drops the places beyond PerNet24 and PerNet16 from one network, keeping the earliest in the queue and always a claimed slot.
+// For when the limits are turned on with a queue that one network's places already fill.
+func (c *Coordinator) TrimNetworks() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.PerNet24 <= 0 && c.PerNet16 <= 0 {
+		return 0
+	}
+	n24, n16 := map[string]int{}, map[string]int{}
+	kept := make([]*ticket, 0, len(c.queue))
+	dropped := 0
+	for _, t := range c.queue {
+		k24, k16 := netKey(t.IP, 24, 40), netKey(t.IP, 16, 32)
+		over := (c.PerNet24 > 0 && n24[k24] >= c.PerNet24) || (c.PerNet16 > 0 && n16[k16] >= c.PerNet16)
+		if over && t.Claimed.IsZero() {
+			dropped++
+			continue
+		}
+		n24[k24]++
+		n16[k16]++
+		kept = append(kept, t)
+	}
+	if dropped > 0 {
+		c.queue = kept
+		c.saveQueueL()
+		c.logf("queue: %d places beyond the per-network limits were dropped", dropped)
+	}
+	return dropped
 }
 
 func (c *Coordinator) findL(tok string) (*ticket, int) {
@@ -545,6 +640,20 @@ func (c *Coordinator) JoinLane(name, handle, ip, lane string) (string, Status, e
 	}
 	if len(c.queue) >= c.queueCap() {
 		return "", Status{}, refuse(429, "the queue is full; try again later", nil)
+	}
+	if c.PerNet24 > 0 || c.PerNet16 > 0 {
+		k24, k16, n24, n16 := netKey(ip, 24, 40), netKey(ip, 16, 32), 0, 0
+		for _, t := range c.queue {
+			if netKey(t.IP, 24, 40) == k24 {
+				n24++
+			}
+			if netKey(t.IP, 16, 32) == k16 {
+				n16++
+			}
+		}
+		if (c.PerNet24 > 0 && n24 >= c.PerNet24) || (c.PerNet16 > 0 && n16 >= c.PerNet16) {
+			return "", Status{}, refuse(429, "this network already holds several places in the queue; try again later", nil)
+		}
 	}
 	if lim := c.perIP(); lim > 0 {
 		k, n := ipKey(ip), 0
@@ -719,6 +828,9 @@ func (c *Coordinator) beginUpload(tok string, length int64) (*ticket, time.Time,
 	}
 	if t.uploading {
 		return nil, time.Time{}, refuse(409, "an upload for this slot is already in progress", nil)
+	}
+	if t.partBusy {
+		return nil, time.Time{}, refuse(409, "a part of this contribution is still arriving", nil)
 	}
 	if length != c.headSize {
 		return nil, time.Time{}, refuse(400, fmt.Sprintf("the upload must be exactly %d bytes (the size of the head)", c.headSize), nil)

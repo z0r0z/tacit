@@ -8,8 +8,10 @@
 //   board.ads()                         the ads still running
 //   board.post(gateway, bytes, { claimPub?, client? })
 //                                       a sealed request for the provider whose live ad names that gateway key (for the one of `claimPub`, when named) -> { id, seq }
-//   board.inbox(gateway, after)         the requests after a cursor -> { boot, next, items: [{ seq, id, bytes }] }; `boot` names this run of the board,
-//                                       whose cursors start again after a restart, so a reader that sees it change reads from the start
+//   board.inbox(gateway, after)         the requests after a cursor -> { boot, next, items: [{ seq, id, bytes, from? }] }; `boot` names this run of the board,
+//                                       whose cursors start again after a restart, so a reader that sees it change reads from the start; `from` tells the
+//                                       requests of one client address apart (a tag keyed by a secret of this board, for this gateway, that changes every few
+//                                       hours: it names no address), so a provider can give each client its own share
 //   board.putReply(id, bytes, sig)      the provider's sealed answer, with its signature over it (replySignature)
 //   board.drop(id, sig)                 the provider sets aside a request it cannot open, signed over dropDigest(id), so it waits in the queue no longer
 //   board.reply(id)                     the answer, or null
@@ -19,7 +21,7 @@
 // A request or an answer is judged by its two ends, not by the board; the board only keeps the traffic bounded (sizes, a queue for
 // each provider, lifetimes) and lets only the provider the request was for answer it.
 
-import { sha256, concatBytes, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
+import { sha256, hmac, concatBytes, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 import { signSchnorr, verifySchnorr, bigintToBytes32 } from './bulletproofs.js';
 
 export class BoardError extends Error { constructor(status, message) { super(message); this.status = status; } }
@@ -28,6 +30,9 @@ export const LIMITS = {
   adSecs: 600, skewSecs: 120, msgSecs: 600, replySecs: 600, maxAds: 200, maxQueue: 64, maxPosted: 512, maxMsg: 70000, minMsg: 4000, maxReply: 70000, maxName: 40, wantSecs: 86400, maxWants: 500, maxAd: 2048,
   // one address's share of a provider's queue, the bytes a provider's queue and its answers may hold, the answers' bytes on the whole board, and how much one inbox read returns
   maxQueueFrom: 24, maxQueueBytes: 1 << 20, maxReplyBytes: 2 << 20, maxRepliesBytes: 128 << 20, maxInboxItems: 32, maxInboxBytes: 1 << 20,
+  // the requests one address has posted to a provider that are still known, the bytes waiting in all the queues together, the requests the whole board keeps
+  // known (answered ones past it are forgotten oldest first), and how often the tag of a client address changes
+  maxPostedFrom: 600, maxQueuesBytes: 64 << 20, maxKept: 200000, fromSecs: 6 * 3600,
 };
 
 const te = new TextEncoder();
@@ -140,13 +145,27 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
   const L = { ...LIMITS, ...limits };
   const adsBy = new Map();                 // claimPub -> ad
   const queues = new Map();                // gateway -> [{ seq, id, bytes, until, from }]
-  const byId = new Map();                  // message id -> { gateway, claimPub, until }
+  const byId = new Map();                  // message id -> { gateway, claimPub, until, from, open }
+  const openBy = new Map();                // gateway -> its requests not yet answered or set aside
+  const postedBy = new Map();              // gateway|client -> the requests of that address still known
   const replies = new Map();               // message id -> { bytes, until, gateway }
   const replyBytes = new Map();            // gateway -> bytes of its answers still kept
   const wantsBy = new Map();               // want pub -> want
   const goneBy = new Map();                // want pub -> { at, until } of a want taken down, so the original cannot be put back
   const boot = bytesToHex(crypto.getRandomValues(new Uint8Array(8)));
-  let seq = 0, repliesTotal = 0, pruned = null;
+  const secret = crypto.getRandomValues(new Uint8Array(32));
+  let seq = 0, repliesTotal = 0, queuedTotal = 0, pruned = null;
+  const bump = (m, k, d) => { const n = (m.get(k) || 0) + d; if (n > 0) m.set(k, n); else m.delete(k); };
+  // a request is no longer waiting (answered, set aside, or run out): it leaves the provider's count of open ones
+  const close = (m) => { if (m.open) { m.open = false; bump(openBy, m.gateway, -1); } };
+  const forget = (id) => {
+    const m = byId.get(id);
+    if (!m) return;
+    close(m); byId.delete(id);
+    if (m.from != null) bump(postedBy, `${m.gateway}|${m.from}`, -1);
+  };
+  // the tag of a client address in a provider's inbox: keyed by this board's secret and the time, so it names no address and changes every `fromSecs`
+  const tagOf = (gateway, client) => (client == null ? null : bytesToHex(hmac(sha256, secret, te.encode(`${Math.floor(now() / L.fromSecs)}|${gateway}|${client}`))).slice(0, 16));
 
   const forgetReply = (id) => {
     const r = replies.get(id);
@@ -158,7 +177,10 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
   };
   const unqueue = (gateway, id) => {
     const q = queues.get(gateway);
-    if (q) { const rest = q.filter((x) => x.id !== id); if (rest.length) queues.set(gateway, rest); else queues.delete(gateway); }
+    if (!q) return;
+    const rest = [];
+    for (const x of q) { if (x.id === id) queuedTotal -= x.bytes.length; else rest.push(x); }
+    if (rest.length) queues.set(gateway, rest); else queues.delete(gateway);
   };
   // once a second at most: every call prunes, and what runs out does so by the second
   function prune() {
@@ -169,10 +191,11 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
     for (const [k, w] of wantsBy) if (w.until <= t) wantsBy.delete(k);
     for (const [k, g] of goneBy) if (g.until <= t) goneBy.delete(k);
     for (const [g, q] of queues) {
-      const live = q.filter((m) => m.until > t);
+      const live = [];
+      for (const m of q) { if (m.until > t) live.push(m); else queuedTotal -= m.bytes.length; }
       if (live.length) queues.set(g, live); else queues.delete(g);
     }
-    for (const [id, m] of byId) if (m.until <= t) byId.delete(id);
+    for (const [id, m] of byId) if (m.until <= t) forget(id);
     for (const [id, r] of replies) if (r.until <= t) forgetReply(id);
   }
   // The ad a request is for. A user's page names the provider it chose (`claimPub`), and the request is for that provider's ad alone. A page that
@@ -191,7 +214,8 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       checkAd(ad, now());
       const have = adsBy.get(ad.claimPub);
       if (have && have.at >= ad.at) return { ok: true, kept: true };
-      if (!have && adsBy.size >= L.maxAds) throw new BoardError(503, 'the board has all the ads it takes');
+      // (the site's own keys are taken whatever else is on the board: no run of other ads keeps them off it)
+      if (!have && adsBy.size >= L.maxAds && !OWN_PROVIDERS[ad.claimPub]) throw new BoardError(503, 'the board has all the ads it takes');
       // `since`: when this key first named this gateway in an ad that has stood since, which orders the ads of one gateway for a page that names no key
       const since = have && have.gateway === ad.gateway ? have.since : now();
       adsBy.set(ad.claimPub, Object.defineProperty({ ...ad }, 'since', { value: since, enumerable: false }));
@@ -207,18 +231,26 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       if (!ad) throw new BoardError(404, 'no provider here has that gateway key');
       const id = messageId(bytes);
       if (byId.has(id)) return { id, seq: byId.get(id).seq, kept: true };
-      // `maxQueue` bounds the requests waiting for the provider; `maxPosted` bounds all of a provider's requests that are still kept, answered or not
-      let posted = 0;
-      for (const x of byId.values()) if (x.gateway === gateway) posted++;
-      if (posted >= L.maxPosted) throw new BoardError(503, 'the provider has all the requests it takes');
+      // `maxQueue` and `maxPosted` bound the requests waiting for the provider (one answered or set aside waits no longer, though it stays known for a while);
+      // `maxPostedFrom` the requests one address has posted to it that are still known, answered or not, so one address's traffic turns only itself away
+      if ((openBy.get(gateway) || 0) >= L.maxPosted) throw new BoardError(503, 'the provider has all the requests it takes');
+      if (client != null && (postedBy.get(`${gateway}|${client}`) || 0) >= L.maxPostedFrom) throw new BoardError(503, 'the provider has all the requests it takes from this address');
       const q = queues.get(gateway) || [];
       if (q.length >= L.maxQueue) throw new BoardError(503, 'the provider has all the requests it takes');
-      // and no one address takes the whole of it, nor large requests all of its room
+      // and no one address takes the whole of it, nor large requests all of its room, nor all the providers' queues together the board's memory
       if (client != null && q.filter((m) => m.from === client).length >= L.maxQueueFrom) throw new BoardError(503, 'the provider has all the requests it takes from this address');
       if (q.reduce((n, m) => n + m.bytes.length, 0) + bytes.length > L.maxQueueBytes) throw new BoardError(503, 'the provider has all the requests it takes');
+      if (queuedTotal + bytes.length > L.maxQueuesBytes) throw new BoardError(503, 'the board has all the requests it takes just now');
+      // the requests known to the board are bounded as a whole: past it, the oldest that wait no longer are forgotten (the provider drops a request it sees again)
+      if (byId.size >= L.maxKept) {
+        for (const [k, x] of byId) { if (byId.size < L.maxKept) break; if (!x.open) forget(k); }
+        if (byId.size >= L.maxKept) throw new BoardError(503, 'the board has all the requests it takes just now');
+      }
       const m = { seq: ++seq, id, bytes, until: now() + L.msgSecs, from: client };
-      q.push(m); queues.set(gateway, q);
-      byId.set(id, { gateway, claimPub: ad.claimPub, seq: m.seq, until: m.until });
+      q.push(m); queues.set(gateway, q); queuedTotal += bytes.length;
+      byId.set(id, { gateway, claimPub: ad.claimPub, seq: m.seq, until: m.until, from: client, open: true, tag: tagOf(gateway, client) });
+      bump(openBy, gateway, 1);
+      if (client != null) bump(postedBy, `${gateway}|${client}`, 1);
       return { id, seq: m.seq };
     },
     // the requests after a cursor, a page at a time: `next` is the last one returned, so a reader that goes on from it reads the rest
@@ -229,7 +261,8 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       for (const m of queues.get(gateway) || []) {
         if (m.seq <= after) continue;
         if (items.length >= L.maxInboxItems || (items.length && size + m.bytes.length > L.maxInboxBytes)) break;
-        items.push({ seq: m.seq, id: m.id, bytes: m.bytes }); size += m.bytes.length;
+        const tag = byId.get(m.id)?.tag;
+        items.push({ seq: m.seq, id: m.id, bytes: m.bytes, ...(tag ? { from: tag } : {}) }); size += m.bytes.length;
       }
       return { boot, next: items.length ? items[items.length - 1].seq : after, items };
     },
@@ -249,7 +282,7 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       // an answered request no longer waits for the provider: it left in the queue it counted against `maxQueue` for the full ten minutes, and a
       // dozen pages polling the house provider filled the queue with requests it had already answered, so the board turned new ones away with a 503
       // although the provider was keeping up (2026-11-12). The request stays known (`byId`), so the same one posted again is still one request.
-      unqueue(m.gateway, id);
+      unqueue(m.gateway, id); close(m);
       return { ok: true };
     },
     // A request the provider could not open leaves the queue, as an answered one does, and stays known, so the same bytes posted again are not queued again.
@@ -260,7 +293,7 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       let ok = false;
       try { ok = verifySchnorr(hexToBytes(String(sig)), dropDigest(id), xonly(m.claimPub)); } catch { ok = false; }
       if (!ok) throw new BoardError(403, 'not signed by the provider');
-      unqueue(m.gateway, id);
+      unqueue(m.gateway, id); close(m);
       return { ok: true };
     },
     reply(id) { prune(); const r = replies.get(id); return r ? r.bytes : null; },
@@ -280,6 +313,6 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       return { ok: true };
     },
     wants() { prune(); return [...wantsBy.values()].sort((a, b) => b.at - a.at); },
-    stats() { prune(); return { ads: adsBy.size, queued: [...queues.values()].reduce((s, q) => s + q.length, 0), replies: replies.size, replyBytes: repliesTotal, wants: wantsBy.size }; },
+    stats() { prune(); return { ads: adsBy.size, queued: [...queues.values()].reduce((s, q) => s + q.length, 0), queuedBytes: queuedTotal, known: byId.size, replies: replies.size, replyBytes: repliesTotal, wants: wantsBy.size }; },
   };
 }

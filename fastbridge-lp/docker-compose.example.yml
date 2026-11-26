@@ -1,0 +1,30 @@
+# A Bitcoin-for-ETH swap provider with Docker Compose. Build the image once from the repository root:
+#   docker build -f worker-relay/Dockerfile.fastbridge-lp -t tacit-lp .
+#
+# 1. Set up (once; -it so it can ask the name and the fee, or set the variables below and use `-T`):
+#      docker compose -f fastbridge-lp/docker-compose.example.yml run --rm provider setup
+#    It makes the key in the volume (mode 600) and prints it once: copy it somewhere offline. It prints the two addresses and how much to send, waits for the
+#    ETH, shields it, checks everything, and stops. Run it again at any time: it picks up where it was.
+# 2. Run it:
+#      docker compose -f fastbridge-lp/docker-compose.example.yml up -d
+#
+# The volume holds the key and the swap records: keep it, and back it up. One container per key (two would lock the same swap twice).
+services:
+  provider:
+    image: tacit-lp
+    command: run
+    restart: unless-stopped
+    volumes:
+      - tacit-lp:/var/lib/tacit-fastbridge-lp
+    environment:
+      # all optional: setup asks for what is not set
+      FB_LP_NAME: "My provider"          # the name on the provider list
+      FB_LP_FEE_BPS: "30"                # your share of each swap, in hundredths of a percent: 30 is 0.30%
+      FB_LP_FLAT_FEE: "1000"             # plus this many sats on each swap
+      FB_LP_SIZE: "small"                # small, medium or large: sets the most one swap takes (README "Quick start")
+      # FB_LP_KEY: ""                    # bring your own key instead of the one setup makes in the volume (64 hex); then it is never written to disk
+      # FB_LP_ALERT_WEBHOOK: ""          # a Slack or Discord webhook: told when it runs low or a swap waits long
+    ports:
+      - "127.0.0.1:10000:10000"          # /health and /info for you; the pages reach it through the board, so it needs no public address
+volumes:
+  tacit-lp:

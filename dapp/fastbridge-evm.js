@@ -5,6 +5,8 @@ import { G, SECP_N, signSchnorr } from './bulletproofs.js';
 
 const LOCK_SPENT_SLOT = 119n;
 const LOCK_COUNT_SLOT = '0x54';
+const LOCK_ROOT_SLOT = '0x55';
+const AGREED_TIME_MS = 15000;
 const POSITION_TTL_MS = 5 * 60 * 1000;
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 const lc = (h) => '0x' + strip(h);
@@ -13,10 +15,15 @@ const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
 const SETTLE_SELECTOR = '717fd7f2';
 const TRACE_PER_LOOK = 24;
 const TX_READS_AT_ONCE = 4;                              // findClaim's reads of the window's transactions, at once
+const TRACE_RETRY_MS = 15000, TRACE_RETRY_MAX_MS = 60 * 1000;     // (a trace no node gave is asked again within a minute: a claim's secret may be in it)
+const UNREAD_SAY_MS = 30 * 60 * 1000;
 
 // `trace(txHash)` -> the calls a transaction made, [{ to, input }] (makeTxTracer): how a claim settled through another contract is read when its calldata does not show it
 // `quorum` (makeNodeQuorum): the nodes that must agree before a read ends a swap (findClaim, spentAgreed, lockAbsent); with none, one node's answer is taken as before
-export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, ownAccount = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {}, trace = null, quorum = null }) {
+// `onUnread(o)`: told (with the lock and a transaction hash) when a spent lock's claim cannot be read because no node traced a transaction it may be in; a provider
+// alerts its operator with it. Default: the log.
+export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, ownAccount = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {}, trace = null, quorum = null, onUnread = null }) {
+  if (!onUnread) onUnread = (o) => log(o);
   const te = new TextEncoder();
   const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
   const bytes = (h) => Uint8Array.from(strip(h).match(/../g).map((x) => parseInt(x, 16)));
@@ -44,20 +51,48 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   const serial = (fn) => { const run = queue.p.catch(() => {}).then(fn); queue.p = run; return run; };
   const reserved = new Set();
 
+  // The chain's time. With a quorum, the time of a block the nodes agree on (a little under their heads, read at most every AGREED_TIME_MS and carried forward by
+  // this machine's clock in between), or the one node's latest block when it is later: a node that is behind cannot make a deadline look further away than it is.
+  // Nodes that do not agree throw (`quorum`): the swap waits, and no claim is built on one node's clock.
+  let agreedAt = null;
   async function now() {
-    const b = await rpc('eth_getBlockByNumber', ['latest', false]);
-    return parseInt(b.timestamp, 16);
+    const one = parseInt((await rpc('eth_getBlockByNumber', ['latest', false])).timestamp, 16);
+    if (!quorum) return one;
+    if (!agreedAt || clock() - agreedAt.at >= AGREED_TIME_MS) {
+      const h = await quorum.head();
+      const b = await quorum.agree('eth_getBlockByNumber', ['0x' + h.toString(16), false], (x) => String(x.timestamp));
+      const ts = Number(BigInt(b.timestamp));
+      if (!(ts > 0)) throw quorumError('the nodes gave no time');
+      agreedAt = { at: clock(), ts };
+    }
+    return Math.max(one, agreedAt.ts + Math.floor((clock() - agreedAt.at) / 1000));
   }
   const lockNullifier = (leaf) => pool.nullifier(lc(leaf));
   const positions = new Map(), misses = new Map();
   const cap = (map, max) => { while (map.size > max) map.delete(map.keys().next().value); };
+  // A lock's place in the pool's lock set. With a quorum, the set is read at a block the nodes agree on, and the root it builds must be the lock root they agree
+  // the pool holds there: a lock set one node made up (with a leaf in it that the pool does not have) is never the ground a claim is built on.
+  // `{ pos, count }`: the position, and the lock count at the block the set was read at (a miss is remembered under that count, so a lock that landed after
+  // that block is looked for again once the nodes' head has passed it: see lockPosition)
+  async function positionOf(key, latestCount) {
+    if (!quorum) return { pos: await ux.stealthLockPosition({ lockLeaf: key }), count: latestCount };
+    const h = await quorum.head();
+    const pos = await ux.stealthLockPosition({ lockLeaf: key, opts: { toBlock: h } });
+    if (!pos) return { pos: null, count: BigInt((await rpc('eth_getStorageAt', [poolAddress, LOCK_COUNT_SLOT, '0x' + h.toString(16)])) || '0x0') };
+    const root = await quorum.agree('eth_getStorageAt', [poolAddress, LOCK_ROOT_SLOT, '0x' + h.toString(16)], wordOf);
+    if (BigInt('0x' + (strip(root) || '0')) !== BigInt('0x' + (strip(pos.lockSetRoot) || '0'))) throw quorumError('the lock set read does not build the lock root the nodes agree on: read again');
+    return { pos, count: null };
+  }
+  // A miss is remembered under the lock count of the block the set was read at, never the newest block's: with a quorum, the set is read at the head the
+  // nodes agree on, which can be a block or two behind the newest, so a lock that landed in between is in the newest count and not in that set. Remembered
+  // under the newest count, it was never looked for again until another lock landed (a lock sent the moment its Bitcoin lock confirmed waited 20 minutes).
   async function lockPosition(leaf) {
     const key = lc(leaf), hit = positions.get(key);
     if (hit && Date.now() - hit.at < POSITION_TTL_MS) return hit.pos;
     const count = BigInt((await rpc('eth_getStorageAt', [poolAddress, LOCK_COUNT_SLOT, 'latest'])) || '0x0');
     if (!hit && misses.get(key) === count) return null;
-    const pos = await ux.stealthLockPosition({ lockLeaf: key });
-    if (pos) { positions.set(key, { at: Date.now(), pos }); misses.delete(key); } else { positions.delete(key); misses.set(key, count); }
+    const { pos, count: seen } = await positionOf(key, count);
+    if (pos) { positions.set(key, { at: Date.now(), pos }); misses.delete(key); } else { positions.delete(key); misses.set(key, seen == null ? count : seen); }
     cap(positions, 1024); cap(misses, 1024);
     return pos;
   }
@@ -71,26 +106,58 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     if (!blocks.has(n)) { blocks.set(n, parseInt((await rpc('eth_getBlockByNumber', ['0x' + n.toString(16), false])).timestamp, 16)); cap(blocks, 4096); }
     return blocks.get(n);
   }
+  // The first block at or after `ts`: the guess is the head less the seconds back at 12 s a block, and each block read moves the guess by the time still missing, so it
+  // settles in a few reads where a binary search over every block took about 25 (and a window is asked for more than once). `lo`/`hi` keep it a search: the answer is
+  // always between them, and each read closes one end.
   async function blockAtOrAfter(ts) {
-    let lo = 0, hi = parseInt(await rpc('eth_blockNumber', []), 16);
-    while (lo < hi) { const mid = Math.floor((lo + hi) / 2); if ((await blockTs(mid)) < ts) lo = mid + 1; else hi = mid; }
+    const head = parseInt(await rpc('eth_blockNumber', []), 16);
+    let lo = 0, hi = head, g = head;
+    const hts = await blockTs(head);
+    if (ts >= hts) return head;
+    g = Math.max(0, head - Math.ceil((hts - ts) / 12));
+    while (lo < hi) {
+      g = Math.min(Math.max(g, lo), hi - 1);
+      const t = await blockTs(g);
+      if (t < ts) lo = g + 1; else hi = g;
+      g += Math.trunc((ts - t) / 12) || (t < ts ? 1 : -1);
+    }
     return lo;
   }
+  // Windows that start at different times are cut at the same blocks (a multiple of WINDOW_STEP below the start), so the pool's events for them are one read that every
+  // swap's scan takes from the cache instead of one read each (a few swaps' scans each fetched ~600k blocks of logs, overlapping, from a node that takes 45k at a time).
+  const WINDOW_STEP = 100_000;
+  const windowFrom = async (secs) => Math.floor((await blockAtOrAfter(Math.max(0, secs - 3600))) / WINDOW_STEP) * WINDOW_STEP;
   const inputs = new Map();
   async function txOf(h) {
-    if (!inputs.has(h)) { const t = await rpc('eth_getTransactionByHash', [h]); inputs.set(h, t && t.input ? { input: t.input, to: String(t.to || '').toLowerCase() } : null); cap(inputs, 256); }
+    // (a transaction a node does not have yet is not kept as one that is not there: only what was read is kept, and a miss is asked again next time)
+    if (inputs.has(h)) return inputs.get(h);
+    const t = await rpc('eth_getTransactionByHash', [h]);
+    if (!(t && t.input)) return null;
+    inputs.set(h, { input: t.input, to: String(t.to || '').toLowerCase() }); cap(inputs, 256);
     return inputs.get(h);
   }
   const poolTo = String(poolAddress).toLowerCase(), relayerTo = String(relayerAddress).toLowerCase();
   const RELAYED_TOPIC = '0x' + hex(keccak256(te.encode('Relayed(address,address,uint256,uint256)')));
   const claims = new Map(), traced = new Map(), ran = new Map();
+  // A transaction's settle calls, and a call's adaptor fields, are decoded once and kept: every look at a long window reads the same transactions again
+  const decodes = new Map(), fields = new WeakMap();
+  const decodedOf = (h, input) => {
+    if (!decodes.has(h)) { let d = null; try { d = ux.lockScan.decodeSettleCalls(input); } catch { d = null; } decodes.set(h, d); cap(decodes, 4096); }
+    return decodes.get(h);
+  };
+  const fieldsOf = (call) => {
+    if (!call || typeof call !== 'object') return null;
+    if (!fields.has(call)) { let f = null; try { f = ux.lockScan.decodePublicValuesAdaptorFields(call.publicValues); } catch { f = null; } fields.set(call, f); }
+    return fields.get(call);
+  };
   // What the settle calls among `calls` say of the lock `key`: whether one spends it, and the claim kernel that is its own. A call's lock spends and its kernels are in
   // the order its ops ran, and only a claim carries a kernel: when every spend in the call is a claim, the lock's kernel is the one at its place. A call that also
   // refunds does not say which kernel is whose (`mixed`): each is then only a candidate.
   const naming = (calls, key) => {
     const r = { named: false, s: [], mixed: false };
     for (const call of calls || []) {
-      let f; try { f = ux.lockScan.decodePublicValuesAdaptorFields(call.publicValues); } catch { continue; }
+      const f = fieldsOf(call);
+      if (!f) continue;
       const nus = f.lockNullifiers.map(lc), i = nus.indexOf(key);
       if (i < 0) continue;
       r.named = true;
@@ -116,11 +183,20 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   // the settles the pool itself ran in a transaction, read from its trace (a call that reverted, or sits under one that did, ran nothing)
   const poolSettlesOf = (calls) => calls.filter((c) => String(c.to || '').toLowerCase() === poolTo && strip(c.input || '').startsWith(SETTLE_SELECTOR))
     .map((c) => { try { return ux.lockScan.decodeSettleCalls(c.input); } catch { return null; } }).filter(Boolean).flatMap((d) => d.calls);
+  // A transaction no node traced is asked again later, each time a while later than the last (from TRACE_RETRY_MS, doubling, to TRACE_RETRY_MAX_MS)
+  const traceMiss = new Map();
   async function pooledSettles(txHash) {
     if (!traced.has(txHash)) {
+      const miss = traceMiss.get(txHash);
+      if (miss && clock() < miss.next) return null;
       let calls = null;
-      try { calls = await trace(txHash); } catch (e) { log({ level: 'warn', msg: 'a transaction could not be traced', tx: txHash, error: String((e && e.message) || e).slice(0, 160) }); }
+      try { calls = await trace(txHash); } catch (e) {
+        const n = (miss ? miss.n : 0) + 1;
+        traceMiss.set(txHash, { n, next: clock() + Math.min(TRACE_RETRY_MAX_MS, TRACE_RETRY_MS * 2 ** Math.min(n - 1, 16)) }); cap(traceMiss, 4096);
+        log({ level: 'warn', msg: 'a transaction could not be traced', tx: txHash, tries: n, error: String((e && e.message) || e).slice(0, 160) });
+      }
       if (!calls) return null;                           // asked again on a later look
+      traceMiss.delete(txHash);
       traced.set(txHash, poolSettlesOf(calls));
       cap(traced, 4096);
     }
@@ -217,7 +293,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const known = claims.get(key);
     if (known) { const j = judge(known); if (j !== undefined) return out(j, known.src); }
     const keep = (r, src) => { claims.set(key, { s: r.s, mixed: r.mixed, src }); cap(claims, 1024); };
-    const events = await ux.fetchEvents({ fromBlock: sinceSecs ? await blockAtOrAfter(Math.max(0, sinceSecs - 3600)) : undefined, toBlock: 'latest' });
+    const events = await ux.fetchEvents({ fromBlock: sinceSecs ? await windowFrom(sinceSecs) : undefined, toBlock: 'latest' });
     // The window's transactions are read a few at a time before they are walked in order: a swap found again from the key a day after its lock has a day of the pool's
     // settles to read, one request each, which one at a time took over a minute (2026-11-25). A read that fails here is made again in the walk, as before.
     const hashes = [...new Set(events.filter((e) => e.txHash && (e.type === 'LeavesInserted' || e.type === 'NullifiersSpent')).map((e) => e.txHash))];
@@ -236,7 +312,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
       if (!e.txHash || seen.has(e.txHash) || (e.type !== 'LeavesInserted' && e.type !== 'NullifiersSpent')) continue;
       seen.add(e.txHash);
       const tx = got.has(e.txHash) ? got.get(e.txHash) : await txOf(e.txHash);
-      const decoded = tx && ux.lockScan.decodeSettleCalls(tx.input);
+      const decoded = tx && decodedOf(e.txHash, tx.input);
       if (decoded && decoded.direct && (tx.to === poolTo || tx.to === relayerTo)) {
         const r = naming(decoded.calls, key);
         if (!r.named) continue;
@@ -259,7 +335,11 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
       // the newest first, a few new traces a look (a trace read once is kept), so a long window is read over several looks
       let fresh = 0;
       for (const h of others.reverse()) {
-        if (!traced.has(h) && fresh++ >= TRACE_PER_LOOK) break;
+        if (!traced.has(h)) {
+          const m = traceMiss.get(h);
+          if (m && clock() < m.next) continue;           // (waiting to be asked again)
+          if (fresh++ >= TRACE_PER_LOOK) break;
+        }
         const r = naming(await pooledSettles(h), key);
         if (!r.named) continue;
         // (a trace is a node's word: with a check, only a kernel that opens the swap is taken from it)
@@ -270,7 +350,24 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
       }
     }
     if (landed) return out(landed.s, landedSrc);
+    sayUnread(key, others);
     throw new Error('the lock is spent, and the settle that spent it is not found yet');
+  }
+  // A spent lock whose settle is not found while transactions of its window could not be traced (or nothing traces at all) is said out loud, with the transaction,
+  // at most every UNREAD_SAY_MS for one lock: the claim may be in one of them, and only a node that traces it gives the swap's secret.
+  const unreadSaid = new Map();
+  function sayUnread(key, others) {
+    const stuck = trace ? others.filter((h) => !traced.has(h) && traceMiss.has(h)) : others;
+    if (!stuck.length) return;
+    const last = unreadSaid.get(key);
+    if (last != null && clock() - last < UNREAD_SAY_MS) return;
+    unreadSaid.set(key, clock()); cap(unreadSaid, 1024);
+    const newest = stuck[stuck.length - 1];
+    onUnread({
+      level: 'alert', lock: key, tx: newest, untraced: stuck.length, tries: (traceMiss.get(newest) || {}).n || 0,
+      msg: trace ? 'a pool lock is spent and its claim cannot be read: no trace node traced the transaction that may carry it. Point FB_LP_TRACE_RPCS at a node of your own that traces, and look at the transaction'
+        : 'a pool lock is spent and its claim cannot be read: no trace node is set, and the transaction that may carry it does not show the claim in its input',
+    });
   }
 
   const own = new Map();
@@ -325,6 +422,11 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   async function jobStatus(id, again = null) {
     if (isOwnJob(id)) {
       if (own.get(id) && own.get(id).done) return 'settled';
+      // the pool first: a claim this account sent before a restart is known by its lock spent with its kernel, not sent again (and refused) for ever
+      if (again && again.type === 'adaptorclaim' && (await claimLanded(again))) {
+        own.set(id, { ...(own.get(id) || { seen: 0, retryAt: 0, fails: 0, proof: null, sending: null }), done: true });
+        return 'settled';
+      }
       if (!selfSettle || !again || !again.bundle) return 'pending';
       return sendOwn(id, () => ux.relay.prove(specOf(again.type, again.bundle)), true);
     }
@@ -332,6 +434,8 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const s = st && st.status;
     if (s === 'settled' || (own.get(id) && own.get(id).done)) return 'settled';
     if (s === 'failed' || s === 'unknown') return (await claimLanded(again)) ? 'settled' : 'failed';
+    // (a proof this side posted waits for the relay to send it for a few minutes before it is sent from this side's own account)
+    if (posted.has(id) && clock() - posted.get(id) < Math.max(openGraceMs, 5 * 60 * 1000)) return 'pending';
     if (!selfSettle) return 'pending';
     if (s === 'open' && st.publicValues && st.proof) return sendOwn(id, () => st);
     if (again && again.bundle && (own.has(id) || (await relayHeld()))) return sendOwn(id, () => ux.relay.prove(specOf(again.type, again.bundle)));
@@ -465,8 +569,43 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const op = rec.lock && rec.lock.op && (rec.lock.op.op || rec.lock.op);
     if (op && op.nCx) reserved.add(lc(pool.leaf(assetId, op.nCx, op.nCy, op.locker)));
     if (rec.lockNote) reserved.add(lc(rec.lockNote));
+    if (rec.pre && rec.pre.lockNote) reserved.add(lc(rec.pre.lockNote));
   };
   const release = ({ rec }) => { if (rec && rec.lockNote) reserved.delete(lc(rec.lockNote)); };
+  // ── a lock proved ahead and sent later (dapp/fastbridge-el.js preStep) ──
+  // The relay proves it and sends nothing (mode 'prove'); once the Bitcoin lock is confirmed the proof is posted (mode 'preproven': the relay only sends it), or,
+  // with an account of this side's own, sent from that account. A relay that will not take a posted proof of this kind throws, and the lock is then sent to be
+  // proved as it always was.
+  const posted = new Map();
+  async function proveAhead(type, bundle) {
+    // (`ahead`: the relay makes a proof asked for ahead only on its prover board, so one that is then never sent costs it no credit; with the board down it
+    // refuses, and the lock is proved after the block as before)
+    // A key that seals what it sends (only Tacit's prover opens it), or proves on its own machine, is not asked to: a proof asked of the relay goes unsealed
+    if ((ux.relay.sealing && ux.relay.sealing()) || (ux.relay.ownProving && ux.relay.ownProving())) throw new Error('this key seals or proves its own: proved after the block');
+    const r = await ux.relay.submitOp({ ...specOf(type, bundle), mode: 'prove', ahead: true });
+    if (!r || !r.jobId) throw new Error('the relay did not take the proof');
+    return { jobId: r.jobId };
+  }
+  async function provenStatus(jobId) {
+    const st = await ux.relay.status(jobId);
+    return st ? { status: st.status, publicValues: st.publicValues || null, proof: st.proof || null, memos: Array.isArray(st.memos) ? st.memos : null } : null;
+  }
+  async function postProven(type, st, bundle) {
+    // the memos the lock was built with (its sealed lock memo): a proof whose memos are other ones is not sent
+    const memos = (bundle && bundle.lockMemos) || st.memos || [];
+    if (st.memos && (st.memos.length !== memos.length || st.memos.some((m, i) => String(m).toLowerCase() !== String(memos[i]).toLowerCase()))) throw new Error('the proof carries other memos');
+    if (ownAccount && selfSettle && (await ownEthOk())) {
+      const id = `own-${type}-${clock().toString(36)}-${++ownSeq}`;
+      await selfSettle({ jobId: id, publicValues: st.publicValues, proof: st.proof, memos });
+      own.set(id, { seen: clock(), retryAt: 0, fails: 0, proof: null, sending: null, done: true });
+      return { jobId: id };
+    }
+    if (typeof ux.relay.postProof !== 'function') throw new Error('this relay takes no posted proofs');
+    const r = await ux.relay.postProof({ type, publicValues: st.publicValues, proof: st.proof, memos });
+    if (!r || !r.jobId) throw new Error(String((r && (r.error || r.why)) || 'the relay did not take the posted proof'));
+    posted.set(r.jobId, clock());
+    return { jobId: r.jobId };
+  }
   const lockOp = ({ rec, rEvmLock, T, deadline, recipient, refundXonly, prefer = null }) => serial(async () => {
     const amount = BigInt(rec.offer.evm.amount);
     const held = await heldNotes();
@@ -529,12 +668,20 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     try { return BigInt(await ux.rpc('eth_getBalance', [ownAccount.address, 'latest'])); } catch { return null; }
   }
 
-  return { now, lockNullifier, lockPosition, findClaim, spentAgreed, lockAbsent, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, covers, heldFree, cutReserve, recipient, claimOp, ownEth };
+  // Every read kept that could stand between a swap and its next step is let go, so the next look reads the chains afresh: what a swap that has not moved for
+  // longer than it should asks for (a watchdog, or a person pressing 'Check again'). What was read stays true; only what was not found, or is waited on, goes.
+  function forget() {
+    misses.clear(); positions.clear(); traceMiss.clear(); refusals.clear(); readyAt = -Infinity;
+    if (typeof ux.forgetLockSet === 'function') ux.forgetLockSet();
+  }
+
+  return { forget, now, lockNullifier, lockPosition, findClaim, spentAgreed, lockAbsent, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, covers, heldFree, cutReserve, recipient, claimOp, ownEth, proveAhead, provenStatus, postProven };
 }
 
 // ── reads that two nodes or more must agree on ──
 // Public nodes of separate operators that the pages' CSP reaches and that serve the pool's state at a recent block number (checked 2026-11-25)
-export const AGREE_NODES = Object.freeze(['https://rpc.mevblocker.io', 'https://eth.drpc.org', 'https://eth-mainnet.public.blastapi.io', 'https://1.rpc.thirdweb.com', 'https://ethereum-rpc.publicnode.com']);
+// our own light node first: it checks state over P2P rather than trusting an operator (it holds recent state only, so an older read simply gets no answer from it)
+export const AGREE_NODES = Object.freeze(['https://tacit-node-gw.onrender.com/eth', 'https://rpc.mevblocker.io', 'https://eth.drpc.org', 'https://eth-mainnet.public.blastapi.io', 'https://1.rpc.thirdweb.com', 'https://ethereum-rpc.publicnode.com']);
 const wordOf = (v) => { const s = strip(v || '0'); return BigInt('0x' + (s || '0')).toString(16); };
 const txOfNode = (t) => [String(t.to || '').toLowerCase(), strip(t.input || '')];
 const receiptOf = (r) => [Number(r.status), Number(r.blockNumber), (r.logs || []).map((l) => [String(l.address || '').toLowerCase(), (l.topics || []).map(strip), strip(l.data || '')])];
@@ -575,18 +722,30 @@ export function makeNodeQuorum({ nodes = AGREE_NODES, fetchImpl = (...a) => fetc
 // ── what the pool ran: a transaction's calls, from a node that traces ──
 // The public nodes that answered debug_traceTransaction (callTracer) or trace_transaction for a pool settle (2026-11-24). A settle sent through a contract that does not
 // carry it as it is (any other forwarder or wallet) is read from here; `nodes` is the operator's to set (an own node first).
+//
+// The pool keeps no record of a claim's kernel apart from the call that carried it (ConfidentialPool emits none), so a claim sent through a contract of the claimer's,
+// in a form of its own, is read only from a trace. A transaction can be made costly to trace (deep, wide call trees, a large output) and a public node may refuse it:
+// the reliable reader is a node of the operator's own that keeps state and traces without limits (FB_LP_TRACE_RPCS first). Each node is asked first with a tracer that
+// keeps only the calls made to the pool (`pool`), so the answer stays small whatever else the transaction did; then with callTracer; then with trace_transaction.
 export const TRACE_NODES = ['https://eth.drpc.org', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://ethereum-mainnet.gateway.tatum.io', 'https://ethereum-json-rpc.stakely.io'];
-// -> trace(txHash) -> [{ to, input }]: every call that ran (one that reverted, or sits under one that did, is left out), in order
-export function makeTxTracer({ nodes = TRACE_NODES, fetchImpl = (...a) => fetch(...a), timeoutMs = 20000 } = {}) {
+// A JavaScript tracer (geth, reth) that keeps only the plain calls (CALL) made to `pool` that ran: a frame that reverted takes the calls under it with it.
+export const poolCallsTracer = (pool) => `{ pool: ${JSON.stringify(String(pool).toLowerCase())}, st: [], top: [],
+  enter: function (f) { var to = toHex(f.getTo()).toLowerCase(); this.st.push({ me: f.getType() === 'CALL' && to === this.pool ? { to: to, input: toHex(f.getInput()) } : null, calls: [] }); },
+  exit: function (r) { var f = this.st.pop(); if (r.getError()) return; var up = this.st.length ? this.st[this.st.length - 1].calls : this.top; if (f.me) up.push(f.me); for (var i = 0; i < f.calls.length; i++) up.push(f.calls[i]); },
+  fault: function () {},
+  result: function (ctx) { if (ctx.error) return []; var out = [], to = toHex(ctx.to).toLowerCase(); if (ctx.type === 'CALL' && to === this.pool) out.push({ to: to, input: toHex(ctx.input) }); for (var i = 0; i < this.top.length; i++) out.push(this.top[i]); return out; } }`;
+// -> trace(txHash) -> [{ to, input }]: every call that ran (one that reverted, or sits under one that did, is left out), in order; with `pool`, the calls to the pool among them
+export function makeTxTracer({ nodes = TRACE_NODES, fetchImpl = (...a) => fetch(...a), timeoutMs = 20000, pool = null, traceTimeout = '60s' } = {}) {
   const post = async (url, method, params) => {
     const r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(timeoutMs) });
     const j = await r.json();
     if (!j || j.error || j.result == null) throw new Error(`${method}: ${String((j && j.error && j.error.message) || r.status).slice(0, 80)}`);
     return j.result;
   };
+  // (a call that is not a plain CALL, such as a delegatecall into the pool's code or a static call, changes nothing of the pool's: it is not what the pool ran)
   const fromCallTracer = (root) => {
     const out = [];
-    const walk = (f) => { if (!f || f.error) return; out.push({ to: f.to, input: f.input }); for (const c of f.calls || []) walk(c); };
+    const walk = (f) => { if (!f || f.error) return; if (!f.type || String(f.type).toUpperCase() === 'CALL') out.push({ to: f.to, input: f.input }); for (const c of f.calls || []) walk(c); };
     walk(root);
     return out;
   };
@@ -594,10 +753,17 @@ export function makeTxTracer({ nodes = TRACE_NODES, fetchImpl = (...a) => fetch(
     const at = (t) => (t.traceAddress || []).join('.');
     const failed = list.filter((t) => t.error).map(at);
     const ran = (a) => !failed.some((b) => b === '' || a === b || a.startsWith(b + '.'));
-    return list.filter((t) => t.type === 'call' && t.action && ran(at(t))).map((t) => ({ to: t.action.to, input: t.action.input }));
+    return list.filter((t) => t.type === 'call' && t.action && (!t.action.callType || t.action.callType === 'call') && ran(at(t))).map((t) => ({ to: t.action.to, input: t.action.input }));
   };
+  const poolOnly = pool ? poolCallsTracer(pool) : null;
   const one = async (url, txHash) => {
-    try { return fromCallTracer(await post(url, 'debug_traceTransaction', [txHash, { tracer: 'callTracer' }])); } catch { /* the other form */ }
+    if (poolOnly) {
+      try {
+        const r = await post(url, 'debug_traceTransaction', [txHash, { tracer: poolOnly, timeout: traceTimeout }]);
+        if (Array.isArray(r) && r.every((c) => c && typeof c.input === 'string' && typeof c.to === 'string')) return r;
+      } catch { /* a node without JavaScript tracers: the other forms */ }
+    }
+    try { return fromCallTracer(await post(url, 'debug_traceTransaction', [txHash, { tracer: 'callTracer', timeout: traceTimeout, tracerConfig: { onlyTopCall: false, withLog: false } }])); } catch { /* the other form */ }
     const r = await post(url, 'trace_transaction', [txHash]);
     if (!Array.isArray(r)) throw new Error('trace_transaction: not a list');
     return fromParity(r);
@@ -611,6 +777,7 @@ export function makeTxTracer({ nodes = TRACE_NODES, fetchImpl = (...a) => fetch(
   };
   // every node's trace at once, null for one that gave none: what a reading taken from a trace is checked against
   tracer.all = (txHash) => Promise.all(nodes.map((u) => one(u, txHash).catch(() => null)));
+  tracer.nodes = [...nodes];
   return tracer;
 }
 

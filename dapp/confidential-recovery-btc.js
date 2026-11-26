@@ -14,6 +14,9 @@ export const ESPLORA_BASES = [
   'https://mempool.space/api',
   'https://blockstream.info/api',
   'https://mempool.emzy.de/api',
+  'https://mempool.bitaroo.net/api',
+  'https://mempool.ninja/api',
+  'https://btcscan.org/api',
 ];
 
 const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');

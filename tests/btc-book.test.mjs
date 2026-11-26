@@ -188,13 +188,14 @@ t('ladder groups identical prints into one level with a count', () => {
   assert.equal(at212[0].count, 5);
 });
 
-t('listing shape: walk-away lots, each at least 2×dust', () => {
-  const s = listingShape(parseAmount('100', 8), 194, 8);
-  assert.equal(s.k, 7);
-  assert.ok(s.perLotSats >= 2 * DUST);
-  assert.ok(s.listedBase <= parseAmount('100', 8));
-  const small = listingShape(parseAmount('6', 8), 194, 8);
-  assert.equal(small.k, 1);
+t('listing shape: few walk-away lots, each worth at least 25,000 sats', () => {
+  const s = listingShape(parseAmount('500', 8), 194, 8);
+  assert.equal(s.k, 3);
+  assert.ok(s.perLotSats >= 25000);
+  assert.ok(s.listedBase <= parseAmount('500', 8));
+  assert.equal(listingShape(parseAmount('1000', 8), 194, 8).k, 3);   // never more than three pieces
+  assert.equal(listingShape(parseAmount('300', 8), 194, 8).k, 2);
+  assert.equal(listingShape(parseAmount('100', 8), 194, 8).k, 1);    // 19,400 sats: one piece
   assert.equal(listingShape(parseAmount('1', 8), 194, 8).k, 0);
 });
 

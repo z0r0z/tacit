@@ -1,4 +1,4 @@
-import { openBtcWallet } from '/trade/btc-session.js?cb=fc0f55c7';
+import { openBtcWallet } from '/trade/btc-session.js?cb=4012365d';
 import { isPasskeyAvailable } from '/prf-wallet.js';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=e9a3a06d';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
@@ -8,8 +8,8 @@ import { mountFast } from '/fast/ui.js?cb=d6734a28';
 import { mountProvide } from '/fast/provide.js?cb=f205b95a';
 import { mountBound } from '/fast/bound.js?cb=f0f32804';
 import { mountReverse } from '/fast/reverse.js?cb=826337bd';
-import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=4a1bb265';
-import { makeWants } from '/fast/want.js?cb=4c56ebdc';
+import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=9b85f002';
+import { makeWants } from '/fast/want.js?cb=aef09b79';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { invaderSvg } from '/prove/invader.js';
 
@@ -17,11 +17,11 @@ import { invaderSvg } from '/prove/invader.js';
 // (docs/FAST-BRIDGE.md). The providers are the ones /fast/lp.json names, each with the key it signs for, and the ones that post
 // their ads on the boards it names. A provider run on this machine can be named in the address
 // (?lp=<url>&claimPub=<hex>&board=<url>) when the page is open from localhost.
-const TACIT_URL = '/tacit.js?cb=35e43051';
+const TACIT_URL = '/tacit.js?cb=258d3937';
 // the bridge itself (the lock, the settle, the key's own provider) loads when a key opens; a touch on the page fetches its modules ahead
 let warmed = false;
 const warm = () => { if (warmed) return; warmed = true; const t = document.getElementById('warm'); if (t) document.head.append(t.content.cloneNode(true)); };
-const wire = () => { warm(); return import('/fast/wire.js?cb=5f24f77e'); };
+const wire = () => { warm(); return import('/fast/wire.js?cb=e180928d'); };
 for (const ev of ['pointerdown', 'focusin']) document.querySelector('main')?.addEventListener(ev, warm, { once: true });
 
 async function lists() {

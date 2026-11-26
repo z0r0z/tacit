@@ -1957,17 +1957,17 @@ test('balance: a full scan counts the wallet account\'s public TAC toward the ho
   const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl });
   const key = '0x' + '33'.repeat(32);
   assert.equal(ux.holderFeeBps(), 30n);
-  await ux.balance(key, { cbtc: false, bridge: false });
+  await ux.balance(key, { cbtc: false });
   assert.ok(calls > 0, 'read the TAC balance');
   assert.equal(ux.holderFeeBps(), 20n, '5,000 TAC on the account -> the 1,000 tier');
   tacWei = 50n * 10n ** 18n;
   await ux.balance(key, { cbtc: false, bridge: false, fromBlock: 1 });
   assert.equal(ux.holderFeeBps(), 20n, 'a windowed scan leaves the tier alone');
   failCall = true;
-  await ux.balance(key, { cbtc: false, bridge: false });
+  await ux.balance(key, { cbtc: false });
   assert.equal(ux.holderFeeBps(), 20n, 'a failed read keeps the last reading');
   failCall = false;
-  await ux.balance(key, { cbtc: false, bridge: false });
+  await ux.balance(key, { cbtc: false });
   assert.equal(ux.holderFeeBps(), 30n, 'below 100 TAC -> the standard rate');
 });
 
@@ -1988,10 +1988,10 @@ test('balance: a connected wallet\'s public TAC also counts toward the holder ra
   const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl });
   try {
     setExternalTacHolders(() => [EXT, 'not-an-address']);
-    await ux.balance('0x' + '44'.repeat(32), { cbtc: false, bridge: false });
+    await ux.balance('0x' + '44'.repeat(32), { cbtc: false });
     assert.equal(ux.holderFeeBps(), 20n, '1,500 TAC in the connected wallet -> the 1,000 tier');
     setExternalTacHolders(() => { throw new Error('wallet gone'); });
-    await ux.balance('0x' + '44'.repeat(32), { cbtc: false, bridge: false });
+    await ux.balance('0x' + '44'.repeat(32), { cbtc: false });
     assert.equal(ux.holderFeeBps(), 30n, 'no connected wallet -> only the account\'s own TAC counts');
   } finally { setExternalTacHolders(() => []); }
 });

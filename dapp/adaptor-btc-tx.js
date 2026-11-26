@@ -258,6 +258,41 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return satsPair(tx, total - tx.outputs.reduce((s, o) => s + o.value, 0));
   }
 
+  // SEVERAL LOCKS IN ONE TRANSACTION (a split across providers): `legs` are [{ lock, amount }], each a lock output as lockSats makes one (output k is leg k), then the one
+  // recovery hint, then the change. The coins are picked for the total of the amounts and the fee of the whole transaction.
+  const manyShape = (coins, legs, hint, change) => ({
+    version: 2, locktime: 0,
+    inputs: coins.map((c) => ({ txid: c.txid, vout: c.vout, sequence: SEQ, witness: [] })),
+    outputs: [...legs.map((l) => ({ value: satsValue(l.amount), script: l.lock.spk })), ...(hint ? [{ value: 0, script: hint }] : []), ...(change > DUST ? [{ value: change, script: own }] : [])],
+  });
+  const manyFee = (coins, legs, hint, feeRate) => {
+    const sized = manyShape(coins, legs, hint, DUST + 1);
+    sized.inputs.forEach((i) => { i.witness = [new Uint8Array(72), new Uint8Array(33)]; });
+    return prims.feeFor(vsizeOf(sized), feeRate);
+  };
+  function pickSatsMany({ amounts, satsUtxos, feeRate }) {
+    const probe = prims.p2trScript(wallet.xonly()), hint = new Uint8Array(2 + 1 + 6 * amounts.length);
+    const legs = amounts.map((a) => ({ lock: { spk: probe }, amount: a })), value = legs.reduce((t, l) => t + satsValue(l.amount), 0);
+    const picked = [];
+    let total = 0;
+    for (const c of satsUtxos.filter((u) => u.value > DUST)) {
+      picked.push(c); total += c.value;
+      if (total >= value + manyFee(picked, legs, hint, feeRate)) return picked;
+    }
+    const need = value + manyFee(picked.length ? picked : [{ txid: '00'.repeat(32), vout: 0 }], legs, hint, feeRate);
+    throw new Error(`adaptor-btc-tx: not enough sats for the lock (need ${need}, have ${total})`);
+  }
+  function lockSatsMany({ legs, hint = null, coins, feeRate }) {
+    if (!coins.length) throw new Error('adaptor-btc-tx: a lock needs a coin to spend');
+    if (!Array.isArray(legs) || legs.length < 2) throw new Error('adaptor-btc-tx: a transaction of several locks has at least two');
+    const value = legs.reduce((t, l) => t + satsValue(l.amount), 0), total = coins.reduce((s, c) => s + c.value, 0);
+    const fee = manyFee(coins, legs, hint, feeRate);
+    if (total < value + fee) throw new Error(`adaptor-btc-tx: not enough sats for the lock (need ${value + fee}, have ${total})`);
+    const tx = manyShape(coins, legs, hint, total - value - fee);
+    tx.inputs.forEach((i, k) => { i.witness = prims.signP2wpkhInput(tx, k, coins[k].value); });
+    return satsPair(tx, total - tx.outputs.reduce((s, o) => s + o.value, 0));
+  }
+
   // One transaction that spends the whole lock output to the wallet, its fee taken from the output.
   function sweepSats({ lockOut, lock, sequence, witnessSizes, sign, feeRate, maxFee = null }) {
     const value = Number(lockOut.value);
@@ -283,6 +318,23 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return sweepSats({ lockOut, lock, sequence: lock.csvBlocks, witnessSizes: [64, lock.leaf.length, lock.controlBlock.length], sign: refundSigner(dLocker, lock), feeRate, maxFee });
   }
 
+  // CHILD (pays for its parent): a coin this wallet holds in a transaction that waits, spent back to the wallet with `fee`, so that the two together pay a rate a
+  // block takes. A lock that missed a block is bumped this way from its change, and keeps its txid (a counterparty already holds it). The child signals
+  // replacement, so a bump that is still short is replaced by one that pays more.
+  const childShape = (coin, out) => ({ version: 2, locktime: 0, inputs: [{ txid: coin.txid, vout: coin.vout, sequence: SEQ, witness: [] }], outputs: [{ value: out, script: own }] });
+  function childVsize() {
+    const sized = childShape({ txid: '00'.repeat(32), vout: 0 }, DUST + 1);
+    sized.inputs[0].witness = [new Uint8Array(72), new Uint8Array(33)];
+    return vsizeOf(sized);
+  }
+  function childSats({ coin, fee }) {
+    const v = Number(coin.value), f = Math.ceil(Number(fee));
+    if (!Number.isSafeInteger(v) || !(f > 0) || v - f <= DUST) throw new Error('adaptor-btc-tx: the coin does not cover the fee of the child and leave more than dust');
+    const tx = childShape(coin, v - f);
+    tx.inputs[0].witness = prims.signP2wpkhInput(tx, 0, v);
+    return satsPair(tx, f);
+  }
+
   // Commit first, then the reveal, which retries while the commit propagates. `onStage` hears 'commit' then 'reveal'. A pair
   // with nothing to commit (a sats transaction) is the reveal alone.
   async function broadcastPair(pair, { onStage = null } = {}) {
@@ -295,7 +347,7 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return { commitTxid: pair.commitTxid, revealTxid: pair.revealTxid };
   }
 
-  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, withKeyPathSig, pickSats, lockSats, claimSats, refundSats, broadcastPair, vsizeOf };
+  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, withKeyPathSig, pickSats, lockSats, pickSatsMany, lockSatsMany, claimSats, refundSats, childSats, childVsize, broadcastPair, vsizeOf };
 }
 
 // A transaction as JSON a record can keep (bytes as hex), and back.

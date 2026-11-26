@@ -33,7 +33,8 @@ A proof lands on the board in one of two ways:
   - router-embedded proofs: `wraptransfer`, `wraplp`, `wrapswap`, `wrapcdpmint` (a posted `wrapswap` whose deposit
     already waits in the pool settles as a plain `pool.settle`, and is listed);
   - proofs pinned to a root that moves with the reflection: `bridgemint`, `cbtcmint`, `fastlane`;
-  - adaptor-swap legs (`adaptorlock`, `adaptorclaim`, `adaptorrefund`): when one lands is part of the swap;
+  - adaptor-swap legs relayed (`adaptorlock`, `adaptorclaim`, `adaptorrefund`): when one lands is part of the swap. A pool lock proved ahead
+    (`adaptorlock`, prove only) and posted by its holder once the other chain's lock is confirmed is listed: its holder chose when by posting it;
   - relayed exits that carry an L2 recipe for the relay to activate. A holder may post such an exit; Tacit's relay
     activates its recipe when it sends it.
 - **Leaving the board:** a relayed job stays until its own deadline. A posted proof also leaves after a day if

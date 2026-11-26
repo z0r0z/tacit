@@ -191,7 +191,7 @@ const TASKS_CB_FILES = ['tasks/verify.js', 'tasks/app.js', 'tasks/index.html'];
 // dapp/discord/ is where the verification panel sends a holder: shared message/holdings helpers, then app.js, then the page.
 const DISCORD_CB_FILES = ['discord/message.js', 'discord/holdings.js', 'discord/app.js', 'discord/index.html'];
 // dapp/praxis/ is the Tacit Praxis ceremony's page: the receipts' check and share link, then app.js, then the page.
-const PRAXIS_CB_FILES = ['praxis/receipt.js', 'praxis/app.js', 'praxis/index.html'];
+const PRAXIS_CB_FILES = ['praxis/browser/core.js', 'praxis/browser/pool.js', 'praxis/browser/flow.js', 'praxis/browser/worker.js', 'praxis/browser/beat.js', 'praxis/receipt.js', 'praxis/web.js', 'praxis/app.js', 'praxis/index.html'];
 // dapp/face/ is the FACE RACE sale page: its config and drawing helpers, the catch-up recorder, then app.js, then the page.
 // dapp/shop/ is where a buyer takes an address from the shop: the shelf (its events and calls), then app.js, then the page.
 const SHOP_CB_FILES = ['shop/shelf.js', 'shop/app.js', 'shop/index.html'];
@@ -204,8 +204,10 @@ const CHAIN_CB_FILES = ['chain/ui.js', 'chain/live.js', 'chain/app.js', 'chain/i
 const PROVE_CB_FILES = ['community-prove.js', 'prove/view.js', 'prove/chain.js', 'prove/invader.js', 'prove/ops.js', 'prove/review.js', 'prove/saltcore.js', 'prove/saltgpu.js', 'prove/tabmine.js', 'prove/salt-worker.js', 'prove/app.js', 'prove/index.html'];   // an importer after what it imports: a file's token is of its bytes once its own imports are stamped
 // dapp/help/ asks the community help desk: its page logic first, then app.js, then the page.
 const HELP_CB_FILES = ['help/ui.js', 'help/embed.js', 'help/app.js', 'help/index.html'];
+// dapp/nodes/ is the status page for the community nodes: the page logic, the shared document rules, then app.js and the page.
+const NODES_CB_FILES = ['nodes/ui.js', 'nodes-list.js', 'nodes/app.js', 'nodes/index.html'];
 // dapp/build/ is the page for builders and dapp/docs/ the docs pages, which share its one script: the script, then the pages.
-const BUILD_CB_FILES = ['build/app.js', 'build/index.html', 'docs/chain/index.html'];
+const BUILD_CB_FILES = ['build/app.js', 'build/index.html', 'docs/chain/index.html', 'docs/btc/index.html'];
 // dapp/assets/ lists Tacit's own assets and the farms under them: the farms' reading first, then app.js, then the page.
 const ASSETS_CB_FILES = ['assets/farms.js', 'assets/app.js', 'assets/index.html'];
 // dapp/etch/ makes an asset on Bitcoin and searches the ones that exist: its search first, then app.js, then the page (it loads /trade/btc.js, hashed with the trade page's).
@@ -445,7 +447,7 @@ function pageCacheBust(files, write) {
 // A page whose script is a file (a CSP without inline script) has a `<!-- warm:begin --><!-- warm:end -->` block instead: the same links inside an inert
 // <template>, which the script clones into the head. The root of this group may be named by the page's own modules rather than by the page.
 // Generated here so it cannot go stale; --verify-only reports a block that no longer matches.
-const PRELOAD_PAGES = ['face/index.html', 'index.html', 'pay/index.html', 'pay/eth/index.html', 'trade/index.html', 'teth/index.html', 'cbtc/index.html', 'vault/index.html', 'tasks/index.html', 'splitter/index.html', 'relay/index.html', 'etch/index.html', 'assets/index.html', 'rewards/index.html', 'bridge/index.html', 'discord/index.html', 'shop/index.html', 'fast/index.html', 'prove/index.html', 'help/index.html', 'farm/index.html', 'btc/index.html', 'praxis/index.html'];
+const PRELOAD_PAGES = ['face/index.html', 'index.html', 'pay/index.html', 'pay/eth/index.html', 'trade/index.html', 'teth/index.html', 'cbtc/index.html', 'vault/index.html', 'tasks/index.html', 'splitter/index.html', 'relay/index.html', 'etch/index.html', 'assets/index.html', 'rewards/index.html', 'bridge/index.html', 'discord/index.html', 'shop/index.html', 'fast/index.html', 'prove/index.html', 'help/index.html', 'nodes/index.html', 'farm/index.html', 'btc/index.html', 'praxis/index.html'];
 const STATIC_IMPORT = /(?:^|[\n;}])\s*(?:import|export)\s*(?:[^'"();]*?\sfrom\s*)?(['"])([^'"]+)\1/g;
 const WARM_BLOCK = /<!-- warm:begin -->[\s\S]*?<!-- warm:end -->/;
 const HEAD_BLOCK = /<!-- preload:begin -->[\s\S]*?<!-- preload:end -->/, LATER_BLOCK = /\/\/ preload-later:begin\n[\s\S]*?\/\/ preload-later:end/, INTENT_BLOCK = /\/\/ preload-intent:begin\n[\s\S]*?\/\/ preload-intent:end/;
@@ -690,7 +692,7 @@ async function main() {
     if (gotCb !== wantCb) drift.push(`classic.html tacit.js ?cb=${gotCb} but sha256(dapp/tacit.js)=${wantCb}`);
     if (gotPreboot !== wantPreboot) drift.push(`classic.html preboot.js ?cb=${gotPreboot} but sha256(dapp/preboot.js)=${wantPreboot}`);
     if (gotSw !== wantSw) drift.push(`sw.js CACHE_VERSION suffix ${gotSw} but sha256(vendor‖prf-wallet)=${wantSw}`);
-    drift.push(...siteChrome(false), ...frontSheets(false), ...pageCacheBust(SATS_CB_FILES, false), ...pageCacheBust(REWARDS_CB_FILES, false), ...pageCacheBust(FARM_CB_FILES, false), ...pageCacheBust(LARGE_POOL_CB_FILES, false), ...pageCacheBust(BRIDGE_CB_FILES, false), ...pageCacheBust(WELD_CB_FILES, false), ...pageCacheBust(TAC_CB_FILES, false), ...btcMarketCss(false), ...tethPageStyle(false), ...pageCacheBust(TRADE_CB_FILES, false), ...tradeAssetPages(false), ...pageCacheBust(VAULT_CB_FILES, false), ...pageCacheBust(TASKS_CB_FILES, false), ...pageCacheBust(DISCORD_CB_FILES, false), ...pageCacheBust(PRAXIS_CB_FILES, false), ...pageCacheBust(SHOP_CB_FILES, false), ...pageCacheBust(FACE_CB_FILES, false), ...pageCacheBust(FAST_CB_FILES, false), ...pageCacheBust(CHAIN_CB_FILES, false), ...pageCacheBust(PROVE_CB_FILES, false), ...pageCacheBust(HELP_CB_FILES, false), ...pageCacheBust(BUILD_CB_FILES, false), ...pageCacheBust(SWAP_CB_FILES, false), ...pageCacheBust(BTC_CB_FILES, false), ...pageCacheBust(ETCH_CB_FILES, false), ...pageCacheBust(ASSETS_CB_FILES, false), ...pageCacheBust(SPLITTER_CB_FILES, false), ...pageCacheBust(RELAY_CB_FILES, false), ...pageCacheBust(PAY_CB_FILES, false));
+    drift.push(...siteChrome(false), ...frontSheets(false), ...pageCacheBust(SATS_CB_FILES, false), ...pageCacheBust(REWARDS_CB_FILES, false), ...pageCacheBust(FARM_CB_FILES, false), ...pageCacheBust(LARGE_POOL_CB_FILES, false), ...pageCacheBust(BRIDGE_CB_FILES, false), ...pageCacheBust(WELD_CB_FILES, false), ...pageCacheBust(TAC_CB_FILES, false), ...btcMarketCss(false), ...tethPageStyle(false), ...pageCacheBust(TRADE_CB_FILES, false), ...tradeAssetPages(false), ...pageCacheBust(VAULT_CB_FILES, false), ...pageCacheBust(TASKS_CB_FILES, false), ...pageCacheBust(DISCORD_CB_FILES, false), ...pageCacheBust(PRAXIS_CB_FILES, false), ...pageCacheBust(SHOP_CB_FILES, false), ...pageCacheBust(FACE_CB_FILES, false), ...pageCacheBust(FAST_CB_FILES, false), ...pageCacheBust(CHAIN_CB_FILES, false), ...pageCacheBust(PROVE_CB_FILES, false), ...pageCacheBust(HELP_CB_FILES, false), ...pageCacheBust(NODES_CB_FILES, false), ...pageCacheBust(BUILD_CB_FILES, false), ...pageCacheBust(SWAP_CB_FILES, false), ...pageCacheBust(BTC_CB_FILES, false), ...pageCacheBust(ETCH_CB_FILES, false), ...pageCacheBust(ASSETS_CB_FILES, false), ...pageCacheBust(SPLITTER_CB_FILES, false), ...pageCacheBust(RELAY_CB_FILES, false), ...pageCacheBust(PAY_CB_FILES, false));
     drift.push(...pageImportMaps(false), ...pagePreloads(false), ...pageCacheBust(HARNESS_CB_FILES, false), ...tacPage(false), ...spxPage(false));
     if (drift.length) {
       console.error('✗ cache-bust tokens or preload links are stale — run `npm run build` and commit the result:');
@@ -746,6 +748,8 @@ async function main() {
     const chainDrift = pageCacheBust(CHAIN_CB_FILES, true);
     const proveDrift = pageCacheBust(PROVE_CB_FILES, true);
     const helpDrift = pageCacheBust(HELP_CB_FILES, true);
+    const nodesDrift = pageCacheBust(NODES_CB_FILES, true);
+    console.log(`• nodes page cache-bust: ${nodesDrift.length ? `${nodesDrift.length} token(s) updated` : 'unchanged'}`);
     console.log(`• help page cache-bust: ${helpDrift.length ? `${helpDrift.length} token(s) updated` : 'unchanged'}`);
     console.log(`• prove page cache-bust: ${proveDrift.length ? `${proveDrift.length} token(s) updated` : 'unchanged'}`);
     console.log(`• fast page cache-bust: ${fastDrift.length ? `${fastDrift.length} token(s) updated` : 'unchanged'}`);

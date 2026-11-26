@@ -64,7 +64,7 @@ export function pairWorld({ providerMarket = 35.6, clientMarket = 35.6, confs = 
   w.provider = { id: 'lp1', name: 'Test provider', ref: { kind: 'http', base: 'http://lp', claimPub: bytesToHex(lW.wallet.pub) } };
   w.discover = async () => {
     const [f, r] = [await w.fwd.handle({ method: 'GET', path: '/info' }), await w.rev.handle({ method: 'GET', path: '/reverse/info' })];
-    return [{ ...w.provider, assets: { btcAsset: f.body.btcAsset, evmAsset: f.body.evmAsset }, terms: termsOf(f.body), reverse: { feeBps: r.body.feeBps, flatFee: BigInt(r.body.flatFee), minAmount: BigInt(r.body.minAmount), maxAmount: BigInt(r.body.maxAmount), available: r.body.available == null ? null : BigInt(r.body.available) } }];
+    return [{ ...w.provider, ...(w.providerNamed === false ? {} : { pinned: true }), assets: { btcAsset: f.body.btcAsset, evmAsset: f.body.evmAsset }, terms: termsOf(f.body), reverse: { feeBps: r.body.feeBps, flatFee: BigInt(r.body.flatFee), minAmount: BigInt(r.body.minAmount), maxAmount: BigInt(r.body.maxAmount), available: r.body.available == null ? null : BigInt(r.body.available) } }];
   };
   const mems = new Map();
   w.mems = mems;

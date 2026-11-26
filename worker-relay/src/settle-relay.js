@@ -34,7 +34,7 @@ import { abi as GAS_ABI, executeCall } from './lib/gas-calls.js';
 import { notExecuted } from './lib/stdin-prover.js';
 import { assertMemosMatchProof } from './lib/memo-root.js';
 import { assertMemoPairing, memoClassOrderProblem } from './lib/memo-pairing.js';
-import { consumedInput, consumedAck, unlandedDeposits, spentInputsOf, noteNullifier } from './lib/spent-precheck.js';
+import { consumedInput, consumedAck, unlandedDeposits, spentNullifiersOf } from './lib/spent-precheck.js';
 import { findCarrier, isRevert, isPendingRevert, isRateLimited, errDetail, holdPendingRevert, splitRoutes, looseAllowed } from './lib/landed-elsewhere.js';
 import { cbtcMintBlocker } from './lib/cbtc-mint-precheck.js';
 import { cdpBlocker } from './lib/cdp-precheck.js';
@@ -756,7 +756,7 @@ async function batchCycle() {
   // batch is done, where they resolve against what the first one did.
   const spent = new Set(), later = [];
   jobs = jobs.filter((j) => {
-    const nus = spentInputsOf(j.op || {}).map((n) => String(noteNullifier(n)).toLowerCase());
+    const nus = spentNullifiersOf(j.op || {}).map((n) => String(n).toLowerCase());
     if (nus.some((n) => spent.has(n))) { later.push(j); return false; }
     for (const n of nus) spent.add(n);
     return true;

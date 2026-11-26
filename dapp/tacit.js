@@ -2042,6 +2042,8 @@ const _CANDIDATE_BASES = {
   mainnet: [
     'https://mempool.emzy.de/api',
     'https://mempool.bitaroo.net/api',
+    'https://mempool.ninja/api',
+    'https://btcscan.org/api',
     'https://mempool.fra.mempool.space/api',
     'https://mempool.tk7.mempool.space/api',
     'https://mempool.va1.mempool.space/api',
@@ -2547,17 +2549,13 @@ async function getBtcUsdPrice() {
       return usd;
     };
     const _fetchChainlink = async () => {
-      const r = await _withTimeout('https://ethereum-rpc.publicnode.com', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: 1, method: 'eth_call',
-          params: [{ to: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', data: '0x50d25bcd' }, 'latest'],
-        }),
-      });
-      if (!r.ok) throw new Error('http ' + r.status);
-      const j = await r.json();
-      const hex = j && j.result;
+      // Use the same health-aware route as every other Ethereum read. A direct
+      // PublicNode call here caused a browser-only 403 on the portfolio page,
+      // even though the other price sources could still win the race.
+      const hex = await _ethRpcCall('eth_call', [
+        { to: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', data: '0x50d25bcd' },
+        'latest',
+      ]);
       if (typeof hex !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(hex)) throw new Error('bad shape');
       const usd = Number(BigInt(hex)) / 1e8;
       if (!Number.isFinite(usd) || usd <= 0) throw new Error('bad shape');
@@ -2797,6 +2795,17 @@ async function _ownLocksReadyForSpend(a = null) {
 }
 // split: { free, held } instead of the free coins alone; held are the coins spoken for, each with `hold`: 'bridge' (a bridge in progress will spend it) or 'lock' (collateral).
 // A coin this page has just spent is in neither.
+// The unspent outputs of `address` that Tacit's own archive and live set hold (worker GET /chain/tac/notes), shaped as an explorer's utxo list; null when that cannot be read.
+async function _tacIndexUtxos(address) {
+  if (!WORKER_BASE || !NET?.name) return null;
+  const r = await fetch(`${WORKER_BASE}/chain/tac/notes?network=${encodeURIComponent(NET.name)}&address=${encodeURIComponent(address)}`, { signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined });
+  if (!r.ok) return null;
+  const j = await r.json();
+  if (!j || !Array.isArray(j.notes)) return null;
+  return j.notes
+    .filter((x) => /^[0-9a-f]{64}$/i.test(String(x.txid)) && Number.isInteger(x.vout) && Number.isFinite(x.value) && Number.isInteger(x.h))
+    .map((x) => ({ txid: String(x.txid).toLowerCase(), vout: x.vout, value: x.value, status: { confirmed: true, block_height: x.h } }));
+}
 async function getUtxos(a, onProgress, { forSpend = false, split = false } = {}) {
   if (forSpend) await _ownLocksReadyForSpend(a);
   else await _ownLocksReserved(a)?.catch(() => {});
@@ -2851,6 +2860,12 @@ async function getUtxos(a, onProgress, { forSpend = false, split = false } = {})
       const ageSec = Math.max(0, Math.floor((Date.now() - lightCached.fetchedAt) / 1000));
       try { toast(`Chain indexers throttled — using cached UTXOs (${ageSec}s old).`, ''); } catch {}
       return _filterRecent(lightCached.utxos);
+    }
+    // No explorer would answer and nothing is cached: Tacit's own index lists the address's Tacit notes (not its ordinary coins), enough to read the holdings.
+    // Never for a spend (the list is not every coin) and never for the split read a balance is drawn from (a short list would show a smaller balance).
+    if (!forSpend && !split && (isRateLimited || /unreachable|network|timeout|fetch|API 5\d\d/i.test(msg))) {
+      const notes = await _tacIndexUtxos(a).catch(() => null);
+      if (notes) return _filterRecent(notes);
     }
     throw e;
   }
@@ -10584,7 +10599,6 @@ async function bridgeWithdrawETH({ provider, burnRecord, onProgress }) {
   _p('fetching relay proof headers');
   const confirmDepth = 6;
   const mempoolBase = currentNetworkName() === 'signet' ? 'https://mempool.space/signet/api' : 'https://mempool.space/api';
-  const ethRpc = gctx.chainId === 11155111 ? 'https://ethereum-sepolia-rpc.publicnode.com' : 'https://ethereum-rpc.publicnode.com';
   const relayAddr = await provider.request({ method: 'eth_call', params: [{ to: gctx.address, data: '0x' + bytesToHex(keccak_256(new TextEncoder().encode('HEADER_RELAY()'))).slice(0, 8) }, 'latest'] });
   const relayAddress = '0x' + relayAddr.slice(26);
   const tipHeightHex = await provider.request({ method: 'eth_call', params: [{ to: relayAddress, data: '0x' + bytesToHex(keccak_256(new TextEncoder().encode('tipHeight()'))).slice(0, 8) }, 'latest'] });
@@ -15692,15 +15706,16 @@ function _pendingChunkedListingsForAsset(aid) {
     .filter(r => r.network === NET.name && r.aid === aid && Number(r.expiry || 0) > Math.floor(Date.now() / 1000));
 }
 const _autoResumedThisSession = new Set();
-async function _autoResumePendingChunkedListings() {
+async function _autoResumePendingChunkedListings({ aid = null, force = false } = {}) {
   if (typeof wallet === 'undefined' || !wallet.priv) return;
   const _now = Math.floor(Date.now() / 1000);
   const all = _loadPendingChunkedListings().filter(r =>
     r.network === NET.name
+    && (!aid || r.aid === aid)
     && Number(r.expiry || 0) > _now
     && Array.isArray(r.pending_vouts)
     && r.pending_vouts.length > 0
-    && !_autoResumedThisSession.has(r.revealTxid),
+    && (force || !_autoResumedThisSession.has(r.revealTxid)),
   );
   if (all.length === 0) return;
   for (const rec of all) {
@@ -27780,10 +27795,29 @@ async function publishPreauthSaleChunks({ sourceUtxoTxid, sourceUtxoVout, chunks
   _progress('fan-done', { revealTxid: splitResult.revealTxid });
 
   _progress('wait-visible', { revealTxid: splitResult.revealTxid });
-  await waitForTxVisible(splitResult.revealTxid);
 
   const groupSeed = crypto.getRandomValues(new Uint8Array(8));
   const groupIdHex = bytesToHex(groupSeed);
+
+  // The fan-out is already on chain: whatever stops the listings from here
+  // (slow indexer, throttle, dropped connection) must leave a record, or the
+  // K pieces sit in the wallet with nothing that lists them.
+  const _keep = (fromIdx, why) => {
+    try {
+      _savePendingChunkedListing({
+        network: NET.name, aid: assetIdHex, ticker, decimals,
+        revealTxid: splitResult.revealTxid, group_id: groupIdHex,
+        chunk_amount: chunkAmount.toString(),
+        chunks_published: fromIdx, chunks_requested: K,
+        pending_vouts: Array.from({ length: K - fromIdx }, (_, j) => fromIdx + j),
+        min_price_sats: minPriceSatsPerChunk, expiry,
+        last_error: String(why?.message || why || ''),
+        last_attempt_ts: Math.floor(Date.now() / 1000),
+      });
+    } catch {}
+  };
+  try { await waitForTxVisible(splitResult.revealTxid); }
+  catch (e) { _keep(0, e); throw e; }
 
   const saleIds = [];
   let firstError = null;
@@ -27819,6 +27853,7 @@ async function publishPreauthSaleChunks({ sourceUtxoTxid, sourceUtxoVout, chunks
       break;
     }
   }
+  if (firstError) _keep(saleIds.length, firstError);
   _progress('done', { saleIds });
   return {
     revealTxid: splitResult.revealTxid,
@@ -46737,7 +46772,7 @@ function _ensureWalletConnect() {
     const sheets = m.wcSheets(m.overlayHost());
     m.announceWalletConnect({
       projectId: m.WC_PROJECT_ID, chains: [1, 8453, 4663],
-      rpcMap: { 1: 'https://ethereum-rpc.publicnode.com', 8453: 'https://mainnet.base.org', 4663: 'https://rpc.mainnet.chain.robinhood.com' },
+      rpcMap: { 1: ETH_NODES[0], 8453: 'https://mainnet.base.org', 4663: 'https://rpc.mainnet.chain.robinhood.com' },
       metadata: { name: 'tacit', description: 'Confidential crosschain DeFi', url: location.origin, icons: [`${location.origin}/tac-logo.png`] },
       onPair: sheets.onPair, onAsk: sheets.onAsk,
     });
@@ -56704,9 +56739,16 @@ async function _btcMarketListForSale(aid, { amountBase, shape, expirySec, onStag
       chunks: shape.k, minPriceSatsPerChunk: shape.perLotSats, expiry,
       preResolvedSource: target, preResolvedAssetIdHex: aid,
     });
-    if (r?.error) throw new Error(`pieces were created but listing didn't finish (${r.error}) — they're in your wallet; list them again`);
-    if (r?.partialFailure) {
-      const err = new Error(`${r.chunks_published || 0} of ${shape.k} pieces listed (${r.partialFailure}) — the rest are in your wallet; list them again`);
+    if (r?.error || r?.partialFailure) {
+      // Usually a lagging indexer or a throttle: wait a few seconds and re-post
+      // the same signed pieces (no new split, no new fee).
+      try { onStage?.('finishing the listings'); } catch {}
+      await new Promise((res) => setTimeout(res, 5000));
+      await _autoResumePendingChunkedListings({ aid, force: true }).catch(() => {});
+      const left = _pendingChunkedListingsForAsset(aid).find((x) => x.revealTxid === r.revealTxid);
+      if (!left || !left.pending_vouts?.length) { invalidateMarketCache(); return { txid: r?.revealTxid || null, via: 'chunks', group_id: r?.group_id }; }
+      const n = left.pending_vouts.length;
+      const err = new Error(`${shape.k - n} of ${shape.k} pieces listed (${left.last_error || r.error || r.partialFailure}). The other ${n} are safe in your wallet and publish on their own the next time this page opens, no new fee. Reload and unlock to finish.`);
       err.noReroute = true;
       throw err;
     }
@@ -56785,6 +56827,7 @@ function _btcMarketCtx(aid) {
     asset: () => _btcMarketAssetView(aid),
     listings: () => (_marketCache?.listings || []).filter(l => (l._asset?.asset_id || l.asset_id) === aid),
     loadListings: async ({ force } = {}) => {
+      try { _autoResumePendingChunkedListings({ aid }); } catch {}
       if (force) invalidateMarketCache();
       await fetchMarketDataDeduped();
     },

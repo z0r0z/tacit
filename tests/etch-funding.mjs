@@ -291,7 +291,7 @@ console.log('\nThe first sign-in:');
   await shot(page, 'signin-sheet');
   const ways = await page.$$eval('.bsheet [data-in]', (b) => b.map((x) => x.dataset.in));
   ok(ways[0] === 'btc' && (await page.$eval('.bsheet [data-in="btc"]', (b) => b.classList.contains('main'))), 'a Bitcoin wallet in the browser comes first, as the way in');
-  ok(/to etch an asset on Bitcoin\. It comes from a signature or a passkey, so there is nothing to back up/.test(await text(page, '.bsheet .lede-s')), 'the sheet says what it is for, and that there is nothing to back up');
+  ok(/Sign in to etch an asset on Bitcoin\. One signature or a passkey; nothing to back up/.test(await text(page, '.bsheet .lede-s')), 'the sheet says what it is for, and that there is nothing to back up');
   ok(/^No wallet yet\? Create one/.test(await text(page, '.bsheet [data-in="new"]')), 'and a visitor with no wallet is shown the way to make one');
   await page.close();
 }

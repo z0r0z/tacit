@@ -69,3 +69,23 @@ test('the attempt turns the network\'s "unexecutable" into a plain refusal of th
   assert.ok(/gone\.unexecutable = true/.test(attempt) && /nothing was spent/.test(attempt));
   assert.ok(attempt.indexOf('gone.unexecutable') < attempt.indexOf('produced no proof'), 'before the generic message is built');
 });
+
+test('an op that carries an adaptor kernel is proved with a private input or not at all: no public request, ever', async () => {
+  const { PRIVATE_ONLY_TYPES, privateOnly, privateOnlyRefusal } = await import('../src/lib/private-prove.js');
+  assert.deepEqual([...PRIVATE_ONLY_TYPES].sort(), ['adaptorclaim', 'adaptorrefund']);
+  assert.ok(privateOnly('adaptorclaim') && privateOnly('adaptorrefund') && !privateOnly('wrap') && !privateOnly('adaptorlock'));
+  assert.match(privateOnlyRefusal({}), /not set to prove with private inputs/, 'a relay that proves in public refuses it');
+  assert.match(privateOnlyRefusal({ PRIVATE_STDIN: '0' }), /not proved with a public one/);
+  assert.match(privateOnlyRefusal({ PRIVATE_STDIN: '1' }, true), /refusing private inputs/, 'so does one whose network refuses private inputs');
+  assert.equal(privateOnlyRefusal({ PRIVATE_STDIN: '1' }), null);
+  assert.equal(privateOnlyRefusal({ PRIVATE_STDIN: '1', PRIVATE_FALLBACK_PUBLIC: '1' }), null, 'the fallback setting does not reach it');
+  const src = await readFile(new URL('../src/lib/prover.js', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('async function attempts() {'));
+  const at = body.indexOf('if (privateOnly(type)) {'), plan = body.indexOf('const plan = privateProvePlan(');
+  assert.ok(at >= 0 && at < plan, 'decided before the plan that may go public');
+  const mine = body.slice(at, plan);
+  assert.ok(!/asPublic|PRIVATE_STDIN: '0'|network-public/.test(mine), 'its branch makes no public attempt');
+  assert.match(mine, /attempt\(\{ PRIVATE_STDIN: '1', PRIVATE_FALLBACK_PUBLIC: '0' \}, timeoutMs\)/, 'one private attempt with the whole time');
+  assert.match(mine, /throw Object\.assign\(new Error/, 'a miss fails the job');
+  assert.match(src, /if \(items\.some\(\(i\) => privateOnly\(i\.type\)\)\) throw/, 'never in a mixed request');
+});

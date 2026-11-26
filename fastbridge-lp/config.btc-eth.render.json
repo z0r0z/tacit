@@ -77,5 +77,11 @@
     "maxSats": "1000000",
     "lockFeeReserve": "2000"
   },
-  "mailboxPollSecs": 1
+  "mailboxPollSecs": 1,
+  "upkeep": { "tickSecs": 120 },
+  "target": { "eth": "10", "btcAsEth": "10" },
+  "recycle": { "minBatchSats": 150000, "maxFeeShareBps": 50, "maxPerTickSats": 3000000, "maxPerDaySats": 10000000, "maxFeeRate": 25, "keepSats": 0 },
+  "skew": { "maxBps": 40, "targetEthShare": 0.5, "deadBand": 0.1, "guardBps": 250 },
+  "notes": { "dustEth": "0.002", "minNotes": 8, "maxFeeBps": 25, "maxPerDay": 3 },
+  "buyback": { "minSendEth": "0.01", "maxPerSendEth": "0.25", "maxPerDayEth": "0.5" }
 }

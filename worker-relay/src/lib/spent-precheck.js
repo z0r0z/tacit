@@ -72,10 +72,18 @@ export function lockNullifiersOf(type, op) {
   return [];
 }
 
+// The nullifiers of the spent notes in a witness. A note whose fields do not read as 32-byte words (a longer value cannot be padded into one)
+// has no nullifier here and is left out, so one odd job never throws for the batch it sits in.
+export function spentNullifiersOf(op) {
+  const out = [];
+  for (const n of spentInputsOf(op)) { try { out.push(noteNullifier(n)); } catch { /* unreadable: let the job through */ } }
+  return out;
+}
+
 // Every nullifier the settle would record for this job that the witness fixes: the spent notes' own, plus the ones
 // whose types carry them another way.
 export function nullifiersOf(type, op) {
-  const out = spentInputsOf(op).map(noteNullifier);
+  const out = spentNullifiersOf(op);
   try {
     if (type === 'bridgemint') out.push(bridgeMintNullifier(op));
     else if (type === 'farmunbond') out.push(farmReceiptNullifier(op));

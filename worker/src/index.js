@@ -104,6 +104,7 @@ import { ethStatsBody, pageStatsBody } from './stats-views.js';
 import { preauthSalesBookBody } from './book-views.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { makeBoundOffers } from './bound-offers.js';
+import { makeTakePresigs } from './take-presig.js';
 import { buildGovernance } from './governance.js';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS } from '../../dapp/discord/message.js';
 import { DISCORD_VERIFY_BUTTON_ID } from '../../discord/panel.js';
@@ -666,7 +667,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/community/beat', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify', '/metrics', '/metrics/event']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/community/beat', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/nodes/list', '/nodes/status', '/nodes/records', '/nodes/relay', '/nodes/ad', '/nodes/credits', '/gas/done', '/outpoints/classify', '/metrics', '/metrics/event']);
 // Usage counts (worker/src/metrics.js): one instance per environment, writing to the same store as the rest.
 const _metricsOfEnv = new WeakMap();
 function metricsOf(env) { let m = _metricsOfEnv.get(env); if (!m) { m = makeMetrics({ kv: env.REGISTRY_KV }); _metricsOfEnv.set(env, m); } return m; }
@@ -4307,6 +4308,21 @@ async function handleSaltPool(req, env, url, cors) {
 
 // GET /oracle/proof, POST /oracle/proof { publicValues, proof }: the verifier contract checks a posted proof (an eth_call of verifyProof, as the proof
 // pool does), against the program key the oracles are deployed with.
+// Community nodes: only these paths and methods are passed on, with a bounded body; nothing of the visitor's but the address (for the service's rate limit) is sent.
+const NODES_PATHS = { '/nodes/list': 'GET', '/nodes/status': 'GET', '/nodes/records': 'GET', '/nodes/credits': 'GET', '/nodes/relay': 'POST', '/nodes/ad': 'POST' };
+async function handleNodesForward(req, env, url, cors) {
+  const origin = String(env.NODES_ORIGIN || '').replace(/\/+$/, '');
+  const h = { ...cors, 'cache-control': 'no-store' };
+  const json = (o, status) => new Response(JSON.stringify(o), { status, headers: { ...h, 'content-type': 'application/json' } });
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: h });
+  if (!/^https:\/\//.test(origin) || NODES_PATHS[url.pathname] !== req.method) return json({ error: 'not found' }, 404);
+  let body;
+  if (req.method === 'POST') { body = await req.text(); if (body.length > 8192) return json({ error: 'too large' }, 413); }
+  try {
+    const r = await fetch(origin + url.pathname + url.search, { method: req.method, headers: { 'content-type': 'text/plain', 'x-forwarded-for': req.headers.get('CF-Connecting-IP') || '' }, body });
+    return new Response(await r.text(), { status: r.status, headers: { ...h, 'content-type': 'application/json' } });
+  } catch { return json({ error: 'the node service did not answer' }, 502); }
+}
 async function handleOracleProof(req, env, cors) {
   const nostore = { ...cors, 'Cache-Control': 'no-store' };
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
@@ -4397,6 +4413,8 @@ async function gasOrderUsed(env, payer, nonce) {
 const GAS_USED_SEL = 'ad04dc3f';   // used(address,uint256)
 async function handleGasRelay(req, env, url, cors) {
   const nostore = { ...cors, 'Cache-Control': 'no-store' };
+  // The browser's preflight before a POST /gas/order: without a 2xx here the page's order never leaves it.
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
   const board = gasBoard(env);
   if (!board) return jsonResponse({ error: 'the gas relay is not configured' }, 404, nostore);
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
@@ -13793,6 +13811,33 @@ function _chainCacheTtlMs(path, body) {
   }
   return 0;
 }
+// GET /chain/tac/notes?address=<bc1…> → { height, notes: [{ txid, vout, value, h }] }: the outputs paying this address that Tacit's own archive holds and the reflected live set still
+// lists as unspent. It is what a wallet falls back on when no public explorer will give it its unspent outputs (they rate-limit this host and its readers): the transactions come
+// from /chain/tac/ancestry, so the wallet reads and checks every note exactly as it does with an explorer's list. Only outputs that carry a Tacit note appear; ordinary coins do not.
+const _liveKeysCache = new Map(); // network -> { raw, keys: Set, height }
+async function handleTacNotes(req, env, url, network, cors) {
+  const addr = decodeBitcoinAddress(String(url.searchParams.get('address') || ''));
+  const hrp = network === 'mainnet' ? 'bc' : 'tb';
+  if (!addr || addr.hrp !== hrp) return jsonResponse({ error: 'not a ' + hrp + ' segwit address' }, 400, cors);
+  const spk = addr.version === 0
+    ? '00' + addr.program.length.toString(16).padStart(2, '0') + bytesToHex(addr.program)
+    : '5120' + bytesToHex(addr.program);
+  const raw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
+  if (!raw) return jsonResponse({ error: 'no live set yet' }, 503, { ...cors, 'Cache-Control': 'no-store' });
+  let hit = _liveKeysCache.get(network);
+  if (!hit || hit.raw !== raw) {
+    const snap = JSON.parse(raw).snapshot || {};
+    hit = { raw, keys: new Set((snap.liveTriples || []).map((t) => String(t[0]).toLowerCase())), height: snap.height };
+    _liveKeysCache.set(network, hit);
+  }
+  const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+  const found = await tacArchive(env, network).notesAt(spk);
+  // the live set records a txid in internal byte order, the reverse of the display order everything else uses
+  const internal = (txid) => String(txid).match(/../g).reverse().join('');
+  const notes = found.filter((n) => hit.keys.has(String(pool.outpointKey('0x' + internal(n.txid), n.vout)).toLowerCase()));
+  return jsonResponse({ height: hit.height, notes }, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
+}
+
 async function handleChainProxy(req, env, network, cors) {
   const u = new URL(req.url);
   const key = `${network}:${u.pathname}${u.search}`;
@@ -22560,6 +22605,8 @@ function watchtowerBidKey(network, ownerH160, bidIdHex) {
 }
 // Bound swap offers of bridged tokens into watchtower bids (bound-offers.js); POST off unless BOUND_OFFERS_ENABLED=true.
 const boundOffers = makeBoundOffers({ jsonResponse, verifySchnorr, watchtowerBidKey });
+// Pre-signed takes of ETH-for-Bitcoin swaps, for a watcher to finish (take-presig.js); open, verified, rate limited.
+const takePresigs = makeTakePresigs({ jsonResponse, ipBucket });
 function watchtowerBidPrefix(network, ownerH160) {
   return ownerH160 ? `wtbid:${network}:${ownerH160}:` : `wtbid:${network}:`;
 }
@@ -24913,6 +24960,10 @@ export async function tacArchiveCatchUp(env, network, { budget, keys, deadlineMs
       return { bytes: hexToBytes(hex), h: j.status.block_height, b: j.status.block_hash };
     };
     const res = await archive.catchUp({ ids, readTx, budget: reads, shouldStop: () => Date.now() - t0 > deadlineMs });
+    try {
+      const ix = await archive.indexPage({ limit: 100, shouldStop: () => Date.now() - t0 > deadlineMs });
+      if (ix.indexed) console.log(`[tac-archive] address index ${network}: ${ix.indexed} outputs indexed${ix.done ? ', complete' : ''}`);
+    } catch (e) { console.log(`[tac-archive] address index ${network} failed: ${String(e && e.message || e).slice(0, 120)}`); }
     if (!res.stopped) { if (list.list_complete || !list.cursor) await kv.delete(cursorKey); else await kv.put(cursorKey, list.cursor); }
     if (res.kept || res.funding) console.log(`[tac-archive] catch-up ${network}: kept ${res.kept} transfers and ${res.funding} funding transactions (${res.failed} reads failed${res.stopped ? ', stopped for its budget' : ''})`);
     return res;
@@ -28981,6 +29032,8 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/prover/salt' || url.pathname.startsWith('/prover/salt/')) return handleSaltPool(req, env, url, cors);
     // The newest TacProvenOracle proof (worker/src/oracle-proof.js): the prover box posts it, the keeper and the vault page read it.
     if (url.pathname === '/oracle/proof') return handleOracleProof(req, env, cors);
+    // Community nodes (node-prober/): the signed list and status, ads, and the allowlisted relay, passed to the prober service named by NODES_ORIGIN (unset: not found).
+    if (url.pathname.startsWith('/nodes/')) return handleNodesForward(req, env, url, cors);
     if (url.pathname === '/prover/blocks' && req.method === 'GET') return handleChainBlocks(req, env, url, cors);
     if (url.pathname === '/prover/rollup' && req.method === 'GET') return handleRollup(req, env, url, cors);
     if (url.pathname === '/pool/snapshot' && req.method === 'GET') return handlePoolSnapshot(req, env, url, cors);
@@ -29801,6 +29854,7 @@ async function _routeFetch(req, env, ctx) {
     // all colos hit the cache.
     //
     // Whitelisted prefixes only — this is NOT a generic open proxy.
+    if (url.pathname === '/chain/tac/notes' && req.method === 'GET') return handleTacNotes(req, env, url, network, cors);
     if (url.pathname.startsWith('/chain/') && req.method === 'GET') {
       return handleChainProxy(req, env, network, cors);
     }
@@ -31233,6 +31287,8 @@ async function _routeFetch(req, env, ctx) {
     // owner. POST is flag-gated; GET (by ?owner=pubkey) + DELETE stay open.
     if (url.pathname === '/watchtower/bids' && req.method === 'POST')   return handleWatchtowerBidPost(req, env, network, cors);
     if (url.pathname === '/watchtower/bids' && req.method === 'GET')    return handleWatchtowerBidsList(url, env, network, cors);
+    if (url.pathname === '/take-presig' && req.method === 'POST')       return takePresigs.post(req, env, network, cors);
+    if (url.pathname === '/take-presig' && req.method === 'GET')        return takePresigs.list(url, env, network, cors);
     // Bound swap offers (bridged tokens into watchtower bids). POST off unless BOUND_OFFERS_ENABLED=true; reads stay open.
     const mbo = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bound-offers$/);
     if (mbo && req.method === 'POST')                          return _mutateAndBust(mbo[1], () => boundOffers.post(mbo[1], req, env, network, cors));

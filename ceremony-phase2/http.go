@@ -165,6 +165,7 @@ func (c *Coordinator) Handler() http.Handler {
 		writeJSON(w, 200, map[string]bool{"left": true})
 	})
 	mux.HandleFunc("PUT /api/upload", c.handleUpload)
+	c.partRoutes(mux)
 	mux.HandleFunc("GET /api/transcript", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, c.State()) })
 	return c.logRequests(oldClients(mux))
 }
@@ -202,7 +203,7 @@ func (c *Coordinator) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	name := f.Name()
 	defer os.Remove(name) // a no-op once the file became the head
-	n, err := io.Copy(f, http.MaxBytesReader(w, r.Body, r.ContentLength))
+	n, err := io.Copy(f, &floorReader{r: http.MaxBytesReader(w, r.Body, r.ContentLength), t0: time.Now(), size: r.ContentLength, limit: until.Add(c.slotCap() / 8)})
 	if err == nil && n != r.ContentLength {
 		err = io.ErrUnexpectedEOF
 	}

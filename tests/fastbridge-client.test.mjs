@@ -449,6 +449,7 @@ test('a bridge that did not go through says what went wrong, that the Bitcoin is
   // a lock this page lost and found again from the key did not fail: it is on its way back
   const found = at(HOUR, { why: 'found from the key', recovered: true });
   assert.equal(found.title, 'Returning to Bitcoin'); assert.ok(!/provider/.test(found.detail.split('Your TAC is safe')[0]));
+  assert.match(found.detail, /found again from your key, not from a record in this browser, so it can only return your BTC/, 'a swap found only from the key says it cannot be finished');
   // the last failed read of the provider is not shown while the lock waits for its timelock, and is once it is due, when the app is sending it
   assert.equal(at(HOUR, { lastError: 'the provider did not answer' }).error, null);
   assert.equal(at(24 * HOUR, { lastError: 'broadcast refused' }).error, 'broadcast refused');
@@ -514,6 +515,20 @@ test('a part of a split bridge on the real lock: it leaves the coins it is told 
   assert.equal(describe({ phase: 'done' }).sweep, null);
   // the notes it spent are held: a second part cannot start on them
   await assert.rejects(() => fb.start({ quote: q, notes: [w.note], reserved: true }), /already part of a swap/);
+});
+
+// ── a note another kind of bridge holds is not one a fast bridge takes ──
+test('notes the regular bridge holds are left out of a fast bridge, and what is left says so when it cannot cover', async () => {
+  const note = (n) => ({ txid: String(n).repeat(64), vout: 0, amount: 100n });
+  const all = [note(1), note(2)], held = new Set([`${'1'.repeat(64)}:0`]);
+  const fb = makeFastBridgeClient({ lp: {}, btc: {}, evm: {}, store: memStore(), seed: new Uint8Array(32), now: () => 1000, taken: (t, v) => held.has(`${t}:${v}`) });
+  assert.deepEqual((await fb.freeNotes(all)).map((n) => n.txid[0]), ['2'], 'the held note is not offered');
+  const plain = makeFastBridgeClient({ lp: {}, btc: {}, evm: {}, store: memStore(), seed: new Uint8Array(32), now: () => 1000 });
+  assert.equal((await plain.freeNotes(all)).length, 2, 'with no such bridge both are offered');
+  const broken = makeFastBridgeClient({ lp: {}, btc: {}, evm: {}, store: memStore(), seed: new Uint8Array(32), now: () => 1000, taken: () => { throw new Error('unreadable'); } });
+  assert.equal((await broken.freeNotes(all)).length, 2, 'a reservation that cannot be read does not stop a bridge');
+  const q = { id: 'q', btcValue: 150n, evmAmount: 149n, validUntil: 5000, csvBlocks: 144, claimPub: '02' + '11'.repeat(32), btcAsset: '11'.repeat(32), evmAsset: '22'.repeat(32) };
+  await assert.rejects(() => fb.start({ quote: q, notes: all }), /already part of a swap/, 'a bridge that only the held note would have covered is told the note is in a bridge');
 });
 
 // ── a bridge split across providers: the parts are held, then locked one at a time ──

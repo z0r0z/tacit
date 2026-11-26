@@ -12,7 +12,7 @@ import * as SV from '/swap/solvers.js?cb=669b2617';
 import { linkName, linkSides } from '/swap/link.js?cb=00bf0557';
 import { routeLine } from '/swap/route-name.js?cb=2a0317f3';
 import { calmText } from '/relay-outcome.js?cb=ad7c898d';
-import * as GR from '/gas-relay.js?cb=d87b3b06';
+import * as GR from '/gas-relay.js?cb=0dc734de';
 import { checkSnwapCall, SNWAP_EXECUTORS, SAFE_EXECUTOR } from '/zrouter-guard.js';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
 import { makePointsNote } from '/points-note.js?cb=40738db7';
@@ -31,8 +31,8 @@ const wordAt = (h, i) => BigInt('0x' + (strip(h).slice(i * 64, (i + 1) * 64) || 
 const addrWord = (a) => strip(a).toLowerCase().padStart(64, '0');
 const lc = (a) => String(a).toLowerCase();
 
-const NODES = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://1.rpc.thirdweb.com', 'https://tacit-node-gw.onrender.com/eth'];
-const SCAN_NODES = ['https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://ethereum-rpc.publicnode.com'];
+const NODES = ['https://ethereum-rpc.publicnode.com', 'https://tacit-node-gw.onrender.com/eth', 'https://eth.drpc.org', 'https://1.rpc.thirdweb.com', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7'];
+const SCAN_NODES = ['https://ethereum-rpc.publicnode.com', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7'];
 const memory = (() => { try { return localStorage; } catch { return null; } })();
 const health = nodeHealth({ store: memory }), scanHealth = nodeHealth({ store: memory, key: 'tacit-rpc-rest-scan-v1', strict: true });
 const WALLET_READS = new Set(['eth_call', 'eth_getBalance', 'eth_gasPrice', 'eth_blockNumber', 'eth_getCode', 'eth_getTransactionReceipt']);
@@ -431,7 +431,8 @@ function paintMove() {
   const lines = (q.rc || []).filter(Boolean);
   rc.hidden = !lines.length || (!S.amt && !q.fixed); rc.classList.toggle('stale', !!q.busy);
   rc.innerHTML = lines.map(([k, v, c, t]) => `<div${t ? ` title="${esc(t)}"` : ''}><dt>${k === 'TAC points' ? TAC_MARK : ''}${esc(k)}</dt><dd class="${c || ''}">${cell(v)}</dd></div>`).join('');
-  const need = !q.free && !parseUnits(S.amt, Math.min(8, tokenOf(S.pay)?.dec ?? 8));
+  // a pool amount is typed and filled in the pool's own precision (pdOf, as Max and the quote use it): checking it against the token's decimals disabled the press
+  const need = !q.free && !parseUnits(S.amt, S.inP ? pdOf(S.pay) : Math.min(8, tokenOf(S.pay)?.dec ?? 8));
   go.textContent = S.busy ? 'Working…' : need ? 'Enter an amount' : q.busy && !q.go ? 'Reading…' : q.go || 'Continue';
   go.disabled = S.busy || need || !!q.busy || !!q.failed || !!q.early;
   go.className = `go${isPrivAt(atOf('get')) ? ' priv' : ''}`;
@@ -781,7 +782,7 @@ const PK = new Proxy({ teth: 'eth', [lc(R.TAC)]: 'tac', [lc(R.CUSD)]: 'cusd', [l
 const POOL_TK = new Proxy({ eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' }, { get: (o, k) => (k in o ? o[k] : ownPool(k)?.ticker) });
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=e6c4e52b'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=58974caf'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));
@@ -1383,7 +1384,7 @@ async function relayGo(P, from, plan) {
     say('Sending it to the relay…');
     const before = await beforeP;
     const r = await fetch(`${API}/gas/order`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ order: { order, data, signature, inPermit, feePermit, p2 } }), signal: AbortSignal.timeout(15e3) }).then((q) => q.json()).catch(() => null);
-    if (r && !r.ok) throw new Error(`${calmText(r?.error) && calmText(r?.error) !== String(r?.error) ? calmText(r.error) : 'The relay did not take the order.'} Nothing was spent.`);
+    if (r && !r.ok) throw new Error(GR.orderRefusal(r, calmText));
     if (!r) say('The relay did not answer. Checking whether it took the order…');
     const usedSel = '0xad04dc3f' + addrWord(from) + BigInt(order.nonce).toString(16).padStart(64, '0');
     say('Waiting for the relay to send it. Nothing leaves your wallet unless the swap lands.');
@@ -2882,7 +2883,7 @@ let lane = null, laneP = null;
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 async function openLane() {
   try {
-    laneP ||= import('/swap/bitcoin.js?cb=e574d6e8').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
+    laneP ||= import('/swap/bitcoin.js?cb=65e765bc').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
     await laneP;
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = laneP = null; }
@@ -2920,7 +2921,11 @@ function paintAtomic() {
 }
 async function openAtomic() {
   try {
-    atomicP ||= import('/swap/atomic.js?cb=41855aaf').then((mod) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir })));
+    // the same lane as /btc/, with the same two helpers: ETH added from the Ethereum wallet in one press, and "Receive as" (the ETH kept private or sent on).
+    // The page's own panels (the Bitcoin send, the ETH send) are on /btc/, so a finished swap's next step opens them there.
+    atomicP ||= Promise.all([import('/swap/atomic.js?cb=caf9904d'), import('/btc/add-eth.js?cb=d423798a'), import('/btc/payout.js?cb=3b028d52')]).then(([mod, ae, po]) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir ,
+      shield: ae.makeAddEth({ getUx }), payout: po.makePayout({ getUx }),
+      onNext: ({ act }) => { if (act === 'send') location.href = '/btc/?dir=e2b#mybtc'; else if (act === 'withdraw') location.href = '/btc/#myeth'; } })));
     await atomicP;
     if (S.atomic) { if (ATOM.ask) { atomic.set(ATOM.ask); ATOM.ask = null; } await atomic.show(); }
   } catch (e) { $('#atomic').innerHTML = `<p class="q err">Could not load the Bitcoin and Ethereum lane: ${esc(e?.message || e)}</p>`; atomic = atomicP = null; }
@@ -2950,7 +2955,7 @@ function probeAtomic() {
     if (yes && $('#atomic')) enterAtomic(atomicAsk(p)); else load(p, { fresh: true });
   };
   if (!$('.mode') || (typeof navigator !== 'undefined' && navigator.connection?.saveData)) { settle(false); return; }
-  ATOM.probing = import('/swap/atomic-probe.js?cb=590d41c3').then((m) => m.probeAtomic()).catch(() => false).then(settle);
+  ATOM.probing = import('/swap/atomic-probe.js?cb=99f7488b').then((m) => m.probeAtomic()).catch(() => false).then(settle);
 }
 function arrows(box, attr) {
   box.addEventListener('keydown', (e) => {

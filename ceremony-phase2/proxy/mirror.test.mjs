@@ -31,15 +31,16 @@ test('credits: one per 0x address, on its receipt day, only from signed receipts
   const { dayTally, credited, addressOf } = await import('./credits.mjs');
   assert.equal(addressOf({ name: 'Tacit', handle: '@tacitfinance' }), null);
   assert.equal(addressOf({ name: 'x', handle: ' 0xAbCdEf0123456789abcdef0123456789ABCDEF01 ' }), '0xabcdef0123456789abcdef0123456789abcdef01');
-  // the live transcript's one receipt (name Tacit, handle @tacitfinance) has no address: nobody is credited
-  assert.deepEqual(await credited(t), []);
+  // the saved transcript's first receipt (name Tacit, handle @tacitfinance) has no address: it is never credited, and every credit is an address
+  const real = await credited(t);
+  assert.ok(real.every((c) => /^0x[0-9a-f]{40}$/.test(c.miner)) && !real.some((c) => c.index === t.receipts[0].index));
   const day = Math.floor(Date.parse(t.receipts[0].at) / 86_400_000);
   const tally = await dayTally(t, day, { nowMs: Date.now() });
-  assert.deepEqual(tally, { day, over: true, miners: [] });
+  assert.ok(tally.over && tally.miners.every((m) => /^0x[0-9a-f]{40}$/.test(m.miner)));
   // a receipt whose handle was changed to an address no longer verifies, so it credits nothing
   const forged = structuredClone(t);
   forged.receipts[0].handle = '0x' + '11'.repeat(20);
-  assert.deepEqual(await credited(forged), []);
+  assert.deepEqual(await credited(forged), [], 'a changed receipt stops the chain there: nothing after it counts');
 });
 
 test('credits from a signed chain: the first contribution per address, its day, excluded addresses skipped', async () => {

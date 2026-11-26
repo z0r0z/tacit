@@ -1,0 +1,29 @@
+12:43:38 reading phase1 /root/in/phase1.rederived
+13:11:36 reading the circuit /root/in/groth16_circuit.bin
+13:12:00 lagrange coefficients (4 FFTs of size 16777216)
+15:06:17 per-wire sums: 15972262 constraints, 15747144 wires, 255 threads
+15:06:35   thread 0: 1000000 of 15972262 constraints (18s)
+15:07:04   thread 0: 2000000 of 15972262 constraints (47s)
+15:07:54   thread 0: 3000000 of 15972262 constraints (1m37s)
+15:08:18   thread 0: 4000000 of 15972262 constraints (2m0s)
+15:08:31   thread 0: 5000000 of 15972262 constraints (2m13s)
+15:10:00   thread 0: 6000000 of 15972262 constraints (3m43s)
+15:12:02   thread 0: 7000000 of 15972262 constraints (5m44s)
+15:13:42   thread 0: 8000000 of 15972262 constraints (7m24s)
+15:16:13   thread 0: 9000000 of 15972262 constraints (9m56s)
+15:18:32   thread 0: 10000000 of 15972262 constraints (12m15s)
+15:20:47   thread 0: 11000000 of 15972262 constraints (14m30s)
+15:23:03   thread 0: 12000000 of 15972262 constraints (16m46s)
+15:25:19   thread 0: 13000000 of 15972262 constraints (19m2s)
+15:27:23   thread 0: 14000000 of 15972262 constraints (21m5s)
+15:29:23   thread 0: 15000000 of 15972262 constraints (23m5s)
+15:30:59 sums done in 24m41s; to affine
+15:33:27 writing phase2.fast and evals.fast
+15:33:38 done
+exit 0
+phase2 948132ccc8c0de3fd1bf4b9dc625f6b35914625ab80d6c964daf811c1fdfc759
+evals 53373457073ca7cd0756fc1e64a9f0391769bb8870ba1f8d54a678b2a35e4155
+[90m13:37:52[0m DBG hash to field function not set, using keccak256 as default
+/root/seal/out/Groth16Verifier.sol written; the verifier hash (sha256 of the vk) is 0x4388a21c687fdd5f218d7e3d13190cac4c5355818d3605fd5fb811df468ee696
+exit 0
+13:37:54

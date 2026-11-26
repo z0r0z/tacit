@@ -159,7 +159,8 @@
       ["stake", "Stake", "/tac/?v=stake#private", "Stake TAC on the Tacit chain: it earns a share of every payment, with no lock."]]],
     "chains": ["Chains", "Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.", [
       ["move", "Move", "/#/chains/move", "Make it private, or take it back out: pick what and where it goes. ↕ flips to withdraw."],
-      ["bridge", "Bridge", "/#/chains/bridge", "Between Bitcoin and Ethereum, either way, with the steps, fee and time up front."],
+      ["btc", "BTC ⇄ ETH", "/btc/", "Swap Bitcoin and ETH directly. Your ETH arrives private."],
+      ["bridge", "Bridge", "/#/chains/bridge", "TAC between Bitcoin and Ethereum, either way, with the steps, fee and time up front."],
       ["fast", "Fast bridge", "/fast/", "TAC from Bitcoin in minutes, paid out by a provider for a fee; or be a provider."],
       ["notes", "Notes", "/tac/?v=notes#bridge", "Your TAC notes on Bitcoin: merge, split, bridge them all; and everything getting ready or on the way."]]],
     "borrow": ["Borrow", "Borrow dollars against your BTC or your TAC.", [
@@ -168,7 +169,7 @@
     "rewards": ["Rewards", "Your airdrop, your points and the leaderboard.", []]
   };
   // the More page's line for each page of the menu
-  const ABOUT = { '/assets/': 'TAC, tETH, cBTC, cUSD and how each is backed', '/tac/': 'the Tacit chain: stake, pay, bridge', '/trade/tac/?src=menu': 'buy and sell TAC: Ethereum pools, a Bitcoin order book', '/pay/': 'BTC, TAC and ETH paid privately from one key', '/bridge/': 'every way between Bitcoin and Ethereum',
+  const ABOUT = { '/assets/': 'TAC, tETH, cBTC, cUSD and how each is backed', '/tac/': 'the Tacit chain: stake, pay, bridge', '/trade/tac/?src=menu': 'buy and sell TAC: Ethereum pools, a Bitcoin order book', '/pay/': 'BTC, TAC and ETH paid privately from one key', '/bridge/': 'every way between Bitcoin and Ethereum', '/btc/': 'swap Bitcoin and ETH directly, either way',
     '/etch/': 'issue your own asset', '/shop/': 'addresses that start with zeros, for TAC', '/prove/': 'run a prover, send waiting settles', '/tasks/': 'small jobs paid in TAC', '/face/': 'buy TAC: the biggest buyer wins the address' };
   // the mock-up's addresses for what is a page, a sheet or another address here
   const ELSE = { '#/portfolio': '/#portfolio', '#/defi/earn': '/#card=earn', '#/borrow': '/vault/', '#/borrow/btc': '/vault/#btc', '#/borrow/tac': '/vault/', '#/rewards': '/rewards/', '#/more': '/#/menu', '#/activity': '/#activity',
@@ -185,6 +186,7 @@
     if (/^\/tac\/?$/.test(p)) { const v = new URLSearchParams(location.search).get('v'); return v && Object.hasOwn(TAC_VIEW, v) ? [TAC_VIEW[v], v] : null; }
     if (p.startsWith('/farm/')) return ['defi', 'farm'];
     if (p.startsWith('/fast/')) return ['chains', 'fast'];
+    if (p.startsWith('/btc/')) return ['chains', 'btc'];
     if (h === '#pools') whole = true; else if (h === '#btc') whole = false;      // (the page takes #pools off the address once it has shown them: they stay the whole page's until a side is asked for)
     if (p.startsWith('/vault/')) return whole ? null : ['borrow', h === '#btc' ? 'btc' : 'tac'];      // where TACD sells (linked from other pages) is the whole page's: the view of TAC's side leaves it out
     if (p.startsWith('/rewards/')) return ['rewards', ''];

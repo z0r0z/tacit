@@ -533,8 +533,7 @@ test('the lock transactions are read in JSON-RPC batches; an answer that names a
   const before = p.batches.length, asked = p.txAsked.length;
   const set = await p.ux.scanLockSet();
   assert.equal(set.lockLeaves.length, chain.filter((l) => l.topics[0] === T.LockLeavesInserted).length, 'the lock set checks out against the pool');
-  assert.ok(p.batches.length - before >= 2, 'the lock set reads its transactions in batches too');
-  assert.ok(p.txAsked.length - asked <= all.length + 4, `and reads each about once (${p.txAsked.length - asked} for ${all.length})`);
+  assert.ok(p.txAsked.length - asked <= 4, `the lock set takes the transactions already read from memory, not the nodes (${p.txAsked.length - asked} asked, ${p.batches.length - before} batches)`);
 });
 
 test('the own-lock finder reads the pool module\'s lock set: a snapshot\'s inputs are taken after the spot check, only the later ones reach the nodes, and they come in batches', async () => {

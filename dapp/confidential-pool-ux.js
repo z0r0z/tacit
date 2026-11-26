@@ -336,9 +336,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // key's swaps reads the ~380 lock transactions and a window of settles: one request each took 12 to 14 s from the public nodes, batches of 25 take about 2 s
   // (measured from a browser's network, 2026-11-25).
   const TX_BATCH_AT_ONCE = 3, TX_BATCH_MS = 12e3, TX_SINGLE_AT_ONCE = 6;
+  // A transaction found does not change, so a later look at the same hashes (a swap list is read again on every sign-in, quote and reload of its page) is answered from here, not from the nodes.
+  const _txSeen = new Map();
   async function readTxs(hashes) {
-    const want = [...new Set((hashes || []).map((h) => String(h).toLowerCase()).filter((h) => /^0x[0-9a-f]{64}$/.test(h)))];
+    const all = [...new Set((hashes || []).map((h) => String(h).toLowerCase()).filter((h) => /^0x[0-9a-f]{64}$/.test(h)))];
     const out = new Map();
+    for (const h of all) if (_txSeen.has(h)) out.set(h, _txSeen.get(h));
+    const want = all.filter((h) => !out.has(h));
     const batchOf = (u) => Number(ethNodes.batchSize?.(u)) || 0;
     const nodes = want.length > 1 && _fetch ? (cfg.rpcs || []).filter((u) => typeof u === 'string' && batchOf(u) > 1) : [];
     if (nodes.length) {
@@ -378,6 +382,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         try { const t = await rpc('eth_getTransactionByHash', [h]); out.set(h, t && typeof t.input === 'string' ? { hash: h, input: t.input, to: t.to == null ? null : String(t.to).toLowerCase() } : null); } catch { /* left out: the caller reads it again */ }
       }
     }));
+    for (const [h, t] of out) if (t) _txSeen.set(h, t);
     return out;
   }
 
@@ -399,7 +404,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       for (let pass = 0; pass < 2 && !got; pass++) {
         if (pass > 0) await new Promise((res) => setTimeout(res, 400));
         const narrow = (e) => e.span < 5000;
-        const wide = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (narrow(a) - narrow(b)) || (isShared(a.url) - isShared(b.url)) || (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
+        const last = (e) => !!ethNodes.lastResort?.(e.url), wide = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (last(a) - last(b)) || (narrow(a) - narrow(b)) || (isShared(a.url) - isShared(b.url)) || (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
         const byUrl = new Map(wide.map((e) => [e.url, e]));
         const ordered = _logHealth.order(wide.map((e) => e.url)).map((u) => byUrl.get(u));
         const refused = (ep) => refuses(ep.url, 'eth_getLogs', [{ fromBlock: '0x' + start.toString(16), toBlock: '0x' + Math.min(to, start + Math.min(ep.span, to - start + 1) - 1).toString(16) }], to);
@@ -3007,6 +3012,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...r, net, asset: lockRecord.asset };
   }
 
+  // the lock set read last is let go, so the next look reads it afresh (a swap that waits longer than it should on a lock: dapp/fastbridge-evm.js forget)
+  function forgetLockSet() { _lockSetAt = null; }
   async function stealthLockPosition({ lockLeaf, opts } = {}) {
     const { tree, lockLeaves, lockSetRoot } = await scanLockSet(opts);
     const lIndex = lockLeaves.findIndex((l) => String(l).toLowerCase() === String(lockLeaf).toLowerCase());
@@ -4067,7 +4074,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   });
 
   return { cfg, assets: _poolAssets, assetByTicker, addAsset, externalAsset, externalAssets, readAsset, registerTokenCall, tokenTicker, registeredTokens, pooledTokens, lpShareId: (poolId) => String(_lp.lpShareId(poolId)).toLowerCase(), account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
-    deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, scanLockSet, readTxs, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
+    deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, scanLockSet, readTxs, stealthClaim, stealthRefund, stealthLockPosition, forgetLockSet, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
     settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeMoved, swapRetry, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, lpBondRecord, keepFarmPosition, recoverSoloFarmPositions, decodeCdpMints: (pv) => recovery().decodeCdpFields(pv).mints, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };

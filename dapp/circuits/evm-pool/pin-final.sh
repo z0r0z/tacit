@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Pin the finalized bundle ($OUT/final, written by finalize.sh) under the same CIDs everywhere: the local Kubo
-# node, the RunPod Kubo node, and Filebase. Each copy is checked to report the bundle's root CID.
+# node, Filebase, and optionally a remote Kubo node. Each copy is checked to report the bundle's root CID.
 #
 #   bash pin-final.sh                       # needs a running local Kubo daemon
 #
-# Env: REMOTE_IPFS_API (default the RunPod node's /api/v0) with REMOTE_IPFS_TOKEN or the keychain item
+# Env: REMOTE_IPFS_API (optional: a remote Kubo /api/v0 to pin on too) with REMOTE_IPFS_TOKEN or the keychain item
 # tacit-ipfs-api-token; FILEBASE_BUCKET (default tacit) with FILEBASE_KEY / FILEBASE_SECRET or the keychain items
 # tacit-filebase-key / tacit-filebase-secret. SKIP_REMOTE=1 or SKIP_FILEBASE=1 leave a target out.
 set -euo pipefail
 source "$(dirname "$0")/ceremony-env.sh"
 
-REMOTE_IPFS_API=${REMOTE_IPFS_API:-https://10mz1z2351rzze-5001.proxy.runpod.net/api/v0}
+REMOTE_IPFS_API=${REMOTE_IPFS_API:-}
 FILEBASE_BUCKET=${FILEBASE_BUCKET:-tacit}
 keychain() { security find-generic-password -s "$1" -w 2>/dev/null | tr -d '\n' || true; }
 
@@ -31,15 +31,15 @@ done
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 ipfs dag export "$ROOT" > "$TMP/bundle.car"
 
-if [ "${SKIP_REMOTE:-0}" != 1 ]; then
-  echo "==> [2/3] RunPod node"
+if [ "${SKIP_REMOTE:-0}" != 1 ] && [ -n "$REMOTE_IPFS_API" ]; then
+  echo "==> [2/3] Remote node"
   TOKEN=${REMOTE_IPFS_TOKEN:-$(keychain tacit-ipfs-api-token)}
   [ -n "$TOKEN" ] || die "no REMOTE_IPFS_TOKEN (keychain tacit-ipfs-api-token)"
   printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" > "$TMP/remote.cfg"; chmod 600 "$TMP/remote.cfg"
   out=$(curl -sf --max-time 900 -K "$TMP/remote.cfg" -X POST -F "file=@$TMP/bundle.car" "$REMOTE_IPFS_API/dag/import?pin-roots=true") \
-    || die "RunPod dag/import failed"
+    || die "remote node dag/import failed"
   got=$(printf '%s' "$out" | jq -r 'select(.Root) | .Root.Cid["/"]' | head -1)
-  [ "$got" = "$ROOT" ] || die "RunPod imported $got, expected $ROOT"
+  [ "$got" = "$ROOT" ] || die "remote node imported $got, expected $ROOT"
   echo "    pinned $got"
 fi
 

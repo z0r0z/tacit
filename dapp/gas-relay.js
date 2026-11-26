@@ -71,6 +71,16 @@ export const needsRelay = ({ ethWei, gasPriceWei, units = 300000n }) => BigInt(e
 
 export const submitOrder = (post, order) => post('/gas/order', { order });
 
+// What the card tells the person when the relay's board refuses an order: the relay's own words when they are plain, the wait when it is rate
+// limiting (the board answers 429 with retryAfter), else a generic line. Always ends by saying nothing was spent.
+export function orderRefusal(r, calm = (x) => x) {
+  const err = r?.error, said = err ? calm(err) : null, plain = said && said !== String(err) ? said : null;
+  if (plain) return `${plain} Nothing was spent.`;
+  const wait = Number(r?.retryAfter);
+  if (Number.isFinite(wait) && wait > 0) return `The relay is busy: try again in about ${wait < 90 ? `${Math.ceil(wait)} seconds` : `${Math.ceil(wait / 60)} minutes`}. Nothing was spent.`;
+  return 'The relay did not take the order. Nothing was spent.';
+}
+
 const W32 = (v) => BigInt(v).toString(16).padStart(64, '0');
 const A32 = (a) => String(a).toLowerCase().replace(/^0x/, '').padStart(64, '0');
 const BYTES = (h) => { const x = String(h).replace(/^0x/, ''); return W32(x.length / 2) + x.padEnd(Math.ceil(x.length / 64) * 64, '0'); };

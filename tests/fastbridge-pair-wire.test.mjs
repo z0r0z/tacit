@@ -15,6 +15,7 @@ import { tacit as T, fetched } from './lib/btc-sim.mjs';
 import { secp, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
 import { signAd } from '../dapp/fastbridge-board.js';
 import { gatewayOf } from '../dapp/fastbridge-mailbox.js';
+import { forgetQuorum } from '../dapp/fastbridge-rate.js';
 
 const { discoverProviders, TAC_PAIR } = await import('../dapp/fast/discover.js');
 const { openPair, loadLists } = await import('../dapp/fast/pair-wire.js');
@@ -94,12 +95,12 @@ test('openPair: the page\'s own price is Chainlink read at one block from severa
   assert.deepEqual(lists.boards, ['https://board.example']);
   const ref = await pair.reference();
   assert.ok(Math.abs(ref.ethPerBtc - 1 / 0.02807678) < 1e-9);
-  assert.equal(ref.source, '3 sources');
+  assert.equal(ref.source, '2 sources', 'two nodes are asked first (the page asks more only when they fail or disagree)');
   const calls = asked.filter(([, m, p]) => m === 'eth_call' && p[0].data === '0xfeaf968c');
-  assert.deepEqual([...new Set(calls.map(([u]) => u))].sort(), NODES, 'each node is asked');
+  assert.deepEqual([...new Set(calls.map(([u]) => u))].sort(), NODES.slice(0, 2).sort(), 'the first two nodes are asked');
   assert.ok(calls.every(([, , p]) => p[1] === '0x' + (0x1500000 - 2).toString(16)), 'all at one block a little behind the tip');
   const ps = await pair.providers();
-  assert.deepEqual(ps.map((p) => [p.id, p.dirs, p.minSats, p.maxSats]), [[pairAd(4).claimPub, ['b2e', 'e2b'], 50000n, 5000000n]], 'the TAC provider on the same board is not offered Bitcoin for ETH');
+  assert.deepEqual(ps.map((p) => [p.id, p.dirs, p.minSats, p.maxSats]), [[pairAd(4).claimPub, ['b2e'], 50000n, 5000000n]], 'the TAC provider on the same board is not offered Bitcoin for ETH (and ETH for Bitcoin is asked only of a provider the site names)');
   assert.deepEqual(await pair.records(), [], 'a key that has swapped nothing has nothing to show');
 });
 
@@ -168,7 +169,7 @@ test('the lists are the ones the fast page names, and a file that cannot be read
 
 let passed = 0;
 for (const [name, fn] of tests) {
-  try { await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }
+  try { forgetQuorum(); await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }
 }
 if (fetched.length) { console.log('network reads attempted:', [...new Set(fetched)]); process.exitCode = 1; }
 console.log(`\n${passed}/${tests.length} pair wiring checks passed`);

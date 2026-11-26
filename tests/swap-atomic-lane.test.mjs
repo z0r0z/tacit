@@ -6,7 +6,7 @@
 //   checks: with no provider the card is as it was (two switches, no lane code or markup, one read of the board) for a board that is empty, one with other ads, and one with an ad
 //   no key signed; with a provider the third switch appears; the lane (sign-in, balances, the minimum, a quote and its comparison with the market, a quote that must not be started,
 //   a flip, one start however many presses, the steps of a swap under way, done and returned, dismissing, found again from the key); links and the address; the front page's switch; a phone width.
-//   The card passes no way to add ETH: a lane short of ETH says so and offers no deposit (the /btc/ page's Add ETH is tested in tests/btc-page.test.mjs).
+//   The card hosts the lane with the /btc/ page's Add ETH and Receive as; a finished swap's next steps open /btc/ (Add ETH's flow is tested in tests/btc-page.test.mjs).
 //
 //   node tests/swap-atomic-lane.test.mjs        (SHOTS=<dir> saves screenshots; PLAYWRIGHT=<path to playwright-core>)
 import { createRequire } from 'node:module';
@@ -64,7 +64,7 @@ const FAKE = `
   const now = () => Math.floor(Date.now() / 1000);
   const S = window.__atom = { calls, opened: [], mode: 'ok', recs: [], bal: { sats: 50000000n, eth: 400000000n }, failStart: false, warn: false, providers: [{ id: 'p1', name: 'Test provider', dirs: ['b2e', 'e2b'], minSats: 50000n, maxSats: 100000000n,
     b2e: { min: 50000n, max: 100000000n, available: null }, e2b: { min: 1000000n, max: 3000000000n, available: 2000000000n } }] };
-  const TITLES = { b2e: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'], e2b: ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'] };
+  const TITLES = { b2e: ['You send BTC', 'They send ETH', 'You get ETH', 'They get BTC'], e2b: ['They send BTC', 'You send ETH', 'They confirm', 'You get BTC'] };
   const steps = (dir, at, state) => TITLES[dir].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: state === 'done' ? 'done' : i < at ? 'done' : i === at && state === 'working' ? 'active' : 'todo' }));
   const set = (id, patch) => { S.recs = S.recs.map((r) => (r.id === id ? { ...r, ...patch } : r)); };
   S.advance = (id, at, state, title) => { const r = S.recs.find((x) => x.id === id); set(id, { state, title: title || r.title, steps: steps(r.dir, at, state), refundAt: state === 'working' ? r.refundAt : null, detail: state === 'returned' ? 'Your coins came back.' : '' }); };
@@ -74,10 +74,17 @@ const FAKE = `
     balances: async () => { calls.balances++; return { sats: S.bal.sats, eth: S.bal.eth, ethHeld: S.bal.ethHeld, pendingSats: S.bal.pendingSats }; },
     quote: async ({ dir, amount }) => {
       calls.quote.push({ dir, amount: String(amount) });
+      if (S.failN > 0) { S.failN--; throw new TypeError('Failed to fetch'); }
       if (S.mode === 'none') throw new Error('No provider can take that amount.');
       const b2e = dir === 'b2e', blocked = S.mode === 'blocked';
       const q = { dir, provider: { id: 'p1', name: 'Test provider' }, pay: amount, get: ((b2e ? (amount * 304n) / 10n : (amount * 10n) / 304n) * (S.cut ? 99n : 100n)) / 100n, rate: blocked ? 29.4 : 30.4, market: 30.62, vsMarketBps: blocked ? -410 : -72, feeBps: 40, etaSecs: 780,
         networkFeeSats: b2e ? 1200 : 0, takeFeeSats: b2e ? null : 500, expiresAt: now() + (S.ttl || 300), highFee: S.highFee ? { sats: 1200, bps: 1200 } : null, warnings: S.warn ? ['The provider holds less than this right now.'] : [], blocked: blocked ? 'the provider quotes 4.1% under the market' : null, ref: { n: calls.quote.length } };
+      // (a swap that three providers fill: the plan beside the quote, as fastbridge-pair.js shapes it)
+      if (S.mode === 'split') {
+        const part = (name, pay) => ({ provider: { id: name, name }, pay, get: (pay * 304n) / 10n, ref: {} });
+        const each = amount / 3n;
+        q.provider = { id: 'split', name: '3 providers' }; q.split = { legs: [part('Alpha', each), part('Bravo', each), part('Charlie', amount - 2n * each)], single: null };
+      }
       calls.quotes.push(q);
       return q;
     },
@@ -90,7 +97,7 @@ const FAKE = `
       S.recs = [{ id, dir: q.dir, state: 'working', title: q.dir === 'b2e' ? 'Waiting for Bitcoin' : 'Waiting for the Bitcoin lock', detail: 'The lock needs a confirmation.', pay: q.pay, get: q.get, steps: steps(q.dir, 0, 'working'), etaSecs: 780, at: now(), refundAt: now() + 86400 }, ...S.recs];
       return { id };
     },
-    pump: async () => { calls.pump++; return S.recs; },
+    pump: async () => { calls.pump++; if (S.pumpMs) await new Promise((r) => setTimeout(r, S.pumpMs)); return S.recs; },
     records: async () => { calls.records++; return S.recs; },
     recover: async () => { calls.recover++; return 0; },
   };
@@ -137,7 +144,7 @@ const probed = (page) => page.waitForFunction(() => performance.getEntriesByType
 const radios = (page) => page.$$eval('.mode [role=radio]', (els) => els.map((e) => [e.dataset.mode, e.getAttribute('aria-checked')]));
 const laneUp = (page) => page.waitForSelector('.swc .mode [data-mode=atomic]', { timeout: 15000 });
 const open = async (page) => { await laneUp(page); await page.click('[data-mode=atomic]'); await page.waitForFunction(() => document.querySelector('#a-go') && document.querySelector('#a-go').textContent !== 'Loading…', null, { timeout: 8000 }); };
-const type = async (page, v) => { await page.fill('#a-amt', v); await page.waitForFunction(() => !document.querySelector('#a-out').classList.contains('ph') || /No quote|Minimum|Most a provider|Not enough/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 }); };
+const type = async (page, v) => { await page.fill('#a-amt', v); await page.waitForFunction(() => !document.querySelector('#a-out').classList.contains('ph') || /No quote|Minimum|Maximum|Not enough/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 }); };
 const atom = (page, expr) => page.evaluate((e) => new Function('A', `return (${e})`)(window.__atom), expr);
 
 console.log('no provider: the card is as it was');
@@ -175,7 +182,7 @@ console.log('a provider: the switch appears, and the lane opens');
   ok(await page.isVisible('#atomic') && !(await page.isVisible('#f-pay')) && !(await page.isVisible('#go')), 'the lane replaces the card');
   ok((await page.getAttribute('[data-mode=atomic]', 'aria-checked')) === 'true' && (await page.getAttribute('[data-mode=wallet]', 'aria-checked')) === 'false', 'the switch shows the lane');
   ok(/from=BTC/.test(page.url()) && /to=ETH/.test(page.url()) && /from-at=btc/.test(page.url()), `the address names the pair (${page.url()})`);
-  await page.waitForFunction(() => /Open your Tacit wallet/.test(document.querySelector('#a-go').textContent));
+  await page.waitForFunction(() => /Sign in to swap/.test(document.querySelector('#a-go').textContent));
   ok(/From.*Bitcoin/.test(await text(page, '#a-pay')) && /To.*Ethereum, private/.test(await text(page, '#a-get')) && (await page.$$('#a-pay-coin svg use')).length === 1, 'BTC is paid from Bitcoin and ETH comes to the private balance, each with its mark');
   ok((await page.$eval('#a-pay-coin use', (u) => u.getAttribute('href'))) === '#tk-btc' && (await page.$eval('#a-get-coin use', (u) => u.getAttribute('href'))) === '#tk-teth', 'the marks are the real BTC and tETH symbols');
   await page.click('#a-go');
@@ -195,8 +202,8 @@ console.log('a provider: the switch appears, and the lane opens');
   const q = (await atom(page, 'A.calls.quote')).at(-1);
   ok(q.dir === 'b2e' && q.amount === '1000000', `the quote was asked for b2e and 1,000,000 sats (${JSON.stringify(q)})`);
   const r = await text(page, '#a-rcpt');
-  ok(/Price\s*1 BTC = 30\.4 ETH/.test(r) && /Market\s*1 BTC = 30\.62 ETH/.test(r) && /You get\s*0\.72% less than the market price/.test(r), `the price, the market and the comparison are shown (${r.slice(0, 200)})`);
-  ok(/Provider\s*Test provider(?!,)/.test(r) && /Bitcoin fee\s*about 1,200 sats/.test(r) && /Time\s*about 13 minutes/.test(r) && /If it stops\s*your BTC returns to you/.test(r), 'the provider and fee, the Bitcoin fee, the time and what happens if it stops');
+  ok(/Market rate\s*1 BTC = 30\.62 ETH/.test(r) && /Fee\s*0\.00220467 ETH · 0\.72%/.test(r) && /You receive\s*0\.304 ETH/.test(r) && /Effective rate\s*1 BTC = 30\.364 ETH/.test(r) && !(await page.$('#a-rcpt dd.warn')), `the market, the fee, the network fee and what arrives are shown (${r.slice(0, 200)})`);
+  ok(/Provider\s*Test provider(?!,)/.test(r) && /Bitcoin network fee\s*≈ 1,200 sats/.test(r) && /Time\s*about 13 min/.test(r) && /If it stops\s*BTC returns/.test(r), 'the provider and fee, the Bitcoin fee, the time and what happens if it stops');
   ok(/^Swap BTC → ETH$/.test(await text(page, '#a-go')) && !(await page.$eval('#a-go', (e) => e.disabled)), 'the button says what it does');
   await SHOT(page, 'lane-quote');
   await atom(page, '(A.mode = "blocked", 0)');
@@ -214,6 +221,49 @@ console.log('a provider: the switch appears, and the lane opens');
   ok(/Note\s*The provider holds less than this right now\./.test(await text(page, '#a-rcpt')) && !(await page.$eval('#a-go', (e) => e.disabled)), 'a note from the provider is shown and does not stop the swap');
   await atom(page, '(A.warn = false, 0)');
 
+  console.log('the lane: a quote that cannot be read is tried again by itself');
+  const goText = () => text(page, '#a-go');
+  await atom(page, '(A.failN = 2, A.calls.quote.length = 0, 0)');
+  await page.fill('#a-amt', '0.014');
+  await sleep(700);
+  ok(/Getting a quote/.test(await goText()) && !(await text(page, '#a-q')).trim(), 'a first miss says it is getting a quote, with no error text');
+  await page.waitForFunction(() => /^Swap /.test(document.querySelector('#a-go').textContent), null, { timeout: 12000 });
+  ok(!(await text(page, '#a-q')).trim() && (await atom(page, 'A.calls.quote.length')) === 3 && !(await page.$eval('#a-go', (e) => e.disabled)), 'two misses, then the quote is shown with no error and no press');
+  await atom(page, '(A.failN = 999, 0)');
+  await page.fill('#a-amt', '0.0141');
+  await page.waitForFunction(() => /^Try again$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  ok(/Can't reach the provider right now/.test(await text(page, '#a-q')) && !/No quote/.test(await goText()), 'a persistent miss ends with the plain line and a Try again button');
+  await atom(page, '(A.failN = 0, 0)');
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Swap /.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
+  ok(!(await text(page, '#a-q')).trim(), 'Try again asks at once and the quote is shown');
+
+  console.log('the lane: a swap that several providers fill');
+  await atom(page, '(A.mode = "split", 0)');
+  await type(page, '0.015');
+  await page.waitForFunction(() => /Best price across 3 providers/.test(document.querySelector('#a-rcpt').textContent), null, { timeout: 5000 });
+  const sr = await text(page, '#a-rcpt');
+  ok(/Providers\s*Best price across 3 providers/.test(sr) && /Alpha\s*0\.005 BTC → 0\.152 ETH/.test(sr) && /Charlie\s*0\.005 BTC → 0\.152 ETH/.test(sr), `the plan is shown before the press: each provider, what it is given and what it pays out (${sr.slice(0, 260)})`);
+  ok(/One provider\s*none can take this much/.test(sr) && /Bitcoin network fee\s*≈ 1,200 sats for all parts/.test(sr), 'and that no one provider takes it, and one fee for the one transaction');
+  ok(/^Swap BTC → ETH$/.test(await text(page, '#a-go')) && !(await page.$eval('#a-go', (e) => e.disabled)), 'the button is as it is for one provider');
+  await SHOT(page, 'lane-split-quote');
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__atom.calls.start.length >= 1, null, { timeout: 5000 });
+  ok((await atom(page, 'A.calls.start.at(-1).split.legs.length')) === 3, 'one press starts the split with its three legs');
+  await sleep(500);
+  // the one card: three parts inside, one time, and what became of each part said by itself
+  const leg = (id, provider, state, title, detail, o = {}) => ({ id, provider, state, title, detail, pay: 500000n, get: 15200000n, got: null, refundAt: null, steps: [], etaSecs: 0, k: 0, ...o });
+  await atom(page, `(A.recs = [{ id: 'batch:b1', dir: 'b2e', state: 'working', title: 'Swapping across 3 providers', detail: '3 parts from one Bitcoin transaction. Each part is a swap of its own.', pay: 1500000n, get: 45600000n, steps: ['You send BTC', 'They send ETH', 'You get ETH', 'They get BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: i === 0 ? 'done' : i === 1 ? 'active' : 'todo' })), etaSecs: 700, at: Math.floor(Date.now() / 1000), refundAt: Math.floor(Date.now() / 1000) + 86000, lockTxid: null, error: null, provider: '3 providers', backBy: null, batch: { id: 'b1', n: 3, legs: [${[['l0', 'Alpha', 'done', 'Done', 'The ETH is in your private balance.', ', got: 15200000n'], ['l1', 'Bravo', 'working', 'Returning your BTC', 'The lock returns to your Bitcoin address when its timelock ends.', ', refundAt: Math.floor(Date.now() / 1000) + 80000'], ['l2', 'Charlie', 'working', 'Waiting for Bitcoin', 'Your lock waits for a Bitcoin block.', '']].map(([i, p, st, t, d, o]) => `{ id: '${i}', provider: '${p}', state: '${st}', title: '${t}', detail: '${d}', pay: 500000n, get: 15200000n, got: null, refundAt: null, steps: [], etaSecs: 0, k: 0 ${o} }`).join(', ')}] } }], 0)`);
+  await page.waitForFunction(() => /Swapping across 3 providers/.test(document.querySelector('#a-sent').textContent), null, { timeout: 9000 });
+  ok((await page.$$('#a-sent [data-rec]')).length === 1 && (await page.$$('#a-sent details.legs li')).length === 3, 'the three swaps are one card with three parts folded inside');
+  ok(/0\.015 BTC → about 0\.456 ETH/.test(await text(page, '#a-sent')), `the card says the total it pays and gets (${(await text(page, '#a-sent')).slice(0, 200)})`);
+  await page.click('#a-sent details.legs summary');
+  const lt = await text(page, '#a-sent details.legs');
+  ok(/Alpha 0\.005 BTC → 0\.152 ETH/.test(lt) && /Bravo[^]*The lock returns to your Bitcoin address when its timelock ends/.test(lt) && /Charlie[^]*Waiting for Bitcoin/.test(lt), `each part says what became of it, the returning one plainly (${lt.slice(0, 300)})`);
+  await SHOT(page, 'lane-split-card');
+  await atom(page, "(A.recs = [], A.mode = \"ok\", A.calls.start.length = 0, 0)");
+  await page.waitForFunction(() => !document.querySelector('#a-sent [data-rec]'), null, { timeout: 9000 }).catch(() => {});
+
   console.log('the lane: more than is held, the fee, flipping');
   await type(page, '0.6');
   ok(/^Add 0\.100012 BTC$/.test(await text(page, '#a-go')) && !(await page.$eval('#a-go', (e) => e.disabled)), `more than the balance offers to add what is short, the quote's Bitcoin fee with it (${await text(page, '#a-go')})`);
@@ -230,20 +280,24 @@ console.log('a provider: the switch appears, and the lane opens');
   await type(page, '1');
   const q2 = (await atom(page, 'A.calls.quote')).at(-1);
   ok(q2.dir === 'e2b' && q2.amount === '100000000', `a quote for e2b is asked in pool units (1 ETH = 100,000,000) (${JSON.stringify(q2)})`);
-  ok(/Price\s*1 ETH = 0\.032895 BTC/.test(await text(page, '#a-rcpt')) && /If it stops\s*your ETH returns to your private balance/.test(await text(page, '#a-rcpt')) && /Bitcoin fee\s*about 500 sats, from the lock when you take it/.test(await text(page, '#a-rcpt')), 'ETH to BTC is priced per ETH, says where the ETH goes if it stops, and names the fee of taking the Bitcoin');
+  ok(/Effective rate\s*1 ETH = 0\.03289 BTC/.test(await text(page, '#a-rcpt')) && /If it stops\s*ETH returns/.test(await text(page, '#a-rcpt')) && /Bitcoin network fee\s*≈ 500 sats, taken from your BTC/.test(await text(page, '#a-rcpt')), 'ETH to BTC is priced per ETH, says where the ETH goes if it stops, and names the fee of taking the Bitcoin');
   const getNow = parseFloat(await text(page, '#a-out')), want = Number((await atom(page, 'A.calls.quotes.at(-1).get')) - 500n) / 1e8;
   ok(Math.abs(getNow - want) < 1e-9, `the amount shown is what arrives, the lock less the fee of taking it (${getNow} = ${want})`);
   await type(page, '5');
-  await page.waitForFunction(() => /^Not enough ETH in your private balance$/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 }).catch(() => {});
-  ok(/^Not enough ETH in your private balance$/.test(await text(page, '#a-go')) && (await page.$eval('#a-go', (e) => e.disabled)) && !/One wallet transaction/.test(await text(page, '#a-q')), 'with no way to add ETH here, more than the private balance says so: the one press that adds it is the BTC page\'s');
+  await page.waitForFunction(() => /^Swap 5 ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 }).catch(() => {});
+  ok(/^Swap 5 ETH → BTC$/.test(await text(page, '#a-go')) && (await page.$eval('#a-go', (e) => e.dataset.act)) === 'oneclick', 'the card passes the same Add ETH as /btc/: more than the private balance is one press that adds the shortfall and swaps ('+await text(page, '#a-go')+')');
   await page.click('#a-flip');
 
   console.log('starting: once, with the quote shown');
   await type(page, '0.01');
   await page.waitForFunction(() => !document.querySelector('#a-go').disabled);
+  await atom(page, '(A.pumpMs = 2500, 0)');                        // (the pass that steps a started swap can take long: the swap is on the page all the while)
   await page.dblclick('#a-go');
   await page.waitForFunction(() => window.__atom.calls.start.length >= 1, null, { timeout: 5000 });
   await sleep(600);
+  await type(page, '1');                                            // a repaint while the pass runs
+  ok(/Waiting for Bitcoin/.test(await text(page, '#a-sent')), `a repaint between the start and the stepping pass keeps the started swap listed (${(await text(page, '#a-sent')).slice(0, 80)})`);
+  await page.fill('#a-amt', ''); await atom(page, '(A.pumpMs = 0, 0)'); await sleep(2500);
   const starts = await atom(page, 'A.calls.start.length'), same = await atom(page, 'A.calls.start[0] === A.calls.quotes.at(-1) || A.calls.quotes.includes(A.calls.start[0])');
   ok(starts === 1 && same, `two presses start one swap, with the very quote that was shown (starts ${starts})`);
   ok(/Waiting for Bitcoin/.test(await text(page, '#a-sent')) && /0\.01 BTC → about 0\.304 ETH/.test(await text(page, '#a-sent')) && (await page.inputValue('#a-amt')) === '', 'the swap is listed with what it pays and gets, and the form is cleared');
@@ -293,7 +347,7 @@ console.log('the Bitcoin fee: the sats cover the amount but not the fee');
   await page.click('#a-go');
   await page.waitForFunction(() => /Balance 0\.010002 BTC/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
   await type(page, '0.01');
-  await page.waitForFunction(() => /Add sats for the Bitcoin fee/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
+  await page.waitForFunction(() => /Add BTC for the fee/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
   ok(!(await page.$eval('#a-go', (e) => e.disabled)), 'when the amount is held but not the fee, the button offers to add sats');
   await page.click('#a-go');
   ok((await page.evaluate(() => window.__btc.funds)) === 1 && (await atom(page, 'A.calls.start.length')) === 0, 'and pressing it opens the way to add them, starting nothing');
@@ -326,7 +380,7 @@ console.log('the wallet locks, and another key opens in the same tab');
   await page.click('#a-go');
   await page.waitForFunction(() => document.querySelectorAll('#a-sent [data-rec]').length === 1, null, { timeout: 8000 });
   await page.evaluate(() => window.__btc.lock());
-  await page.waitForFunction(() => /Open your Tacit wallet/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
+  await page.waitForFunction(() => /Sign in to swap/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
   const pumps = await atom(page, 'A.calls.pump');
   ok(/Open the same Tacit wallet again to finish it/.test(await text(page, '#a-q')), `a swap under way when the wallet locks: the page asks for the same wallet again (${await text(page, '#a-q')})`);
   ok((await page.$$('#a-sent [data-rec]')).length === 0 && (await text(page, '#a-bal')) === '' && (await text(page, '#a-out')) === '0', 'the locked wallet\'s swaps, balance and quote are no longer shown');
@@ -358,7 +412,7 @@ console.log('a quote near its end is renewed before a press, and a renewed quote
   await page.click('#a-go');
   await page.waitForFunction(() => /Accept the new price/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
   ok((await atom(page, 'A.calls.start.length')) === 0 && (await atom(page, 'A.calls.quote')).length === asked + 1, 'a press on it asks for a new quote first, and starts nothing');
-  ok(/The quote was renewed and gives less: 0\.304 → 0\.30096 ETH/.test(await text(page, '#a-q')) && (await text(page, '#a-out')) === '0.30096', `the new numbers are shown and said (${await text(page, '#a-q')})`);
+  ok(/New quote gives less: 0\.304 → 0\.30096 ETH/.test(await text(page, '#a-q')) && (await text(page, '#a-out')) === '0.30096', `the new numbers are shown and said (${await text(page, '#a-q')})`);
   await page.click('#a-go');
   await page.waitForFunction(() => /^Swap BTC → ETH$/.test(document.querySelector('#a-go').textContent.trim()), null, { timeout: 5000 });
   ok((await atom(page, 'A.calls.start.length')) === 0, 'accepting them starts nothing by itself');
@@ -391,8 +445,8 @@ console.log('a Bitcoin fee that is a large share of the amount is accepted befor
   await page.waitForFunction(() => window.__btc.unlocked && /Balance/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
   await atom(page, '(A.highFee = true, 0)');
   await type(page, '0.01');
-  await page.waitForFunction(() => /Accept the Bitcoin fee/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
-  ok(/The Bitcoin fee is about 1,200 sats, 12\.0% of the amount/.test(await text(page, '#a-q')), `the fee and its share are said (${await text(page, '#a-q')})`);
+  await page.waitForFunction(() => /Accept the fee/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
+  ok(/Network fee ≈ 1,200 sats \(12\.0% of the amount/.test(await text(page, '#a-q')), `the fee and its share are said (${await text(page, '#a-q')})`);
   await page.click('#a-go');
   await page.waitForFunction(() => /^Swap BTC → ETH$/.test(document.querySelector('#a-go').textContent.trim()), null, { timeout: 5000 });
   ok((await atom(page, 'A.calls.start.length')) === 0, 'accepting it starts nothing by itself');
@@ -485,18 +539,26 @@ console.log('the words: durations, the market, errors, the probe');
       httpOther: await p.probeAtomic({ lists: { boards: [], providers: [{ base: 'https://p.example' }] }, fetchImpl: j({ btcAsset: '00'.repeat(32), evmAsset: 'f0'.repeat(32) }) }),
       insecure: await p.probeAtomic({ lists: { boards: ['http://b.example'], providers: [{ base: 'http://p.example' }] }, fetchImpl: j({ ads: [adJson], btcAsset: '00'.repeat(32), evmAsset: p.ETH_ASSET_ID }) }),
     };
+    // a board that names the pair is enough: the provider's own address is not read while it is there, and is read when no board names the pair
+    const first = [], later = [], clock = () => Math.floor(Date.now() / 1000), both = { boards: ['https://b.example'], providers: [{ base: 'https://p.example' }] };
+    out.probe.boardFirst = await p.probeAtomic({ lists: both, now: clock, fetchImpl: async (u) => { first.push(String(u)); return String(u).endsWith('/ads') ? { ok: true, json: async () => ({ ads: [adJson] }) } : { ok: false, json: async () => ({}) }; } });
+    out.firstReads = first;
+    out.probe.fallback = await p.probeAtomic({ lists: both, now: clock, fetchImpl: async (u) => { later.push(String(u)); return { ok: true, json: async () => (String(u).endsWith('/ads') ? { ads: [] } : { btcAsset: '00'.repeat(32), evmAsset: p.ETH_ASSET_ID }) }; } });
+    out.laterReads = later;
     out.sats = p.SATS_ASSET_ID; out.eth = p.ETH_ASSET_ID;
     return out;
   }, ad());
-  ok(JSON.stringify(r.eta) === JSON.stringify(['about a minute', 'about a minute', 'about 13 minutes', 'about 2 hours']), `durations in words (${JSON.stringify(r.eta)})`);
+  ok(JSON.stringify(r.eta) === JSON.stringify(['about 1 min', 'about 1 min', 'about 13 min', 'about 2 h']), `durations in words (${JSON.stringify(r.eta)})`);
   ok(JSON.stringify(r.until) === JSON.stringify(['in 5 h 7 min', 'in 40 min', 'now', 'in 3 days']), `refund times in words (${JSON.stringify(r.until)})`);
   ok(JSON.stringify(r.market) === JSON.stringify(['0.72% less than the market price', 'at the market price', '1.50% more than the market price', '12.0% less than the market price', null]), `the market comparison (${JSON.stringify(r.market)})`);
   ok(JSON.stringify(r.rate) === JSON.stringify(['1 BTC = 30.4 ETH', '1 BTC = 304 ETH', '1 BTC = 30.123 ETH']), `rates (${JSON.stringify(r.rate)})`);
-  ok(r.err[0] === 'Something did not answer just now. Nothing was sent. Try again in a moment.' && r.err[1] === 'No provider can take that amount.' && r.err[2] === r.err[0] && r.err[3] === 'The quote ran out.' && r.err[4] === r.err[0] && r.err[5] === r.err[0] && r.err[6] === r.err[0], `errors: an engine sentence stays, an exception's own words never show (${JSON.stringify(r.err)})`);
-  ok(r.err.slice(7).every((x) => x === 'The provider could not do that just now. Nothing was sent. Try again in a moment.'), `errors: a line that names an address, a link or markup is not said (${JSON.stringify(r.err.slice(7))})`);
+  ok(r.err[0] === 'No answer just now. Nothing was sent. Try again soon.' && r.err[1] === 'No provider can take that amount.' && r.err[2] === r.err[0] && r.err[3] === 'The quote ran out.' && r.err[4] === r.err[0] && r.err[5] === r.err[0] && r.err[6] === r.err[0], `errors: an engine sentence stays, an exception's own words never show (${JSON.stringify(r.err)})`);
+  ok(r.err.slice(7).every((x) => x === 'The provider could not do that. Nothing was sent. Try again soon.'), `errors: a line that names an address, a link or markup is not said (${JSON.stringify(r.err.slice(7))})`);
   ok(JSON.stringify(r.fmt) === JSON.stringify(['0.00000001', '1', '0.304']), `amounts have eight places and no trailing zeros (${JSON.stringify(r.fmt)})`);
   ok(r.probe.none === false && r.probe.other === false && r.probe.otherToken === false && r.probe.signed === true && r.probe.down === false && r.probe.bad === false && r.probe.http === true && r.probe.httpOther === false, `the probe: no list, another pair, sats against another token, a signed ad of the pair, a board down, a board that errs, and a provider that serves its own terms ${JSON.stringify(r.probe)}`);
   ok(r.probe.insecure === false, 'a board or provider that is not https is not read');
+  ok(r.probe.boardFirst === true && r.firstReads.some((u) => u === 'https://b.example/ads') && !r.firstReads.some((u) => u.endsWith('/info')), `the probe: a board that names the pair is enough, and the provider's own address is not read (${r.firstReads.join(' ')})`);
+  ok(r.probe.fallback === true && r.laterReads.includes('https://p.example/info'), `and the provider's own address is read when no board names the pair (${r.laterReads.join(' ')})`);
   ok(r.sats === SATS, 'the probe\'s asset id is plain sats (64 zeros, adaptor-xswap.js SATS_ASSET)');
   ok(r.eth === ETH, 'and the pool\'s ETH is the pair\'s other side (fastbridge-pair.js ETH_ASSET)');
   await page.close();
@@ -535,13 +597,18 @@ console.log('a phone width, and the dark scheme');
   await page.click('#a-flip');
   ok((await text(page, '#a-bal')) === 'Balance 0.00847639 ETH', `the balance is what the wallet holds, not what is left after the relay fee (${await text(page, '#a-bal')})`);
   await page.fill('#a-amt', '0.0083');
-  await page.waitForFunction(() => /stays back/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
-  ok((await text(page, '#a-go')) === '0.00028 ETH stays back for the pool’s fee' && await page.$eval('#a-go', (e) => e.disabled), `more than can be locked, but less than is held, says what stays back (${await text(page, '#a-go')})`);
+  await page.waitForFunction(() => /^Swap 0\.0083 ETH/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(/^Swap 0\.0083 ETH → BTC$/.test(await text(page, '#a-go')) && (await page.$eval('#a-go', (e) => e.dataset.act)) === 'oneclick', `more than can be locked, but less than is held, is the one press that adds the rest (${await text(page, '#a-go')})`);
   await page.fill('#a-amt', '0.009');
-  await page.waitForFunction(() => /Not enough/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
-  ok(/Not enough ETH in your private balance/.test(await text(page, '#a-go')), 'more than is held still says there is not enough');
-  // the card's lane has no way to add ETH from a wallet (the /btc/ page passes one: tests/btc-page.test.mjs): no Add button, and no line about a deposit
-  ok((await page.$eval('#a-go', (e) => e.dataset.act)) === '' && !/deposit from your wallet/.test(await text(page, '#a-q')), 'on the card, a lane with no way to add ETH offers no deposit');
+  await page.waitForFunction(() => /^Swap 0\.009 ETH/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(/^Swap 0\.009 ETH → BTC$/.test(await text(page, '#a-go')), 'more than is held is the one-press Add ETH swap, as on /btc/');
+  ok((await page.$eval('#a-go', (e) => e.dataset.act)) === 'oneclick', 'on the card, the lane has Add ETH, as /btc/ does');
+  // the card's lane has the page's "Receive as" for a swap of BTC (btc/payout.js), and a finished swap's next steps open the page that has the panels
+  await page.click('#a-flip');
+  await page.fill('#a-amt', '0.001');
+  await page.waitForFunction(() => document.querySelector('#a-payto') && !document.querySelector('#a-payto').hidden, null, { timeout: 8000 }).catch(() => {});
+  ok(/Receive as/.test(await text(page, '#a-payto')) && /Another Ethereum address/.test(await text(page, '#a-payto')), 'on the card, a swap of BTC asks "Receive as", as /btc/ does');
+  await page.click('#a-flip');
   await page.fill('#a-amt', '0.008');
   await page.waitForFunction(() => /^Swap/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
   ok(!(await page.$eval('#a-go', (e) => e.disabled)), 'an amount that fits can be swapped');
@@ -562,7 +629,7 @@ console.log('a phone width, and the dark scheme');
   await page.fill('#a-amt', '0.001');
   await page.waitForFunction(() => /No provider has enough/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
   ok(await page.$eval('#a-go', (e) => e.disabled), 'a provider with less than its minimum says so, and the button is off');
-  ok(!/Minimum|Most a provider/.test(await text(page, '#a-go')), 'it does not name a minimum nobody can meet');
+  ok(!/Minimum|Maximum/.test(await text(page, '#a-go')), 'it does not name a minimum nobody can meet');
   await page.close();
 }
 

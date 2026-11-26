@@ -1,36 +1,35 @@
 // a namespace import, and `?.`: this file and wallet-prompts.js are served without a cache token, so for a few minutes after a change a visit can hold one of them new and the other old
 import * as prompts from './wallet-prompts.js';
 
-// BuidlGuidl sits last but the shared key: its cap is per ORIGIN (every visitor of tacit.finance together: 4,000 units an hour, then 40,000 a day), and it was
-// used up when read on 2026-11-14 and again on 2026-11-25 ("retry in 17997 s"), so each new browser met it as a failure before the health record learned it.
+// Keep retired or origin-blocked endpoints out of the browser retry set. A failed fallback still creates a failed-resource
+// console entry and spends time before the next healthy node is tried.
 export const ETH_NODES = [
-  'https://ethereum-rpc.publicnode.com',
-  'https://rpc.mevblocker.io',
-  'https://tacit-node-gw.onrender.com/eth',
+  // PublicNode currently returns browser-specific HTTP 403s for this app, even
+  // though the same JSON-RPC payload works from other clients. Keep it out of
+  // the default browser route so a visitor never pays for that failed first try.
   'https://eth.drpc.org',
   'https://1.rpc.thirdweb.com',
-  'https://eth-mainnet.public.blastapi.io',
   'https://ethereum-json-rpc.stakely.io',
-  'https://1rpc.io/eth',
-  'https://mainnet.rpc.buidlguidl.com',
+  // The light gateway is promoted ahead of these nodes for cheap latest-state reads;
+  // its position here keeps it out of the way for history, receipts, and logs.
+  'https://tacit-node-gw.onrender.com/eth',
+  // Last resorts: they answer a browser with a 429 (no CORS headers, so the console shows a CORS block), and a browser prints a line for every failed request.
+  'https://rpc.mevblocker.io',
+  'https://eth-mainnet.public.blastapi.io',
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
 ];
 export const ETH_LOG_NODES = [
+  'https://tacit-node-gw.onrender.com/eth',
+  'https://ethereum-json-rpc.stakely.io',
   'https://rpc.mevblocker.io',
   'https://rpc.mevblocker.io/fast',
-  'https://ethereum-rpc.publicnode.com',
-  'https://tacit-node-gw.onrender.com/eth',
-  'https://mainnet.rpc.buidlguidl.com',
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
-  'https://ethereum-json-rpc.stakely.io',
-  'https://1rpc.io/eth',
 ];
 export const ETH_ARCHIVE_NODES = [
-  'https://rpc.mevblocker.io',
   'https://eth.drpc.org',
-  'https://eth-mainnet.public.blastapi.io',
   'https://1.rpc.thirdweb.com',
-  'https://mainnet.rpc.buidlguidl.com',
+  'https://rpc.mevblocker.io',
+  'https://eth-mainnet.public.blastapi.io',
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
 ];
 
@@ -48,8 +47,8 @@ export const ROBINHOOD_NODES = [
 
 const LIMITS = {
   'ethereum-rpc.publicnode.com': { logs: 9999, back: 9999, state: true, batch: 50 },
-  'rpc.mevblocker.io': { logs: 45000, batch: 25 },
-  'mainnet.rpc.buidlguidl.com': { logs: 10000 },
+  'rpc.mevblocker.io': { logs: 45000, batch: 25, last: true },
+  'mainnet.rpc.buidlguidl.com': { logs: 10000, last: true },
   'tacit-node-gw.onrender.com/eth': { logs: 512, state: true },
   'eth-mainnet.nodereal.io': { logs: 49999, shared: true },
   'rpc.flashbots.net': { logs: 0 },
@@ -57,7 +56,9 @@ const LIMITS = {
   'eth.drpc.org': { logs: 0 },
   '1.rpc.thirdweb.com': { logs: 2000 },
   'ethereum-json-rpc.stakely.io': { logs: 25 },
-  '1rpc.io/eth': { logs: 50 },
+  '1rpc.io/eth': { logs: 50, last: true },
+  // answers a log read of more than 10 blocks with a 400, so it is never asked one
+  'eth-mainnet.public.blastapi.io': { logs: 0, last: true },
   'base.drpc.org': { logs: 0 },
   'base-mainnet.public.blastapi.io': { logs: 0 },
   'robinhood.drpc.org': { logs: 0, state: true },
@@ -73,6 +74,10 @@ export const logSpan = (url) => limitsOf(url)?.logs || Infinity;
 // with null). Measured 2026-11-25 with Origin tacit.finance, 377 eth_getTransactionByHash: publicnode 100 a batch fine (0.5 s for all), mevblocker 25 (3.7 s).
 export const batchSize = (url) => limitsOf(url)?.batch || 0;
 export const isShared = (url) => !!limitsOf(url)?.shared;
+// A node that answers a browser with 429s (no CORS headers, so a CORS block in the console): asked only when every other has failed, whatever its log span.
+// The nodes whose agreement ends a swap in a browser: the page's list without the last resorts, four of them, two of which must agree (makeNodeQuorum asks them all at once).
+export const browserAgreeNodes = () => ETH_NODES.filter((u) => !limitsOf(u)?.last).slice(0, 4);
+export const lastResort = (url) => !!limitsOf(url)?.last;
 const blockNo = (t) => (typeof t === 'string' && /^0x[0-9a-f]+$/i.test(t) ? parseInt(t, 16) : null);
 const STATE_BLOCK = { eth_call: 1, eth_getBalance: 1, eth_getCode: 1, eth_getStorageAt: 2, eth_getTransactionCount: 1 };
 export function refuses(url, method, params, head = null) {

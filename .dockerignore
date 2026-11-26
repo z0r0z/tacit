@@ -5,6 +5,7 @@
 !worker-relay/package.json
 !worker-relay/package-lock.json
 !worker-relay/src
+!node-prober/src
 !worker/package.json
 !worker/package-lock.json
 !worker/src/btc-shielded-pool.js
@@ -12,6 +13,7 @@
 !dapp/*.js
 !dapp/vendor/*.js
 !dapp/trade/rpc.js
+!dapp/fast/split-plan.js
 !dapp/evm-pool/token-pool-code.json
 !dapp/btc-pool/pin.json
 !dapp/btc-pool/vk.bin

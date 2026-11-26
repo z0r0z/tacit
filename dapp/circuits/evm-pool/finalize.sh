@@ -148,7 +148,7 @@ cat <<EOF
 
 Final key ready in $FINAL. Next (operator; nothing below has run):
 
-1. Pin the bundle on the local node, the RunPod node and Filebase (the final zkey exceeds /finalize's inline cap,
+1. Pin the bundle on the local node and Filebase (the final zkey exceeds /finalize's inline cap,
    so it goes in by CID):
      bash $EVM_POOL_DIR/pin-final.sh
    Confirm transact_final.zkey resolves at ${zf_cid:-its CID}: curl -sI $GATEWAY/${zf_cid:-<cid>}

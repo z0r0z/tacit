@@ -5,6 +5,7 @@
 //   tacit-prover [serve]          GET /health, POST /prove {stdin}, GET /job?id= (its stage and an ETA while it proves),
 //                                 GET /mine, POST /mine {miner?, on} (tacit.finance/prove/ starts and pauses mining)
 //                                 GET /helpdesk, POST /helpdesk {on, api?} (lend idle time to the community help desk, helpdesk.rs)
+//                                 GET /ceremony, POST /ceremony {on} (while mining, one contribution to the Tacit Praxis ceremony, ceremony.rs)
 //   tacit-prover prove <stdin>    one proof to <stdin>.proof.json
 //   tacit-prover check            every faster path against the code it replaces, then exit
 //   tacit-prover install          start at login and stay ready (launchd on macOS, a systemd user unit on Linux)
@@ -21,6 +22,7 @@
 // TACIT_PROVER_DIR (~/.tacit-prover: finished proofs), TACIT_METAL=0 (CPU leaf hashing), TACIT_MINE=0xADDR (serve mines the
 // proof pool while it has nothing of its own to prove), TACIT_POOL_API (https://api.tacit.finance), and the SDK's
 // SP1_WORKER_NUM_*_WORKERS (one per stage by default below 16 GB of RAM), TACIT_SALT_THREADS (cores that grind salts; a quarter by default, 0 is off), TACIT_SALT_BATTERY=1 (grind on battery too: by default it waits for the charger), TACIT_SALT_PRIORITY=normal (grind at normal priority: by default the lowest, so the person's own work comes first).
+mod ceremony;
 mod gentle;
 mod helpdesk;
 mod hw;
@@ -483,6 +485,21 @@ fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey:
         });
     }
 
+    // While mining, one turn is taken from the proof pool for the ceremony (ceremony.rs): the owner's own proofs still come first.
+    {
+        let st1 = state.clone();
+        ceremony::start(ceremony::Ctx {
+            dir: store_dir(),
+            miner: Box::new(pool::miner),
+            owner_busy: Arc::new(move || {
+                let s = st1.0.lock().unwrap();
+                !s.queue.is_empty() || s.jobs.values().any(|j| j.status == "proving")
+            }),
+            pool_busy: Arc::new(|| pool::NOW.lock().unwrap().is_some()),
+            ram: ram_bytes(),
+        });
+    }
+
     // One proof at a time: a second would double the memory and halve each one's speed.
     {
         let state = state.clone();
@@ -501,7 +518,7 @@ fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey:
                     let kick = std::mem::take(&mut s.kick);
                     mined = false;
                     if (t.timed_out() || kick) && s.queue.is_empty() {
-                        if let Some(miner) = pool::miner() {
+                        if let Some(miner) = pool::miner().filter(|_| !ceremony::wants_turn()) {
                             drop(s);
                             salt::PROVING.store(true, std::sync::atomic::Ordering::Relaxed);
                             mined = pool::mine_one(&client, &pk, &miner);
@@ -682,6 +699,18 @@ fn handle(mut conn: TcpStream, state: &Arc<(Mutex<State>, Condvar)>, origins: &[
             // switched off while they are being fetched: the fetch stops
             if on { helpdesk::fetch_start(&store_dir()); } else { helpdesk::fetch_stop(); }
             reply(&mut conn, "200 OK", helpdesk::status(&store_dir(), pool::miner()).to_string())
+        }
+        // The ceremony: on or off (on by default while mining), what it is doing, and the receipt once this machine has contributed.
+        ("GET", "/ceremony") => reply(&mut conn, "200 OK", ceremony::status(&store_dir()).to_string()),
+        ("POST", "/ceremony") => {
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let Some(on) = v["on"].as_bool() else {
+                return reply(&mut conn, "400 Bad Request", r#"{"error":"on must be true or false"}"#.into());
+            };
+            if let Err(e) = ceremony::set(&store_dir(), on) {
+                return reply(&mut conn, "400 Bad Request", serde_json::json!({ "error": e }).to_string());
+            }
+            reply(&mut conn, "200 OK", ceremony::status(&store_dir()).to_string())
         }
         _ => reply(&mut conn, "404 Not Found", r#"{"error":"not found"}"#.into()),
     }

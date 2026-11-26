@@ -63,7 +63,8 @@ test('Bitcoin for ETH on the page, from the real engine: the balance, the quote 
   assert.equal(r['You get'], '0.80% less than the market price');
   assert.equal(r.Provider, 'Test provider', 'the provider, and no fee it did not name');
   assert.match(r['Bitcoin fee'], /^about \d+ sats$/);
-  assert.match(r.Time, /^about \d+ minutes$/);
+  // (a Bitcoin block is ahead: the time is a range, as the lane says it from swap/atomic.js etaSpan)
+  assert.match(r.Time, /^about \d+(\u2060–\u2060\d+)? minutes$/);
   assert.equal(r['If it stops'], 'your BTC returns to you within about a day');
   go(m).click();
   const sent = await until(() => !m.$('a-sent').hidden && m.text('a-sent'), 'the swap under way');
@@ -108,7 +109,8 @@ test('ETH for Bitcoin on the page, from the real engine: a flip, the provider lo
   await m.lane.show();
   const done = m.text('a-sent');
   assert.match(done, /Done/);
-  assert.match(done, /0\.036 ETH → 0\.00100539 BTC/);
+  // what arrived at the Bitcoin address: the provider's lock (100,539 sats) less the fee of the take that spent it (500 sats here)
+  assert.match(done, /0\.036 ETH → 0\.00100039 BTC/);
   assert.deepEqual([...m.host.querySelectorAll('#a-sent [data-step]')].map((li) => li.dataset.step), ['lock', 'match', 'claim', 'take']);
   assert.equal([...m.host.querySelectorAll('#a-sent [data-step]')].every((li) => li.className === 'done'), true);
   m.done();

@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend/groth16"
@@ -32,6 +33,13 @@ type cube struct {
 
 func (c *cube) Define(api frontend.API) error {
 	api.AssertIsEqual(api.Add(api.Mul(c.X, c.X, c.X), c.X, 5), c.Y)
+	// FIXTURE_PAD=n adds n constraints, for a file with enough points to cross chunk boundaries (the default is the toy circuit)
+	pad, _ := strconv.Atoi(os.Getenv("FIXTURE_PAD"))
+	acc := c.X
+	for i := 0; i < pad; i++ {
+		acc = api.Mul(acc, acc, c.X)
+	}
+	api.AssertIsEqual(api.Sub(acc, acc), 0)
 	return nil
 }
 

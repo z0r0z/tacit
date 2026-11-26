@@ -20,7 +20,7 @@ export const CHROME_PAGES = {
   'vault/index.html': 'borrow', 'pay/index.html': 'pay', 'pay/eth/index.html': 'pay', 'tasks/index.html': 'tasks',
   'build/index.html': '', 'etch/index.html': 'etch', 'weld/stats/index.html': '', 'relay/index.html': '',
   'splitter/index.html': '', 'sats/index.html': '', 'bridge/index.html': 'bridge',
-  'discord/index.html': '', 'shop/index.html': 'shop', 'face/index.html': 'face', 'fast/index.html': 'chains', 'prove/index.html': 'prove', 'help/index.html': '', 'docs/chain/index.html': '',
+  'discord/index.html': '', 'shop/index.html': 'shop', 'face/index.html': 'face', 'fast/index.html': 'chains', 'prove/index.html': 'prove', 'help/index.html': '', 'nodes/index.html': '', 'docs/chain/index.html': '', 'docs/btc/index.html': '',
   'farm/index.html': 'defi', 'btc/index.html': 'chains', 'praxis/index.html': '',
 };
 
@@ -31,6 +31,7 @@ const G = {
   pay: '<path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/>',
   borrow: '<path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/>',
   more: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.7"/>',
+  btc: '<circle cx="7.6" cy="8" r="4.4"/><circle cx="16.4" cy="8" r="4.4"/><path d="M6.4 6h1.9a1 1 0 0 1 0 2H6.4m0 0h2.1a1 1 0 0 1 0 2H6.4M6.4 5.2V10.8"/><path d="M16.4 5.4l-1.5 2.5 1.5 2.7 1.5-2.7zM14.9 7.9h3"/><path d="M5 17.5h14m-2.2-2l2.2 2-2.2 2"/><path d="M19 21.5H5m2.2-2l-2.2 2 2.2 2"/>',
   tac: '<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/>',
   bridge: '<path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/>',
   farm: '<path d="M6.5 14.2A4.2 4.2 0 0 1 7.8 6.1a4.6 4.6 0 0 1 8.4 0 4.2 4.2 0 0 1 1.3 8.1"/><path d="M6.5 14.2V19a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-4.8"/><path d="M6.5 16.8h11"/>',
@@ -46,6 +47,7 @@ const G = {
   tasks: '<path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/>',
   trade: '<path d="M4 17l5-6 4 4 7-8"/><path d="M15 7h5v5"/>',
   build: '<path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/>',
+  nodes: '<circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M11 7l-5 10M13 7l5 10M7 19h10"/>',
   stats: '<path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/>',
   prove: '<rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/>',
   paper: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/>',
@@ -68,7 +70,7 @@ const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : 
 // FACE. Build and Stats are in every page's footer. Trade is in the menu as well as linked from the pages that show TAC's price: that is where a visitor who wants to buy or sell
 // TAC looks first, and the link says (?src=menu) which door it was, which the page counts and nothing else.
 const MAIN = [['portfolio', '/#portfolio', 'Portfolio'], ['payments', '/#/payments', 'Payments'], ['defi', '/#/defi', 'DeFi'], ['chains', '/#/chains', 'Chains'], ['borrow', '/vault/', 'Borrow'], ['rewards', '/rewards/', 'Rewards']];
-const MORE = [['assets', '/assets/', 'Assets'], ['tac', '/tac/', 'TAC'], ['trade', '/trade/tac/?src=menu', 'Trade'], ['pay', '/pay/', 'Pay pool'], ['bridge', '/bridge/', 'Bridges'],
+const MORE = [['assets', '/assets/', 'Assets'], ['tac', '/tac/', 'TAC'], ['trade', '/trade/tac/?src=menu', 'Trade'], ['pay', '/pay/', 'Pay pool'], ['bridge', '/bridge/', 'Bridges'], ['btc', '/btc/', 'BTC ⇄ ETH'],
   ['etch', '/etch/', 'Etch'], ['shop', '/shop/', 'Shop'], ['prove', '/prove/', 'Prove'], ['tasks', '/tasks/', 'Tasks'], ['face', '/face/', 'FACE']];
 const BAR = 4;   // how many of the sections the phone's bar holds before More; the rest are first in the menu there
 
@@ -101,6 +103,7 @@ const OUT = [
   ['github', 'Source', 'https://github.com/src-company/tacit', 'Source'],
   ['contract', 'Pool contract', 'https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC', 'Contract'],
   ['stats', 'Stats', '/weld/stats/', 'Stats'],
+  ['nodes', 'Nodes', '/nodes/'],
   ['llama', 'DefiLlama', 'https://defillama.com/protocol/tacit'],
   ['ethbeat', 'Listed on ETHBeat', 'https://ethbeat.org/privacy/projects/tacit-pay'],
   ['x', '@tacitfi on X', 'https://x.com/tacitfi'],
@@ -134,7 +137,7 @@ export const headHtml = (dapp, inline = false) => `${inline ? `<style>\n${readFi
 // drawn by chrome.js once it runs, the head pushed the whole page down under the reader (tools/layout-shift-check.mjs). The vault is two views,
 // told apart by the address's #btc, which chrome.js reads: it is stamped as its section alone, with the head of its first view.
 //   <!-- chrome:sec:begin -->…<!-- chrome:sec:end -->     the section's head, first in <main>
-export const SEC_PAGES = { 'farm/index.html': 'defi/farm', 'fast/index.html': 'chains/fast', 'rewards/index.html': 'rewards/', 'vault/index.html': 'borrow' };
+export const SEC_PAGES = { 'farm/index.html': 'defi/farm', 'fast/index.html': 'chains/fast', 'btc/index.html': 'chains/btc', 'rewards/index.html': 'rewards/', 'vault/index.html': 'borrow' };
 // the sections' names, lines and views are chrome.js's (its SEC table), read from it so the two cannot differ
 const secTable = (dapp) => {
   const m = /\n  const SEC = (\{\n[\s\S]*?\n  \});\n/.exec(readFileSync(join(dapp, 'chrome.js'), 'utf8'));

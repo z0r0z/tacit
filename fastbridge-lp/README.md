@@ -7,6 +7,49 @@ and takes the Bitcoin once the user's claim shows it the secret. The protocol is
 The process runs the Ethereum-locker machine (`dapp/fastbridge-el.js`) over a durable store. Everything it decides it
 reads from the chains; the HTTP API only carries the user's offer in and the pool lock's offer out.
 
+## Quick start: a Bitcoin-for-ETH provider
+
+Node 22 and a machine that stays on. From a checkout of this repository, with the packages installed (`(cd worker-relay && npm ci --omit=dev --ignore-scripts) && (cd worker && npm ci --omit=dev --ignore-scripts)`):
+
+```
+node fastbridge-lp/setup.mjs
+```
+
+1. **Set up.** It asks for a name and your fee (each has a default; `--name`, `--fee-bps`, `--flat-fee`, `--size`, `--yes` skip the questions). It makes your key
+   in `fastbridge-lp/data-btc-eth/provider.key` (mode 600) and prints it once: **copy it somewhere offline**, the funds are only as safe as it (`setup show-key` prints it again on request).
+   Then it prints the provider's two public addresses, an Ethereum pool account and a Bitcoin address, and how much to send for a small, medium or large start.
+2. **Send the funds.** ETH to the pool account (Ethereum mainnet). It sees it, shields it into private notes of the key, and sets the swap limits from what arrived. Bitcoin
+   to the Bitcoin address is optional and turns on ETH to BTC; one confirmation counts, and running setup again after sending it switches the direction on.
+3. **It checks and goes live.** It tries the Ethereum nodes, the Bitcoin explorers, the price, the board, a dry run of the quote path and the CORS answer for tacit.finance, then starts the
+   daemon, which posts its signed ad. It shows under "Providers online" at https://tacit.finance/btc/ within a few minutes (the first read of the pool takes about two).
+
+Stop it with Ctrl-C at any point and run the same command again: the key is made once, a deposit is written down before it is sent, and a run first finds out what the last one finished. A
+deposit whose settle reverted (the relay busy, or its settle racing ours) is settled again, from this account when the relay is not sending, and counted done as soon as the notes are in the pool: it is never deposited twice.
+`node fastbridge-lp/setup.mjs run` starts the daemon later (a restart), `status` reads its health and its ad and says what they mean.
+
+**Starter sizes** (the most one swap takes; the least is 50,000 sats; ETH is for two swaps at the most at once, at today's price, plus 0.01 ETH that stays for gas):
+
+| size | most per swap | send ETH | send BTC (optional) |
+|---|---|---|---|
+| small | 100,000 sats (0.001 BTC) | about 0.07 ETH (at 31 ETH per BTC) | the swap's most plus 40,000 sats |
+| medium | 500,000 sats (0.005 BTC) | about 0.32 ETH | same |
+| large | 2,500,000 sats (0.025 BTC) | about 1.56 ETH | same |
+
+Setup prints the exact figures for the day's price. Start small: the limits come from what is funded, and a later run after a top-up raises them.
+
+**What you earn, what you risk.** You earn the fee on every swap: a share of the amount (30 means 0.30%) plus a flat number of sats that covers the Bitcoin network fees. Pages ask the providers with the lowest fees first. You risk:
+capacity tied up while a swap is open (up to about 16 hours if a user disappears, after which it comes back to you), network fees on both chains, and the price moving in that time. All of it is bounded by your maximum per swap. Tacit never
+holds your funds: the key is yours, and each swap locks both sides. Nothing here is a promise of income.
+
+**Watching it.** `curl localhost:8788/health` is liveness; `/info` shows what it quotes (`minAmount`, `maxAmount`, `feeBps`, `flatFee`), `available` (the most it can lend now; 0 or under the minimum shows as "full right now"; add ETH) and,
+once a swap has ended, `stats` (swaps, fees earned, capacity held). Alerts go to the log and to `FB_LP_ALERT_WEBHOOK` (see "Watching it" below).
+
+**Docker.** `docker build -f worker-relay/Dockerfile.fastbridge-lp -t tacit-lp .`, then `docker run -it -v tacit-lp:/var/lib/tacit-fastbridge-lp tacit-lp setup` (once; it stops when the checks pass), then
+`docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp tacit-lp run`. Without `-it` it takes `FB_LP_NAME`, `FB_LP_FEE_BPS`, `FB_LP_FLAT_FEE`, `FB_LP_SIZE` and `FB_LP_KEY` from the environment.
+`docker-compose.example.yml` is the same with a volume; `render.example.yaml` is a Render service (a template, not deployed) with the disk and variables. One instance per key.
+
+The sections below are the full reference.
+
 ## Run one that stays on
 
 Anyone can provide: from the bridge page (`/fast/`, "Provide liquidity", while the page is open), or with this process, which stays on by itself and
@@ -71,6 +114,7 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 |---|---|
 | `network`, `poolAddress`, `btcAsset`, `evmAsset` | the chain, the pool, and the asset on each side (the same 32-byte id for TAC) |
 | `btcBases` | esplora bases, asked in order for reads; a broadcast goes to every one |
+| `btcFeeTarget`, `btcMinFeeRate` | the explorers' estimate the provider's Bitcoin transactions pay (a block target, `'1'` for a pair provider, `'3'` otherwise) and the least sat/vB they pay (2 for a pair provider, else 1). A pair provider's lock that a block goes by without is bumped from its change, child pays for parent, up to 1% of the amount |
 | `csvBlocks` | the Bitcoin refund timelock the user's lock must carry (at least `policy.minCsv`) |
 | `reserve.reserveSecs`, `reserve.extendSecs`, `reserve.maxUnbackedShare` | how long a reservation holds the payout while the user builds and sends its lock (5 min), for how long once the lock is on the network (2 h), and the share of the pool balance that reservations with no transaction behind them may hold together (half; one alone may hold more) |
 | `reserve.perClient`, `reserve.perBoard` | how many reservations with no lock named yet one client address holds at once (2), and the requests that come through a board together (4, as they name no address). A new one past that lets go of that client's oldest, so a user asking again is always answered; 0 for no limit |
@@ -79,7 +123,7 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `quote.feeBps`, `quote.flatFee` | the LP's fee: a share of the amount plus a flat part in base units. The flat part covers the relay's fee (for cutting a note to size) and a little more: the user already pays the Bitcoin take in sats, inside its lock (`takeSats`), so it is not part of the fee. Keep it small: a fee over 5% of the amount is quoted by the fast page with a plain warning, and the front page's Bridge tab does not prefer it, so a flat fee of F TAC keeps every bridge under about 20 × F TAC out of the tab (a fee over 90% is not quoted at all) |
 | `quote.validSecs`, `quote.rate` | how long a quote holds; `{num, den}` converts what is left after the fee (1/1 for one asset on both sides) |
 | `quote.graceSecs`, `quote.lateSecs`, `quote.lateMoveBps` | how long after `validSecs` an offer is still answered at the quote. With a fixed `rate` (the TAC provider) the grace is all there is. A provider priced from the market answers after the grace only an offer whose lock it saw before the quote ran out (named to `/extend` in time, or confirmed in a block by then), up to `lateSecs` after it (6 h), and only while the price of the moment pays no more than `lateMoveBps` over the quote (100) |
-| `traceRpcs` | the Ethereum nodes asked for a transaction's trace (`debug_traceTransaction` or `trace_transaction`), to read a claim settled through a contract other than the pool or its relayer; `FB_LP_TRACE_RPCS` (comma separated) wins. An own node goes first (the public ones that answer are the default) |
+| `traceRpcs` | the Ethereum nodes asked for a transaction's trace (`debug_traceTransaction` or `trace_transaction`), to read a claim settled through a contract other than the pool or its relayer; `FB_LP_TRACE_RPCS` (comma separated) wins. An own node goes first (the public ones that answer are the default). Each node is asked first with a tracer that keeps only the calls made to the pool, then with `callTracer`, then with `trace_transaction`; a transaction no node traced is asked again later (from 15 s, doubling, to 10 minutes) and alerted with its hash. The pool records no claim's kernel apart from the call that carried it, so a claim sent through a contract of the claimer's in a form of its own is read only from a trace, and a public node may refuse a transaction made costly to trace: until the pool records claims, a node of your own that keeps state and traces without limits (an archive node) is what reads every claim. Run one and put it first |
 | `agreeRpcs` | the Ethereum nodes, of separate operators, that must agree before a swap is taken as claimed, refunded or lost: every one is asked at one block, two or more must answer and all that answer must say the same (else the read is made again and the swap waits; refunds still go out at their time). `FB_LP_AGREE_RPCS` (comma separated) wins; at least two. Default: public nodes that serve the pool's state at a block number. `traceRpcs` should name two or more as well, since a claim read from a trace is taken only once two nodes trace it alike |
 | `policy.evmWindowSecs` | the time the user has to claim in the pool, from the Bitcoin block that confirmed its lock (4 h) |
 | `policy.minClaimSecs`, `policy.claimSlackSecs` | the least time a claim may be built with (1 h), and the gap between the pool deadline and the opening of the user's refund (2 h) |
@@ -247,7 +291,66 @@ own; the TAC provider is not changed by it.
   RPC) and public exchange tickers, which must agree within `rate.maxSpreadBps`; the fee is on top. With no price (sources down or disagreeing) the provider quotes
   nothing and alerts, and a page checks every quote against its own reading of the market, so a mispriced provider is blocked by the page as well.
 - A swap's take comes out of the lock itself, and a take that is slow is replaced by one that pays more (`policy.takeFeeFactor`, `takeBumpSecs`, `takeMaxFeeShare`).
+- **A flat fee that follows costs** (`FB_LP_DYNAMIC_FEE=on`, off unless set; `lib/flatfee.mjs`). Off, each direction's flat part is its configured number
+  (`FB_LP_FLAT_FEE`, `FB_LP_REVERSE_FLAT_FEE`). On, each is `FB_LP_FEE_SUBSIDY` (0 to 1, 0.5 unless set; 1 recovers the whole cost) of the provider's own estimated
+  network cost per swap, read every 30 s: forward (sats) = 160 vB x the fee estimate (sat/vB) the provider already warms + the relay's fee for a pool note valued
+  in sats at the current rate; reverse (pool units) = 160 vB x the fee estimate valued in pool units + the relay's fee for the claim. `FB_LP_FEE_SUBSIDY_UNTIL`
+  (unix seconds or a date) ends the intro: from then the share is 1. The cost is smoothed (an exponential average) and the figure moves only when it is 10% off the one in
+  use, then is held to `FB_LP_FLAT_FEE_MIN` / `_MAX` (`FB_LP_REVERSE_FLAT_FEE_MIN` / `_MAX`; 100 sats and 2000 units unless set) and never over 1.5% of the
+  direction's least amount (nor over the 2.5% less the rate part), so the least swap stays under the page's 3% guard. With no fee estimate, relay fee or price for
+  half an hour the configured flat fees apply again. A quote given is sealed with its amounts and never changes. `/info` carries `feeModel` (`dynamic`, `live`,
+  `subsidy`, `costSats`, `costEthUnits`, `feeRate`, `flatFeeSats`, `reverseFlatFeeUnits`, `limits`), and `flatFee` in `/info` and on the board's ad is the figure in use.
 - `--dry-run` answers `/info` and `/quote` and checks offers, sends nothing.
+
+### Upkeep (pair mode)
+
+A pair provider looks after its own inventory every `upkeep.tickSecs` (120): `lib/automation.mjs`, wired by `lib/automation-wire.mjs`. Each part has its own switch, and
+everything it does is logged; a failure is alerted (at most hourly per kind).
+
+- **Take coins to the reverse address** (`recycle`, on when the reverse side is on; `FB_LP_RECYCLE=off` stops it). The sats a BTC -> ETH take pays to the main address
+  are moved to the reverse address, so they back ETH -> BTC swaps. Only coins that a take of this provider's finished swaps paid (read by the take's txid, never by listing
+  the main address), plain P2WPKH outputs of the main key, confirmed, unspent, `minCoin`..`maxCoin` sats; never a coin a swap under way names. Several in one transaction to
+  the reverse key's own address, at a fee rate two or more explorers agree on (`maxFeeRate` 25 sat/vB: above it, it waits), at least `minBatchSats` (150,000) with a fee of
+  at most `maxFeeShareBps` (0.5%), at most `maxPerTickSats` (3,000,000) a move and `maxPerDaySats` (10,000,000) a day. RBF, replaced at a higher rate after `bumpSecs`.
+  `keepSats` keeps that much of the coins at the main address. The first move after a start is only logged (a dry run).
+- **The lean** (`skew`, on when the reverse side is on; `FB_LP_SKEW=off`). Holding much more ETH than its target share (`targetEthShare` 0.5, outside a `deadBand`
+  of 0.1), the provider raises its one rate a few basis points (a user bringing BTC gets a little more ETH, one bringing ETH a little fewer sats), and lowers it the other
+  way: at most `maxBps` (15), and never so far that a quote at the minimum, with its fee, stands more than `guardBps` (250) under the market (pages block 3%). `/info`
+  says the lean of the moment (`skewBps`).
+- **ETH notes** (`notes`; `FB_LP_NOTES_MERGE=off`). `/info` reports the free notes, their total and what one lock can draw (`usable`: the largest 16, less a cut). When
+  there are `minNotes` (8) or more, or any under `dustEth` (0.002), the smallest 16 are merged into one note of the same key, when the relay's fee is at most `maxFeeBps`
+  (0.25%), at most `maxPerDay` (3) a day, and only while no BTC -> ETH swap is under way.
+- **Accounting.** Each quote keeps the market rate it was priced from; each finished swap adds its fee over that market (sats for BTC -> ETH, pool ETH for ETH -> BTC),
+  its network costs (the Bitcoin fees of its take, lock or refund as the explorers report them; the relay's fee for a note cut or refund, estimated) and any loss.
+  Swaps that ended before the accounting began are not counted. Kept in `dataDir/upkeep/stats.json`, shown in `/info`:
+  `stats: { since, swaps, feesEarnedSats, feesEarnedEth, networkCostSats, networkCostEth, lossesSats, lossesEth, netEth, reinvestedEth, owedEth, capacity: { eth, sats, valueEth, firstValueEth, firstAt }, notes }`
+  (ETH in pool units of 1e-8 ETH), with `target` and `buyback` beside it.
+- **The target and buybacks** (`target`, `buyback`; `FB_LP_BUYBACK=on` to start, off unless set; `FB_LP_TARGET_ETH`). Under the target (`target.eth` of pool ETH, 10, and
+  Bitcoin worth `target.btcAsEth`, 10, at the market) every swap's net stays as capacity (`reinvestedEth`). At the target with buybacks on, a swap's net is owed
+  (`owedEth`) and sent to TacBuyback (`contracts/deployments/1.json`; no other address is accepted) as an unwrap of the provider's own pool ETH, only from what is over
+  the target, at least `minSendEth` (0.01), at most `maxPerSendEth` (0.25) a send and `maxPerDayEth` (0.5) a day, and only while no BTC -> ETH swap is under way. The
+  contract's keeper buys TAC with it for the reserve in its own small, spaced buys. `/info` `buyback: { on, to, startedAt, owedEth, routedEth, feesEth, sends, tacBought, lastTx, lastAt }`:
+  `routedEth` is what reached the contract, `tacBought` (TAC wei) the provider's share of the contract's buys since its first send, pro rata to its part of the
+  contract's ETH at each buy.
+- **Shielding its own ETH** (`lib/shield.mjs`; off unless `FB_LP_AUTO_SHIELD=on`). ETH sent to the pool account (`poolAccount`, the Ethereum address of the key) is plain
+  ETH until it is deposited into the pool as private notes; with this on the provider does that itself, the step `tools/fastbridge-lp-shield.mjs <ETH> --eth --send` is by
+  hand (the tool and the daemon share `lib/shield-core.mjs`). `FB_LP_SHIELD_RESERVE_ETH` (0.02, at least 0.0005) is the public ETH it never touches, for gas;
+  `FB_LP_SHIELD_MIN_ETH` (0.02) the smallest deposit; `FB_LP_SHIELD_EVERY_SECS` (600) the least gap between deposits. It deposits the balance less the reserve (whole 1e-8 units),
+  only while nothing is under way on the forward side (no open swap, hold or promise), one deposit at a time. Its state is `dataDir/upkeep/shield.json`
+  (`nextIndex`, and `pending` with the index, amount, account nonce and transaction): the pending deposit is written before it is sent, so a restart waits for it and settles it, and
+  never sends it again. The key's next wrap index is kept there; it is read from the pool's history (minutes) only when none is kept, once. Each deposit is first run as a call:
+  one that would revert is not sent, and a used index (`DepositExists`) stops auto-shield with an alert, to read the history again at the next start. A deposit whose settle fails, or
+  that reverted, also stops it with an alert (the deposit is on the chain, the restart settles it). ETH that falls by 0.01 or more with nothing of the provider's under way is alerted
+  and skipped. One log line per action (`auto-shield: ...`); `/info` `refill.autoShield: { on, halted, pending, shielded }`.
+- **Low-balance alerts** (always on; `lib/refill-watch.mjs`). Each goes through the alert (webhook, below), is said when it begins and again every four hours while it lasts, and
+  once more, as an info, when it ends:
+  `private ETH to lend is low` (free pool ETH under `FB_LP_ALERT_LOW_ETH`, 0.05: send ETH to `poolAccount`), `Bitcoin is low` (sats at the main and reverse addresses under
+  `FB_LP_ALERT_LOW_SATS`, 100000: send BTC to the address named), `the pool account is under its gas reserve` (public ETH under the reserve: send ETH to `poolAccount`) and
+  `ETH ... has sat unshielded` (public ETH over the reserve and the smallest deposit for 30 minutes with auto-shield off: run the tool or switch it on). `/info` shows the same
+  as `refill: { poolAccount, btcAddresses, freeEth, lowEth, sats, lowSats, publicEth, gasReserveEth, minChunkEth, alerting, autoShield }` (ETH in ETH, no secrets).
+
+To turn it on, the owner sets `FB_LP_AUTO_SHIELD=on` and `FB_LP_ALERT_WEBHOOK=<a Slack or Discord incoming-webhook URL>` in the service's environment on Render (a redeploy
+applies them). With no webhook the alerts are in the log only.
 
 ## Watching it
 
@@ -266,6 +369,9 @@ line for Slack and Discord incoming webhooks, so one of those can be the webhook
 | `reverse: the notes at the reverse address could not be read` in the log | (reverse side) the scan of that address failed, so `/reverse/info` answers `available: null` and quotes are refused | the explorers; it is tried again after ten seconds |
 | `the provider is running out of private TAC to lend` | the TAC held free is under `lowFreeTac` | shield more TAC to the pool account, or set up `refill` (above) |
 | `the provider is running low on ETH for the settles it sends itself` | the ETH at the pool account is under `lowEth` | send ETH to `poolAccount`; if the relay keeps not sending settles, look at its settle wallet and its limits as well |
+| `recycle: a coin of a move was spent by another transaction` | (pair upkeep) a take coin the provider was moving to its reverse address was spent elsewhere | only the main key signs for it: check what else runs on the key |
+| `stats: ... ended with nothing received` | (pair upkeep) a swap ended with the provider paid nothing for what it gave | read the swap's record and its claim or lock before anything else |
+| `buyback: a send that did not finish ... spent its note` | (pair upkeep) a buyback send was cut short and its note is spent | check the TacBuyback balance and the relay job; it was counted as sent |
 | `bridges are waiting for a provider` | a want on a board this process is on, for its asset, that it has not seen before (read every five minutes). `largest` is the biggest; when any names a price, `payUpTo` is the highest and `atYourFee` how many of them (one that names none counts) this provider's fee already meets; `amounts` and `prices` (hundredths of a percent, or null) are in the JSON | raise `quote.maxAmount` or the TAC in the pool if it is more than this process can take; if `atYourFee` is under the count, a lower `feeBps` or flat fee meets the rest |
 
 The same swap in the log: `swap` lines show each phase change (`accepted`, `locking`, `locked`, `offered`, `taking`,
@@ -298,6 +404,7 @@ node tests/fastbridge-sim.test.mjs      # both machines against a simulated Bitc
 node tests/fastbridge-lp.test.mjs       # this service: API, quotes, store, explorer adapter, and swaps through all of it
 node tests/fastbridge-reverse-service.test.mjs   # the reverse side: its service and the user's client over the same machines
 node tests/fastbridge-lp-reverse.test.mjs      # what the process puts around it: its key, options, notes and routing
+node tests/fastbridge-lp-upkeep.test.mjs       # a pair provider's upkeep: coin moves, accounting, the lean, note merges, buybacks
 node tests/fastbridge-fork.mjs          # the Ethereum side against the live pool on a mainnet fork (needs anvil, FORK, EXEC)
 ```
 

@@ -3,6 +3,8 @@ const SELECTOR_SETTLE = '717fd7f2';
 const SELECTOR_RELAY_SETTLE = 'fcccb833';
 const SELECTOR_RELAY_SETTLE_SEEDED = 'e2b28725';
 const SELECTOR_SETTLE_WITH_TIP = '70b16a7d';
+export const MAX_NESTED_SETTLES = 16;
+export const MAX_NESTED_INPUT_BYTES = 256 * 1024;
 
 const READ_AHEAD = 6;
 const MAINNET_POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
@@ -83,10 +85,14 @@ export function makeConfidentialLockScan({ pool }) {
     throw new Error(`decodeRelaySettleCalldata: unrecognized selector 0x${selector}`);
   }
 
+  // A settle carried inside another contract's calldata is found by its selector, wherever it sits: an input is read for at most MAX_NESTED_SETTLES of them, and
+  // one larger than MAX_NESTED_INPUT_BYTES is not searched at all (no settle a forwarder carries comes near it), so one transaction's calldata cannot ask every
+  // reader for hundreds of full decodes.
   function decodeNestedSettles(inputHex) {
     const raw = strip0x(inputHex).toLowerCase();
     const out = [];
-    for (let i = raw.indexOf(SELECTOR_SETTLE, 8); i >= 0; i = raw.indexOf(SELECTOR_SETTLE, i + 1)) {
+    if (raw.length > MAX_NESTED_INPUT_BYTES * 2) return out;
+    for (let i = raw.indexOf(SELECTOR_SETTLE, 8); i >= 0 && out.length < MAX_NESTED_SETTLES; i = raw.indexOf(SELECTOR_SETTLE, i + 1)) {
       if (i % 2) continue;
       const data = raw.slice(i + 8);
       const size = BigInt(Math.floor(data.length / 2));

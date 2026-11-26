@@ -24,13 +24,13 @@ function ipNum(addr) {
   if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;
   return { bits: 128, n: groups.reduce((s, g) => (s << 16n) | BigInt(parseInt(g, 16)), 0n) };
 }
-// A client's address as a key: an IPv6 one by its /64, since a network gives all the rest of it to one customer.
+// A client's address as a key: an IPv6 one by its /48, since a network may give a customer that much (a /56 or a /48, not only a /64).
 function ipKey(addr) {
   const a = String(addr).trim().toLowerCase();
   if (!a.includes(':') || /^(::ffff:)?\d+\.\d+\.\d+\.\d+$/.test(a)) return a;
   const [h, t = ''] = a.split('::'), head = h ? h.split(':') : [], tail = t ? t.split(':') : [];
   const full = a.includes('::') ? [...head, ...Array(Math.max(0, 8 - head.length - tail.length)).fill('0'), ...tail] : head;
-  return `${full.slice(0, 4).map((x) => x.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+  return `${full.slice(0, 3).map((x) => x.replace(/^0+(?=.)/, '')).join(':')}::/48`;
 }
 // Cloudflare's own addresses (https://www.cloudflare.com/ips/, read 2026-11-25): an entry of the forwarded list in one of them is a hop of its edge.
 export const CLOUDFLARE = [
@@ -74,8 +74,13 @@ export function clientOf(req, rule) {
   return i >= 0 && ipNum(list[i]) ? ipKey(list[i]) : direct;
 }
 
-export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits = { default: [60, 60], offer: [6, 60] }, trustProxy = false, clientIp = null, kindOf = (method, path) => (path === '/offer' ? 'offer' : 'default') }) {
+export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits = { default: [60, 60], offer: [6, 60] }, trustProxy = false, clientIp = null, kindOf = (method, path) => (path === '/offer' ? 'offer' : 'default'), log = null }) {
   const rule = clientRule({ trustProxy, clientIp });
+  // every answer a page may read carries these, an error's included: one without them reaches a browser as a blocked request, not as the error it was
+  const corsOf = (req) => {
+    const origin = req.headers.origin;
+    return origin && (origins.includes('*') || origins.includes(origin)) ? { 'access-control-allow-origin': origin, vary: 'origin', 'access-control-allow-methods': 'GET, POST, PUT, OPTIONS', 'access-control-allow-headers': 'content-type', 'access-control-max-age': '600' } : {};
+  };
   const buckets = new Map();
   function allowed(ip, kind) {
     const [cap, perSecs] = limits[kind] || limits.default;
@@ -89,8 +94,7 @@ export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits =
   setInterval(() => { const t = Date.now() / 1000; for (const [k, b] of buckets) if (t - b.at > 600) buckets.delete(k); }, 60000).unref();
 
   async function onRequest(req, res) {
-    const origin = req.headers.origin;
-    const cors = origin && (origins.includes('*') || origins.includes(origin)) ? { 'access-control-allow-origin': origin, vary: 'origin', 'access-control-allow-methods': 'GET, POST, PUT, OPTIONS', 'access-control-allow-headers': 'content-type', 'access-control-max-age': '600' } : {};
+    const cors = corsOf(req);
     const send = (status, body) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors }); res.end(JSON.stringify(body)); };
     if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
     const ip = clientOf(req, rule);
@@ -112,7 +116,10 @@ export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits =
   }
   // whatever a request does, the process stays up: a listener that throws is an unhandled rejection, which ends it
   const server = createServer((req, res) => {
-    onRequest(req, res).catch(() => { try { if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'the service could not answer' })); } catch { /* the connection is gone */ } });
+    onRequest(req, res).catch((e) => {
+      if (log) { try { log({ level: 'error', msg: 'a request could not be answered', method: req.method, path: String(req.url || '').split('?')[0].slice(0, 80), error: String((e && e.message) || e).slice(0, 160) }); } catch { /* a log that fails is not the request's */ } }
+      try { if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json', 'cache-control': 'no-store', ...corsOf(req) }); res.end(JSON.stringify({ error: 'the service could not answer' })); } catch { /* the connection is gone */ }
+    });
   });
   // a connection is kept longer than a proxy in front keeps its own idle ones, so the proxy never reuses one this side has closed
   server.keepAliveTimeout = 65000;

@@ -613,7 +613,7 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   ok('the sender and kind maps drop jobs that left the queue');
 }
 
-// ───────────────── 25b. the proofs nobody watches (a bridge mint, the fast bridge's lock, claim and refund) wait behind the ops a person is waiting on, for two minutes ─────────────────
+// ───────────────── 25b. the proofs nobody watches (a bridge mint, a swap's pool refund) wait behind the ops a person is waiting on, for two minutes ─────────────────
 {
   const t0 = t;
   const op = (k) => ({ chainBinding: '0xcb', spendRoot: '0xr', fee: 0, n: k });
@@ -621,8 +621,8 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   // a run of bridge mints and fast-bridge proofs came first; a person's unwrap, send and wrap came after, and a swap came last
   const q = mk();
   const m1 = await q.submitJob({ type: 'bridgemint', op: op('pt-m1'), memos: [], client: 'a/24' });
-  const l1 = await q.submitJob({ type: 'adaptorlock', op: op('pt-l1'), memos: [], client: 'b/24' });
-  const c1 = await q.submitJob({ type: 'adaptorclaim', op: op('pt-c1'), memos: [], client: 'c/24' });
+  const l1 = await q.submitJob({ type: 'adaptorrefund', op: op('pt-l1'), memos: [], client: 'b/24' });
+  const c1 = await q.submitJob({ type: 'bridgestealthmint', op: op('pt-c1'), memos: [], client: 'c/24' });
   const u1 = await q.submitJob({ type: 'unwrap', op: op('pt-u1'), memos: [], client: 'd/24' });
   const tr = await q.submitJob({ type: 'transfer', op: op('pt-t1'), memos: [], client: 'e/24' });
   const w1 = await q.submitJob({ type: 'wrap', op: op('pt-w1'), memos: [], client: 'f/24' });
@@ -632,7 +632,17 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   for (let k = 0; k < 7; k++) got.push((await q.nextJob()).jobId);
   assert.deepStrictEqual(got, [sw.jobId, u1.jobId, tr.jobId, w1.jobId, m1.jobId, l1.jobId, c1.jobId],
     'the swap first, then what a person waits on in arrival order, then the patient ones in arrival order');
-  ok('a bridge mint and the fast bridge\'s proofs are taken after the unwrap, send and wrap that arrived behind them');
+  ok('a bridge mint and a swap\'s refund are taken after the unwrap, send and wrap that arrived behind them');
+
+  // a swap's pool lock and claim are watched (the Bitcoin page): taken in their place by arrival, with what a person waits on
+  const q4 = mk();
+  const lk = await q4.submitJob({ type: 'adaptorlock', op: op('pw-l'), memos: [], client: 'a/24' });
+  const cl = await q4.submitJob({ type: 'adaptorclaim', op: op('pw-c'), memos: [], client: 'b/24' });
+  const uw = await q4.submitJob({ type: 'unwrap', op: op('pw-u'), memos: [], client: 'c/24' });
+  const seen4 = [];
+  for (let k = 0; k < 3; k++) seen4.push((await q4.nextJob()).jobId);
+  assert.deepStrictEqual(seen4, [lk.jobId, cl.jobId, uw.jobId], 'a swap\'s lock and claim are not held behind an unwrap that came after them');
+  ok('a swap\'s pool lock and claim are taken by arrival, not held two minutes behind the others');
 
   // a patient job that has waited the head start is back in its place by arrival: a run of unwraps cannot hold a bridge mint back
   const q2 = mk();
@@ -652,7 +662,7 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
 
   // alone, a patient job is taken at once: nothing is held for the others
   const q3 = mk();
-  const only = await q3.submitJob({ type: 'adaptorclaim', op: op('pl-c'), memos: [], client: 'a/24' });
+  const only = await q3.submitJob({ type: 'adaptorrefund', op: op('pl-c'), memos: [], client: 'a/24' });
   assert.strictEqual((await q3.nextJob()).jobId, only.jobId);
   ok('a patient job with nothing else waiting is taken at once');
 }

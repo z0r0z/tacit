@@ -4,6 +4,11 @@ The Tacit Praxis ceremony adds new contributions to the public Groth16 Phase-2 s
 circuit** (the one circuit that checks an SP1 proof of any program), continuing from Succinct's last file, `phase2-17`.
 Phase 1 is the Hermez / Perpetual Powers of Tau file that Succinct's setup used.
 
+**What Praxis is.** Praxis is a practical witness encryption scheme (Tse, Vanjani and Vesely, ePrint 2026/2971). Witness encryption
+locks a message to a statement, so that anyone who holds a proof of that statement can unlock it, and no one else can. Praxis locks
+to a Groth16 verifier on BN254, which can express any statement a zero-knowledge proof can, so one key serves every statement.
+Its ciphertext is 7.88 GiB at 100-bit security. The verifier has to be set up honestly, and that setup is what this ceremony produces.
+
 The ceremony produces a **new key** for that circuit (a new delta). It does not change Succinct's deployed SP1 verifier
 (`VERIFIER_HASH 0x4388a21c…`) or its key, and does not add to the setup that verifier relies on. The new key is the
 setup for future Tacit Praxis work, which is in progress and has not been reviewed, and for other Groth16 verifiers of
@@ -14,10 +19,12 @@ The key is sound only if all three hold:
 1. at least one of the first 54 contributors to the Perpetual Powers of Tau (Phase 1) was honest;
 2. at least one Phase 2 contributor was honest: one of Succinct's 18 contributions, or one here;
 3. the starting files (the Phase 1 commons, the initial Phase 2 file and the evaluations) were derived correctly from
-   Phase 1 and the circuit. Re-deriving them from `powersOfTau28_hez_final_24.ptau` is a separate check, not yet done
-   here.
+   Phase 1 and the circuit. They were re-derived from `powersOfTau28_hez_final_24.ptau` and the circuit and match
+   Succinct's files byte for byte, with the rest of the chain up to the key on Ethereum:
+   [genesis/RESULT.md](genesis/RESULT.md), and [genesis/reproduce.sh](genesis/reproduce.sh) to run it yourself.
 
-The link-by-link checks below cover (2) from `phase2-17` onward; they do not cover (1) or (3).
+The link-by-link checks below cover (2) from `phase2-17` onward. Checking files cannot show (1), or that one of Succinct's 18
+contributors was honest.
 
 What a Tacit Praxis ciphertext will encrypt to (the five public inputs, the gate program, the pinned decryptor stack)
 is fixed in [STATEMENT.md](STATEMENT.md).
@@ -28,14 +35,24 @@ at `cd7874155e26`).
 
 ## Contribute
 
-You need Go 1.24 or later (release binaries are built with Go 1.27.4), about 16 GB of RAM, about 2.2 GB of free disk,
-and to download and upload about 1 GB (each file is 1,040,779,531 bytes).
+You need about 16 GB of RAM, about 2.2 GB of free disk, and to download and upload about 1 GB (each file is
+1,040,779,531 bytes). Either download a release binary (built with Go 1.27.4; check it against `SHA256SUMS`) or build
+the tool yourself (Go 1.24 or later):
 
 ```sh
+# a release binary, for your computer (darwin-arm64, darwin-amd64, linux-amd64, linux-arm64, windows-amd64.exe)
+curl -fLO https://github.com/z0r0z/tacit/releases/download/ceremony-v1.0.0/tacit-ceremony-darwin-arm64
+chmod +x tacit-ceremony-darwin-arm64
+./tacit-ceremony-darwin-arm64 contribute --coordinator <coordinator URL> --name "<your name>" --handle @you
+
+# or from source
 git clone https://github.com/z0r0z/tacit && cd tacit/ceremony-phase2
 go build -o tacit-ceremony ./cmd/tacit-ceremony
 ./tacit-ceremony contribute --coordinator <coordinator URL> --name "<your name>" --handle @you
 ```
+
+`<coordinator URL>` is on the ceremony's page, https://tacit.finance/praxis/ (a 0x address as the handle is where the ceremony's
+points go).
 
 Leave it running. It:
 

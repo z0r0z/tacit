@@ -13,6 +13,7 @@ const { ETH_NODES } = await import('../dapp/eth-nodes.js');
 const { hedgedRpc, nodeHealth } = await import('../dapp/trade/rpc.js');
 
 const OURS = ETH_NODES.find((u) => u.includes('tacit-node-gw'));
+const FIRST_HISTORY = ETH_NODES.find((u) => !u.includes('tacit-node-gw'));
 const A = '0x' + 'ab'.repeat(20);
 const firstAsked = async (method, params, hosts = ETH_NODES, extra = {}) => {
   const hits = [];
@@ -29,12 +30,11 @@ test('the cheap latest-state reads go to the light node first', async () => {
 });
 
 test('everything else keeps its order: numbered blocks, receipts, transactions, blocks, logs, proofs', async () => {
-  const publicFirst = ETH_NODES[0].replace(/^https:\/\//, '');
   for (const [m, p] of [['eth_getTransactionReceipt', ['0x' + '11'.repeat(32)]], ['eth_getTransactionByHash', ['0x' + '11'.repeat(32)]], ['eth_getBlockByNumber', ['latest', false]], ['eth_getBlockByHash', ['0x' + '22'.repeat(32), false]], ['eth_getLogs', [{ fromBlock: '0x1', toBlock: '0x10' }]], ['eth_getProof', [A, [], 'latest']], ['eth_feeHistory', ['0x5', 'latest', []]]])
     assert.notEqual(await firstAsked(m, p), OUR_ID, `${m} must not be promoted`);
   const pinned = await firstAsked('eth_getBalance', [A, '0x1900000']);
   assert.notEqual(pinned, OUR_ID, 'a numbered block is deeper than the light node keeps (32 blocks): the list refuses it for the light node, and it is not asked');
-  assert.equal(await firstAsked('eth_getTransactionReceipt', ['0x' + '11'.repeat(32)]), publicFirst, 'the first public node, as before');
+    assert.equal(await firstAsked('eth_getTransactionReceipt', ['0x' + '11'.repeat(32)]), new URL(FIRST_HISTORY).host, 'the first history-capable node');
 });
 
 test('a light node resting after a limit goes behind the others, and comes back when its rest is over', async () => {
@@ -60,7 +60,7 @@ test("the reader's own node (127.0.0.1:8545) is a light node too: it goes ahead 
 
 test("'tacit-light-first' = '0' turns it off for that browser", async () => {
   store.set('tacit-light-first', '0');
-  try { assert.notEqual(await firstAsked('eth_getBalance', [A, 'latest']), OUR_ID); } finally { store.delete('tacit-light-first'); }
+  try { assert.equal(await firstAsked('eth_getBalance', [A, 'latest']), new URL(FIRST_HISTORY).host, 'the normal list order'); } finally { store.delete('tacit-light-first'); }
   assert.equal(await firstAsked('eth_getBalance', [A, 'latest']), OUR_ID);
 });
 
@@ -78,5 +78,6 @@ test("the swap card's own node list and the price strip's fallbacks name the lig
   assert.ok(!(card.match(/const SCAN_NODES = \[([^\]]*)\]/)?.[1] || '').includes(new URL(OURS).host), 'but SCAN_NODES (log scans) does not: a light node answers 512 blocks a query');
   const px = readFileSync(new URL('../dapp/px-strip.js', import.meta.url), 'utf8');
   const hosts = [...(px.match(/const HOSTS = \[([^\]]*)\]/)?.[1] || '').matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(!hosts.includes('https://ethereum-rpc.publicnode.com'), 'the price strip has no browser-403 fallback');
   assert.equal(hosts[hosts.length - 1], OURS, 'px-strip.js HOSTS ends with it: its one sequential multicall is not made to wait on a node that might be slower');
 });

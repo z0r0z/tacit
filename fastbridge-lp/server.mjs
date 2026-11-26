@@ -6,6 +6,8 @@
 //   FB_LP_KEY=<64 hex>        the LP's key: its Bitcoin wallet, its pool identity, the root of its swap seed. Env only.
 //   FB_LP_CONFIG=<path>       the config file (README.md). Default ./fastbridge-lp/config.json
 //   FB_LP_ALERT_WEBHOOK=<url> optional: alerts are POSTed there as JSON as well as logged
+//   FB_LP_AUTO_SHIELD=on      a pair provider shields the ETH sent to its pool account (FB_LP_SHIELD_RESERVE_ETH, _MIN_ETH, _EVERY_SECS; FB_LP_ALERT_LOW_ETH, _LOW_SATS: lib/shield.mjs, lib/refill-watch.mjs)
+//   FB_LP_TRACE_RPCS=<urls>   the nodes that trace a transaction (comma separated, an own archive node first): how a claim sent through another contract is read
 //   PORT, FB_LP_DATA_DIR, FB_LP_NAME, FB_LP_BOARDS, FB_LP_MIN_AMOUNT, FB_LP_MAX_AMOUNT, FB_LP_FEE_BPS, FB_LP_FLAT_FEE   optional: set over the config (lib/env-config.mjs)
 //   node fastbridge-lp/server.mjs [--dry-run]     (Node 22; run from the repository root)
 //
@@ -77,7 +79,11 @@ const selfSettle = (x) => turn(async () => {
   await ux.rpc('eth_call', [{ from: acct.address, to: ux.cfg.pool, data: ux.settleCalldata(x) }, 'latest']);
   return ux.settleFromAccount({ settlerPriv: key, publicValues: x.publicValues, proof: x.proof, memos: x.memos || [] });
 });
-// the nodes asked for a transaction's trace, to read a claim settled through a contract other than the pool or its relayer (README `traceRpcs`)
+const alert = makeAlert({ log, webhook: process.env.FB_LP_ALERT_WEBHOOK || null, name: C.name || undefined });
+// the nodes asked for a transaction's trace, to read a claim settled through a contract other than the pool or its relayer (README `traceRpcs`). The pool keeps no
+// record of a claim's kernel apart from the call that carried it, so a claim sent through a contract in a form of its own is read only from a trace, and a public node
+// may refuse a transaction made costly to trace. Until the pool records claims, a node of the operator's own that keeps state and traces (an archive node, first in
+// FB_LP_TRACE_RPCS) is what reads every claim; a claim no node traced is alerted with its transaction (onUnread below).
 const traceNodes = String(process.env.FB_LP_TRACE_RPCS || '').split(',').map((s) => s.trim()).filter(Boolean);
 if (!traceNodes.length) traceNodes.push(...(Array.isArray(C.traceRpcs) && C.traceRpcs.length ? C.traceRpcs : TRACE_NODES));
 // the nodes that must agree (two or more, all that answer alike) before a swap is taken as claimed, refunded or lost (README `agreeRpcs`)
@@ -85,10 +91,15 @@ const agreeNodes = String(process.env.FB_LP_AGREE_RPCS || '').split(',').map((s)
 if (!agreeNodes.length) agreeNodes.push(...(Array.isArray(C.agreeRpcs) && C.agreeRpcs.length ? C.agreeRpcs : AGREE_NODES));
 if (agreeNodes.length < 2) { console.error('agreeRpcs (FB_LP_AGREE_RPCS) must name two Ethereum nodes or more'); process.exit(1); }
 if (traceNodes.length < 2) log({ level: 'warn', msg: 'traceRpcs names one node: a claim read from a trace is taken only once two nodes trace it alike' });
-const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs }, selfSettle, ownAccount: { address: acct.address }, selfRetryMs: 60000, log, trace: makeTxTracer({ nodes: traceNodes }), quorum: makeNodeQuorum({ nodes: agreeNodes }) });
+const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs }, selfSettle, ownAccount: { address: acct.address }, selfRetryMs: 60000, log, trace: makeTxTracer({ nodes: traceNodes, pool: C.poolAddress }), quorum: makeNodeQuorum({ nodes: agreeNodes }), onUnread: (o) => alert(o) });
+// What the provider's Bitcoin transactions pay. A pair provider's are each on a swap's clock (its lock a user waits on, its take, its refund), so they go out for
+// the next block (`btcFeeTarget`, the explorers' estimate for that many blocks: '1') and never under `btcMinFeeRate` sat/vB (2), as the page's locks do
+// (dapp/fast/pair-wire.js); the fee comes out of the provider's spread, and a lock that still misses a block is bumped from its change (fastbridge-bl.js
+// bumpLock). The TAC provider keeps its three-block estimate unless its config says otherwise: its quotes ask the user for the fee of its take.
+const btcFees = { feeTarget: String(C.btcFeeTarget ?? (PAIR ? '1' : '3')), minFeeRate: Number(C.btcMinFeeRate ?? (PAIR ? 2 : 1)) };
 const btc = makeNodeBtcChain({
   bases: C.btcBases, tacit, prims, builder, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]),
-  poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log,
+  poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log, ...btcFees,
 });
 
 // the price: read now and again every `rate.everySecs`; with none the provider quotes nothing and says so (a provider never prices from a feed it cannot read)
@@ -100,6 +111,39 @@ if (PAIR) {
   log({ level: 'info', msg: 'pair provider: Bitcoin for ETH', price: rateFeed.current(), sats: { min: C.quote.minAmount, max: C.quote.maxAmount }, reverse: !!(C.reverse && C.reverse.enabled) });
 }
 
+// A pair provider's upkeep (lib/automation.mjs, README "Upkeep"): its quotes price from the market moved by the lean of the moment (lib/skew.mjs), and each quote
+// keeps the market rate it was priced from (`mkt`), which the accounting of the swap reads. The pool's own sends (a lock's note cut and lock, a merge of small
+// notes, a buyback send) take turns, so the upkeep never spends a note a lock is being built from.
+const { applySkew } = await import('./lib/skew.mjs');
+let leanBps = 0;
+const quoteRate = () => { const r = rateFeed && rateFeed.rate(); return r && leanBps ? applySkew(r, leanBps) : r; };
+const withMkt = (store) => (PAIR ? { ...store, put: async (rec) => { if (rec && rec.id && !rec.mkt) { const m = rateFeed.rate(); if (m) rec = { ...rec, mkt: { num: String(m.num), den: String(m.den) }, ...(leanBps ? { leanBps } : {}) }; } return store.put(rec); }, get: store.get.bind(store), list: store.list.bind(store), del: store.del ? store.del.bind(store) : undefined, problems: store.problems ? store.problems.bind(store) : () => [] } : store);
+const poolTurn = makeSerial();
+if (PAIR) for (const k of ['prepare', 'lockOp']) { const f = evm[k]; if (typeof f === 'function') evm[k] = (...a) => poolTurn(() => f(...a)); }
+
+// The flat part of the fee following the provider's own network cost (lib/flatfee.mjs): off unless FB_LP_DYNAMIC_FEE=on. Reads the fee estimate the provider already
+// warms and the relay's fee for a pool note, every 30 s; a read that fails keeps the last good one for a while, then the configured flat fees apply.
+let flat = null;
+if (PAIR && C.feeModel && C.feeModel.dynamic === true) {
+  const { makeFlatFee } = await import('./lib/flatfee.mjs');
+  const fm = C.feeModel, fwdM = fm.fwd || {}, revM = fm.rev || {}, RC = C.reverse && C.reverse.enabled ? C.reverse : null;
+  const got = { feeRate: null, feeAt: -Infinity, relay: null, relayAt: -Infinity };
+  const fresh = (t) => Date.now() / 1000 - t <= 1800;
+  flat = makeFlatFee({
+    dynamic: true, subsidy: fm.subsidy ?? 0.5, subsidyUntil: fm.subsidyUntil ?? null,
+    fwd: { flat: C.quote.flatFee, min: fwdM.min ?? '100', max: fwdM.max ?? null, minAmount: C.quote.minAmount, feeBps: C.quote.feeBps },
+    rev: RC ? { flat: RC.flatFee, min: revM.min ?? '2000', max: revM.max ?? null, minAmount: RC.minAmount, feeBps: RC.feeBps } : null,
+    read: () => (fresh(got.feeAt) && fresh(got.relayAt) ? { feeRate: got.feeRate, relayEth: got.relay, rate: rateFeed.rate() } : null),
+  });
+  const lookCosts = async () => {
+    try { const r = Number(await btc.feeRate(30000)); if (r > 0) { got.feeRate = r; got.feeAt = Date.now() / 1000; } } catch { /* the last good one stands for a while */ }
+    try { got.relay = await evm.cutReserve(10n ** 10n); got.relayAt = Date.now() / 1000; } catch { /* as above */ }
+    if (flat.update()) log({ level: 'info', msg: 'flat fee follows cost', ...flat.view() });
+  };
+  setTimeout(lookCosts, 5000).unref(); setInterval(lookCosts, 30000).unref();
+  log({ level: 'info', msg: 'dynamic flat fee is on', subsidy: fm.subsidy ?? 0.5, limits: flat.view().limits });
+}
+
 const confs = (C.policy.confs || [['0', 1]]).map(([from, n]) => [BigInt(from), n]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
 // TAC with up to 8 places, as the pool's units (8 places) and as the token's wei (18)
 const tacUnits = (t) => { const [whole, frac = ''] = String(t).split('.'); return BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8)); };
@@ -107,7 +151,7 @@ const config = {
   claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
   lowFree: (PAIR ? C.lowFreeEth : C.lowFreeTac) != null ? tacUnits(PAIR ? C.lowFreeEth : C.lowFreeTac) : null,    // what is left to lend, an amount with up to 8 places (TAC, or ETH for a pair provider)
   lowEth: C.lowEth != null ? tacUnits(C.lowEth) * 10n ** 10n : null,        // an ETH amount ("0.002") in wei: the units helper reads up to 8 places
-  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(PAIR ? { rate: () => rateFeed.rate() } : {}) },
+  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(PAIR ? { rate: () => quoteRate() } : {}), ...(flat ? { flatFee: () => flat.fwd() } : {}) },
   policy: {
     minCsv: C.policy.minCsv ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, minClaimSecs: C.policy.minClaimSecs ?? 3600, claimSlackSecs: C.policy.claimSlackSecs ?? 7200,
     roundSecs: C.policy.roundSecs ?? 600, refundMarginSecs: C.policy.refundMarginSecs ?? 600, maxOfferAgeSecs: C.policy.maxOfferAgeSecs ?? 3600, holdAgeSecs: C.policy.holdAgeSecs,
@@ -116,7 +160,6 @@ const config = {
   },
 };
 const data = resolve(C.dataDir || 'fastbridge-lp/data');
-const alert = makeAlert({ log, webhook: process.env.FB_LP_ALERT_WEBHOOK || null, name: C.name || undefined });
 // a pair provider with no price quotes nothing: said, and again each alertSecs while it stays so, and once when the price is back
 if (PAIR) {
   let priced = true, saidAt = -Infinity;
@@ -129,7 +172,8 @@ if (PAIR) {
 }
 // a dry run keeps its swaps and quotes in memory, so a later live run starts from nothing it did not choose
 const swapStore = DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'swaps'));
-const service = makeLpService({ seed, btc, evm, swaps: swapStore, quoteStore: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'quotes')), config, log, alert });
+const quoteStore = withMkt(DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'quotes')));
+const service = makeLpService({ seed, btc, evm, swaps: swapStore, quoteStore, config, log, alert });
 
 log({ level: 'info', msg: 'fast bridge LP', network, dryRun: DRY, bitcoinAddress: btc.address, claimPub: config.claimPub, poolAccount: acct.address, config: cfgPath, data });
 await service.start();
@@ -197,7 +241,8 @@ if (C.refill !== false && !DRY) {
 // is this provider's own, so what users send for it lands where the forward side lends from.
 let handle = service.handle;
 const { reverseOptions } = await import('./lib/reverse.mjs');
-const ropts = PAIR ? pairLib.pairReverseOptions(C, rateFeed) : reverseOptions(C);
+const ropts = PAIR ? pairLib.pairReverseOptions(C, { rate: () => quoteRate() }, flat ? () => flat.rev() : null) : reverseOptions(C);
+let rside = null;
 if (ropts && DRY) log({ level: 'info', msg: 'dry run: the reverse side is not started' });
 else if (ropts) {
   const { reverseKeyOf, reverseSeedOf, makeReverseInventory, routed } = await import('./lib/reverse.mjs');
@@ -207,22 +252,38 @@ else if (ropts) {
   if (rprims.wallet.address() === btc.address) { console.error('the reverse address must not be the provider\'s own address'); process.exit(1); }
   const rbtc = makeNodeBtcChain({
     bases: C.btcBases, tacit, prims: rprims, builder: makeAdaptorBtcTx({ prims: rprims, kit: tacitKit(tacit) }), pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]),
-    poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log,
+    poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log, ...btcFees,
   });
   // the notes are read by the module's own scan of the wallet it holds: that is the reverse key's here, and nothing else of this process reads it
   // (a pair provider sells plain coins, which it lists from the address itself)
   if (!PAIR) { tacit.wallet.priv = rkey; tacit.wallet.pub = rprims.wallet.pub; }
+  const rswaps = makeFileStore(resolve(data, 'reverse/swaps')), rquotes = withMkt(makeFileStore(resolve(data, 'reverse/quotes')));
   const reverse = makeReverseService({
     seed: reverseSeedOf(key), btc: rbtc, evm, inventory: PAIR ? pairLib.satsInventory(rbtc) : makeReverseInventory({ tacit, asset: C.btcAsset, log }), config: ropts, log, alert,
-    swaps: makeFileStore(resolve(data, 'reverse/swaps')), quotes: makeFileStore(resolve(data, 'reverse/quotes')), offers: makeFileStore(resolve(data, 'reverse/offers')), evmOffers: makeFileStore(resolve(data, 'reverse/evm-offers')),
+    swaps: rswaps, quotes: rquotes, offers: makeFileStore(resolve(data, 'reverse/offers')), evmOffers: makeFileStore(resolve(data, 'reverse/evm-offers')),
   });
+  rside = { btc: rbtc, prims: rprims, swaps: rswaps, quotes: rquotes };
   await reverse.start();
   let rbusy = false;
   setInterval(async () => { if (rbusy) return; rbusy = true; try { await reverse.tick(); } catch (e) { log({ level: 'error', msg: 'reverse tick failed', error: String((e && e.message) || e).slice(0, 200) }); } finally { rbusy = false; } }, (C.tickSecs ?? 15) * 1000);
   handle = routed(service.handle, reverse.handle);
   log({ level: 'info', msg: 'the reverse side is on: the TAC and the sats at this Bitcoin address are what it sells and what it pays fees from', reverseAddress: rbtc.address, maxOpen: ropts.maxOpen, maxTac: String(ropts.maxLocked), csvBlocks: ropts.csvBlocks, feeBps: ropts.quote.feeBps });
 }
-const server = makeHttpServer({ handle, origins: C.origins || [], trustProxy: !!C.trustProxy, clientIp: C.clientIp || null });
+if (PAIR && !DRY) {
+  const { wireAutomation } = await import('./lib/automation-wire.mjs');
+  const auto = await wireAutomation({ C, key, prims, btc, tacit, ux, evm, service, swapStore, quoteStore, rside, rateFeed, poolTurn, turn, data, keccak256: keccak_256, log, alert, setLean: (b) => { leanBps = b; } });
+  if (auto) handle = auto.wrap(handle);
+}
+// /info says what the flat fees follow
+if (flat) {
+  const inner = handle;
+  handle = async (req) => {
+    const r = await inner(req);
+    if (!(req && req.method === 'GET' && req.path === '/info' && r && r.status === 200 && r.body && typeof r.body === 'object')) return r;
+    try { return { ...r, body: { ...r.body, feeModel: flat.view() } }; } catch (e) { log({ level: 'error', msg: '/info: the fee model could not be read', error: String((e && e.message) || e).slice(0, 160) }); return r; }
+  };
+}
+const server = makeHttpServer({ handle, origins: C.origins || [], trustProxy: !!C.trustProxy, clientIp: C.clientIp || null, log });
 server.listen(C.port ?? 8787, () => log({ level: 'info', msg: 'listening', port: C.port ?? 8787 }));
 
 // Boards the LP is on as well: its ad is posted there and the requests left for it are answered, so a user finds it without its URL.

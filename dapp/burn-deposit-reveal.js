@@ -1,5 +1,5 @@
 
-import { extractInputs, classifyConfidentialTx } from './burn-deposit-bitcoin.js';
+import { extractInputs, classifyConfidentialTx, readVarint } from './burn-deposit-bitcoin.js';
 import { verifySchnorr } from './bulletproofs.js';
 import { bppRangeProve, bigintToBytes32, pointToBytes, pedersenCommit } from './bulletproofs-plus.js';
 
@@ -412,11 +412,87 @@ export function makeBurnDepositReveal({ pool, secp, prims: defaultPrims = null }
     }
   }
 
-  return { deriveBurnHomeKey, planMigrationToBurnHome, buildMigrationTxs, isBurnHomeOf, reconstructBurnHome, planBurnDepositReveal, buildBurnDepositRevealTxs, buildCancelTx };
+  // A two-transaction pair whose first transaction is on Bitcoin but whose second can never be (its other coin was spent elsewhere) leaves the first one's
+  // output paying the envelope script. That script is `<this key> OP_CHECKSIG ...`, so the key alone can spend the output, through the same script path the
+  // second transaction would have taken, to its own address. The script is read from the second transaction's witness and checked against the output it
+  // must unlock before anything is signed.
+  async function buildSweepTx({ prims, commitHex, revealHex, walletPriv, feeRate = null } = {}) {
+    const P = primsOf(prims);
+    if (!(walletPriv instanceof Uint8Array) || walletPriv.length !== 32) throw new Error('burn-deposit-reveal: walletPriv must be Uint8Array(32)');
+    const commit = parseRawTx(commitHex, P.sha256), rev = parseRawTx(revealHex, P.sha256);
+    const at = rev.inputs.findIndex((i) => i.txid === commit.txid && i.vout === 0);
+    if (at < 0) throw new Error('burn-deposit-reveal: the second transaction does not spend the first one\'s first output');
+    const items = rev.inputs[at].witness;
+    if (items.length !== 3) throw new Error('burn-deposit-reveal: the second transaction does not spend the first through a script path');
+    const script = items[1], out0 = commit.outputs[0];
+    if (!out0) throw new Error('burn-deposit-reveal: the first transaction has no output');
+    const wpub = secp.getPublicKey(walletPriv, true);
+    if (script.length < 35 || script[0] !== 0x20 || script[33] !== 0xac || P.bytesToHex(script.subarray(1, 33)) !== P.bytesToHex(wpub.slice(1))) {
+      throw new Error('burn-deposit-reveal: this key does not own the script the first transaction pays');
+    }
+    const { Q_xonly, parity } = P.tweakedOutputKey(P.TAP_NUMS, P.tapLeafHash(script));
+    const spk = P.p2trScript(Q_xonly);
+    if (P.bytesToHex(spk) !== P.bytesToHex(out0.script)) throw new Error('burn-deposit-reveal: the script in the second transaction is not the one the first pays');
+    const cb = P.controlBlock(P.TAP_NUMS, parity);
+    const commitValue = Number(out0.value);
+    const rate = Number(feeRate != null ? feeRate : await P.getFeeRate('priority'));
+    if (!Number.isFinite(rate) || rate < MIN_RELAY_RATE) throw new Error(`burn-deposit-reveal: fee rate ${rate} sat/vB is below the minimum relay rate`);
+
+    const savedPriv = P.wallet.priv, savedPub = P.wallet.pub;
+    try {
+      P.wallet.priv = walletPriv; P.wallet.pub = wpub;
+      const tx = {
+        version: 2, locktime: 0,
+        inputs: [{ txid: commit.txid, vout: 0, sequence: 0xfffffffd, witness: [] }],
+        outputs: [{ value: commitValue, script: P.p2wpkhScript(wpub) }],
+      };
+      const prevouts = [{ value: commitValue, script: spk }];
+      const sign = () => { tx.inputs[0].witness = P.signTaprootScriptPathInput(tx, prevouts, script, cb); return vsizeOf(P, tx).vsize; };
+      const fee0 = P.feeFor(sign(), rate), value = commitValue - fee0;
+      if (value <= DUST) throw Object.assign(new Error(`burn-deposit-reveal: the ${commitValue} sats the first transaction holds are not worth moving at ${rate} sat/vB`), { code: 'small', commitValue, fee: fee0 });
+      tx.outputs[0].value = value; sign();
+      const std = checkStandard(P, tx, prevouts, 'sweep');
+      return { hex: P.bytesToHex(P.serializeTx(tx)), txid: P.txid(tx), value, fee: std.fee, vsize: std.vsize, feeRate: rate, commitTxid: commit.txid, commitValue };
+    } finally {
+      P.wallet.priv = savedPriv; P.wallet.pub = savedPub;
+    }
+  }
+
+  // The coins (display txid, vout) a raw transaction spends.
+  const spentBy = (hex) => parseRawTx(hex).inputs.map((i) => ({ txid: i.txid, vout: i.vout }));
+
+  return { deriveBurnHomeKey, planMigrationToBurnHome, buildMigrationTxs, isBurnHomeOf, reconstructBurnHome, planBurnDepositReveal, buildBurnDepositRevealTxs, buildCancelTx, buildSweepTx, spentBy };
 }
 
 function hexToBytesLocal(h) { const s = String(h).replace(/^0x/, ''); const a = new Uint8Array(s.length / 2); for (let i = 0; i < a.length; i++) a[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16); return a; }
 function bytesToHexLocal(b) { return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(''); }
 function reverseBytes(b) { return Uint8Array.from(b).reverse(); }
+// A raw transaction's inputs (display txids, witness items), outputs and display txid.
+function parseRawTx(hex, sha256 = null) {
+  const b = hexToBytesLocal(hex), bad = () => new Error('burn-deposit-reveal: a transaction does not parse');
+  let p = 4;
+  const segwit = b[4] === 0x00 && b[5] === 0x01;
+  if (segwit) p = 6;
+  const start = p, rv = () => { const r = readVarint(b, p); if (!r) throw bad(); p += r[1]; return r[0]; };
+  const dv = (at) => new DataView(b.buffer, b.byteOffset + at);
+  const inputs = [], outputs = [];
+  for (let i = 0, n = rv(); i < n; i++) {
+    if (p + 36 > b.length) throw bad();
+    inputs.push({ txid: bytesToHexLocal(reverseBytes(b.subarray(p, p + 32))), vout: dv(p + 32).getUint32(0, true), witness: [] });
+    p += 36; const sl = rv(); p += sl + 4;
+  }
+  for (let i = 0, n = rv(); i < n; i++) {
+    if (p + 8 > b.length) throw bad();
+    const value = dv(p).getBigUint64(0, true); p += 8;
+    const len = rv(); if (p + len > b.length) throw bad();
+    outputs.push({ value, script: b.slice(p, p + len) }); p += len;
+  }
+  const end = p;
+  if (segwit) for (const inp of inputs) for (let k = 0, n = rv(); k < n; k++) { const len = rv(); if (p + len > b.length) throw bad(); inp.witness.push(b.slice(p, p + len)); p += len; }
+  if (p + 4 !== b.length) throw bad();
+  if (!sha256) return { inputs, outputs, txid: null };
+  const stripped = cat([b.subarray(0, 4), b.subarray(start, end), b.subarray(p)]);
+  return { inputs, outputs, txid: bytesToHexLocal(reverseBytes(sha256(sha256(stripped)))) };
+}
 function le32(n) { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; }
 function cat(arr) { let n = 0; for (const x of arr) n += x.length; const o = new Uint8Array(n); let i = 0; for (const x of arr) { o.set(x, i); i += x.length; } return o; }

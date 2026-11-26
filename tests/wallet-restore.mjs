@@ -32,7 +32,7 @@ const until = (page, fn, arg, timeout = 15000) => page.waitForFunction(fn, arg, 
 
 // A browser wallet that announces itself through EIP-6963 (a second one, `other`, announces before it). It allows this site once
 // asked (kept across a reload, as a wallet does), says which of its methods were called, and keeps the listeners the page adds.
-const wallet = ({ uuid, name, rdns, account, announce = true, inject = false }) => `(() => {
+const wallet = ({ uuid, name, rdns, account, announce = true, inject = false, lateMs = 0 }) => `(() => {
   const key = 'stub-allowed-${uuid}', listeners = {};
   const provider = { async request({ method }) {
     window.__log('${uuid}:' + method);
@@ -47,7 +47,7 @@ const wallet = ({ uuid, name, rdns, account, announce = true, inject = false }) 
   ${inject ? 'window.ethereum = provider;' : ''}
   ${announce ? `const detail = Object.freeze({ info: Object.freeze({ uuid: '${uuid}', name: '${name}', icon: '', rdns: '${rdns}' }), provider });
   const say = () => window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail }));
-  window.addEventListener('eip6963:requestProvider', say); say();` : ''}
+  ${lateMs ? `setTimeout(() => { window.addEventListener('eip6963:requestProvider', say); say(); }, ${lateMs});` : `window.addEventListener('eip6963:requestProvider', say); say();`}` : ''}
 })();`;
 const MAIN = wallet({ uuid: 'main', name: 'Test Wallet', rdns: 'test.wallet', account: A, inject: true });
 const OTHER = wallet({ uuid: 'other', name: 'Other Wallet', rdns: 'other.wallet', account: B });
@@ -260,6 +260,29 @@ try {
       await page.close();
     }
     ok(c.calls.every((m) => m.startsWith('main:')), `and the other wallet was never asked (${[...new Set(c.calls)].join(' ')})`);
+  }
+  await c.ctx.close();
+
+  // ── a remembered wallet that announces itself after the page has started (an extension still waking) is connected when it does, with no prompt; the Portfolio
+  // opened before that fills in and its Wallet sheet goes ──
+  c = await newContext([wallet({ uuid: 'main', name: 'Test Wallet', rdns: 'test.wallet', account: A, lateMs: 2500 })]);
+  await c.ctx.addInitScript(() => { try { localStorage.setItem('tacit-trade-wallet', 'test.wallet'); localStorage.setItem('stub-allowed-main', '1'); } catch { } });
+  {
+    const { page, errors, blocked } = await open(c.ctx, '/');
+    await page.waitForSelector(PAGES.front.chip);
+    ok(await showing(page, 'front', SHORT_A), `front: a wallet that announces itself 2.5 s after the page opened is connected once it does (${await label(page, 'front')})`);
+    ok(c.asked('eth_requestAccounts') === 0 && c.asked('personal_sign') === 0 && c.asked('eth_accounts') >= 1, `and nothing was prompted or signed (${c.calls.join(' ')})`);
+    ok(!blocked.length && !errors.length, `no page errors or blocked requests (${[...errors, ...blocked].slice(0, 2).join(' | ')})`);
+    await page.close();
+  }
+  {
+    c.calls.length = 0;
+    const { page } = await open(c.ctx, '/#portfolio');
+    await page.waitForSelector(PAGES.front.chip);
+    ok(await showing(page, 'front', SHORT_A), `the Portfolio opened first is connected to the wallet when it wakes (${await label(page, 'front')})`);
+    const there = await until(page, () => document.documentElement.dataset.view === 'portfolio' && !document.querySelector('dialog.sheet[open]') && !!document.querySelector('#ppg-body [data-pf-open="tac"]'), null, 15000).then(() => true, () => false);
+    ok(there, 'and the page shows what the wallet holds with the Wallet sheet gone');
+    await page.close();
   }
   await c.ctx.close();
 

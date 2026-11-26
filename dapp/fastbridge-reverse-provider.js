@@ -16,7 +16,7 @@
 //   POST /reverse/quote   { amount, claimPub }  amount = the pool TAC the user locks; claimPub = the Bitcoin key the user will take the note with
 //   POST /reverse/start   { quoteId }           the provider locks (and broadcasts) its Bitcoin note: -> { swapId }
 //   GET  /reverse/swap/<swapId>                 { phase, why }
-//   GET  /reverse/swap/<swapId>/offer           the provider's lock offer, once its lock is confirmed (404 before)
+//   GET  /reverse/swap/<swapId>/offer           the provider's lock offer, once its lock is confirmed (`{ offer: null }` before; a provider before that answered 404)
 //   POST /reverse/swap/<swapId>/evm-offer { evmOffer }   the user's pool lock offer, checked before it is kept
 //
 //   seed, btc, evm   the machine's secrets; the DEDICATED Bitcoin chain (its wallet, coins and notes); the pool side
@@ -26,6 +26,7 @@
 //                      minConfsFor(value), anyTac, alertSecs, refreshSecs, policy: { minClaimSecs, offerWaitSecs, maxEvmWindowSecs } }
 
 import { makeBitcoinLocker } from './fastbridge-bl.js';
+import { makeWatchdog } from './fastbridge-watch.js';
 import { pickNotes } from './fastbridge-client.js';
 import { feeOf } from './fastbridge-price.js';
 import { takeSatsAt } from './fastbridge-provider.js';
@@ -74,11 +75,13 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
   let chain = Promise.resolve();
   const exclusive = (fn) => { const run = chain.then(fn, fn); chain = run.catch(() => {}); return run; };
 
+  // the flat part of the fee: a number, or a function that gives it now (a provider whose flat part follows its own costs)
+  const flatNow = () => BigInt((typeof q.flatFee === 'function' ? q.flatFee() : q.flatFee) ?? 0);
   // what a pool amount the user locks becomes: the Bitcoin note it gets is that less the provider's fee (a rate on the amount, and a flat part)
   function price(amount) {
     const a = BigInt(amount);
     if (a < min || a > max) throw Object.assign(new Error(`the amount must be between ${min} and ${max}`), { status: 400 });
-    const fee = feeOf(q, a);
+    const fee = feeOf({ ...q, flatFee: flatNow() }, a);
     let out = a - fee;
     if (sats && out > 0n) { const { num, den } = rateNow(); out = (out * den) / num; }   // the fee is in pool units; what is left buys sats at the rate
     if (a - fee <= 0n || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
@@ -149,7 +152,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     const p = await picture().catch(() => null), a = await availableAmount();
     return {
       v: 1, direction: 'out', lockerPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(min), maxAmount: String(max), available: a == null ? null : String(a),
-      feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks ?? 96, evmWindowSecs: config.evmWindowSecs, minClaimSecs: pol.minClaimSecs ?? 3600,
+      feeBps: q.feeBps, flatFee: String(flatNow()), csvBlocks: config.csvBlocks ?? 96, evmWindowSecs: config.evmWindowSecs, minClaimSecs: pol.minClaimSecs ?? 3600,
       maxOpen, open: p ? p.open : null, anyTac: config.anyTac !== false,
     };
   }
@@ -225,8 +228,31 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
       inLockSet: true, nowSecs: await evm.now(), minClaimSecs: pol.minClaimSecs ?? 3600,
     });
     if (!v.ok) return no('offer: ' + v.reasons.join('; '));
+    // (a deadline counted from the ask, as a lock built ahead has, is taken on the same terms as one counted from the block: time to claim, and not further out
+    // than this side accepts; the machine checks both again before it claims)
+    if (Number(offer.deadline) - (await evm.now()) > (pol.maxEvmWindowSecs ?? 6 * 3600)) return no('offer: the deadline is further out than this side accepts');
     await evmOffers.put({ id, offer });
+    // (the swap is stepped now rather than at the next tick: the claim is built at once; steps of one swap run one at a time, so this and a tick never overlap)
+    (async () => {
+      for (let i = 0, was = null; i < 4; i++) {
+        const r = await bl.step((await swaps.get(id)) || swap), at = r && JSON.stringify([r.phase, !!r.claim, !!(r.claim && r.claim.jobId)]);
+        if (!r || !['broadcast', 'offered', 'claiming'].includes(r.phase) || (r.claim && r.claim.jobId) || at === was) break;
+        was = at;
+      }
+    })().catch(() => {});
     return reply({ ok: true });
+  }
+
+  // The lock offer as soon as the lock is sent (a lock of plain sats only): the same terms the offer carries once the lock is confirmed, so the user can build and
+  // prove its pool lock while the block is awaited. The user checks it against the transaction itself, and locks nothing before the lock has its confirmations.
+  async function earlyOffer(id) {
+    const s = await swaps.get(id);
+    if (!s || !X.isSats(s.asset) || !['broadcast', 'offered'].includes(s.phase) || !s.lock || !/^[0-9a-f]{64}$/.test(String(s.lock.txid || ''))) return reply({ offer: null });
+    const sec = X.deriveSwapSecrets({ seed, swapId: hexToBytes(id) }), recipient = await evm.recipient(id);
+    return reply(X.makeBtcLockOffer({
+      swapId: hexToBytes(id), asset: s.asset, value: BigInt(s.amount), rLock: null, txid: s.lock.txid, vout: s.lock.vout, csvBlocks: s.csvBlocks, lockerXonly: btc.wallet.xonly, T: sec.T,
+      claimerPub: s.counterClaimPub, evm: { asset: s.evmAsset, amount: BigInt(s.evmAmount), recipient: bytesToHex(recipient.xonly), rOut: sec.rOut },
+    }));
   }
 
   async function handle({ method, path, body }) {
@@ -240,12 +266,18 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
         if (!body || !isId(body.quoteId)) return reply({ error: 'quoteId is required' }, 400);
         return await startSwap({ quoteId: body.quoteId });
       }
-      const m = /^\/reverse\/swap\/([0-9a-f]{72})(\/offer|\/evm-offer)?$/.exec(path);
+      const m = /^\/reverse\/swap\/([0-9a-f]{72})(\/offer|\/evm-offer|\/early-offer)?$/.exec(path);
       if (m && isSwapId(m[1])) {
         // (the lock's txid once it is sent: the user's page shows the lock and its confirmation while it waits for the offer, which comes after the block)
         if (method === 'GET' && !m[2]) { const s = await swaps.get(m[1]); return s ? reply({ phase: s.phase, why: s.why || null, lockTxid: s.phase !== 'built' && s.lock && /^[0-9a-f]{64}$/.test(String(s.lock.txid || '')) ? s.lock.txid : null }) : reply({ error: 'unknown swap' }, 404); }
-        if (method === 'GET' && m[2] === '/offer') { const o = await offers.get(m[1]); return o ? reply(o.offer) : reply({ error: 'no offer yet' }, 404); }
-        if (method === 'POST' && m[2] === '/evm-offer') return await keepEvmOffer(m[1], body);
+        if (method === 'GET' && m[2] === '/offer') { const o = await offers.get(m[1]); return o ? reply(o.offer) : reply({ offer: null }); }
+        if (method === 'GET' && m[2] === '/early-offer') return await earlyOffer(m[1]);
+        if (method === 'POST' && m[2] === '/evm-offer') {
+          const r = await keepEvmOffer(m[1], body);
+          // (every pool offer refused is said with its reason; one taken, once)
+          log(r.body && r.body.ok ? { level: 'info', msg: 'reverse pool offer taken', id: m[1], kept: !!r.body.kept } : { level: 'warn', msg: 'reverse pool offer refused', id: m[1], status: r.status, why: String((r.body && (r.body.why || r.body.error)) || '').slice(0, 200) });
+          return r;
+        }
       }
       return reply({ error: 'not found' }, 404);
     } catch (e) {
@@ -256,8 +288,32 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
 
   async function start() { await swaps.list(); stale(); }
 
+  // A quote that started no swap is of no use once it has run out: it is let go `quoteKeepSecs` after (a look every ten minutes at most), and sooner, as soon as it
+  // runs out, while more than `maxQuotes` such quotes are kept. One that started a swap stays with it.
+  let lastPrune = -Infinity;
+  async function pruneQuotes() {
+    if (!quotes.del || now() - lastPrune < 600) return 0;
+    lastPrune = now();
+    const keepSecs = config.quoteKeepSecs ?? 3600, cap = config.maxQuotes ?? 5000;
+    const loose = (await quotes.list()).filter((r) => r && !r.swapId);
+    let n = 0;
+    for (const r of loose) if (Number(r.validUntil) + keepSecs < now() || (loose.length > cap && Number(r.validUntil) < now())) { await quotes.del(r.id); n++; }
+    return n;
+  }
+
+  // the watchdog (fastbridge-watch.js): a swap whose step has not moved for longer than it takes is read afresh and said. The lock's wait for its block, and the
+  // wait for a user who may never lock or take, have no time of their own (the timelock ends them); a user's pool offer that is kept and not acted on has.
+  const WATCH_BL = { claiming: 600 };
+  const watchdog = makeWatchdog({
+    now, log, alert,
+    budget: (r) => (r.phase === 'broadcast' ? (r.confirmedAt ? 600 : null) : r.phase === 'offered' ? (r.hasEvmOffer ? 600 : null) : WATCH_BL[r.phase] ?? null),
+    keyOf: (r) => JSON.stringify([r.phase, !!r.confirmedAt, !!r.hasEvmOffer, !!(r.claim && r.claim.jobId)]),
+    forget: () => { if (evm.forget) evm.forget(); },
+    kick: (r) => bl.step(r),
+  });
   const lastAlert = new Map();
   async function tick() {
+    await pruneQuotes().catch((e) => log({ level: 'warn', msg: 'the reverse quotes could not be pruned', error: String((e && e.message) || e).slice(0, 160) }));
     for (const rec of await swaps.list()) {
       if (TERMINAL.has(rec.phase)) continue;
       const before = rec.phase;
@@ -269,6 +325,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
         if (next.phase === 'refund-wait') alert({ level: 'warn', msg: 'a reverse swap is waiting out its timelock to take its Bitcoin note back', id: next.id, why: next.why || null });
       }
       if (next.lastError && next.lastError !== rec.lastError) log({ level: 'warn', msg: 'reverse swap step failed', id: next.id, phase: next.phase, error: next.lastError });
+      if (!TERMINAL.has(next.phase)) await watchdog.look({ ...next, hasEvmOffer: next.phase === 'offered' ? !!(await evmOffers.get(next.id).catch(() => null)) : false });
       const every = alertSecs, k = next.id + '|' + next.phase, t = now();
       // (the Ethereum nodes have not agreed on this swap for ten minutes: it waits and is read again; said every quarter hour while it lasts)
       if (next.nodesSince != null && t - next.nodesSince >= 600 && t - (lastAlert.get(next.id + '|nodes') ?? -Infinity) >= 900) {

@@ -65,10 +65,13 @@ export async function readProviders({ board, now = () => Math.floor(Date.now() /
 // `concurrency`: how many requests are answered at once. One at a time, a slow request (a lock judged against explorers, a status read) held every
 // request behind it, the board's queue for the provider filled to its limit of 64, and the board turned new requests away with a 503
 // ("the provider has all the requests it takes") on 2026-11-12 while a dozen pages polled.
-export function makeMailboxServer({ board, keys, handle, signReply, now = () => Math.floor(Date.now() / 1000), pollMs = 2000, concurrency = 6, log = () => {} }) {
+export function makeMailboxServer({ board, keys, handle, signReply, now = () => Math.floor(Date.now() / 1000), pollMs = 2000, concurrency = 6, log = () => {}, handleMs = 60000, stuckMs = 180000, clock = () => Date.now() }) {
   const gw = bytesToHex(keys.pub);
   const seen = new Map();
-  let after = 0, boot = null, busy = false, timer = null;
+  let after = 0, boot = null, busy = false, busySince = 0, timer = null;
+  // a request whose handler never returns (a node that does not answer) is let go of after `handleMs`, so it holds up neither the lane nor the next read; and a read
+  // that has held the loop for `stuckMs` (a hang nothing above bounds) is given up on, so the inbox is read again. Nothing is answered twice: `fresh` drops a request seen.
+  const bounded = (p, ms, what) => { let t; return Promise.race([Promise.resolve(p), new Promise((_, no) => { t = setTimeout(() => no(new Error(`${what} took over ${Math.round(ms / 1000)} s`)), ms); })]).finally(() => clearTimeout(t)); };
   // a request is answered once: a one-time key and nonce seen again is dropped
   const fresh = (id, until) => {
     const t = now();
@@ -78,8 +81,9 @@ export function makeMailboxServer({ board, keys, handle, signReply, now = () => 
     return true;
   };
   async function pump() {
+    if (busy && clock() - busySince > stuckMs) { log({ level: 'warn', msg: 'the inbox read has been stuck: reading it again', secs: Math.round((clock() - busySince) / 1000) }); busy = false; }
     if (busy) return 0;
-    busy = true;
+    busy = true; busySince = clock();
     let n = 0;
     try {
       let r = await board.inbox(gw, after);
@@ -98,7 +102,8 @@ export function makeMailboxServer({ board, keys, handle, signReply, now = () => 
               if (e instanceof SealedError && board.drop) await Promise.resolve(board.drop(m.id, bytesToHex(signReply(dropDigest(m.id))))).catch(() => {});
               throw e;
             }
-            const out = await handle({ method: req.method, path: req.path, body: req.body });
+            // (the board's tag of the client address, when it gives one: the provider's holds are then shared out per client and not among all of the board's)
+            const out = await bounded(handle({ method: req.method, path: req.path, body: req.body, ...(typeof m.from === 'string' && /^[0-9a-f]{16}$/.test(m.from) ? { client: `board:${m.from}` } : {}) }), handleMs, 'the provider\'s handler');
             const bytes = await req.reply(out.status, {}, te.encode(JSON.stringify(out.body)));
             await board.putReply(m.id, bytes, bytesToHex(signReply(replyDigest(m.id, bytes))));
           } catch (e) { log({ level: 'warn', msg: 'a request was not answered', error: String((e && e.message) || e).slice(0, 120) }); }

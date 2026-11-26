@@ -89,7 +89,9 @@ test('with no claim in the pool, the timelock still returns the note; a claim th
   await w.store.put(rec());
   w.tip = 100 + 96 - 1;
   let r = await w.bl.step({ id: rec().id });
-  assert.ok(r.refund, 'a lock whose pool lock was refunded, not claimed, goes back');
+  assert.equal(r.phase, 'refund-wait', 'the pool shows the pool lock refunded, not claimed');
+  r = await w.bl.step({ id: rec().id });
+  assert.ok(r.refund, 'and the lock goes back');
   assert.equal(w.sent.length, 1);
 
   const v = world({ evm: { findClaim: async () => { throw new Error('the lock is spent, and the settle that spent it is not found yet'); } } });
@@ -102,13 +104,43 @@ test('with no claim in the pool, the timelock still returns the note; a claim th
   assert.deepEqual(v.sent, []);
 });
 
-test('before the timelock, a claimed lock is left alone and nothing is asked of the pool', async () => {
-  let asked = 0;
-  const w = world({ evm: { findClaim: async () => { asked++; return []; } } });
+test('a claimed lock is read from the pool on every step: once the claim is final the swap is done, before the timelock; while it is not deep enough, it waits quietly', async () => {
+  let asked = 0, deep = false;
+  const w = world({ evm: { findClaim: async (nu, o) => { asked++; assert.equal(o.final, 64); if (!deep) throw new Error('the lock is spent, and the spend is not deep enough yet'); return ['0x' + '77'.repeat(32)]; } } });
   await w.store.put(rec());
-  const r = await w.bl.step({ id: rec().id });
+  let r = await w.bl.step({ id: rec().id });
   assert.equal(r.phase, 'claimed');
-  assert.equal(asked, 0);
+  assert.equal(r.lastError, undefined, 'a spend not yet final is no error');
+  deep = true;
+  r = await w.bl.step({ id: rec().id });
+  assert.equal(r.phase, 'done');
+  assert.equal(asked, 2);
+  assert.deepEqual(w.sent, []);
+});
+
+test('once a claim was sent, the timelock does not refund on a read the nodes do not agree on, nor before the pool deadline has passed', async () => {
+  const quorum = () => { throw Object.assign(new Error('the Ethereum nodes do not agree on this read: read again'), { quorum: true }); };
+  const w = world({ evm: { findClaim: async () => quorum() } });
+  await w.store.put(rec({ phase: 'refund-wait', claimSent: true, claim: { op: { op: { kernelS: '0x' + '77'.repeat(32) } } } }));
+  w.tip = 100 + 96 + 10; w.now = T0 + 9000;
+  let r = await w.bl.step({ id: rec().id });
+  assert.equal(r.phase, 'refund-wait');
+  assert.equal(r.refund, undefined);
+  assert.ok(r.nodesSince != null);
+  const u = world({ evm: { findClaim: async () => null, spentAgreed: async () => false } });
+  await u.store.put(rec({ phase: 'refund-wait', claimSent: true }));
+  u.tip = 100 + 96 + 10;
+  r = await u.bl.step({ id: rec().id });
+  assert.equal(r.refund, undefined, 'unspent, but the deadline is still ahead: a claim may yet land');
+  u.now = T0 + 7200 + 601;
+  r = await u.bl.step({ id: rec().id });
+  assert.equal(r.claimMissed, true);
+  assert.ok(r.refund, 'unspent past the deadline, as the nodes agree: the lock goes back');
+  const s = world({ evm: { findClaim: async () => null, spentAgreed: async () => true } });
+  await s.store.put(rec({ phase: 'refund-wait', claimSent: true }));
+  s.tip = 100 + 96 + 10; s.now = T0 + 9000;
+  r = await s.bl.step({ id: rec().id });
+  assert.equal(r.refund, undefined, 'one node says unspent, the nodes agree it is spent: read again');
 });
 
 test('a lock that reached the chain moves on, though the send of it was never answered and a second send is refused', async () => {

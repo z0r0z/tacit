@@ -149,7 +149,7 @@ func Seal(phase1Path, headPath, evalsPath string, phase1Beacon, phase2Beacon []b
 	if err != nil {
 		return nil, nil, err
 	}
-	commons := p1.Seal(phase1Beacon)
+	commons := SealPhase1(p1, phase1Beacon)
 	p, v := head.Seal(&commons, evals, phase2Beacon)
 	return p, v, nil
 }

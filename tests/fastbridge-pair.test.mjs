@@ -18,9 +18,29 @@ import { fetched, te } from './lib/btc-sim.mjs';
 import { pool, sha256, ASSET } from './lib/chain-sim.mjs';
 import { memStore } from './lib/fastbridge-world.mjs';
 import { pairWorld, SATS, UNITS, strip } from './lib/pair-world.mjs';
+import { namedProvider } from '../dapp/fastbridge-pair.js';
+import { OWN_PROVIDERS } from '../dapp/fastbridge-board.js';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
+
+test('ETH for Bitcoin is asked only of a provider the site names (its own keys, or one /fast/lp.json lists); Bitcoin for ETH of any', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.providerNamed = false;                                        // an ad on a board, from a key the site does not name
+  assert.deepEqual((await w.pair.providers()).map((p) => [p.id, p.dirs, p.e2b]), [['lp1', ['b2e'], null]]);
+  await assert.rejects(() => w.pair.quote({ dir: 'e2b', amount: UNITS }), /no provider is offering ETH for Bitcoin/);
+  w.providerNamed = true;
+  assert.deepEqual((await w.pair.providers()).map((p) => [p.id, p.dirs]), [['lp1', ['b2e', 'e2b']]]);
+  const own = Object.keys(OWN_PROVIDERS)[1];
+  assert.equal(namedProvider({ id: own, ref: { kind: 'mailbox', claimPub: own } }), true, 'the site\'s own key, from a board ad');
+  assert.equal(namedProvider({ id: 'ab'.repeat(33), ref: { kind: 'mailbox', claimPub: 'ab'.repeat(33) } }), false, 'any other key from a board ad');
+  assert.equal(namedProvider({ id: 'ab'.repeat(33), http: true, ref: { kind: 'http', claimPub: 'ab'.repeat(33) } }), true, 'one lp.json lists (served over HTTP)');
+  assert.equal(namedProvider({ id: 'ab'.repeat(33), pinned: true, ref: { kind: 'mailbox', claimPub: 'ab'.repeat(33) } }), true, 'one lp.json pins');
+  const open = w.makePair({ e2bFrom: () => true });
+  w.providerNamed = false;
+  assert.deepEqual((await open.providers()).map((p) => p.dirs), [['b2e', 'e2b']], 'a page may widen it');
+});
 
 test('Bitcoin for ETH, all the way: the quote is judged against the market, the sats are locked, the provider locks ETH, the claim publishes the secret, and the user ends with the ETH and the provider with the sats', async () => {
   const w = pairWorld();
@@ -141,14 +161,15 @@ test('a market price far from the last good one is not used until it holds: the 
   assert.equal(near.blocked, null, 'a move of about one percent is taken');
 });
 
-test('a quote between 1% and 3% under the market is allowed with a warning that says how far', async () => {
-  const w = pairWorld({ providerMarket: 35.0, clientMarket: 35.6 });    // 1.7% under, and 0.8% more of fees
+test('a quote under 2.5% under the market is allowed with no warning (it is the fee), and between 2.5% and 3% with one that says how far', async () => {
+  const w = pairWorld({ providerMarket: 35.0, clientMarket: 35.6 });    // about 2.5% under, with the fees
   await w.ready();
   w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
   const q = await w.pair.quote({ dir: 'b2e', amount: SATS });
   assert.equal(q.blocked, null);
-  assert.equal(q.warnings.length, 1);
-  assert.match(q.warnings[0], /^this is 2\.\d% worse than the market price$/);
+  assert.ok(q.vsMarketBps < -100 && q.vsMarketBps > -300);
+  assert.equal(q.warnings.length, q.vsMarketBps < -250 ? 1 : 0);
+  if (q.warnings.length) assert.match(q.warnings[0], /^this is 2\.\d% worse than the market price$/);
 });
 
 test('when the page cannot read the market it says so and blocks: a price nobody can check is not shown as fair', async () => {
@@ -171,7 +192,7 @@ test('a provider with no price of its own right now is asked again later, in wor
   w.market.providerDown = true;
   w.clock.advance(4000);                                           // the provider's last read has aged out
   await w.clientFeed.refresh();
-  await assert.rejects(() => w.pair.quote({ dir: 'b2e', amount: SATS }), /no price for this pair right now/);
+  await assert.rejects(() => w.pair.quote({ dir: 'b2e', amount: SATS }), /no price right now/);
   w.market.providerDown = false; await w.providerFeed.refresh();
   await assert.rejects(() => w.pair.quote({ dir: 'b2e', amount: 5_000n }), /no provider takes that amount/);
   await assert.rejects(() => w.pair.quote({ dir: 'b2e', amount: 0n }), /enter an amount/);
@@ -247,18 +268,62 @@ test('the swap is kept: a new page over the same stores shows it, and a lock who
   const fresh = w.makePair({ stores: { fwd: empty, index: memStore(), swaps: () => memStore(), quotes: () => memStore() } });
   assert.deepEqual(await fresh.records(), []);
   assert.equal(await fresh.recover(), 1);
-  assert.equal((await fresh.records())[0].title, 'Returning your BTC');
-  assert.match((await fresh.records())[0].detail, /ends\. It was found again from your key\.$/, 'the reason is a sentence of its own');
+  // the lock is the provider's to answer (it took no offer here): the swap is kept as waiting for its offer, and falls to the timelock refund when none comes
+  assert.equal((await fresh.records())[0].title, 'Checking your swap…', 'no offer seen: never said as the provider sending ETH');
   w.btc.mine(143);
   for (let i = 0; i < 60 && (await fresh.records())[0].state !== 'returned'; i++) { await fresh.pump(); w.btc.mine(1); w.clock.advance(60); }
   assert.equal((await fresh.records())[0].state, 'returned');
   assert.equal((await fresh.records())[0].title, 'Returned');
 });
 
+test('a lock of sats never takes a coin the wallet\'s holdings scan finds a note on, and with no answer from the scan nothing is locked or reserved', async () => {
+  const w = pairWorld({ userSats: [300_000, 200_000] });
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  const carrier = w.uCoins[0];                                     // the larger coin, which a lock would take first
+  const noted = new Map([['asset', { utxos: [{ utxo: { txid: carrier.txid, vout: carrier.vout } }] }]]);
+  const off = w.makePair({ holdings: async () => { throw new Error('the explorers did not answer'); } });
+  const q0 = await off.quote({ dir: 'b2e', amount: SATS });
+  await assert.rejects(() => off.start(q0), /could not be checked for notes/);
+  assert.equal((await w.mems.get('fwd').list()).length, 0, 'nothing was stored or sent');
+  const pair = w.makePair({ holdings: async () => noted });
+  const q = await pair.quote({ dir: 'b2e', amount: SATS });
+  const { id } = await pair.start(q);
+  const rec = await w.mems.get('fwd').get(id);
+  assert.ok(rec.feeInputs.length > 0);
+  assert.ok(rec.feeInputs.every((i) => i.txid !== carrier.txid), 'the coin with the note on it stays where it is');
+  const { noteOutpoints } = await import('../dapp/fastbridge-pair.js');
+  const h = new Map([['a', { utxos: [{ utxo: { txid: 'aa', vout: 1 } }], ghosts: [{ txid: 'bb', vout: 0 }], pending: [{ utxo: { txid: 'cc', vout: 2 } }] }]]);
+  h.unclassified = ['dd:3'];
+  assert.deepEqual([...noteOutpoints(h)].sort(), ['aa:1', 'bb:0', 'cc:2', 'dd:3']);
+});
+
+test('a lock whose send failed is not sent once its quote has run out, and the page says plainly that nothing left the address', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  const send = w.uBtc.broadcast;
+  w.uBtc.broadcast = async () => { throw new Error('broadcast refused: no explorer answered'); };
+  const q = await w.pair.quote({ dir: 'b2e', amount: SATS });
+  const { id } = await w.pair.start(q);
+  const rec = await w.mems.get('fwd').get(id);
+  assert.equal(rec.validUntil, Number(q.expiresAt), 'the record keeps the quote\'s end');
+  assert.equal(rec.phase, 'built');
+  w.clock.advance(Number(q.expiresAt) - w.clock.now() + 601);
+  w.uBtc.broadcast = send;                                          // the explorers answer again, too late
+  await w.pair.pump();
+  const r = (await w.pair.records()).find((x) => x.id === id);
+  assert.equal((await w.mems.get('fwd').get(id)).phase, 'aborted');
+  assert.deepEqual([r.state, r.title], ['stopped', 'Stopped']);
+  assert.match(r.detail, /never left your Bitcoin address/);
+  assert.equal(w.btc.spends.has(`${w.uCoins[0].txid}:${w.uCoins[0].vout}`), false, 'the coin was not spent');
+  assert.deepEqual(await w.pair.heldCoins(), [], 'and is free for the next swap');
+});
+
 test('of two providers the better quote wins, and one that fails to answer does not stop the other', async () => {
   const w = pairWorld();
   await w.ready();
-  const mk = (id, btcValue, ok = true) => ({ id, name: id, ref: { kind: 'http', base: id, claimPub: '02' + '11'.repeat(32) }, assets: { btcAsset: SATS_ASSET, evmAsset: ASSET }, terms: { minAmount: 1n, maxAmount: 10n ** 12n, available: null }, reverse: { feeBps: 0, flatFee: 0n, minAmount: 1n, maxAmount: 10n ** 12n, available: null }, ok, btcValue });
+  const mk = (id, btcValue, ok = true) => ({ id, name: id, ref: { kind: 'http', base: id, claimPub: '02' + '11'.repeat(32) }, pinned: true, assets: { btcAsset: SATS_ASSET, evmAsset: ASSET }, terms: { minAmount: 1n, maxAmount: 10n ** 12n, available: null }, reverse: { feeBps: 0, flatFee: 0n, minAmount: 1n, maxAmount: 10n ** 12n, available: null }, ok, btcValue });
   const list = [mk('cheap', 100_539n), mk('dear', 99_000n), mk('down', 0n, false)];
   const reply = (p) => async (method, path, body) => {
     if (!p.ok) throw new Error('the provider is unreachable');
@@ -312,11 +377,11 @@ test('the pair\'s numbers: ETH per BTC from a quote, and the market comparison f
 
 test('a swap that has waited ten minutes on Ethereum nodes that do not agree says so in plain words, and one that has not says nothing of it', () => {
   const fwd = { id: 'x', phase: 'claimed', amount: '100000', evmAmount: '3531520', csvBlocks: 144, created: 5, lockAt: 1000 };
-  assert.match(describeFwd({ ...fwd, nodesSince: 1000 }, () => 1700).detail, /Ethereum nodes this page reads have not agreed/);
+  assert.match(describeFwd({ ...fwd, nodesSince: 1000 }, () => 1700).detail, /Ethereum nodes this page reads disagree/);
   assert.doesNotMatch(describeFwd({ ...fwd, nodesSince: 1000 }, () => 1300).detail, /Ethereum nodes/);
   assert.doesNotMatch(describeFwd(fwd, () => 1700).detail, /Ethereum nodes/);
   const rev = { id: 'y', phase: 'offered', created: 5, deadline: 9000, offer: { evm: { amount: '1' }, btc: { value: '2' } } };
-  assert.match(describeRev({ ...rev, nodesSince: 1000 }, () => 1700).detail, /a refund still goes out at its time/);
+  assert.match(describeRev({ ...rev, nodesSince: 1000 }, () => 1700).detail, /A refund still goes out on time/);
   assert.doesNotMatch(describeRev({ ...rev, phase: 'done', nodesSince: 1000 }, () => 1700).detail, /Ethereum nodes/);
 });
 
@@ -345,7 +410,7 @@ test('found again from the key: a Bitcoin-for-ETH swap that completed is listed 
   assert.equal(await fresh.recover(), 1);
   const [r] = await fresh.records();
   assert.deepEqual([r.dir, r.state, r.title], ['b2e', 'done', 'Done']);
-  assert.equal(r.detail, 'The ETH is in your private balance, and the provider collected the BTC.');
+  assert.equal(r.detail, 'The ETH is in your private balance.');
   assert.equal(r.refundAt, null);
 });
 
@@ -360,7 +425,7 @@ test('found again from the key: while the swaps found are read one by one, each 
   // what a page listing the swaps would show when the first step of the first one is written
   const st = freshStores(), put = st.fwd.put;
   let shown = null;
-  st.fwd.put = async (r) => { if (!shown && r.phase !== 'refund-wait') shown = (await st.fwd.list()).map((x) => describeFwd(x).title); return put(r); };
+  st.fwd.put = async (r) => { if (!shown && r.phase !== 'refund-wait' && (await st.fwd.list()).length === 2) shown = (await st.fwd.list()).map((x) => describeFwd(x).title); return put(r); };
   const fresh = w.makePair({ stores: st });
   assert.equal(await fresh.recover(), 2);
   assert.deepEqual(shown, ['Checking', 'Checking'], 'the second swap is listed as being checked while the first is read');
@@ -527,7 +592,7 @@ test('a provider\'s refusal is said in the page\'s own words: what its answer sa
   const e = await pair.quote({ dir: 'b2e', amount: 1_000_000n }).then(() => null, (x) => x);
   assert.equal(e && e.message, 'no provider could quote that amount just now');
   const busy = wordsWorld({ quote: () => { throw Object.assign(new Error('rate limited, ' + PROVIDER_TEXT), { status: 429 }); } });
-  assert.equal(await busy.quote({ dir: 'b2e', amount: 1_000_000n }).then(() => null, (x) => x.message), 'the provider is busy just now', 'a refusal of a known kind gets the page\'s sentence for it');
+  assert.equal(await busy.quote({ dir: 'b2e', amount: 1_000_000n }).then(() => null, (x) => x.message), 'the provider is busy', 'a refusal of a known kind gets the page\'s sentence for it');
   const held = wordsWorld({ reserve: () => ({ ok: false, why: PROVIDER_TEXT }) });
   const q = await held.quote({ dir: 'b2e', amount: 1_000_000n });
   assert.equal(q.blocked, null);
@@ -625,7 +690,7 @@ test('one press: a deposit that is mined but not yet a note starts an ETH-for-Bi
   assert.match(id, /^[0-9a-f]{72}$/, 'a deposit of exactly the amount, mined and landing, starts the swap');
   assert.equal((await w.rev.handle({ method: 'GET', path: '/reverse/info' })).body.open, 1, 'and the provider was asked to lock');
   // the provider locks and the lock confirms; the note has not landed, so no lock of ETH can be made yet
-  await w.run(async () => (await w.pair.records()).some((r) => r.id === id && r.title === 'Locking your ETH in the pool'));
+  await w.run(async () => (await w.pair.records()).some((r) => r.id === id && r.title === 'Sending your ETH'));
   for (let i = 0; i < 4; i++) { await w.step(); w.clock.advance(30); }
   assert.deepEqual(w.evm.submitted.filter((j) => j.type === 'adaptorlock'), [], 'nothing is locked before the note is there');
   const waiting = (await w.pair.records()).find((r) => r.id === id);
@@ -652,12 +717,14 @@ test('the lane\'s words for an ETH-for-Bitcoin swap: the wait for the provider\'
   // the provider sends its lock and says its txid: the page shows it, and its confirmations, while the lock waits for its block
   await w.rev.tick(); await w.pair.pump();
   const seen = (await w.pair.records()).find((r) => r.id === id);
-  assert.equal(seen.title, 'The provider locked BTC for you');
+  assert.equal(seen.title, 'Provider sent BTC');
   assert.match(seen.lockTxid || '', /^[0-9a-f]{64}$/, 'the lock\'s txid, for a link to it');
-  assert.match(seen.detail, /Waiting for one Bitcoin confirmation\. A block comes about every ten minutes/);
+  assert.match(seen.detail, /Waiting for one Bitcoin confirmation\. A block takes about 10 min/);
   assert.equal(seen.etaSecs, 1650, 'counted from when the lock was seen');
   w.clock.advance(3600);
-  assert.equal((await w.pair.records()).find((r) => r.id === id).etaSecs, 1050 + 60, 'a block that is late leaves a minute for it, never none');
+  const late = (await w.pair.records()).find((r) => r.id === id);
+  assert.equal(late.etaSecs, 1650, 'a block that is late is still about ten minutes away: the time left does not freeze at a minute, it stays honest');
+  assert.match(late.detail, /No Bitcoin block for \d+ min\. Blocks come.*Your swap is safe: nothing of yours moves until the provider’s BTC is confirmed\./, 'a slow block is said, and that the swap is safe');
   assert.equal(describeRev({ id, phase: 'taking', phaseAt: 0, offer: { evm: { amount: '1' }, btc: { value: '1' } } }, () => 120).title, 'Your BTC is on its way');
 });
 
@@ -709,6 +776,67 @@ test('the coins a payment made to this address are read from its transaction, in
   assert.deepEqual(await pc.arriving('ee'.repeat(32)), [{ txid: 'ee'.repeat(32), vout: 1, value: 150000 }], 'its output to this address; not dust, not another address, not one spent');
   assert.deepEqual(await pc.arriving('11'.repeat(32)), [], 'a transaction no explorer has yet: nothing');
   assert.deepEqual(await pc.arriving('not a txid'), []);
+});
+
+// ── the tab closed (or the device lost) after the provider locked its ETH: the key, the chain and the provider's published offer finish the swap ──
+test('record lost after the provider locked: the swap is found again from the key and the claim is built from key-only data', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  await w.pair.start(await w.pair.quote({ dir: 'b2e', amount: SATS }));
+  // the page is gone once the provider's offer for this swap is out (its lock is in the pool) and the user has not claimed
+  const rec0 = async () => (await w.mems.get('fwd').list())[0];
+  const offerOut = async () => { const r = await rec0(); if (!r) return false; const a = await w.fwd.handle({ method: 'GET', path: '/swap/' + r.id + '/offer' }); return a.status === 200 && a.body.offer !== null; };
+  for (let i = 0; i < 800 && !(await offerOut()); i++) { await stepWorld(w, []); w.clock.advance(30); if (i % 20 === 19) w.btc.mine(1, { advance: false }); await w.pair.pump(); }
+  const rec = await rec0();
+  assert.ok(await offerOut(), 'the provider locked and published its offer');
+  assert.ok(!rec.claim, 'the user had not claimed');
+  const lost = freshStores();
+  const fresh = w.makePair({ stores: lost });
+  assert.equal(await fresh.recover(), 1);
+  const kept = (await lost.fwd.list())[0];
+  assert.equal(kept.id, rec.id);
+  assert.ok(kept.recovered && kept.claimFromKey);
+  const phase = async () => (await lost.fwd.list())[0].phase;
+  for (let i = 0; i < 800 && !['done', 'claimed', 'refund-wait'].includes(await phase()); i++) { await stepWorld(w, [fresh]); w.clock.advance(30); if (i % 20 === 19) w.btc.mine(1, { advance: false }); }
+  const end = (await lost.fwd.list())[0];
+  assert.ok(['claimed', 'done'].includes(end.phase), 'finished from the key: ' + end.phase + ' ' + (end.why || ''));
+  assert.ok(end.claim && end.claim.op, 'the claim was built from the key and the published offer');
+  assert.equal(end.evmAmount, String(end.evmOffer.amount));
+});
+
+test('a lock found again from the key whose provider never shows an offer: said neutrally, then returned, and the offer is asked for a few times, not every pass', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  await w.pair.start(await w.pair.quote({ dir: 'b2e', amount: SATS }));
+  const rec0 = async () => (await w.mems.get('fwd').list())[0];
+  for (let i = 0; i < 40 && !((await rec0()).lockConfs > 0 || (await w.btc.status((await rec0()).lock.txid)).confirmations > 0); i++) { w.btc.mine(1, { advance: false }); await w.pair.pump(); }
+  let looks = 0;
+  const { makeCounter } = await import('../dapp/fastbridge-http.js');
+  const lost = freshStores();
+  const fresh = w.makePair({ stores: lost, counterFor: () => makeCounter(async (method, path, body) => {
+    if (method === 'GET' && /^\/swap\/[0-9a-f]+\/offer$/.test(path)) { looks++; return { status: 200, body: { offer: null } }; }
+    const r = await w.fwd.handle({ method, path, body }); return { status: r.status, body: r.body };
+  }) });
+  assert.equal(await fresh.recover(), 1);
+  const titles = new Set();
+  for (let i = 0; i < 400; i++) {
+    const r = (await fresh.pump())[0];
+    titles.add(r.title);
+    assert.ok(!/sending ETH/i.test(r.title + r.detail), 'it never says the provider is sending ETH while no offer was seen');
+    if (r.title === 'Returning your BTC') break;
+    w.clock.advance(15);
+  }
+  assert.ok(titles.has('Checking your swap…'), 'neutral while it waits: ' + [...titles]);
+  assert.equal((await lost.fwd.list())[0].phase, 'refund-wait', 'with no offer after twenty minutes it goes to the refund');
+  assert.ok(looks >= 2 && looks <= 10, `the offer was asked for a few times, with a growing gap (${looks})`);
+});
+
+test('two swap ids give unrelated secrets (t, the lock blinding, the claim output blinding)', () => {
+  const seed = new Uint8Array(32).fill(7);
+  const a = X.deriveSwapSecrets({ seed, swapId: new Uint8Array(36).fill(1) }), b = X.deriveSwapSecrets({ seed, swapId: new Uint8Array(36).fill(2) });
+  assert.ok(a.t !== b.t && a.rOut !== b.rOut && a.rLock !== b.rLock && a.t !== a.rOut && a.t !== a.rLock);
 });
 
 let passed = 0;

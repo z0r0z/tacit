@@ -7,6 +7,7 @@
 //   p.tacitAddress(priv)                     -> the Ethereum address the Tacit key makes (the wallet sheet's; its key can be exported there)
 //   p.quote(units)                           -> { fee, net }   pool units (1e-8 ETH): the relay's fee of the withdrawal, and what arrives
 //   p.send({ key, units, to })               -> { txHash, fee, net }
+//   p.largest(key)                           -> the most one withdrawal takes (the largest private ETH amount), pool units
 //   p.want(pub, id) / p.choose(pub, id, rec) / p.drop(pub, id)    the choice kept for a swap: { to, at, state: 'waiting' | 'sending' | 'sent' | 'failed', tx?, why? }
 import { keccak_256, secp, sha256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmAccount } from '/evm-account.js';
@@ -50,22 +51,40 @@ export function makePayout({ getUx }) {
     return { fee: BigInt(fee), net: BigInt(net) };
   }
 
-  // The swap's note: one of exactly its amount (the claim makes one). Withdrawn whole by the relay, which takes its fee from it; what arrives is the rest.
+  // The key's ETH notes. The pool module names an asset with its 0x (the swap's pair client reads it the same way: fastbridge-evm.js lc); a page that named
+  // it bare found none, and a withdrawal waited for ever on a note that was there (the canary of 11-25).
+  const ethNotes = (byAsset) => {
+    const at = byAsset && (byAsset[`0x${ETH_ID}`] || byAsset[ETH_ID]);
+    return (at && at.notes) || [];
+  };
+  // The swap's note: one of exactly its amount (the claim makes one), withdrawn whole by the relay, which takes its fee from it; what arrives is the rest.
+  // With no note of that amount (another page merged or spent it), the amount is withdrawn from the smallest note that holds it, and the rest stays private.
   async function send({ key, units, to }) {
     const chk = checkAddress(to);
     if (!chk.ok) throw new Error(chk.why);
     const ux = await getUx(), priv = Uint8Array.from(key.priv), want = BigInt(units);
     const { byAsset } = await ux.balance(priv, { bridge: false, cbtc: false });
-    const notes = (byAsset[ETH_ID] && byAsset[ETH_ID].notes) || [];
-    const note = notes.find((n) => BigInt(n.value) === want);
-    if (!note) throw Object.assign(new Error('The ETH from this swap is not in your private balance as one amount yet. Trying again shortly.'), { retry: true });
-    const r = await ux.unwrap({ note, walletPriv: priv, recipient: chk.address });
-    if (r.status && r.status !== 'settled') throw Object.assign(new Error('The relay has not finished the withdrawal yet.'), { retry: true });
+    const notes = ethNotes(byAsset);
+    const exact = notes.find((n) => BigInt(n.value) === want);
+    const bigger = exact ? null : notes.filter((n) => BigInt(n.value) > want).sort((a, b) => (BigInt(a.value) < BigInt(b.value) ? -1 : 1))[0];
+    if (!exact && !bigger) {
+      const held = notes.reduce((s, n) => s + BigInt(n.value), 0n);
+      throw Object.assign(new Error(held >= want ? 'your private ETH is in smaller amounts than this swap: send it from the tETH page' : 'the swap’s ETH is not in your private balance yet'), { retry: held < want });
+    }
+    const r = exact ? await ux.unwrap({ note: exact, walletPriv: priv, recipient: chk.address }) : await ux.sendUnwrap({ note: bigger, walletPriv: priv, recipient: chk.address, amount: want });
+    if (r.status && r.status !== 'settled') throw Object.assign(new Error('the relay has not finished the withdrawal yet'), { retry: true });
     return { txHash: r.txHash || null, fee: BigInt(r.fee ?? 0n), net: BigInt(r.net ?? 0n) };
+  }
+
+  // the most one withdrawal takes: the largest of the key's private ETH amounts (pool units)
+  async function largest(key) {
+    const ux = await getUx();
+    const { byAsset } = await ux.balance(Uint8Array.from(key.priv), { bridge: false, cbtc: false });
+    return ethNotes(byAsset).reduce((m, n) => (BigInt(n.value) > m ? BigInt(n.value) : m), 0n);
   }
 
   const want = (pub, id) => { const r = readAll(pub)[id]; return r && Date.now() - Number(r.at || 0) < KEEP_MS ? r : null; };
   const choose = (pub, id, rec) => { const m = readAll(pub); m[id] = { at: Date.now(), ...(m[id] || {}), ...rec }; writeAll(pub, m); return m[id]; };
   const drop = (pub, id) => { const m = readAll(pub); delete m[id]; writeAll(pub, m); };
-  return { tacitAddress, quote, send, want, choose, drop, checkAddress };
+  return { tacitAddress, quote, send, largest, want, choose, drop, checkAddress };
 }

@@ -3,7 +3,7 @@
 // The pool module is a stand-in that records what it is asked: its own maths is tested elsewhere.
 //   node tests/btc-borrow.test.mjs
 import assert from 'node:assert/strict';
-import { makeLoans, exactNotes, bondGap, bondCall, ESCROW, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS, NEAR_FALL, NEAR_CLEAR, fallToLiq, fallText, liqPhrase, healthLine, approaching, loanId, loanTag } from '../dapp/btc-borrow.js';
+import { makeLoans, riskNote, exactNotes, bondGap, bondCall, ESCROW, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS, NEAR_FALL, NEAR_CLEAR, fallToLiq, fallText, liqPhrase, healthLine, approaching, loanId, loanTag } from '../dapp/btc-borrow.js';
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { hmac } from '@noble/hashes/hmac';
@@ -184,5 +184,27 @@ assert.deepEqual({ ...got.record, at: 0 }, { lockTxid: 'aa'.repeat(32), lockVout
   assert.equal(borrowAt({ sats: 1_000_000n, usdBtc: 100000, pct: 150 }), 666.66);
   for (const pct of [250, 200, 175, 150]) assert.ok(h(borrowAt({ sats: 1_000_000n, usdBtc: 100000, pct })).ratio >= pct, `at ${pct}% the amount filled keeps at least ${pct}%`);
   assert.equal(borrowAt({ sats: 0n, usdBtc: 100000, pct: 200 }), 0); assert.equal(borrowAt({ sats: 5n, usdBtc: NaN, pct: 200 }), 0);
+}
+
+// ── thin ratios are warned about ──
+assert.equal(riskNote(200, 130), null, 'a ratio of 175% or more has nothing to add');
+assert.equal(riskNote(175, 130), null);
+assert.equal(riskNote(130, 130), null, 'already at the line: the loan row says so');
+assert.equal(riskNote(NaN, 130), null); assert.equal(riskNote(150, 0), null);
+assert.match(riskNote(150, 130), /At 150%, bitcoin falling 13% makes this loan liquidatable\. A liquidation takes all of the cBTC behind it.*about 30% of the loan's value/, 'the fall to the line and what a liquidation takes');
+assert.match(riskNote(160, 130), /falling 18% /);
+
+// ── topping up ──
+{
+  const base = { controller: '0xC', debtValue: '900', rateSnapshot: '0xrate', positionOwner: '0xOWNER' };
+  const tree = { root: '0xtroot', pathFor: (i) => ({ path: [`path${i}`] }) };
+  const topNote = { asset: '0x01', cx: '3', cy: '4', value: '250', blinding: 'bl2', leafIndex: 9, path: ['np'], owner: 'own2', secret: 'sec2', root: '0xnroot' };
+  const a = L.topupArgs(t, 'PRIV', { p: base, ownerPriv: 'OPRIV', basket: [{ asset: '0x01', value: '7' }], tree, index: 4, note: topNote });
+  assert.deepEqual(a, { controller: '0xC', debtValue: 900n, rateSnapshot: '0xrate', oldBasket: [{ asset: '0x01', value: 7n }],
+    addedCollateral: [{ asset: '0x01', cx: '3', cy: '4', value: '250', blinding: 'bl2', leafIndex: 9, path: ['np'], owner: 'own2', nk: 'sec2' }],
+    positionIndex: 4, positionPath: ['path4'], spendRoot: '0xnroot', cdpPositionRoot: '0xtroot', positionOwner: '0xOWNER', positionOwnerPriv: 'OPRIV' }, 'the same debt, the position as it stands, and the note as the added leg under the note\'s own root');
+  assert.deepEqual(L.toppedBasket([{ asset: '0x01', value: '7' }], topNote), [{ asset: '0x01', value: '257' }], 'the note joins its asset\'s leg');
+  assert.deepEqual(L.toppedBasket([{ asset: '0x02', value: '5' }], topNote), [{ asset: '0x02', value: '5' }, { asset: '0x01', value: '250' }], 'or becomes a leg of its own');
+  assert.deepEqual(L.toppedBasket([{ asset: '0xAB', value: 1n }], { asset: '0xab', value: 2n }), [{ asset: '0xAB', value: '3' }], 'assets match without regard to case, and bigint values are kept exact');
 }
 console.log('btc-borrow: all checks passed');

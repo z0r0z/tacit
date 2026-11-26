@@ -9,6 +9,11 @@
 //   FB_LP_MAX_AMOUNT     the most it takes. Below the least, it quotes nothing and finishes its open swaps: the switch to turn it off
 //   FB_LP_FEE_BPS        the fee as a share of the amount, in hundredths of a percent (30 is 0.30%)
 //   FB_LP_FLAT_FEE       the flat part of the fee, in base units
+//   FB_LP_DYNAMIC_FEE    on or off (off when unset): the flat part of the fee of a pair provider follows its own network cost (lib/flatfee.mjs); FB_LP_FLAT_FEE and
+//                        FB_LP_REVERSE_FLAT_FEE are then what it falls back to when it cannot read its costs
+//   FB_LP_FEE_SUBSIDY    0 to 1 (0.5 when unset): the share of the cost the flat part covers (1 is the whole cost); FB_LP_FEE_SUBSIDY_UNTIL (unix seconds or
+//                        a date like 2026-12-31): from then on it is 1
+//   FB_LP_FLAT_FEE_MIN, FB_LP_FLAT_FEE_MAX, FB_LP_REVERSE_FLAT_FEE_MIN, FB_LP_REVERSE_FLAT_FEE_MAX   the least and most the flat part moves between (base units)
 //   FB_LP_BTC_BASES      the Bitcoin explorers (esplora base URLs, https, comma separated, asked in this order) in place of the config's list: a keyed or
 //                        self-hosted one goes first, without a new image
 //   FB_LP_MAILBOX_POLL_SECS  how often it reads the board for requests left for it, in seconds (1 to 30; 3 when unset): a request waits for the
@@ -41,6 +46,14 @@ export function applyEnv(C, env = process.env) {
     out.btcBases = bases;
   }
   if (has('FB_LP_PAIR')) { const v = String(env.FB_LP_PAIR).trim().toLowerCase(); if (v !== 'btc-eth' && v !== 'off') throw new Error(`FB_LP_PAIR must be btc-eth or off (got "${env.FB_LP_PAIR}")`); if (v === 'btc-eth') out.pair = 'btc-eth'; else delete out.pair; }
+  const fm = {};
+  if (has('FB_LP_DYNAMIC_FEE')) { const v = String(env.FB_LP_DYNAMIC_FEE).trim().toLowerCase(); if (v !== 'on' && v !== 'off') throw new Error(`FB_LP_DYNAMIC_FEE must be on or off (got "${env.FB_LP_DYNAMIC_FEE}")`); fm.dynamic = v === 'on'; }
+  if (has('FB_LP_FEE_SUBSIDY')) { const t = String(env.FB_LP_FEE_SUBSIDY).trim(), n = Number(t); if (!/^\d*\.?\d+$/.test(t) || n < 0 || n > 1) throw new Error(`FB_LP_FEE_SUBSIDY must be 0 to 1 (got "${t.slice(0, 20)}")`); fm.subsidy = n; }
+  if (has('FB_LP_FEE_SUBSIDY_UNTIL')) { const t = String(env.FB_LP_FEE_SUBSIDY_UNTIL).trim(), n = /^\d{9,11}$/.test(t) ? Number(t) : Math.floor(Date.parse(t) / 1000); if (!Number.isFinite(n) || n <= 0) throw new Error(`FB_LP_FEE_SUBSIDY_UNTIL must be unix seconds or a date (got "${t.slice(0, 30)}")`); fm.subsidyUntil = n; }
+  for (const [k, side, f] of [['FB_LP_FLAT_FEE_MIN', 'fwd', 'min'], ['FB_LP_FLAT_FEE_MAX', 'fwd', 'max'], ['FB_LP_REVERSE_FLAT_FEE_MIN', 'rev', 'min'], ['FB_LP_REVERSE_FLAT_FEE_MAX', 'rev', 'max']]) {
+    if (has(k)) { fm[side] = { ...(fm[side] || {}), [f]: uint(k, String(env[k]).trim()) }; }
+  }
+  if (Object.keys(fm).length) out.feeModel = { ...(C.feeModel || {}), ...fm, ...(fm.fwd ? { fwd: { ...((C.feeModel || {}).fwd || {}), ...fm.fwd } } : {}), ...(fm.rev ? { rev: { ...((C.feeModel || {}).rev || {}), ...fm.rev } } : {}) };
   // the reverse side: off unless asked for, and every value that is set must be valid (the process does not start on a guess)
   if (has('FB_LP_REVERSE') || ['FEE_BPS', 'FLAT_FEE', 'MIN_AMOUNT', 'MAX_AMOUNT', 'MAX_OPEN', 'MAX_TAC', 'MAX_SATS'].some((k) => has('FB_LP_REVERSE_' + k))) {
     const r = { ...(C.reverse || {}) };

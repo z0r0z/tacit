@@ -362,14 +362,17 @@ export function limitCrossesBook(book, side, unit) {
   return book.bestBid != null && unit <= book.bestBid;
 }
 
+export const MAX_PIECES = 3, MIN_PIECE_SATS = 25000;
 export function listingShape(amountBase, unit, decimals) {
   const amt = BigInt(amountBase);
   const totalSats = satsForAmount(amt, unit, decimals);
   if (amt <= 0n || totalSats < DUST) return { k: 0, totalSats, listedBase: 0n };
-  for (let k = 7; k >= 2; k--) {
+  // A piece costs its share of two Bitcoin transactions, one listing and one cancel, and the API
+  // allows 50 listings a key a day: at most MAX_PIECES, each worth at least MIN_PIECE_SATS.
+  for (let k = MAX_PIECES; k >= 2; k--) {
     const perLotBase = amt / BigInt(k);
     const perLotSats = satsForAmount(perLotBase, unit, decimals);
-    if (perLotBase <= 0n || perLotSats < DUST * 2) continue;
+    if (perLotBase <= 0n || perLotSats < Math.max(DUST * 2, MIN_PIECE_SATS)) continue;
     return { k, perLotBase, perLotSats, listedBase: perLotBase * BigInt(k), totalSats: perLotSats * k };
   }
   return { k: 1, perLotBase: amt, perLotSats: totalSats, listedBase: amt, totalSats };

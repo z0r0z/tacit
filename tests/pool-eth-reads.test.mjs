@@ -119,17 +119,17 @@ test('two readers in a page (the same module loaded twice) ask the nodes for a r
   assert.equal(w.asked.filter(([, m]) => m === 'eth_getLogs').length, 4, 'one more read, for both');
 });
 
-test('a node with a quota of its own is asked for logs before the key every visitor shares', async () => {
+test('a deep read of logs goes to the shared key before the nodes a browser gets 429s from (mevblocker, BuidlGuidl: last resorts)', async () => {
   mem.clear();
   const head = 30_000_000;
   const w = world(Object.fromEntries(ETH_LOG_NODES.map((u) => [u, (method) => (method === 'eth_blockNumber' ? '0x' + head.toString(16) : method === 'eth_getLogs' ? [] : '0x0')])));
   await w.ux().fetchEvents({ fromBlock: head - 30_000, toBlock: head });
   const first = w.asked.find(([, m]) => m === 'eth_getLogs')[0];
-  assert.ok(!first.includes('nodereal'), 'the shared key was not the first asked: ' + first);
-  assert.ok(w.asked.filter(([u, m]) => m === 'eth_getLogs' && u.includes('nodereal')).length === 0, 'and not asked at all while another served it');
+  assert.ok(first.includes('nodereal'), 'the shared key is the first asked for a range publicnode will not serve: ' + first);
+  assert.ok(w.asked.filter(([u, m]) => m === 'eth_getLogs' && /mevblocker|buidlguidl/.test(u)).length === 0, 'and the 429 nodes are not asked at all while it served');
 });
 
-test('log nodes are tried wide first, and among the wide ones the shared key after the rest; the nodes of a few blocks come last of all', async () => {
+test('log nodes are tried wide first, the shared key among the wide ones last; the nodes of a few blocks follow, and the last resorts come after all of them', async () => {
   mem.clear();
   const head = 30_000_000, order = [];
   const w = world(Object.fromEntries(ETH_LOG_NODES.map((u) => [u, (method) => {
@@ -141,8 +141,8 @@ test('log nodes are tried wide first, and among the wide ones the shared key aft
   const seen = [...new Set(order)];
   const at = (frag) => seen.findIndex((u) => u.includes(frag));
   assert.ok(at('rpc.mevblocker.io') >= 0 && at('nodereal') >= 0 && at('stakely') >= 0, 'every node was tried: ' + seen.join(' '));
-  assert.ok(at('rpc.mevblocker.io') < at('nodereal'), 'a node with a quota of its own before the shared key');
   assert.ok(at('nodereal') < at('stakely') && at('nodereal') < at('1rpc.io'), 'the shared key (wide) before the nodes of 25 and 50 blocks');
+  assert.ok(at('stakely') < at('rpc.mevblocker.io') && at('1rpc.io') < at('rpc.mevblocker.io') && at('nodereal') < at('rpc.mevblocker.io'), 'mevblocker (429s from a browser) after every other node');
 });
 
 test('a node that is certain to refuse a range is not asked, and one whose quota is used up is not asked again during its rest', async () => {
@@ -187,20 +187,21 @@ test('the connected wallet serves a log read of the pool\'s own events when ever
 test('a node\'s widest range of logs is learned from its refusal and kept for the next page', async () => {
   mem.clear();
   const head = 30_000_000;
+  const WIDE = 'https://rpc.mevblocker.io';
   const logNode = (cap) => (method, params) => {
     if (method === 'eth_blockNumber') return '0x' + head.toString(16);
     if (method !== 'eth_getLogs') return '0x0';
     const span = parseInt(params[0].toBlock, 16) - parseInt(params[0].fromBlock, 16) + 1;
     return span > cap ? { error: { code: -32005, message: `exceed maximum block range: ${cap}` } } : [];
   };
-  const nodes = { ...Object.fromEntries([...ETH_NODES, ...ETH_LOG_NODES].map((u) => [u, () => 'reset'])), [ETH_LOG_NODES[1]]: logNode(20000), [ETH_NODES[0]]: (m) => (m === 'eth_blockNumber' ? '0x' + head.toString(16) : 'reset') };
+  const nodes = { ...Object.fromEntries([...ETH_NODES, ...ETH_LOG_NODES].map((u) => [u, () => 'reset'])), [WIDE]: logNode(20000), [ETH_NODES[0]]: (m) => (m === 'eth_blockNumber' ? '0x' + head.toString(16) : 'reset') };
   const w = world(nodes);
   await w.ux().fetchEvents({ fromBlock: head - 99_999, toBlock: head });
   const kept = Object.entries(JSON.parse(mem.get('tacit-pool-rpc-span-v1:1') || '{}'));
-  assert.deepEqual(kept, [[ETH_LOG_NODES[1], 20000]], 'the range it serves is kept');
+  assert.deepEqual(kept, [[WIDE, 20000]], 'the range it serves is kept');
   const w2 = world(nodes);
   await w2.ux().fetchEvents({ fromBlock: head - 99_999, toBlock: head });
-  const spans = w2.asked.filter(([u, m]) => u === ETH_LOG_NODES[1] && m === 'eth_getLogs');
+  const spans = w2.asked.filter(([u, m]) => u === WIDE && m === 'eth_getLogs');
   assert.equal(spans.length, 5, 'the next page asks in ranges it serves, with no refusal first');
 });
 

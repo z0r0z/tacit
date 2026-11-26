@@ -9,7 +9,7 @@ export const MANIFEST = ['README.md', 'SECURITY.md', 'audit/AUDITS.md',
   'docs/TAC.md', 'docs/RECOVERY.md', 'docs/AIRDROP.md', 'docs/FARMS.md', 'docs/VIRTUAL-FARMS.md', 'docs/PRIVATE-PAYOUT.md', 'docs/VERIFY-LIVE.md', 'docs/CEREMONY.md',
   'docs/EVM-POOL.md', 'docs/DEPLOYMENTS.md', 'docs/AMM.md', 'docs/ASSOC-POOL.md', 'docs/BRIDGE.md', 'docs/FAST-BRIDGE.md',
   'docs/COMMUNITY-OPS.md', 'docs/OPEN-RELAYER.md', 'docs/RUN-A-RELAY.md', 'docs/POOL-BLOCKS.md', 'docs/TACIT-BLOCKS.md',
-  'dapp/prove/index.html'];
+  'dapp/prove/index.html', 'ceremony-phase2/README.md'];
 const show = (p) => execFileSync('git', ['-C', REPO, 'show', `${REF}:${p}`], { encoding: 'utf8', maxBuffer: 64 << 20 });
 const htmlToText = (t) => t.replace(/<(script|style)[\s\S]*?<\/\1>/gi, '').replace(/<h([1-3])[^>]*>/gi, (_, n) => '\n' + '#'.repeat(+n) + ' ')
   .replace(/<(br|\/p|\/li|\/div|\/section|\/h[1-6])[^>]*>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
@@ -34,7 +34,7 @@ function chunkText(text, name) {
 if (process.argv[1].endsWith('build-corpus.mjs')) {
   const sha = execFileSync('git', ['-C', REPO, 'rev-parse', '--short', REF], { encoding: 'utf8' }).trim();
   const chunks = [], per = {};
-  for (const p of MANIFEST) { const raw = show(p); const c = chunkText(p.endsWith('.html') ? htmlToText(raw) : raw, p.split('/').pop()); per[p] = c.length; chunks.push(...c); }
+  for (const p of MANIFEST) { const raw = show(p); const c = chunkText(p.endsWith('.html') ? htmlToText(raw) : raw, p.startsWith('ceremony-phase2/') ? p : p.split('/').pop()); per[p] = c.length; chunks.push(...c); }
   writeFileSync(OUT, JSON.stringify({ ref: REF, commit: sha, builtAt: new Date().toISOString(), files: per, chunks }));
   console.log(`corpus from ${REF} @ ${sha}: ${chunks.length} chunks, ${Math.round(chunks.reduce((a, c) => a + c.text.length, 0) / 1024)} KB`);
 }

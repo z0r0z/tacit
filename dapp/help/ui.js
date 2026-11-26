@@ -8,7 +8,7 @@
 //   ui.submit(q?)  asks (the textarea's text when q is left out); ui.refresh() re-reads the count
 
 export const MAX_Q = 500;
-export const EXAMPLES = ['Has Tacit been audited?', 'Can I get my notes back with just my key?', 'What do I get for holding TAC?'];
+export const EXAMPLES = ['Can I get my notes back with just my key?', 'What do I get for holding TAC?', 'What is the Tacit Praxis ceremony?'];
 
 export function mountHelp({ root, ask, health, examples = EXAMPLES }) {
   const doc = root.ownerDocument;

@@ -1,6 +1,6 @@
 // The Tacit Praxis ceremony's read-only HTTPS window onto the coordinator: GET /api/head and GET /api/transcript, cached a
 // few seconds, so tacit.finance/praxis/ can show the chain live (an HTTPS page cannot read the plain-HTTP coordinator).
-// Contributions go to the coordinator directly with the CLI; nothing is written through here. No dependencies.
+// The CLI contributes to the coordinator directly; /api/c/* (write.mjs) is the browser's way in, passed through to it. No dependencies.
 //
 //   COORDINATOR_URL=http://143.55.45.86:53874 PORT=10000 node ceremony-phase2/proxy/server.mjs
 //
@@ -11,11 +11,12 @@
 // CEREMONY_POINTS (100) points a credit, CEREMONY_EXCLUDE a comma-separated list of addresses never credited.
 //
 // GET /api/coordinator tells a prover-pool machine where to contribute: { open, coordinator, key, queue } (COORDINATOR_PUBLIC_URL,
-// default COORDINATOR_URL). The machine pins the key and the tool's hashes itself; only the address comes from here, so the
+// default COORDINATOR_URL); browser: true (BROWSER_CONTRIBUTE=1) tells the page to offer the in-browser path. The machine pins the key and the tool's hashes itself; only the address comes from here, so the
 // coordinator can move without a new release.
 import { createServer } from 'node:http';
 import { startMirror } from './mirror.mjs';
 import { dayTally, DAY_MS } from './credits.mjs';
+import { handleWrite, isWrite, WRITE_METHODS, WRITE_HEADERS } from './write.mjs';
 
 const UPSTREAM = String(process.env.COORDINATOR_URL || '').replace(/\/$/, '');
 const PORT = Number(process.env.PORT || 10000);
@@ -57,8 +58,9 @@ async function fetchUpstream(path, hit) {
 createServer(async (req, res) => {
   const origin = req.headers.origin;
   const cors = origin && ORIGINS.includes(origin) ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : {};
-  if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors, 'Access-Control-Allow-Methods': 'GET', 'Access-Control-Max-Age': '600' }); return res.end(); }
+  if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors, 'Access-Control-Allow-Methods': WRITE_METHODS, 'Access-Control-Allow-Headers': WRITE_HEADERS, 'Access-Control-Max-Age': '600' }); return res.end(); }
   const path = (req.url || '').split('?')[0];
+  if (isWrite(path)) return handleWrite(req, res, { upstream: UPSTREAM, cors, ipHeaders: process.env.CLIENT_IP_HEADERS ? process.env.CLIENT_IP_HEADERS.split(',').map((x) => x.trim().toLowerCase()) : undefined });
   if (req.method === 'GET' && path === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"ok":true}'); }
   if (req.method === 'GET' && path === '/api/mirror') {
     res.writeHead(mirror ? 200 : 404, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30', ...cors });
@@ -69,7 +71,7 @@ createServer(async (req, res) => {
     let head = null;
     try { head = v.status === 200 && !v.stale ? JSON.parse(v.body) : null; } catch {}
     res.writeHead(head ? 200 : 502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...cors });
-    return res.end(JSON.stringify(head ? { open: head.closed === false, coordinator: PUBLIC_URL, key: process.env.COORDINATOR_KEY || null, queue: head.queue, index: head.index } : { error: 'the coordinator did not answer' }));
+    return res.end(JSON.stringify(head ? { open: head.closed === false, coordinator: PUBLIC_URL, key: process.env.COORDINATOR_KEY || null, queue: head.queue, index: head.index, browser: process.env.BROWSER_CONTRIBUTE === '1' } : { error: 'the coordinator did not answer' }));
   }
   if (req.method === 'GET' && path === '/api/credits') {
     const day = Number(new URL(req.url, 'http://x').searchParams.get('day'));

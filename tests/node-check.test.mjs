@@ -109,7 +109,7 @@ test('Ethereum: behind, wrong chain, no old proofs, pruned receipts, no CORS, op
   const cors = await run({ eth: { noCors: true } });
   assert.equal(verdicts(cors)['eth-browser'], 'FAIL'); assert.equal(verdicts(cors)['eth-reads'], 'PASS');
   const open = await run({ eth: { adminOpen: true } });
-  assert.deepEqual(failed(open), ['no admin/debug/txpool API']);
+  assert.deepEqual(failed(open), ['no admin/debug/txpool API (tracing only on the keyed path)']);
 });
 
 test('Bitcoin: behind, wrong history, pruned history, no CORS fail; a node whose answers differ from the public ones fails the hash check', async () => {
@@ -170,6 +170,67 @@ test('pruned bitcoind: judged on headers, fees, mempool, broadcast and recent bl
   assert.deepEqual(failed(await runPruned({ noFees: true })), ['fee estimate']);
   assert.deepEqual(failed(await runPruned({ mempoolNotLoaded: true })), ['mempool loaded']);
   assert.deepEqual(failed(await runPruned({ acceptsGarbage: true })), ["broadcast path answers a malformed transaction with the node's reason"]);
+});
+
+// ── the keyed trace path: our gateway at /k/<key>/eth traces; /eth (the visitors' path) does not; public tracers stand as references ──
+const POOL = '0x000000000ed1eabd231be41d93b719056f7febfc', PTX = '0x' + '5a'.repeat(32);
+const traceStub = (b = {}) => http.createServer(async (req, res) => {
+  const r = JSON.parse(await readBody(req));
+  const keyed = req.url.startsWith('/k/');
+  const ans = (q) => {
+    if (q.method === 'eth_blockNumber') return { result: '0x' + HEAD.toString(16) };
+    if (q.method === 'eth_getLogs') return b.noPoolTx ? { result: [] } : { result: [{ transactionHash: PTX }] };
+    if (q.method === 'debug_traceTransaction' && (keyed || b.visitorTraces) && !b.noTrace) {
+      if (typeof q.params[1]?.tracer === 'string' && q.params[1].tracer.includes('enter')) return { result: [{ to: POOL, input: b.otherInput || '0xabcd' }] };
+      return { result: { type: 'CALL', to: POOL, input: b.otherInput || '0xabcd', calls: [] } };
+    }
+    return { error: { code: -32601, message: 'method not available here' } };
+  };
+  res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ jsonrpc: '2.0', id: r.id, ...ans(r) }));
+});
+const refTrace = await up(traceStub({ visitorTraces: true }));   // a public tracer traces for anyone
+const runTrace = async (b) => runChecks({ ...refs, ethKey: (await up(traceStub(b))) + '/k/some-secret-key-0123456789/eth', traceRefs: [refTrace] });
+
+test('eth-trace: the keyed path traces pool transactions as the public tracers do; the visitors\' path refuses; the key never reaches the output', async () => {
+  const good = await runTrace({});
+  assert.equal(verdicts(good)['eth-trace'], 'PASS', JSON.stringify(good.checks));
+  assert.ok(!JSON.stringify(good).includes('some-secret-key'));
+  assert.deepEqual(failed(await runTrace({ otherInput: '0xffff' })), ['a recent pool transaction', 'a pool transaction ~2 days old'], 'different pool calls from the public tracers');
+  assert.ok(failed(await runTrace({ noTrace: true })).includes('a recent pool transaction'));
+  assert.deepEqual(failed(await runTrace({ visitorTraces: true })), ["the visitors' path refuses tracing"]);
+  assert.equal(verdicts(await runTrace({ noPoolTx: true }))['eth-trace'], 'UNVERIFIED', 'nothing to trace is not a pass');
+  const noRef = await runChecks({ ...refs, ethKey: (await up(traceStub())) + '/k/some-secret-key-0123456789/eth', traceRefs: ['http://127.0.0.1:1'] });
+  assert.equal(verdicts(noRef)['eth-trace'], 'UNVERIFIED');
+});
+
+// ── btc-index: bitcoind + electrs behind the gateway, compared read by read with a public esplora ──
+const HAL = '1Q2TWHE3GMdB6BZKafqwxXtWAWgFt5Jvm3';
+const indexStub = (b = {}) => http.createServer((req, res) => {
+  const ok = (body) => { res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' }); res.end(typeof body === 'string' ? body : JSON.stringify(body)); };
+  const u = req.url;
+  if (u === `/tx/${OLD_TX}`) return ok({ txid: OLD_TX, fee: b.badFee ? 1 : 0, vout: [{ value: 1e9, scriptpubkey_asm: b.otherAsm ? 'x' : 'y' }], status: { confirmed: true, block_height: 170 } });
+  if (u === `/tx/${OLD_TX}/outspends`) return ok([{ spent: true, txid: 'cd'.repeat(32), vin: 0 }, { spent: true, txid: 'ef'.repeat(32), vin: 1 }]);
+  if (u === `/tx/${OLD_TX}/merkle-proof`) return ok({ block_height: 170, merkle: ['aa'], pos: 1 });
+  if (u === `/address/${HAL}`) return ok({ address: HAL, chain_stats: { tx_count: 26, funded_txo_count: 20, spent_txo_count: b.badStats ? 3 : 19 } });
+  if (u === `/address/${HAL}/utxo`) return ok([{ txid: 'ab'.repeat(32), vout: 0, value: 5 }]);
+  if (u === `/address/${HAL}/txs/chain`) return ok(Array.from({ length: 25 }, (_, i) => ({ txid: i.toString(16).padStart(64, 'a') })));
+  if (u.startsWith(`/address/${HAL}/txs/chain/`)) return ok(b.shortPages ? [] : [{ txid: 'bb'.repeat(32) }]);
+  if (u === '/v1/fees/recommended') return ok({ fastestFee: 3, halfHourFee: 2, hourFee: 2, economyFee: 1, minimumFee: 1 });
+  if (u === '/mempool') return ok({ count: 1000, vsize: 1, total_fee: 1, fee_histogram: [] });
+  res.writeHead(404); res.end();
+});
+const refIndex = await up(indexStub());
+const runIndex = async (b) => runChecks({ timeoutMs: 5000, btc: await up(indexStub(b)), btcRefs: [refIndex], btcIndex: true });
+
+test('btc-index: every read the pages use equals the public esplora\'s (the *_asm fields aside); a wrong fee, stats or a short history fails', async () => {
+  const good = await runIndex({});
+  assert.equal(verdicts(good)['btc-index'], 'PASS', JSON.stringify(good.checks.filter((c) => c.role === 'btc-index')));
+  assert.equal(verdicts(await runIndex({ otherAsm: true }))['btc-index'], 'PASS', 'asm text is not compared');
+  const fee = await runIndex({ badFee: true });
+  assert.deepEqual(fee.checks.filter((c) => c.role === 'btc-index' && c.status === 'fail').map((c) => c.id), ['a transaction, whole (fee, prevouts, status)']);
+  assert.ok(failed(await runIndex({ badStats: true })).includes('address stats'));
+  assert.ok(failed(await runIndex({ shortPages: true })).includes('every history page, to the end'));
+  assert.ok(good.checks.some((c) => c.id === 'mempool/recent' && c.status === 'skip'), '/mempool/recent is NOT PROVIDED, not failed');
 });
 
 test.after(() => servers.forEach((s) => s.close()));

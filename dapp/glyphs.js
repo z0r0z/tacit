@@ -95,7 +95,9 @@ function field(canvas, ground) {
     return moving;
   }
   function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // cleared in device pixels, whatever the scale: with the window zoomed out the device pixel ratio is below 1, and a clear in the scaled
+    // space covers only that fraction of the canvas, so the rest was never wiped and its glyphs piled up frame on frame
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.restore();
     ctx.font = FIELD.font;
     for (const c of cells) {
       if (c.fade < 0.02) continue;

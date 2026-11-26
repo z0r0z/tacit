@@ -347,5 +347,31 @@ await test('split: an address with nothing spoken for has no held coins, and the
   });
 });
 
+// ---- no explorer answers: Tacit's own index lists the address's Tacit notes ----
+const throttled = () => new Response('slow down', { status: 429, headers: { 'Retry-After': '60' } });
+const notesFor = (n) => () => jsonResp({ height: 977000, notes: [{ txid: txid(n), vout: 1, value: 546, h: 950000 }, { txid: 'nothex', vout: 0, value: 546, h: 1 }] });
+await test('explorers refuse: the wallet reads the address\'s Tacit notes from Tacit\'s own index (a malformed row dropped)', async () => {
+  const addr = testAddr(41);
+  return withRouter([['/chain/tac/notes', notesFor(411)], [`/address/${addr}/utxo`, throttled]], async () => {
+    const u = await getUtxos(addr);
+    return u.length === 1 && u[0].txid === txid(411) && u[0].vout === 1 && u[0].value === 546 && u[0].status.confirmed === true && u[0].status.block_height === 950000;
+  });
+});
+await test('explorers refuse: a read for a balance (split) or a spend never takes the short list', async () => {
+  const addr = testAddr(42);
+  return withRouter([['/chain/tac/notes', notesFor(421)], [`/address/${addr}/utxo`, throttled]], async () => {
+    let a = 'none', b = 'none';
+    try { await getUtxos(addr, null, { split: true }); a = 'list'; } catch { a = 'threw'; }
+    try { await getUtxos(addr, null, { forSpend: true }); b = 'list'; } catch { b = 'threw'; }
+    return a === 'threw' && b === 'threw';
+  });
+});
+await test('explorers refuse and the index cannot be read: the refusal reaches the caller as before', async () => {
+  const addr = testAddr(43);
+  return withRouter([['/chain/tac/notes', () => new Response('{}', { status: 503 })], [`/address/${addr}/utxo`, throttled]], async () => {
+    try { await getUtxos(addr); return false; } catch { return true; }
+  });
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

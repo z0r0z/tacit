@@ -110,17 +110,23 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   let fee = null, feeRead = null, feeLost = null;
   async function readFee() {
     const why = [];
-    const seen = (await Promise.all(list.map(async (b) => {
-      const host = (() => { try { return new URL(b).host; } catch { return b; } })();
+    // Three explorers are asked first (the ones that answered lately, in turn: askOrder), and the rest only when fewer than two of them gave an estimate; one that
+    // fails is left alone for a while like any other read (coolDown), so a dead explorer is not asked again with every estimate.
+    const one = async (b) => {
+      const host = hostOf(b);
       try {
         const r = await fetchImpl(b + '/fee-estimates', { signal: AbortSignal.timeout(timeoutMs) });
-        if (!r.ok) { why.push(`${host} ${r.status}`); return null; }
+        if (!r.ok) { why.push(`${host} ${r.status}`); coolDown(b, retryAfter(r), `fee estimate ${r.status}`); return null; }
         const f = await r.json(), v = Number(f[feeTarget] ?? f['6']);
         if (Number.isFinite(v) && v > FEE_RATE_CEILING) { why.push(`${host} gave an implausible estimate`); return null; }
-        if (Number.isFinite(v) && v > 0) return v;
+        if (Number.isFinite(v) && v > 0) { healed(b); return v; }
         why.push(`${host} gave no estimate`); return null;
-      } catch (e) { why.push(`${host} ${e && e.name === 'TimeoutError' ? 'timed out' : 'was unreachable'}`); return null; }
-    }))).filter((v) => v != null).sort((a, b) => a - b);
+      } catch (e) { why.push(`${host} ${e && e.name === 'TimeoutError' ? 'timed out' : 'was unreachable'}`); coolDown(b, 0, 'fee estimate failed'); return null; }
+    };
+    const order = askOrder();
+    let seen = (await Promise.all(order.slice(0, 3).map(one))).filter((v) => v != null);
+    if (seen.length < 2 && order.length > 3) seen = seen.concat((await Promise.all(order.slice(3).map(one))).filter((v) => v != null));
+    seen.sort((a, b) => a - b);
     if (!seen.length) throw new Error(`no explorer answered a fee estimate (${why.join(', ')})`);
     // (`minFeeRate`: a lock that a bridge waits on is not sent at the least the network relays when the explorers' estimates run under it, as they
     // do when the pool is busy with transactions above that line: one sent at 1.06 sat/vB sat unconfirmed for over an hour)
@@ -155,7 +161,7 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   // The lock as the explorers see it, before this side locks anything against it: the transaction (its inputs and outputs), the block it is in, the tip, and
   // whether the lock output is spent. Ordinary reads take the first explorer that answers; this one asks them all. Two that show the same lock agree. An
   // explorer that does not answer (a refusal for too many requests, a timeout) is silent, which is not a contradiction: one explorer that answers alone
-  // gives `thin: true`, and the caller waits a while for a second before it goes on. An explorer that says the lock is not there or not in a block, or two
+  // gives `thin: true`, and the caller waits for a second before it goes on (dapp/fastbridge-el.js locks nothing on one explorer's word). An explorer that says the lock is not there or not in a block, or two
   // that show it differently, is a contradiction: it throws (to be asked again). With one explorer configured, that one is the source.
   async function lockAgreed(txid, vout) {
     need(txid);
