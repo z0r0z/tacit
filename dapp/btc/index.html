@@ -100,8 +100,12 @@ html[data-sec="chains/btc"] .hero :is(h1, .sub) { display: none !important; }
 html[data-sec="chains/btc"] #sec-head > p:not(.sh-n) { display: none; }      /* (the Chains line above the tabs says nothing this tab's own line and the hero do not) */
 html[data-sec="chains/btc"] .hero { padding-top: clamp(8px, 2vh, 20px); }      /* (the Chains head above says it: its tab and its line) */
 .hero { padding: clamp(18px, 5vh, 52px) 0 0; text-align: center; }
-.mk { display: grid; grid-template-columns: auto minmax(72px, 168px) auto; align-items: center; justify-content: center; gap: 6px; margin: 0 auto 18px; }
+.mk { display: grid; grid-template-columns: auto minmax(72px, 168px) auto; align-items: center; justify-content: center; gap: 6px; margin: 0 auto 14px; }
+.mk .asset { display: grid; justify-items: center; gap: 8px; min-width: 82px; }
 .mk .tk { width: clamp(68px, 18vw, 104px); height: clamp(68px, 18vw, 104px); box-shadow: 0 18px 36px -22px rgba(0,0,0,.55); }
+.mk .asset span { display: grid; gap: 1px; line-height: 1.2; }
+.mk .asset b { font: 500 12px var(--mono); letter-spacing: .01em; }
+.mk .asset small { font: 400 10.5px var(--mono); color: var(--mute); }
 .wire { position: relative; height: 24px; }
 .wire i { position: absolute; left: 14px; right: 14px; top: 50%; height: 1px; background: currentColor; opacity: .4; }
 .wire i::before, .wire i::after { content: ''; position: absolute; top: 50%; width: 7px; height: 7px; margin-top: -3.5px; border: solid; border-width: 1.5px 1.5px 0 0; }
@@ -116,23 +120,23 @@ html[data-sec="chains/btc"] .hero { padding-top: clamp(8px, 2vh, 20px); }      /
 .hero h1 { font: 400 clamp(44px, 11vw, 68px)/1 var(--serif); letter-spacing: -.025em; margin: 0 0 10px; }
 .hero h1 em { font-style: italic; color: var(--mute); }
 .hero .sub { margin: 0 auto; max-width: 30em; font: 400 clamp(18px, 2.4vw, 21px)/1.3 var(--serif); color: color-mix(in srgb, var(--ink) 72%, var(--mute)); text-wrap: balance; }
-.live { min-height: 20px; margin: 14px 0 0; font-size: 12.5px; color: var(--mute); }
+.live { min-height: 20px; margin: 12px 0 0; font-size: 12.5px; color: var(--mute); }
 .live b { font-weight: 500; color: var(--ink); }
 .live span { white-space: nowrap; }
 /* the track record at the top: swaps finished, orange for Bitcoin sold for ETH, blue for ETH sold for Bitcoin (the numbers are darkened toward the ink so they stay readable) */
-.rec { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 18px auto 0; max-width: 46em; }
+.rec { display: flex; flex-wrap: wrap; justify-content: center; gap: 1px; margin: 16px auto 0; max-width: 46em; overflow: hidden; background: var(--hair); border: 1px solid var(--hair); border-radius: 14px; box-shadow: 0 14px 28px -26px rgba(0,0,0,.55); }
 .rec[hidden] { display: none; }
-.rt { flex: 1 1 92px; min-width: 84px; padding: 10px 8px 9px; text-align: center; background: var(--card); border: 1px solid var(--hair); border-top: 3px solid var(--hair-2); border-radius: 12px; }
-.rt b { display: block; font: 500 26px/1 var(--mono); letter-spacing: -.02em; color: var(--ink); }
-.rt span { display: block; margin-top: 6px; font-size: 11.5px; color: var(--mute); }
-.rt.btc { border-top-color: var(--orange); background: color-mix(in srgb, var(--orange) 9%, var(--card)); }
+.rt { flex: 1 1 92px; min-width: 84px; padding: 10px 8px 9px; text-align: center; background: var(--card); border: 0; border-top: 3px solid var(--hair-2); border-radius: 0; }
+.rt b { display: block; font: 500 22px/1 var(--mono); letter-spacing: -.02em; color: var(--ink); }
+.rt span { display: block; margin-top: 5px; font-size: 10.5px; color: var(--mute); }
+.rt.btc { border-top-color: var(--orange); background: color-mix(in srgb, var(--orange) 8%, var(--card)); }
 .rt.btc b { color: color-mix(in srgb, var(--orange) 72%, var(--ink)); }
-.rt.eth { border-top-color: var(--blue); background: color-mix(in srgb, var(--blue) 10%, var(--card)); }
+.rt.eth { border-top-color: var(--blue); background: color-mix(in srgb, var(--blue) 9%, var(--card)); }
 .rt.eth b { color: color-mix(in srgb, var(--blue) 72%, var(--ink)); }
-@media (max-width: 480px) { .rec { display: grid; grid-template-columns: 1fr 1fr; } }      /* each part of the line whole: it breaks between them */
+@media (max-width: 480px) { .rec { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; } }      /* each part of the line whole: it breaks between them */
 
 /* the lane, drawn by swap/atomic.js in the card's own styles */
-.lane { margin: 26px 0 0; padding: 16px; background: var(--card); border: 1px solid var(--hair); border-radius: 20px; box-shadow: 0 30px 60px -48px rgba(0,0,0,.5); }
+.lane { margin: 24px 0 0; padding: 16px; background: linear-gradient(var(--card), var(--card)) padding-box, linear-gradient(115deg, color-mix(in srgb, var(--orange) 55%, var(--hair-2)), var(--hair) 45%, color-mix(in srgb, var(--blue) 55%, var(--hair-2))) border-box; border: 1px solid transparent; border-radius: 20px; box-shadow: 0 28px 64px -42px rgba(0,0,0,.58); }
 /* the button stays in the card: the page is short, and a phone's bar of sections sits where the card's sticky button would */
 .lane .act { position: static; margin-left: -16px; margin-right: -16px; background: none; }
 /* an amount sized to its field: as large as the card draws it, smaller as it gets longer, never cut (--n is its length, set by the lane) */
@@ -154,15 +158,16 @@ html .lane #atomic .rcpt dd { text-wrap: balance; }      /* a fact that has to b
 .dd { border-top: 1px solid var(--hair); interpolate-size: allow-keywords; }
 .dd:last-of-type { border-bottom: 1px solid var(--hair); }
 .dd.first { margin-top: 40px; }
-.dd > summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 14px; min-height: 52px; padding: 14px 0; box-sizing: border-box; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; position: relative; padding-right: 26px; }
+.dd > summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 14px; min-height: 52px; padding: 14px 10px; margin: 0 -10px; box-sizing: border-box; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; position: relative; padding-right: 36px; border-radius: 10px; transition: background-color .15s; }
 .dd > summary::-webkit-details-marker { display: none; }
 .dd > summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
 .dd h2 { margin: 0; font: 400 22px/1.15 var(--serif); letter-spacing: -.012em; }
 .dd .sum { flex: 1 1 0; min-width: 0; font: 400 12px/1.5 var(--mono); color: var(--mute); }
 .dd .sum b { font-weight: 500; color: var(--ink); }
-.dd .chev { position: absolute; right: 4px; top: 50%; width: 7px; height: 7px; margin-top: -6px; border-right: 1.5px solid var(--mute); border-bottom: 1.5px solid var(--mute); transform: rotate(45deg); transition: transform .25s ease, border-color .15s; }
+.dd .chev { position: absolute; right: 14px; top: 50%; width: 7px; height: 7px; margin-top: -6px; border-right: 1.5px solid var(--mute); border-bottom: 1.5px solid var(--mute); transform: rotate(45deg); transition: transform .25s ease, border-color .15s; }
 .dd[open] > summary .chev { transform: rotate(-135deg); margin-top: -2px; }
-@media (hover: hover) { .dd > summary:hover .chev { border-color: var(--ink); } }
+@media (hover: hover) { .dd > summary:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); } .dd > summary:hover .chev { border-color: var(--ink); } }
+.dd[open] > summary { background: color-mix(in srgb, var(--ink) 3%, transparent); }
 .dd-b { padding: 2px 0 26px; }
 .dd::details-content { block-size: 0; overflow: clip; transition: block-size .28s ease, content-visibility .28s allow-discrete; }
 .dd[open]::details-content { block-size: auto; }
@@ -647,7 +652,11 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <div class="sh" id="sec-head" data-of="chains"><h1 tabindex="-1">Chains</h1><p>Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.</p><nav class="sh-t" aria-label="Chains"><i class="sh-i" aria-hidden="true"></i><a href="/#/chains/move" data-v="move">Move</a><a href="/btc/" data-v="btc" aria-current="page">BTC ⇄ ETH</a><a href="/#/chains/bridge" data-v="bridge">Bridge</a><a href="/fast/" data-v="fast">Fast bridge</a><a href="/tac/?v=notes#bridge" data-v="notes">Notes</a></nav><p class="sh-n">Swap Bitcoin and ETH directly. Your ETH arrives private.</p></div>
     <!-- chrome:sec:end -->
     <section class="hero" aria-labelledby="h">
-      <div class="mk" aria-hidden="true"><svg class="tk"><use href="#tk-btc"/></svg><span class="wire"><i></i></span><svg class="tk"><use href="#tk-eth"/></svg></div>
+      <div class="mk" aria-hidden="true">
+        <span class="asset"><svg class="tk"><use href="#tk-btc"/></svg><span><b>Bitcoin</b><small>public chain</small></span></span>
+        <span class="wire"><i></i></span>
+        <span class="asset"><svg class="tk"><use href="#tk-eth"/></svg><span><b>Private ETH</b><small>Tacit balance</small></span></span>
+      </div>
       <h1 id="h">BTC <em>⇄</em> ETH</h1>
       <p class="sub">Swap Bitcoin and ETH directly. Your ETH arrives private. <a href="/docs/btc/">How it works</a></p>
       <p class="live num" id="live" role="status"></p>
