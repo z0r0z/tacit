@@ -160,6 +160,13 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
           const signed = evmTx.signEip1559({ chainId: 1n, nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip, gasLimit, to, value: BigInt(value), data }, acct.priv);
           return rpc('eth_sendRawTransaction', [signed.raw]);
         },
+        // how many times the venue's router has paid out of the vault in about the last 30 hours (TransferOut with the vault as its first topic): read from the Ethereum nodes
+        vaultHistory: async ({ router, vault }) => {
+          const topic0 = '0x' + Buffer.from(keccak256(new TextEncoder().encode('TransferOut(address,address,address,uint256,string)'))).toString('hex');
+          const head = Number(BigInt(await rpc('eth_blockNumber', [])));
+          const logs = await rpc('eth_getLogs', [{ address: router, fromBlock: '0x' + (head - 9000).toString(16), toBlock: '0x' + head.toString(16), topics: [topic0, '0x' + '0'.repeat(24) + String(vault).toLowerCase().replace(/^0x/, '')] }]);
+          return Array.isArray(logs) ? logs.length : 0;
+        },
         address, btcDestination: rside.btc.address, gasReserveWei: sc.reserveWei,
         load: () => kv.get('rebalance'), save: (r) => kv.put(r), log, alert,
       });

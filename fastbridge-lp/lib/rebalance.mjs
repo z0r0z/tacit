@@ -19,8 +19,8 @@
 const UNIT = 10n ** 10n;                                       // wei in one pool unit
 const DAY = 86400;
 const VENUES = {
-  thorchain: { prefix: 'thorchain', nodes: ['https://gateway.liquify.com/chain/thorchain_api', 'https://thornode.ninerealms.com', 'https://thornode.thorchain.info'] },
-  mayachain: { prefix: 'mayachain', nodes: ['https://mayanode.mayachain.info', 'https://mayanode.ninerealms.com'] },
+  thorchain: { prefix: 'thorchain', router: '0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146', nodes: ['https://gateway.liquify.com/chain/thorchain_api', 'https://thornode.ninerealms.com', 'https://thornode.thorchain.info'] },
+  mayachain: { prefix: 'mayachain', router: '0xe3985E6b61b814F7Cdb188766562ba71b446B46d', nodes: ['https://mayanode.mayachain.info', 'https://mayanode.ninerealms.com'] },
 };
 const err = (e) => String((e && e.message) || e).slice(0, 200);
 const ethText = (wei) => (Number(BigInt(wei) / UNIT) / 1e8).toFixed(4);
@@ -91,18 +91,25 @@ const memoOk = (memo, dest) => {
 };
 
 // One venue's quote, with its vault address checked. `from`/`to`: 'ETH' or 'BTC'; `amount`: 1e8 units; `destination`: the provider's own address on the `to` chain.
-export async function venueQuote({ venue, nodes, fetchImpl, from, to, amount, destination, slipBps, now = () => Math.floor(Date.now() / 1000) }) {
+export async function venueQuote({ venue, nodes, fetchImpl, from, to, amount, destination, slipBps, vaultHistory = null, now = () => Math.floor(Date.now() / 1000) }) {
   const p = VENUES[venue].prefix, asset = (c) => `${c}.${c}`;
   const failed = [];
   const books = (await Promise.all(nodes.map((n) => getJson(fetchImpl, `${n}/${p}/inbound_addresses`).then((l) => ({ n, l }), (e) => { failed.push(`${new URL(n).host}: ${err(e)}`); return null; })))).filter(Boolean);
   const seen = books.map(({ n, l }) => ({ n, ib: l.find((x) => x.chain === from), out: l.find((x) => x.chain === to) })).filter((x) => x.ib && x.out);
-  if (seen.length < 2) throw new Error(`${venue}: only ${seen.length} node(s) answered; two must agree on the vault address${failed.length ? ` (not answering: ${failed.join('; ')})` : ''}`);
+  // one node is enough only when Ethereum itself vouches for the vault (below); with none to do that, two must agree
+  if (seen.length < (vaultHistory && from === 'ETH' ? 1 : 2)) throw new Error(`${venue}: only ${seen.length} node(s) answered; two must agree on the vault address${failed.length ? ` (not answering: ${failed.join('; ')})` : ''}`);
   const ib = seen[0].ib;
   for (const s of seen) if (!same(s.ib.address, ib.address)) throw new Error(`${venue}: the nodes disagree on the ${from} vault address; nothing sent`);
   for (const s of seen) {
     for (const x of [s.ib, s.out]) if (x.halted || x.global_trading_paused || x.chain_trading_paused) throw new Error(`${venue}: trading on ${x.chain} is halted`);
   }
   if (!/^0x[0-9a-fA-F]{40}$/.test(ib.address) && from === 'ETH') throw new Error(`${venue}: the ETH vault address is malformed`);
+  if (from === 'ETH' && vaultHistory) {
+    // an address a node names is a vault only if the venue's own router (pinned here, not taken from the node) has paid out of it lately: a made-up or retired address has no such history
+    if (!same(ib.router, VENUES[venue].router)) throw new Error(`${venue}: the router the nodes name is not the one this provider knows; nothing sent`);
+    const n = await vaultHistory({ router: VENUES[venue].router, vault: ib.address });
+    if (!(n >= 3)) throw new Error(`${venue}: Ethereum shows no recent outbound payments from that vault through the venue's router (${n}); nothing sent`);
+  }
   const q = await getJson(fetchImpl, `${seen[0].n}/${p}/quote/swap?from_asset=${asset(from)}&to_asset=${asset(to)}&amount=${amount}&destination=${destination}&tolerance_bps=${slipBps}`);
   if (!same(q.inbound_address, ib.address)) throw new Error(`${venue}: the quote names a vault address the nodes do not agree on; nothing sent`);
   if (!memoOk(q.memo, destination)) throw new Error(`${venue}: the quote's memo is not a plain swap to the provider's own address; nothing sent`);
@@ -119,12 +126,12 @@ export function costBps({ dir, amountWei, amountSats, out, ethPerBtc }) {
   const gave = Number(amountSats) * 1e10 * ethPerBtc; return Math.round((1 - (Number(out) * 1e10) / gave) * 10000);
 }
 
-export async function bestQuote({ cfg, fetchImpl, dir, amount1e8, destination, ethPerBtc, amountWei, amountSats, log = () => {} }) {
+export async function bestQuote({ cfg, fetchImpl, dir, amount1e8, destination, ethPerBtc, amountWei, amountSats, vaultHistory = null, log = () => {} }) {
   const [from, to] = dir === 'eth2btc' ? ['ETH', 'BTC'] : ['BTC', 'ETH'];
   const got = [], why = [];
   for (const v of cfg.venues) {
     try {
-      const q = await venueQuote({ venue: v, nodes: cfg.nodes[v], fetchImpl, from, to, amount: amount1e8, destination, slipBps: cfg.slipBps });
+      const q = await venueQuote({ venue: v, nodes: cfg.nodes[v], fetchImpl, from, to, amount: amount1e8, destination, slipBps: cfg.slipBps, vaultHistory });
       got.push({ ...q, costBps: costBps({ dir, amountWei, amountSats, out: q.out, ethPerBtc }) });
     } catch (e) { why.push(err(e)); log({ level: 'info', msg: 'rebalance: a venue gave no usable quote', venue: v, error: err(e) }); }
   }
@@ -132,7 +139,7 @@ export async function bestQuote({ cfg, fetchImpl, dir, amount1e8, destination, e
   return { best: got[0] || null, all: got, why };
 }
 
-export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true, gate = (fn) => fn(), turn = (fn) => fn(), unshield, ethBalance, ethNonce, ethReceipt, sendEth, sendBtc = null, address, btcDestination, gasReserveWei, fetchImpl = (...a) => fetch(...a), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
+export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true, gate = (fn) => fn(), turn = (fn) => fn(), unshield, ethBalance, ethNonce, ethReceipt, sendEth, vaultHistory = null, sendBtc = null, address, btcDestination, gasReserveWei, fetchImpl = (...a) => fetch(...a), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   let st = null, busy = false, nextAt = -Infinity, halted = null, last = null;
   const said = new Map();
   const sayOnce = (k, a, secs = 6 * 3600) => { if (now() - (said.get(k) ?? -Infinity) >= secs) { said.set(k, now()); alert(a); } };
@@ -157,7 +164,7 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       return { did: 'waiting for the unshield' };
     }
     if (p.stage === 'send') {
-      const amountWei = BigInt(p.amountWei), cheap = await bestQuote({ cfg, fetchImpl, dir: 'eth2btc', amount1e8: String(amountWei / UNIT), destination: btcDestination, ethPerBtc: await rateNow(), amountWei, log });
+      const amountWei = BigInt(p.amountWei), cheap = await bestQuote({ cfg, fetchImpl, dir: 'eth2btc', amount1e8: String(amountWei / UNIT), destination: btcDestination, ethPerBtc: await rateNow(), amountWei, vaultHistory, log });
       if (!cheap.best || cheap.best.costBps > cfg.maxCostBps) {
         // nothing is lost by waiting: the ETH is public at the provider's own address, held from the shield, and tried again
         sayOnce('send-wait', { level: 'warn', msg: 'rebalance: ETH is ready to swap but no venue quotes within the cost limit; trying again', cost: cheap.best ? cheap.best.costBps : null, limit: cfg.maxCostBps, why: cheap.why });
@@ -211,7 +218,7 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       if (plan.skip) return { did: 'skip', why: plan.skip };
       const dest = plan.dir === 'eth2btc' ? btcDestination : address;
       const amount1e8 = plan.dir === 'eth2btc' ? String(plan.amountWei / UNIT) : String(plan.amountSats);
-      const { best, all, why } = await bestQuote({ cfg, fetchImpl, dir: plan.dir, amount1e8, destination: dest, ethPerBtc: mkt, amountWei: plan.amountWei, amountSats: plan.amountSats, log });
+      const { best, all, why } = await bestQuote({ cfg, fetchImpl, dir: plan.dir, amount1e8, destination: dest, ethPerBtc: mkt, amountWei: plan.amountWei, amountSats: plan.amountSats, vaultHistory, log });
       last.quotes = all.map((x) => ({ venue: x.venue, costBps: x.costBps, out: String(x.out) }));
       if (!best) { sayOnce('noquote', { level: 'warn', msg: 'rebalance: a swap is due but no venue gave a usable quote', why }); return { did: 'no quote' }; }
       if (best.costBps > cfg.maxCostBps) { sayOnce('dear', { level: 'info', msg: 'rebalance: a swap is due but the best quote costs more than the limit', best: best.venue, costBps: best.costBps, limit: cfg.maxCostBps }); return { did: 'dear', costBps: best.costBps }; }

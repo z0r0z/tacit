@@ -74,6 +74,21 @@ test('a venue quote is taken only when two nodes agree on the vault, trading is 
   await bad([[nodes[0], book()], [nodes[1], book()]], quoteOf({ recommended_min_amount_in: '9000000' }), /least/);
 });
 
+test('with Ethereum vouching for the vault (its router has paid out of it lately), one node is enough; a router that is not the pinned one, or a vault with no history, is refused', async () => {
+  const MAYA_ROUTER = '0xe3985E6b61b814F7Cdb188766562ba71b446B46d';
+  const args = { venue: 'mayachain', from: 'ETH', to: 'BTC', amount: '5000000', destination: BTC_DEST, slipBps: 100, now: NOW };
+  const nodes = ['https://a.example', 'https://b.example'];
+  const one = (over, quote = quoteOf()) => venueFetch({ books: new Map([[nodes[0], book({ ETH: { router: MAYA_ROUTER, ...over } })], [nodes[1], null]]), quote });
+  const seenArgs = [];
+  const ok = await venueQuote({ ...args, nodes, fetchImpl: one({}), vaultHistory: async (x) => { seenArgs.push(x); return 12; } });
+  assert.equal(ok.vault, VAULT); assert.equal(seenArgs[0].router, MAYA_ROUTER, 'the router asked about is the pinned one, not the node\'s');
+  await assert.rejects(() => venueQuote({ ...args, nodes, fetchImpl: one({ router: '0x' + '22'.repeat(20) }), vaultHistory: async () => 12 }), /not the one this provider knows/);
+  await assert.rejects(() => venueQuote({ ...args, nodes, fetchImpl: one({}), vaultHistory: async () => 1 }), /no recent outbound payments/);
+  await assert.rejects(() => venueQuote({ ...args, nodes, fetchImpl: one({}) }), /only 1 node/, 'with nothing to vouch for the vault, two nodes must agree as before');
+  const two = new Map([[nodes[0], book({ ETH: { router: MAYA_ROUTER } })], [nodes[1], book({ ETH: { router: MAYA_ROUTER, address: '0x' + 'cd'.repeat(20) } })]]);
+  await assert.rejects(() => venueQuote({ ...args, nodes, fetchImpl: venueFetch({ books: two, quote: quoteOf() }), vaultHistory: async () => 12 }), /disagree/, 'two nodes that differ are still refused');
+});
+
 test('the best venue is the cheaper one; one that is halted or disagrees is left out and the other is used', async () => {
   const c = cfg({ FB_LP_REBALANCE_NODES_THORCHAIN: 'https://t1.example,https://t2.example', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://m1.example,https://m2.example' });
   const amountWei = ETH(0.3), out = { thorchain: '830000', mayachain: '845000' };
