@@ -9993,6 +9993,65 @@ async function _recordSettledTradeVolume(env, network, assetIdHex, lastTrade) {
   return true;
 }
 
+// Authenticated one-off repair for a transaction that was observed in a
+// mempool, persisted by the legacy hint path, and later disappeared. The
+// caller identifies the exact asset + txid; no prefix or bulk deletion is
+// supported. This keeps every aggregate derived from that record in sync.
+async function _removePhantomTrade(env, network, assetIdHex, txidHex) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex) || !/^[0-9a-f]{64}$/.test(txidHex)) {
+    throw new Error('asset_id and txid must be 64 lowercase hex chars');
+  }
+  const eventKey = tradeEventKey(network, assetIdHex, txidHex);
+  const ringKey = tradesRingKey(network, assetIdHex);
+  const [event, ringRaw, lastTrade, outlierTrade, seen] = await Promise.all([
+    env.REGISTRY_KV.get(eventKey, 'json'),
+    env.REGISTRY_KV.get(ringKey),
+    env.REGISTRY_KV.get(lastTradeKey(network, assetIdHex), 'json'),
+    env.REGISTRY_KV.get(`${lastTradeKey(network, assetIdHex)}:outlier`, 'json'),
+    env.REGISTRY_KV.get(transferSeenKey(network, assetIdHex, txidHex)),
+  ]);
+  let ring = [];
+  try { const parsed = ringRaw ? JSON.parse(ringRaw) : []; if (Array.isArray(parsed)) ring = parsed; } catch {}
+  const ringTrade = ring.find(t => t?.txid === txidHex) || null;
+  const record = event || ringTrade;
+  if (!record && !seen && lastTrade?.txid !== txidHex && outlierTrade?.txid !== txidHex) {
+    return { removed: false, reason: 'not-found', asset_id: assetIdHex, txid: txidHex };
+  }
+
+  const priceSats = Math.max(0, Number(record?.price_sats) || 0);
+  const ts = Number(record?.ts) || 0;
+  await env.REGISTRY_KV.delete(eventKey);
+  if (ringTrade) {
+    ring = ring.filter(t => t?.txid !== txidHex);
+    await env.REGISTRY_KV.put(ringKey, JSON.stringify(ring));
+  }
+  if (lastTrade?.txid === txidHex) {
+    if (ring.length > 0) await env.REGISTRY_KV.put(lastTradeKey(network, assetIdHex), JSON.stringify(ring[0]));
+    else await env.REGISTRY_KV.delete(lastTradeKey(network, assetIdHex));
+  }
+  if (outlierTrade?.txid === txidHex) {
+    await env.REGISTRY_KV.delete(`${lastTradeKey(network, assetIdHex)}:outlier`);
+  }
+  if (priceSats > 0) {
+    if (ts > 0) {
+      const dayKey = tradeDayKey(network, assetIdHex, _utcYyyymmdd(ts));
+      const day = Number(await env.REGISTRY_KV.get(dayKey)) || 0;
+      await env.REGISTRY_KV.put(dayKey, String(Math.max(0, day - priceSats)), { expirationTtl: TRADE_DAY_TTL_SECONDS });
+    }
+    const lifeKey = tradeLifetimeKey(network, assetIdHex);
+    const life = Number(await env.REGISTRY_KV.get(lifeKey)) || 0;
+    await env.REGISTRY_KV.put(lifeKey, String(Math.max(0, life - priceSats)));
+  }
+  if (seen) {
+    await env.REGISTRY_KV.delete(transferSeenKey(network, assetIdHex, txidHex));
+    const countKey = transferCountKey(network, assetIdHex);
+    const count = parseInt((await env.REGISTRY_KV.get(countKey)) || '0', 10) || 0;
+    await env.REGISTRY_KV.put(countKey, String(Math.max(0, count - 1)));
+  }
+  try { await _bustAssetDetailCache(network, assetIdHex); } catch {}
+  return { removed: true, asset_id: assetIdHex, txid: txidHex, price_sats: priceSats, transfer_count_adjusted: !!seen };
+}
+
 // Recent-trades ring buffer per asset. Bounded at TRADES_RING_CAP entries.
 // Newest first; older entries fall off the end. Each entry is the same
 // shape we write to lastTradeKey so client renderers can reuse the same
@@ -16926,6 +16985,13 @@ async function handleAttest(assetIdHex, req, env, network, cors) {
   return jsonResponse({ ok: true, attestation }, 200, cors);
 }
 
+// Only confirmed transactions may enter durable transfer/trade history. Kept
+// as a tiny named predicate so the mempool-eviction invariant has direct unit
+// coverage instead of being buried inside the large hint handler.
+function _shouldPersistAssetHint(confirmed) {
+  return confirmed === true;
+}
+
 // Targeted-scan endpoint. The cron polls in 5-min ticks, so a freshly broadcast
 // etch can take ~5–15 min to surface in /assets. The dApp calls this right after
 // broadcast with the reveal txid; the worker fetches the tx directly from
@@ -17074,7 +17140,20 @@ async function handleAssetHint(req, env, network, cors, ctx) {
       try { derived = await _deriveTradeFromChain(env, network, tx, decoded.opcode, dx.asset_id, dx); }
       catch { return jsonResponse({ ok: true, source: 'deferred', asset_id: dx.asset_id, network }, 200, cors); }
     }
-    const counted = await bumpTransferCount(env, network, dx.asset_id, txidHex);
+    // A mempool sighting is not durable chain history. Transactions can be
+    // evicted or replaced after an explorer has briefly served them; writing
+    // xferseen + trade aggregates here used to leave a permanent phantom
+    // trade and also made the later confirmed cron scan dedupe itself away.
+    //
+    // Keep returning the optimistic decoded record to the submitting dapp,
+    // but only persist counters/history once an explorer reports the tx as
+    // confirmed. An unconfirmed tx that later confirms is picked up by the
+    // normal block scanner (or a repeated hint), neither of which is blocked
+    // by a premature xferseen marker.
+    const persistHint = _shouldPersistAssetHint(confirmed);
+    const counted = persistHint
+      ? await bumpTransferCount(env, network, dx.asset_id, txidHex)
+      : false;
     let lastTrade = null;
     if (derived && derived.price_sats > 0) {
       lastTrade = {
@@ -17102,7 +17181,7 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     }
     await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
     return jsonResponse({
-      ok: true, source: counted ? 'hint' : 'already-counted',
+      ok: true, source: !persistHint ? 'pending-confirmation' : counted ? 'hint' : 'already-counted',
       asset_id: dx.asset_id,
       kind: decoded.opcode === T_AXFER ? 'axfer'
           : decoded.opcode === T_AXFER_VAR ? 'axfer-var'
@@ -28524,6 +28603,7 @@ export {
   // (b) helper writes match the hint-path aggregates byte-for-byte.
   // Drift in either silently breaks lifetime + 24h volume accuracy.
   _deriveAxferTradeFromChain, _recordSettledTradeVolume, sweepPreauthPhantoms, _recordPreauthFillFromSweep,
+  _removePhantomTrade, _shouldPersistAssetHint,
   // Journal-based reconcile — race-free authoritative recompute of the
   // lifetime counter from the trade-event journal. Tests pin (a) sum
   // correctness across N entries, (b) single put semantics (no RMW),
@@ -31936,6 +32016,21 @@ async function _routeFetch(req, env, ctx) {
         // the next /assets/:id read without waiting on the SWR FRESH window.
         ctx.waitUntil(_bustAssetDetailCache(network, aid));
         return jsonResponse(result, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    // POST /admin/remove-phantom-trade?aid=X&txid=Y
+    //   Remove one explicitly identified mempool-evicted trade written by
+    //   the pre-confirmation hint path. DEBUG_TOKEN-gated and deliberately
+    //   non-bulk: operators must first verify the tx is absent from chain.
+    if (url.pathname === '/admin/remove-phantom-trade' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = (url.searchParams.get('aid') || '').toLowerCase();
+        const txid = (url.searchParams.get('txid') || '').toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(aid) || !/^[0-9a-f]{64}$/.test(txid)) {
+          return jsonResponse({ error: 'aid and txid are required (64-hex)' }, 400, cors);
+        }
+        return jsonResponse(await _removePhantomTrade(env, network, aid, txid), 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
     }
     // GET /admin/volume-disagree?aid=X[&limit=N]
