@@ -352,7 +352,7 @@ $('keep-save').addEventListener('click', () => {
   const k = lane.keep(), st = $('mine-st');
   if (!k) { st.textContent = 'Sign in first.'; return; }
   const blob = new Blob([JSON.stringify(k.save(), null, 1)], { type: 'application/json' }), url = URL.createObjectURL(blob);
-  const a = Object.assign(document.createElement('a'), { href: url, download: `tacit-btc-eth-swaps-${new Date().toISOString().slice(0, 10)}.json` });
+  const a = Object.assign(document.createElement('a'), { href: url, download: `tacit-btc-eth-swaps-${new Date().toLocaleDateString('en-CA')}.json` });
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
   st.textContent = 'Saved. Keep it until your swaps are done.';
