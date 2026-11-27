@@ -18,6 +18,12 @@ envVarGroups:
         value: mainnet
       - key: CHAIN_ID
         value: "1"
+      - key: PRAXIS_URL
+        value: https://tacit-praxis-ceremony.onrender.com
+      - key: PRAXIS_STALL_WARN_SECS
+        value: "7200"
+      - key: PRAXIS_STALL_CRITICAL_SECS
+        value: "10800"
       - key: POOL_ADDR
         value: "0x000000000Ed1eabD231Be41d93b719056F7febFC"
       - key: HEADER_RELAY_ADDR

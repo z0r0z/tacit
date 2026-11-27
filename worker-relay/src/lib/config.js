@@ -253,6 +253,9 @@ export const CFG = {
   vastApiKey: opt('VAST_API_KEY', ''),
   vastHoursWarn: num('VAST_HOURS_WARN', 48),
   vastHoursCritical: num('VAST_HOURS_CRITICAL', 12),
+  praxisUrl: opt('PRAXIS_URL', 'https://tacit-praxis-ceremony.onrender.com').replace(/\/$/, ''),
+  praxisStallWarnSecs: num('PRAXIS_STALL_WARN_SECS', 2 * 60 * 60),
+  praxisStallCriticalSecs: num('PRAXIS_STALL_CRITICAL_SECS', 3 * 60 * 60),
   proveFailuresCritical: num('PROVE_FAILURES_CRITICAL', 4),
   proverBoardQuietSecs: num('PROVER_BOARD_QUIET_SECS', 600),
   // The monitor warns on a proof the pool refused from a board worker within this many seconds (two 5-minute runs), not on the lifetime count.
