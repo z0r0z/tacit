@@ -20,10 +20,10 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="preconnect" href="https://tacit-fast-board.onrender.com" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
-<!-- preload-roots: /btc/app.js -->
+<!-- preload-roots: /btc/app.js | | /swap/atomic-market.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=dd33b791">
-<link rel="modulepreload" href="/swap/atomic.js?cb=f1ba9701">
+<link rel="modulepreload" href="/btc/app.js?cb=a3046643">
+<link rel="modulepreload" href="/swap/atomic.js?cb=19cd0850">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -33,25 +33,8 @@
 <link rel="modulepreload" href="/community-nodes.js">
 <link rel="modulepreload" href="/nodes-pin.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
-<link rel="modulepreload" href="/swap/atomic-market.js?cb=c42a3f60">
-<link rel="modulepreload" href="/fast/discover.js?cb=9b85f002">
-<link rel="modulepreload" href="/fastbridge-http.js">
-<link rel="modulepreload" href="/fastbridge-client.js?cb=09a13249">
-<link rel="modulepreload" href="/fastbridge-bl.js">
-<link rel="modulepreload" href="/adaptor-xswap.js">
-<link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
-<link rel="modulepreload" href="/bulletproofs.js">
-<link rel="modulepreload" href="/bulletproofs-plus.js">
-<link rel="modulepreload" href="/adaptor-signature.js">
-<link rel="modulepreload" href="/adaptor-btc-lock.js">
-<link rel="modulepreload" href="/fastbridge-price.js">
-<link rel="modulepreload" href="/fastbridge-mailbox.js?cb=4c2ccb36">
-<link rel="modulepreload" href="/sealed-request.js">
-<link rel="modulepreload" href="/fastbridge-board.js">
-<link rel="modulepreload" href="/fastbridge-board-client.js?cb=b3c3ac03">
-<link rel="modulepreload" href="/fastbridge-rate.js?cb=b392f6cc">
-<link rel="modulepreload" href="/swap/atomic-probe.js?cb=99f7488b">
 <link rel="modulepreload" href="/trade/poolux.js?cb=59d125e5">
+<link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/btc/add-eth.js?cb=d423798a">
 <link rel="modulepreload" href="/btc/panel.js?cb=4e01aedd">
 <link rel="modulepreload" href="/btc/send.js?cb=990d748a">
@@ -117,8 +100,12 @@ html[data-sec="chains/btc"] .hero :is(h1, .sub) { display: none !important; }
 html[data-sec="chains/btc"] #sec-head > p:not(.sh-n) { display: none; }      /* (the Chains line above the tabs says nothing this tab's own line and the hero do not) */
 html[data-sec="chains/btc"] .hero { padding-top: clamp(8px, 2vh, 20px); }      /* (the Chains head above says it: its tab and its line) */
 .hero { padding: clamp(18px, 5vh, 52px) 0 0; text-align: center; }
-.mk { display: grid; grid-template-columns: auto minmax(72px, 168px) auto; align-items: center; justify-content: center; gap: 6px; margin: 0 auto 18px; }
+.mk { display: grid; grid-template-columns: auto minmax(72px, 168px) auto; align-items: center; justify-content: center; gap: 6px; margin: 0 auto 14px; }
+.mk .asset { display: grid; justify-items: center; gap: 8px; min-width: 82px; }
 .mk .tk { width: clamp(68px, 18vw, 104px); height: clamp(68px, 18vw, 104px); box-shadow: 0 18px 36px -22px rgba(0,0,0,.55); }
+.mk .asset span { display: grid; gap: 1px; line-height: 1.2; }
+.mk .asset b { font: 500 12px var(--mono); letter-spacing: .01em; }
+.mk .asset small { font: 400 10.5px var(--mono); color: var(--mute); }
 .wire { position: relative; height: 24px; }
 .wire i { position: absolute; left: 14px; right: 14px; top: 50%; height: 1px; background: currentColor; opacity: .4; }
 .wire i::before, .wire i::after { content: ''; position: absolute; top: 50%; width: 7px; height: 7px; margin-top: -3.5px; border: solid; border-width: 1.5px 1.5px 0 0; }
@@ -133,12 +120,23 @@ html[data-sec="chains/btc"] .hero { padding-top: clamp(8px, 2vh, 20px); }      /
 .hero h1 { font: 400 clamp(44px, 11vw, 68px)/1 var(--serif); letter-spacing: -.025em; margin: 0 0 10px; }
 .hero h1 em { font-style: italic; color: var(--mute); }
 .hero .sub { margin: 0 auto; max-width: 30em; font: 400 clamp(18px, 2.4vw, 21px)/1.3 var(--serif); color: color-mix(in srgb, var(--ink) 72%, var(--mute)); text-wrap: balance; }
-.live { min-height: 20px; margin: 14px 0 0; font-size: 12.5px; color: var(--mute); }
+.live { min-height: 20px; margin: 12px 0 0; font-size: 12.5px; color: var(--mute); }
 .live b { font-weight: 500; color: var(--ink); }
-.live span { white-space: nowrap; }      /* each part of the line whole: it breaks between them */
+.live span { white-space: nowrap; }
+/* the track record at the top: swaps finished, orange for Bitcoin sold for ETH, blue for ETH sold for Bitcoin (the numbers are darkened toward the ink so they stay readable) */
+.rec { display: flex; flex-wrap: wrap; justify-content: center; gap: 1px; margin: 16px auto 0; max-width: 46em; overflow: hidden; background: var(--hair); border: 1px solid var(--hair); border-radius: 14px; box-shadow: 0 14px 28px -26px rgba(0,0,0,.55); }
+.rec[hidden] { display: none; }
+.rt { flex: 1 1 92px; min-width: 84px; padding: 10px 8px 9px; text-align: center; background: var(--card); border: 0; border-top: 3px solid var(--hair-2); border-radius: 0; }
+.rt b { display: block; font: 500 22px/1 var(--mono); letter-spacing: -.02em; color: var(--ink); }
+.rt span { display: block; margin-top: 5px; font-size: 10.5px; color: var(--mute); }
+.rt.btc { border-top-color: var(--orange); background: color-mix(in srgb, var(--orange) 8%, var(--card)); }
+.rt.btc b { color: color-mix(in srgb, var(--orange) 72%, var(--ink)); }
+.rt.eth { border-top-color: var(--blue); background: color-mix(in srgb, var(--blue) 9%, var(--card)); }
+.rt.eth b { color: color-mix(in srgb, var(--blue) 72%, var(--ink)); }
+@media (max-width: 480px) { .rec { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; } }      /* each part of the line whole: it breaks between them */
 
 /* the lane, drawn by swap/atomic.js in the card's own styles */
-.lane { margin: 26px 0 0; padding: 16px; background: var(--card); border: 1px solid var(--hair); border-radius: 20px; box-shadow: 0 30px 60px -48px rgba(0,0,0,.5); }
+.lane { margin: 24px 0 0; padding: 16px; background: linear-gradient(var(--card), var(--card)) padding-box, linear-gradient(115deg, color-mix(in srgb, var(--orange) 55%, var(--hair-2)), var(--hair) 45%, color-mix(in srgb, var(--blue) 55%, var(--hair-2))) border-box; border: 1px solid transparent; border-radius: 20px; box-shadow: 0 28px 64px -42px rgba(0,0,0,.58); }
 /* the button stays in the card: the page is short, and a phone's bar of sections sits where the card's sticky button would */
 .lane .act { position: static; margin-left: -16px; margin-right: -16px; background: none; }
 /* an amount sized to its field: as large as the card draws it, smaller as it gets longer, never cut (--n is its length, set by the lane) */
@@ -160,15 +158,16 @@ html .lane #atomic .rcpt dd { text-wrap: balance; }      /* a fact that has to b
 .dd { border-top: 1px solid var(--hair); interpolate-size: allow-keywords; }
 .dd:last-of-type { border-bottom: 1px solid var(--hair); }
 .dd.first { margin-top: 40px; }
-.dd > summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 14px; min-height: 52px; padding: 14px 0; box-sizing: border-box; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; position: relative; padding-right: 26px; }
+.dd > summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 14px; min-height: 52px; padding: 14px 10px; margin: 0 -10px; box-sizing: border-box; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; position: relative; padding-right: 36px; border-radius: 10px; transition: background-color .15s; }
 .dd > summary::-webkit-details-marker { display: none; }
 .dd > summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
 .dd h2 { margin: 0; font: 400 22px/1.15 var(--serif); letter-spacing: -.012em; }
 .dd .sum { flex: 1 1 0; min-width: 0; font: 400 12px/1.5 var(--mono); color: var(--mute); }
 .dd .sum b { font-weight: 500; color: var(--ink); }
-.dd .chev { position: absolute; right: 4px; top: 50%; width: 7px; height: 7px; margin-top: -6px; border-right: 1.5px solid var(--mute); border-bottom: 1.5px solid var(--mute); transform: rotate(45deg); transition: transform .25s ease, border-color .15s; }
+.dd .chev { position: absolute; right: 14px; top: 50%; width: 7px; height: 7px; margin-top: -6px; border-right: 1.5px solid var(--mute); border-bottom: 1.5px solid var(--mute); transform: rotate(45deg); transition: transform .25s ease, border-color .15s; }
 .dd[open] > summary .chev { transform: rotate(-135deg); margin-top: -2px; }
-@media (hover: hover) { .dd > summary:hover .chev { border-color: var(--ink); } }
+@media (hover: hover) { .dd > summary:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); } .dd > summary:hover .chev { border-color: var(--ink); } }
+.dd[open] > summary { background: color-mix(in srgb, var(--ink) 3%, transparent); }
 .dd-b { padding: 2px 0 26px; }
 .dd::details-content { block-size: 0; overflow: clip; transition: block-size .28s ease, content-visibility .28s allow-discrete; }
 .dd[open]::details-content { block-size: auto; }
@@ -300,6 +299,7 @@ html .lane #atomic .pt-say.err { color: var(--err); }
 #pv-fund .bar { height: 4px; margin: 8px 0 6px; background: var(--hair); border-radius: 2px; overflow: hidden; }
 #pv-fund .bar i { display: block; height: 100%; width: 0; background: var(--ink); border-radius: 2px; }
 #pv-fund .fig span { white-space: nowrap; }
+#pv-fund .rec { margin: 0 0 8px; color: var(--ink); }
 
 /* becoming one */
 #be .box { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
@@ -468,6 +468,11 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh.sh-l { max-width: 560px; text-align: left; } .sh.sh-l .sh-more { margin-top: 18px; }
 @media (hover: hover) { .sh-t a:hover { color: var(--ink); } }
 @media (max-width: 520px) { .sh { margin-top: 18px; } .sh-t { display: grid; grid-auto-columns: 1fr; } .sh-t a { padding: 6px 6px; font-size: 12px; } }
+/* Chains has several distinct routes. On a phone they are a legible 3 × 2 map, not six squeezed labels in one row. */
+@media (max-width: 640px) {
+  .sh[data-of="chains"] .sh-t { display: grid; grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .sh[data-of="chains"] .sh-t a { min-width: 0; padding-inline: 6px; white-space: normal; text-wrap: balance; }
+}
 .sh-more { list-style: none; margin: 22px auto 0; padding: 4px 18px; max-width: 560px; text-align: left; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
 .sh-more li + li { border-top: 1px solid var(--hair); }
 .sh-more a { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 2px 14px; padding: 14px 2px; color: var(--ink); font: 400 14px/1.3 var(--mono); text-decoration: none; }
@@ -588,7 +593,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=4c9196f2" defer></script>
+<script src="/chrome.js?cb=411895d5" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -649,13 +654,18 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
   <main class="bx">
     <!-- chrome:sec:begin -->
-    <div class="sh" id="sec-head" data-of="chains"><h1 tabindex="-1">Chains</h1><p>Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.</p><nav class="sh-t" aria-label="Chains"><i class="sh-i" aria-hidden="true"></i><a href="/#/chains/move" data-v="move">Move</a><a href="/btc/" data-v="btc" aria-current="page">BTC ⇄ ETH</a><a href="/#/chains/bridge" data-v="bridge">Bridge</a><a href="/fast/" data-v="fast">Fast bridge</a><a href="/tac/?v=notes#bridge" data-v="notes">Notes</a></nav><p class="sh-n">Swap Bitcoin and ETH directly. Your ETH arrives private.</p></div>
+    <div class="sh" id="sec-head" data-of="chains"><h1 tabindex="-1">Chains</h1><p>Choose where your money starts and where you want it to arrive.</p><nav class="sh-t" aria-label="Chains"><i class="sh-i" aria-hidden="true"></i><a href="/#/chains/overview" data-v="overview">Overview</a><a href="/#/chains/move" data-v="move">Private balance</a><a href="/btc/" data-v="btc" aria-current="page">BTC ⇄ ETH</a><a href="/#/chains/bridge" data-v="bridge">TAC bridge</a><a href="/fast/" data-v="fast">Fast TAC</a><a href="/tac/?v=notes#bridge" data-v="notes">Bitcoin notes</a></nav><p class="sh-n">Swap Bitcoin and ETH directly. Your ETH arrives private.</p></div>
     <!-- chrome:sec:end -->
     <section class="hero" aria-labelledby="h">
-      <div class="mk" aria-hidden="true"><svg class="tk"><use href="#tk-btc"/></svg><span class="wire"><i></i></span><svg class="tk"><use href="#tk-eth"/></svg></div>
+      <div class="mk" aria-hidden="true">
+        <span class="asset"><svg class="tk"><use href="#tk-btc"/></svg><span><b>Bitcoin</b><small>public chain</small></span></span>
+        <span class="wire"><i></i></span>
+        <span class="asset"><svg class="tk"><use href="#tk-eth"/></svg><span><b>Private ETH</b><small>Tacit balance</small></span></span>
+      </div>
       <h1 id="h">BTC <em>⇄</em> ETH</h1>
       <p class="sub">Swap Bitcoin and ETH directly. Your ETH arrives private. <a href="/docs/btc/">How it works</a></p>
       <p class="live num" id="live" role="status"></p>
+      <div class="rec" id="rec" role="group" aria-label="Track record of Tacit’s provider" hidden></div>
       <noscript><p>This page needs JavaScript.</p></noscript>
     </section>
 
@@ -792,6 +802,27 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/btc/app.js?cb=dd33b791"></script>
+<!-- warm:begin -->
+<template id="warm">
+<link rel="modulepreload" href="/swap/atomic-market.js?cb=c42a3f60">
+<link rel="modulepreload" href="/fast/discover.js?cb=9b85f002">
+<link rel="modulepreload" href="/fastbridge-http.js">
+<link rel="modulepreload" href="/fastbridge-client.js?cb=09a13249">
+<link rel="modulepreload" href="/fastbridge-bl.js">
+<link rel="modulepreload" href="/adaptor-xswap.js">
+<link rel="modulepreload" href="/bulletproofs.js">
+<link rel="modulepreload" href="/bulletproofs-plus.js">
+<link rel="modulepreload" href="/adaptor-signature.js">
+<link rel="modulepreload" href="/adaptor-btc-lock.js">
+<link rel="modulepreload" href="/fastbridge-price.js">
+<link rel="modulepreload" href="/fastbridge-mailbox.js?cb=4c2ccb36">
+<link rel="modulepreload" href="/sealed-request.js">
+<link rel="modulepreload" href="/fastbridge-board.js">
+<link rel="modulepreload" href="/fastbridge-board-client.js?cb=b3c3ac03">
+<link rel="modulepreload" href="/fastbridge-rate.js?cb=b392f6cc">
+<link rel="modulepreload" href="/swap/atomic-probe.js?cb=99f7488b">
+</template>
+<!-- warm:end -->
+<script type="module" src="/btc/app.js?cb=a3046643"></script>
 </body>
 </html>
