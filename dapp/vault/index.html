@@ -374,7 +374,7 @@ input::placeholder { color: var(--mute); opacity: .7; }
 header.top { position: relative; z-index: 30; container: top / inline-size; }
 /* one header on every page, so moving between a section's views (some are the front page, some pages of their own) moves nothing: the same height,
    and, where the sections are named, the same place for them whatever the page's label beside the mark */
-header.top { padding-top: 22px; padding-bottom: 8px; }
+header.top { padding-top: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--hair); }
 @container top (min-width: 900px) { header.top .brand { min-width: 160px; } }
 header.top .top-r { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
 
@@ -390,7 +390,7 @@ header.top .sn > .sm { margin-left: auto; }
   transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 /* the look's own rules each sit under the rule they restyle, at the same weight */
-.sn > a, .sn summary { font: 400 14px/1 var(--sans, var(--mono)); }
+.sn > a, .sn summary { font: 500 13.5px/1 var(--sans, var(--mono)); border-radius: 999px; letter-spacing: -.005em; }
 .sn summary::-webkit-details-marker { display: none; }
 /* the menu is a <details>: a page's own rules for details and summary (a border, a "+", a margin) are not for it */
 header.top .sm { margin: 0; padding: 0; border: 0; font: inherit; }
@@ -400,8 +400,8 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 .sn svg.fill, .sf svg.fill { fill: currentColor; stroke: none; }
 .sn > a { display: none; }
 .sn > a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { color: var(--ink); background: var(--hair); }
-@media (hover: hover) { .sn > a:hover, .sn summary:hover { color: var(--ink); background: var(--hair); } }
+.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { color: var(--ink); background: var(--raise, var(--card)); box-shadow: inset 0 0 0 1px var(--hair-2, var(--hair)), 0 1px 2px rgba(20,23,26,.06); }
+@media (hover: hover) { .sn > a:hover, .sn summary:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 6%, transparent); } .sn > a[aria-current="page"]:hover, .sn summary.here:hover, .sm[open] > summary:hover { background: var(--raise, var(--card)); } }
 .sn > a:active, .sn summary:active { transform: scale(.93); }
 .sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
 @container top (min-width: 540px) { .sn > a { display: inline-flex; } }
@@ -435,15 +435,15 @@ header.top .chip {
   font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
-header.top .chip { background: var(--card, transparent); border-radius: 10px; font: 500 14px/1 var(--sans, var(--mono)); }
+header.top .chip { background: var(--raise, var(--card, transparent)); border-radius: 999px; border-color: var(--hair-2, var(--hair-strong, var(--hair))); font: 500 13.5px/1 var(--sans, var(--mono)); box-shadow: 0 1px 2px rgba(20,23,26,.05); }
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
-header.top .chip .dot.on { background: var(--ok); }
-header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); }
-header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; }
+header.top .chip .dot.on { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
+header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 22%, transparent); }
+header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; box-shadow: none; }
 header.top .chip.act { background: transparent; }
 header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
-@media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
+@media (hover: hover) { header.top .chip:hover { border-color: var(--ink); background: var(--raise, var(--card)); } header.top .chip.act:hover { border-color: transparent; background: color-mix(in srgb, var(--ink) 6%, transparent); } }
 header.top .chip:active { transform: scale(.97); }
 header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
@@ -462,11 +462,12 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 /* the phone's bar: the first four sections and More, fixed to the foot of the window; the footer keeps clear of it */
 .bn { display: none; }
 @media (max-width: 539px) {
-  .bn { position: fixed; z-index: 29; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(5, 1fr); padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
-    background: color-mix(in srgb, var(--paper, var(--bg, #fff)) 92%, transparent); border-top: 1px solid var(--hair); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
-  .bn a { display: grid; justify-items: center; gap: 3px; min-height: 44px; padding: 5px 2px 3px; border-radius: 12px; color: var(--mute); font: 500 10.5px/1.1 var(--mono); text-decoration: none; -webkit-tap-highlight-color: transparent; }
-  .bn a svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-  .bn a[aria-current="page"] { color: var(--ink); background: var(--hair); }
+  .bn { position: fixed; z-index: 29; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    background: color-mix(in srgb, var(--card, var(--bg, #fff)) 90%, transparent); border-top: 1px solid var(--hair-2, var(--hair)); box-shadow: 0 -8px 24px -18px rgba(0,0,0,.35); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+  .bn a { position: relative; display: grid; justify-items: center; gap: 3px; min-height: 44px; padding: 5px 2px 3px; border-radius: 12px; color: var(--mute); font: 500 10.5px/1.1 var(--sans, var(--mono)); text-decoration: none; -webkit-tap-highlight-color: transparent; transition: color .15s, background-color .15s; }
+  .bn a svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .bn a[aria-current="page"] { color: var(--ink); background: color-mix(in srgb, var(--ink) 7%, transparent); }
+  .bn a[aria-current="page"]::before { content: ''; position: absolute; top: 0; left: 28%; right: 28%; height: 2px; border-radius: 0 0 2px 2px; background: var(--orange); }
   .bn a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
   footer.sf { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
   #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
@@ -508,10 +509,10 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh-more a b { grid-column: 2; font-weight: 500; } .sh-more a small { grid-column: 2; font-size: 12px; color: var(--mute); } .sh-more a i { grid-column: 3; grid-row: 1 / span 2; font-style: normal; color: var(--mute); }
 /* in Graphite the sections' words are set in the grotesk, as the header's are; a page that has no --sans keeps its own face */
 .sh p, .sh-t a, .sh-more a, .bn a { font-family: var(--sans, var(--mono)); }
-.sh-t { border-radius: 10px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); }
-.sh-t a { border-radius: 8px; }
-.sh-t a[aria-current="page"] { background: var(--raise, var(--card)); }
-.sh-t .sh-i { border-radius: 8px; background: var(--raise, var(--card)); }
+.sh-t { border-radius: 12px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); border: 1px solid var(--hair); }
+.sh-t a { border-radius: 9px; font-weight: 500; }
+.sh-t a[aria-current="page"] { background: var(--raise, var(--card)); box-shadow: 0 1px 3px rgba(20,23,26,.08); }
+.sh-t .sh-i { border-radius: 9px; background: var(--raise, var(--card)); box-shadow: 0 1px 3px rgba(20,23,26,.08); }
 /* each page of its own, as the view of its section: its own heading (and the switch the section's tabs now are) gives way to the section's head; everything
    else the page has stays, its notes, explainers and status lines included, and what belongs to the other view is out of the way */
 /* (the vault is stamped with its section alone, data-sec="borrow", until chrome.js names the side from the address; the page's own rules already keep
@@ -531,17 +532,17 @@ html[data-sec="rewards/"] #find-h { display: none !important; }
 
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
-  position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
-  width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
-  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px;
-  box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
+  position: absolute; z-index: 5; top: calc(100% + 10px); right: 0; display: grid; gap: 2px; box-sizing: border-box;
+  width: max-content; min-width: 228px; max-width: calc(100vw - 32px); padding: 7px;
+  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 18px;
+  box-shadow: 0 24px 52px -24px rgba(14,17,22,.45), 0 2px 8px rgba(14,17,22,.08);
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
-.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
-.sm-p a { font: 400 14px/1 var(--sans, var(--mono)); }
+.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 11px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; transition: background-color .14s; }
+.sm-p a { font: 500 13.5px/1 var(--sans, var(--mono)); }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
-.sm-p a[aria-current="page"] { background: var(--hair); }
+.sm-p a[aria-current="page"] { background: var(--field, var(--hair)); box-shadow: inset 0 0 0 1px var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
 .sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
 .sm-p .pr { display: flex; }
@@ -587,18 +588,18 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 .sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
 @media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
 
-/* Graphite's palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
-   its head, so the one block recolours them all and a page's own styles are untouched. The values are the front page's (index.html keeps them with the rest of its
-   tokens). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and are left out: the SPX page, by
-   its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the build gives it. */
+/* Atelier Mineral palette, for every page that wears the header: warm limestone & alabaster in light mode, deep obsidian slate in dark mode, with burnt-amber accent.
+   Two pages keep a ground of their own and are left out: the SPX page, by its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu. */
 :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-  --paper: #E6E6E4; --bg: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --ink: #17181B; --mute: #5C5D62;
-  --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24); --hair-strong: rgba(23,24,27,.24); --skel: rgba(23,24,27,.08);
+  --paper: #F4F1EA; --bg: #F4F1EA; --card: #FFFEFB; --field: #EFECE4; --raise: #FFFFFF; --ink: #14171A; --mute: #525962; --faint: #676F79;
+  --hair: rgba(20,23,26,.09); --hair-2: rgba(20,23,26,.20); --hair-strong: rgba(20,23,26,.20); --skel: rgba(20,23,26,.07);
+  --orange: #D96B08; --ok: #0E7A4B; --warn: #B45309; --err: #C4321D;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-    --paper: #131417; --bg: #131417; --card: #1A1B1F; --field: #15161A; --ink: #E4E4E1; --mute: #9A9BA1;
-    --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22); --hair-strong: rgba(228,228,225,.22); --skel: rgba(228,228,225,.07);
+    --paper: #0E1116; --bg: #0E1116; --card: #161B22; --field: #10141B; --raise: #232A35; --ink: #F0ECE3; --mute: #9BA3B0; --faint: #7E8796;
+    --hair: rgba(240,236,227,.09); --hair-2: rgba(240,236,227,.20); --hair-strong: rgba(240,236,227,.20); --skel: rgba(240,236,227,.07);
+    --orange: #F59E28; --ok: #4ADE80; --warn: #F59E28; --err: #F87171;
   }
 }
 
