@@ -24,6 +24,8 @@
 <meta name="theme-color" content="#17150F" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤫</text></svg>">
 <link rel="preconnect" href="https://tacit-btc-pool-mainnet.onrender.com" crossorigin>
+<link rel="preconnect" href="https://api.tacit.finance" crossorigin>
+<link rel="modulepreload" href="/sats/app.js?cb=3f6d4408">
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('../fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
 @font-face { font-family: 'Instrument Serif'; font-weight: 400; font-display: swap; src: url('../fonts/instrument-serif-400-latin.woff2') format('woff2'); }
@@ -96,7 +98,7 @@ h1 { font: 400 var(--t-h1)/.95 var(--serif); margin: var(--s4) 0 var(--s2); lett
 h2 { font: 400 var(--t-h2)/1.15 var(--serif); margin: 0 0 var(--s4); }
 h3 { font: 400 var(--t-h3)/1.2 var(--serif); margin: var(--s6) 0 var(--s3); }
 .eyebrow { font: var(--t-xs)/1.4 var(--mono); color: var(--mute); letter-spacing: .06em; text-transform: uppercase; margin: 0 0 var(--s2); }
-.block { margin: 0 0 var(--s8); }
+.block { margin: 0 0 var(--s8); content-visibility: auto; contain-intrinsic-size: auto 520px; }
 .block > h2 { padding-top: var(--s5); border-top: 1px solid var(--ink); }
 
 /* ── hero ── */
