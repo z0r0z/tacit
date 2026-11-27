@@ -97,7 +97,6 @@ const PINNED_TRADES = Object.freeze([
   // on mempool.space.
   Object.freeze({ txid: 'b8cb32dc79dc31fce0cfc77879a79206bb038b3b0663d6b4e80b9876360c3b75', price_sats: 33872, amount: '12057512727', ts: 1779818068 }),
   Object.freeze({ txid: '9f8bbcc44d287f710f5612d1f1d15dd8ce21438773d708188d612aa9d8087657', price_sats: 34072, amount: '12128710064', ts: 1779816536 }),
-  Object.freeze({ txid: '3340f16c5e7eb7961a1c3dbf2c6cade4b6f459ff5468ac0048f7c4698580069a', price_sats: 627, amount: '19', ts: 1779805415 }),
   Object.freeze({ txid: '4bf0ce5c4921aeb1ee2380dd79c04aa481e13d7db1b7d1a3c8d6c2d6a6cbe44c', price_sats: 44000, amount: '15851814465', ts: 1779794916 }),
   Object.freeze({ txid: '894210c1dac6333d61768ace677a7405c990cb59087fa32eae1767d96237f80e', price_sats: 113000, amount: '63503761062', ts: 1779793535 }),
 ]);
