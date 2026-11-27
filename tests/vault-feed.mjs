@@ -60,6 +60,16 @@ const PROOF = { accountProof: ['0x1234', '0x5678'], storageProof: [{ proof: ['0x
   ok('a header that does not rebuild to its hash is refused');
 }
 
+// ── a Glamsterdam header (a real Sepolia block): its block access list hash and slot number follow requestsHash ──
+{
+  const GX = JSON.parse(readFileSync(new URL('fixtures/vault-feed-glamsterdam-block.json', import.meta.url), 'utf8')).block;
+  assert.ok(Feed.headerRlp(GX).includes(GX.blockAccessListHash.slice(2)), 'it rebuilds to its hash, with the block access list hash in it');
+  assert.throws(() => Feed.headerRlp({ ...GX, slotNumber: undefined }), /did not rebuild/, 'and without its slot number it does not');
+  const nulls = { ...FX.sample, blockAccessListHash: null, slotNumber: null };
+  assert.equal(Feed.headerRlp(nulls), Feed.headerRlp(FX.sample), 'an older block a node writes the new fields as null for rebuilds as before');
+  ok('a Glamsterdam header rebuilds to its hash, and an older one as before');
+}
+
 // ── the pool passes over a node with a wrong header or proof ──
 {
   const forged = { ...FX.sample, stateRoot: `0x${'ab'.repeat(32)}` };
