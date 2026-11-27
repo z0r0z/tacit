@@ -268,7 +268,7 @@ const RPCV = { balance: 10n ** 18n, receipt: { status: '0x1' } };
 const hex = (v) => '0x' + BigInt(v).toString(16);
 // the house provider's /info, with what its upkeep adds (fastbridge-lp/lib/automation.mjs): null answers 404, as a provider without it does
 const HOUSE = 'https://tacit-fastbridge-pair-lp.onrender.com';
-let houseInfo = { v: 1, stats: { since: 1795608000, swaps: 4, swapsForward: 3, swapsReverse: 1, refunds: 0, reinvestedEth: '1234567', netEth: '1234567', capacity: { eth: '320000000', sats: '1500000', valueEth: '365000000' } }, target: { eth: '1000000000', btcAsEth: '1000000000', reached: false }, skewBps: 0, buyback: { on: false, startedAt: null, routedEth: '0', tacBought: '0', sends: 0 } };
+let houseInfo = { v: 1, stats: { since: 1795608000, swaps: 4, swapsForward: 3, swapsReverse: 1, refunds: 0, volumeSats: '1500000', medianSecs: 1320, reinvestedEth: '1234567', netEth: '1234567', capacity: { eth: '320000000', sats: '1500000', valueEth: '365000000' } }, target: { eth: '1000000000', btcAsEth: '1000000000', reached: false }, skewBps: 0, buyback: { on: false, startedAt: null, routedEth: '0', tacBought: '0', sends: 0 } };
 const BAD = [], FLAKY = { on: false, asked: [] };
 // the network: the board and the public nodes are answered here, everything else off the machine is refused
 async function wire(page, { ads, boardDelayMs = 0 }) {
@@ -335,7 +335,7 @@ console.log('the page: the marks, the line, the lane');
   ok(/Tacit’s provider has finished 4 swaps \(3 BTC to ETH, 1 ETH to BTC\) since Nov 2\d, 0 refunded\./.test(fundLine), `the track record: swaps finished, by direction, refunds (${fundLine.slice(0, 140)})`);
   await page.waitForFunction(() => !document.querySelector('#rec').hidden, null, { timeout: 10000 });
   const recTxt = await text(page, '#rec');
-  ok(/4\s*swaps finished\s*3\s*BTC → ETH\s*1\s*ETH → BTC\s*0\s*refunded/.test(recTxt), `the track record at the top: swaps finished, each direction, refunds (${recTxt})`);
+  ok(/4\s*swaps finished\s*3\s*BTC → ETH\s*1\s*ETH → BTC\s*0\s*refunded\s*0\.015\s*BTC moved\s*~22\s*min, typical swap/.test(recTxt), `the track record at the top: swaps finished, each direction, refunds (${recTxt})`);
   const tint = await page.evaluate(() => [...document.querySelectorAll('#rec .rt')].map((e) => getComputedStyle(e).borderTopColor));
   ok(tint[1] === 'rgb(247, 147, 26)' && tint[2] === 'rgb(98, 126, 234)', `BTC → ETH is orange and ETH → BTC is blue (${tint.join(' | ')})`);
   const barW = await page.$eval('#pv-fund .bar i', (e) => e.getBoundingClientRect().width / e.parentElement.getBoundingClientRect().width);
