@@ -5,11 +5,12 @@
 //   const m = await readMarket({ fetchImpl, lists, call, now })
 //   m.rate          ETH per BTC, or null when the market could not be read
 //   m.providers     [{ id, name, b2e: { min, max, available, feeBps, flatFee }, e2b: same | null }]: b2e amounts and flat fee in sats, e2b in pool units (1e-8 ETH)
+//   m.unreached     true when no provider and no board answered at all (the network, not the providers): "none online" would be wrong
 //   m.totals        { b2e: { min, max, now, split }, e2b: same } over every provider (null for a direction none offers): the least taken, the most asked, the most takeable now
 //                   by one provider, and by the best few together (split)
 //   estimate(m, dir, amount) -> { get, provider } | null       what the best provider would give for `amount`, before its own quote
 
-import { discoverProviders } from '/fast/discover.js?cb=9b85f002';
+import { discoverProviders } from '/fast/discover.js?cb=a3e99ef5';
 import { makeRateFeed, chainlinkEthBtc, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=b392f6cc';
 import { ETH_NODES, batchSize } from '/eth-nodes.js';
 import { bodyType } from '/rpc-body.js';
@@ -58,7 +59,7 @@ export async function readMarket({ fetchImpl = (...a) => fetch(...a), lists = nu
     : makeRateFeed({ sources: [priceSource({ fetchImpl, now, ...(nodes ? { nodes: typeof nodes === 'function' ? nodes : () => nodes } : {}) })], counted: true, minSources: 2, maxSpreadBps: 1, unanimous: true, maxAgeSecs: 600, ...(now ? { now } : {}) });
   const l = lists || (await loadLists(fetchImpl));
   const [found, rate] = await Promise.all([
-    discoverProviders({ ...l, fetchImpl, assets: { btcAsset: SATS_ASSET_ID, evmAsset: ETH_ASSET_ID }, ...(now ? { now } : {}) }).catch(() => []),
+    discoverProviders({ ...l, fetchImpl, assets: { btcAsset: SATS_ASSET_ID, evmAsset: ETH_ASSET_ID }, ...(now ? { now } : {}) }).catch(() => Object.defineProperty([], 'reached', { value: false })),
     feed.refresh().then((c) => (c ? c.ethPerBtc : null), () => null),
   ]);
   // (ETH for Bitcoin is shown only for a provider the site names, as the pair client asks only those: fastbridge-pair.js namedProvider)
@@ -68,7 +69,7 @@ export async function readMarket({ fetchImpl = (...a) => fetch(...a), lists = nu
   const nowS = Math.floor(Date.now() / 1000);
   let rateOut = rate, rateAt = null;
   if (rate) lastPut({ ethPerBtc: rate, at: nowS }); else { const m = lastGet(nowS); if (m) { rateOut = m.ethPerBtc; rateAt = m.at; } }
-  return { rate: rateOut, ...(rateAt ? { rateAt } : {}), providers, totals: { b2e: totalOf(providers.map((p) => p.b2e)), e2b: totalOf(providers.map((p) => p.e2b)) }, at: Math.floor(Date.now() / 1000) };
+  return { rate: rateOut, ...(rateAt ? { rateAt } : {}), providers, ...(found.reached === false ? { unreached: true } : {}), totals: { b2e: totalOf(providers.map((p) => p.b2e)), e2b: totalOf(providers.map((p) => p.e2b)) }, at: Math.floor(Date.now() / 1000) };
 }
 
 // what is left of `amount` after a side's fee (its share and its flat part, both in the paying side's units)

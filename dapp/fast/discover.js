@@ -28,6 +28,7 @@ const assetsOf = (x, want) => {
 
 export async function discoverProviders({ providers = [], boards = [], fetchImpl = (...a) => fetch(...a), now, assets = TAC_PAIR }) {
   const out = [];
+  let reached = 0; // providers and boards that answered at all: none of them means "not reached", which is not "none online"
   await Promise.all(providers.map(async (p) => {
     try {
       // the other direction's terms, read beside the forward ones: a provider that sells only one way answers no /reverse/info, and is listed without them
@@ -35,6 +36,7 @@ export async function discoverProviders({ providers = [], boards = [], fetchImpl
         makeHttpCounter({ base: p.base, fetchImpl }).info(),
         fetchImpl(`${String(p.base).replace(/\/$/, '')}/reverse/info`, { signal: AbortSignal.timeout(15000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
       ]);
+      reached++;
       const claimPub = String(i.claimPub || '').toLowerCase(), a = assetsOf(i, assets);
       if (p.claimPub && p.claimPub.toLowerCase() !== claimPub) return;
       if (!a) return;
@@ -45,7 +47,9 @@ export async function discoverProviders({ providers = [], boards = [], fetchImpl
   }));
   await Promise.all(boards.map(async (boardBase) => {
     try {
-      for (const p of await readProviders({ board: makeBoardClient({ base: boardBase, fetchImpl }), ...(now ? { now } : {}) })) {
+      const listed = await readProviders({ board: makeBoardClient({ base: boardBase, fetchImpl }), ...(now ? { now } : {}) });
+      reached++;
+      for (const p of listed) {
         const a = assetsOf(p.ad, assets);
         if (!a) continue;
         out.push({ id: p.id, name: p.name, ref: { kind: 'mailbox', boardBase, gateway: p.ad.gateway, claimPub: p.ad.claimPub }, terms: termsOf(p.ad), assets: a, ...(p.ad.reverse ? { reverse: reverseTermsOf(p.ad.reverse) } : {}) });
@@ -53,7 +57,10 @@ export async function discoverProviders({ providers = [], boards = [], fetchImpl
     } catch { /* a board that does not answer has no providers here */ }
   }));
   const seen = new Set();
-  return out.sort((a, b) => (b.http ? 1 : 0) - (a.http ? 1 : 0)).filter((p) => (seen.has(p.id) ? false : (seen.add(p.id), true)));
+  const list = out.sort((a, b) => (b.http ? 1 : 0) - (a.http ? 1 : 0)).filter((p) => (seen.has(p.id) ? false : (seen.add(p.id), true)));
+  // (list.reached: false when there was something to ask and nothing answered; not enumerable, so the list reads as before everywhere else)
+  Object.defineProperty(list, 'reached', { value: reached > 0 || !(providers.length + boards.length), enumerable: false });
+  return list;
 }
 
 // A provider's defaults, in base units of TAC (8 places): 0.30% and 1 TAC, from 10 to 1,000 TAC.

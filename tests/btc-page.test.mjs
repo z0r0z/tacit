@@ -275,7 +275,7 @@ async function wire(page, { ads, boardDelayMs = 0 }) {
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const req = route.request(), url = req.url();
     if (url === `${HOUSE}/info`) return houseInfo ? route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(houseInfo) }) : route.fulfill({ status: 404, body: '{}' });
-    if (url === `${BOARD}/ads`) { if (boardDelayMs) await sleep(boardDelayMs); return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ ads }) }).catch(() => {}); }
+    if (url === `${BOARD}/ads`) { if (ads === null) return route.abort('connectionrefused').catch(() => {}); if (boardDelayMs) await sleep(boardDelayMs); return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ ads }) }).catch(() => {}); }
     // nodes that answer a browser with a 429 that carries no CORS headers (a CORS block, a console line for each request): the page must never ask them. FLAKY: publicnode refuses like that when a test sets it
     if (/mevblocker|buidlguidl/.test(url) || (FLAKY.on && /publicnode/.test(url))) { (/publicnode/.test(url) ? FLAKY.asked : BAD).push(url); return route.abort('failed'); }
     if (req.method() === 'POST' && /publicnode|drpc|1rpc|tenderly|mevblocker|blastapi|buidlguidl|thirdweb|stakely|nodereal|flashbots|tacit-node-gw/.test(url)) {
@@ -491,6 +491,15 @@ console.log('no provider online');
   const { page } = await fresh({ ads: [] });
   await page.waitForFunction(() => /No provider is online/.test(document.querySelector('#cap').textContent), null, { timeout: 20000 });
   ok((await page.$$('#pv-list li')).length === 0 && /no provider online/.test(await text(page, '#live')), 'the list says so, and the line under the heading too');
+  await page.close();
+}
+
+console.log('the providers cannot be reached (a network that blocks them)');
+{
+  const { page } = await fresh({ ads: null });
+  await page.waitForFunction(() => /could not be reached/.test(document.querySelector('#cap').textContent), null, { timeout: 20000 });
+  ok(/providers not reached just now/.test(await text(page, '#live')) && !/no provider online/.test(await text(page, '#live')), `not "none online" when nothing answered (${await text(page, '#live')})`);
+  ok(/not reached just now/.test(await text(page, '#atomic')) && !/none online/.test(await text(page, '#atomic')), 'the card says the same');
   await page.close();
 }
 

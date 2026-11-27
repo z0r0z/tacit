@@ -2,7 +2,7 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt, fmtMost } from '/swap/atomic.js?cb=b5b5e2da';
+import { makeAtomicLane, fmt, fmtMost } from '/swap/atomic.js?cb=f6fd8fbc';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
@@ -54,7 +54,7 @@ let marketModuleP = null;
 let marketWarmed = false;
 const marketModule = () => {
   if (!marketWarmed) { marketWarmed = true; const t = $('warm'); if (t) document.head.append(t.content.cloneNode(true)); }
-  return (marketModuleP ||= import('/swap/atomic-market.js?cb=93b896a7').catch((e) => { marketModuleP = null; throw e; }));
+  return (marketModuleP ||= import('/swap/atomic-market.js?cb=fa5b53cd').catch((e) => { marketModuleP = null; throw e; }));
 };
 function market() {
   if (!mkP || Date.now() - mkAt > MARKET_MS - 5000) {
@@ -98,16 +98,17 @@ function paintProviders(m) {
   const ps = m.providers || [], tb = m.totals?.b2e, te = m.totals?.e2b;
   const bNow = tb ? (tb.split ?? tb.now) : 0n; // BTC for ETH fills from several providers at once
     const nowB = bNow > 0n ? `${fmtMost(bNow)} BTC` : null, nowE = te && te.now > 0n ? `${fmtMost(te.now)} ETH` : null;
-  cap.innerHTML = !ps.length ? 'No provider is online. Swaps wait for one. Run one below.'
+  cap.innerHTML = !ps.length && m.unreached ? 'The providers could not be reached just now. Check your connection; this page tries again by itself.'
+    : !ps.length ? 'No provider is online. Swaps wait for one. Run one below.'
     : `Now, in one swap: ${nowB ? `up to <b class="num">${esc(nowB)}</b> for ETH` : 'no BTC for ETH'}, and ${nowE ? `up to <b class="num">${esc(nowE)}</b> for BTC` : 'no ETH for BTC'}.`;
   list.innerHTML = ps.length ? ps.map((p) => `<li data-pv="${esc(p.id)}"><span class="nm"><b>${esc(p.name)}</b><span class="num">${esc(String(p.id).slice(0, 10))}…</span></span>${side(p.b2e, 'b2e')}${side(p.e2b, 'e2b')}</li>`).join('') : '';
   // the line at the top: each part kept whole (the line breaks between them), and what can be swapped now to two figures, rounded down
   const bits = [];
   if (m.rate) bits.push(`<b class="num">1 BTC = ${esc(m.rate.toLocaleString('en-US', { maximumFractionDigits: m.rate >= 100 ? 1 : 3 }))} ETH</b>${m.rateAt ? ` <span class="mute">(price from ${Math.max(1, Math.round((Date.now() / 1000 - m.rateAt) / 60))} min ago)</span>` : ''}`);
-  bits.push(ps.length ? `${ps.length} provider${ps.length === 1 ? '' : 's'} online` : 'no provider online');
+  bits.push(ps.length ? `${ps.length} provider${ps.length === 1 ? '' : 's'} online` : m.unreached ? 'providers not reached just now' : 'no provider online');
   const upB = bNow > 0n ? `${twoFigures(bNow)} BTC` : null, upE = te && te.now > 0n ? `${twoFigures(te.now)} ETH` : null;
   if (upB || upE) bits.push(`up to ${[upB, upE].filter(Boolean).map(esc).join(' or ')} now`);
-  setSum('pv-at', ps.length ? `${ps.length} online${upB || upE ? ` · up to ${[upB, upE].filter(Boolean).join(' or ')}` : ''}` : 'none online');
+  setSum('pv-at', ps.length ? `${ps.length} online${upB || upE ? ` · up to ${[upB, upE].filter(Boolean).join(' or ')}` : ''}` : m.unreached ? 'not reached just now' : 'none online');
   live.innerHTML = bits.map((b) => `<span>${b}</span>`).join(' · ');
 }
 

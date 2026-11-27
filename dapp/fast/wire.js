@@ -27,9 +27,9 @@ import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=63153972';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=9b85f002';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=a3e99ef5';
 import { splitAmount, assignNotes } from '/fast/sweep.js?cb=713466b3';
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=9b85f002';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=a3e99ef5';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 // four explorers, tried in turn: one busy or rate-limited explorer does not stop a swap (every page that uses this allows all four)

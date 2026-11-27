@@ -25,14 +25,14 @@
 import { esc, fmtUnits, parseUnits, plain, E10 } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=52d6d8ce';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=c4fd0df4';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=bed462e4';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const NO_ANSWER = 'No answer just now. Nothing was sent. Try again soon.', RETRY_MS = [2000, 4000, 8000, 15000, 30000], RETRY_SHOWN = 3;
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
 // A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
 // one too near its end asks for a new one first
 const RENEW_SECS = 150, START_SECS = 125;
-const MARKET_MODULE = '/swap/atomic-market.js?cb=93b896a7';
+const MARKET_MODULE = '/swap/atomic-market.js?cb=fa5b53cd';
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
 // the most providers one BTC-for-ETH swap is split among (fastbridge-pair.js splitLegs)
@@ -501,7 +501,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const ts = (m.providers || []).map((p) => p[L.dir]).filter(Boolean), now0 = ts.reduce((a, s) => { const n = s.available != null && s.available < s.max ? s.available : s.max; return n >= s.min && n > a ? n : a; }, 0n);
     const out = [];
     if (m.rate) out.push(['Market', (L.dir === 'b2e' ? rateText(m.rate) : `1 ETH = ${tidy((1 / m.rate).toFixed(6))} BTC`) + (m.rateAt ? ` (price from ${Math.max(1, Math.round((Date.now() / 1000 - m.rateAt) / 60))} min ago)` : ''), '']);
-    if (!ts.length) out.push(['Providers', 'none online right now', 'warn']);
+    if (!ts.length) out.push(['Providers', m.unreached ? 'not reached just now: check your connection' : 'none online right now', 'warn']);
     else {
       // the limits the ads name (what a provider holds now is the next row)
       // what the plan can fill: from the smallest amount any provider takes up to the most the best providers together can take now
