@@ -452,11 +452,11 @@ fn ledger_cannot_be_drained_past_its_funding() {
     let mut l = BackingLedger::default();
     fund_via_shield(&mut l, &ASSET, 1000);
     for i in 0..10u8 {
-        assert_eq!(l.debit(&[i; 32], 100), Some(()));
+        assert_eq!(l.debit(&[i; 32], &[i.wrapping_add(1); 32], 100), Some(()));
     }
     assert_eq!(l.available(), 0);
     assert_eq!(
-        l.debit(&[0xFF; 32], 1),
+        l.debit(&[0xFF; 32], &[0xFE; 32], 1),
         None,
         "an eleventh exit is refused, not clamped"
     );
@@ -502,6 +502,7 @@ fn ledger_fund_saturates_and_value_zero_is_never_an_anchor() {
         exited: 0,
         shielded: BTreeSet::new(),
         exited_at: BTreeSet::new(),
+        exited_notes: BTreeSet::new(),
     };
     fund_via_shield(&mut l, &ASSET, 10);
     assert_eq!(l.funded, u128::MAX, "saturates rather than wrapping");
@@ -1392,7 +1393,7 @@ fn valid_leaves_adds_each_anchor_once() {
         asset: ASSET,
         value: 5,
     };
-    let out = valid_leaves(&base, &[a, a]);
+    let out = valid_leaves(&base, &[a, a], &ASSET);
     assert_eq!(out.len(), 2, "the same anchor twice is one leaf");
     assert_eq!(
         out[0], base[0],
@@ -1409,7 +1410,7 @@ fn valid_leaves_adds_each_anchor_once() {
         asset: ASSET,
         value: 5,
     };
-    let out = valid_leaves(&base, &[clash]);
+    let out = valid_leaves(&base, &[clash], &ASSET);
     assert_eq!(out.len(), 1, "the clashing anchor is dropped, not appended");
     assert_eq!(out[0], base[0], "the base set wins");
     assert!(
@@ -1418,7 +1419,7 @@ fn valid_leaves_adds_each_anchor_once() {
     );
 
     // The same anchor arriving twice is still one leaf.
-    assert_eq!(valid_leaves(&base, &[clash, clash]).len(), 1);
+    assert_eq!(valid_leaves(&base, &[clash, clash], &ASSET).len(), 1);
 }
 
 // ───────────────────────────── hostile input ─────────────────────────────
@@ -2047,4 +2048,50 @@ fn be32(v: u32) -> [u8; 32] {
     let mut out = [0u8; 32];
     out[28..].copy_from_slice(&v.to_be_bytes());
     out
+}
+
+// ═══════════ REGRESI: serangan dari audit adversarial ═══════════
+
+/// V1 — satu catatan, dua carrier. `bind = 0` membuat siapa pun boleh membawa payload yang sama ke
+/// transaksi lain, jadi outpoint-nya berbeda tetapi commitment-nya sama. Debit harus menolak yang kedua.
+#[test]
+fn one_note_cannot_be_debited_through_a_second_carrier() {
+    let mut l = BackingLedger::default();
+    fund_via_shield(&mut l, &ASSET, 1000);
+    let c1 = ExitAnchor {
+        outpoint: [0xA1; 32],
+        commitment: [0xC0; 32],
+        asset: ASSET,
+        value: 400,
+    };
+    let c2 = ExitAnchor {
+        outpoint: [0xA2; 32],
+        commitment: [0xC0; 32],
+        asset: ASSET,
+        value: 400,
+    };
+    assert_eq!(admit_exit(&mut l, &c1, &ASSET), Some(()));
+    assert_eq!(
+        admit_exit(&mut l, &c2, &ASSET),
+        None,
+        "the same note through a second carrier is refused"
+    );
+    assert_eq!(l.exited, 400, "backing is spent once for one note");
+    assert_eq!(l.available(), 600);
+}
+
+/// V4 — leaf set satu aset tidak boleh menelan exit aset lain.
+#[test]
+fn valid_leaves_refuses_an_anchor_of_another_asset() {
+    let a = ExitAnchor {
+        outpoint: [0x11; 32],
+        commitment: [0x22; 32],
+        asset: [0xBB; 32],
+        value: 400,
+    };
+    assert_eq!(
+        valid_leaves(&[], &[a], &ASSET).len(),
+        0,
+        "an exit of another asset is not a leaf of this fold"
+    );
 }

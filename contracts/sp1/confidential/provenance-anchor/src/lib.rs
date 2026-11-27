@@ -172,6 +172,8 @@ pub struct BackingLedger {
     /// set and the burn set, which grow with history for the same reason, and committed the same way.
     shielded: BTreeSet<[u8; 32]>,
     exited_at: BTreeSet<[u8; 32]>,
+    /// `commitment` of each debited note: one note leaves the pool once, whatever carries it.
+    exited_notes: BTreeSet<[u8; 32]>,
 }
 
 impl BackingLedger {
@@ -221,13 +223,25 @@ impl BackingLedger {
     ///
     /// Idempotent by outpoint — a second call for the same exit returns `None` and books nothing, so
     /// re-folding a block cannot spend the backing twice.
-    pub fn debit(&mut self, outpoint: &[u8; 32], value: u64) -> Option<()> {
+    pub fn debit(&mut self, outpoint: &[u8; 32], commitment: &[u8; 32], value: u64) -> Option<()> {
         let v = value as u128;
         if value == 0 || v > self.available() {
             return None;
         }
+        // Two keys, because they stop two different replays and neither subsumes the other.
+        //
+        // `exited_at` (carrier outpoint) stops a re-folded block debiting again. `exited_notes`
+        // (the note's own commitment) stops one note being debited twice through two carriers: a
+        // `T_BTC_SPEND` with `bind = 0` may be carried by anyone, so the same exit can be confirmed in a
+        // second transaction with a different outpoint and the same commitment. Keying on the outpoint
+        // alone books that as a second, distinct exit and pays the pool twice for one note.
         if !self.exited_at.insert(*outpoint) {
             return None; // already admitted: one exit backs one anchor, once
+        }
+        if !self.exited_notes.insert(*commitment) {
+            // Same note, different carrier. Keep the outpoint so a retry of *this* carrier stays a no-op,
+            // but book nothing: the value already left once.
+            return None;
         }
         self.exited += v;
         Some(())
@@ -718,6 +732,35 @@ fn want_holds(tx: &[u8], want: &[u8; WANT_LEN]) -> bool {
 /// This is what `read_exit` could not do while it saw one body: two exits in one carrier naming the same
 /// `exit_vout` both parsed, and the ledger's outpoint set would only catch them after the fact. Checking the
 /// carrier refuses both, which is the worker's behaviour and fails closed at the read step.
+/// Whether any *other* envelope in this carrier repeats one of `our_nfs`.
+///
+/// The pool's spent set is cross-block and out of reach here, but a repeat *within one carrier* is not: one
+/// carrier holding two exits over the same notes would debit twice for value that left once. `parse_spend`
+/// already refuses a nullifier repeated inside a single body; this is the same rule across bodies.
+fn carrier_repeats_a_nullifier(tx: &[u8], our_vin: usize, our_nfs: &[[u8; 32]]) -> bool {
+    let inputs = match cxfer_core::bitcoin::extract_inputs(tx) {
+        Some(i) => i,
+        None => return true, // unparseable carrier: fail closed
+    };
+    for vin in 0..inputs.len() {
+        if vin == our_vin {
+            continue;
+        }
+        let payload = match envelope_of_input(tx, vin) {
+            Some(p) => p,
+            None => continue,
+        };
+        let body = match parse_spend(&payload) {
+            Some(b) => b,
+            None => continue,
+        };
+        if body.nullifiers.iter().any(|nf| our_nfs.contains(nf)) {
+            return true;
+        }
+    }
+    false
+}
+
 fn carrier_claims_vout(tx: &[u8], our_vin: usize, vout: u32) -> bool {
     let inputs = match cxfer_core::bitcoin::extract_inputs(tx) {
         Some(i) => i,
@@ -752,11 +795,32 @@ fn carrier_claims_vout(tx: &[u8], our_vin: usize, vout: u32) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExitAnchor {
     /// `outpoint_key(txid, exit_vout)`: where the exited note sits, the same key the reflection's UTXO set uses.
-    pub outpoint: [u8; 32],
+    outpoint: [u8; 32],
     /// `commitment_hash(Cx, Cy)` of the boundary's secp commitment — the note's identity for the DAG.
-    pub commitment: [u8; 32],
-    pub asset: [u8; 32],
-    pub value: u64,
+    commitment: [u8; 32],
+    asset: [u8; 32],
+    value: u64,
+}
+
+impl ExitAnchor {
+    /// The only way to build one outside this crate: [`read_exit`] authenticated it first.
+    ///
+    /// The fields are deliberately private. `admit_exit` and `valid_leaves` both trust an `ExitAnchor` to be
+    /// what a confirmed carrier proved, so a caller that could write one as a struct literal could mint a
+    /// provenance leaf for value nothing ever proved — the hole this design exists to close, reopened as a
+    /// constructor. Tests inside this crate reach the fields as a child module; that is not the public surface.
+    pub fn outpoint(&self) -> &[u8; 32] {
+        &self.outpoint
+    }
+    pub fn commitment(&self) -> &[u8; 32] {
+        &self.commitment
+    }
+    pub fn asset(&self) -> &[u8; 32] {
+        &self.asset
+    }
+    pub fn value(&self) -> u64 {
+        self.value
+    }
 }
 
 /// Read an exit out of a confirmed carrier and authenticate it back to the block's txid root.
@@ -843,6 +907,12 @@ pub fn read_exit(
     if carrier_claims_vout(&w.tx, w.vin, exit.exit_vout) {
         return None;
     }
+    // Nor may two envelopes of this carrier spend the same notes. `parse_spend` refuses a nullifier repeated
+    // inside one body; the same rule across bodies is what stops one carrier debiting twice for value that
+    // left once. The cross-block spent set is the pool's and stays with `pool_ok`.
+    if carrier_repeats_a_nullifier(&w.tx, w.vin, &body.nullifiers) {
+        return None;
+    }
     // The exit must name a REAL output of this carrier, and that output's script must hash to
     // `dest_spk_hash`. Without these two checks `exit_vout` and `dest_spk_hash` would be free witnesses:
     // a prover could name vout 7 on a one-output carrier, or fork one confirmed exit into unlimited
@@ -878,7 +948,7 @@ pub fn admit_exit(ledger: &mut BackingLedger, anchor: &ExitAnchor, asset: &[u8; 
     if &anchor.asset != asset {
         return None; // an exit of another asset cannot drain this one's backing
     }
-    ledger.debit(&anchor.outpoint, anchor.value)
+    ledger.debit(&anchor.outpoint, &anchor.commitment, anchor.value)
 }
 
 // ───────────────────────────── long lineages ─────────────────────────────
@@ -938,9 +1008,13 @@ pub fn lineage(hops: u32, anchor: Option<([u8; 32], u32)>) -> Lineage {
 pub fn valid_leaves(
     base: &[([u8; 32], [u8; 32])],
     anchors: &[ExitAnchor],
+    asset: &[u8; 32],
 ) -> Vec<([u8; 32], [u8; 32])> {
     let mut out = base.to_vec();
     for a in anchors {
+        if &a.asset != asset {
+            continue; // a leaf of another asset would let one fold bottom out at another's exit
+        }
         let same_outpoint = out
             .iter()
             .any(|(o, c)| *o == a.outpoint && *c == a.commitment);

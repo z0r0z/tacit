@@ -3,7 +3,7 @@
 Status: design + tests. No deployed contract, verifying key or ELF changes. Entry for
 `docs/STUCK-TAC-BOUNTY.md` option D.
 
-- Code: `contracts/sp1/confidential/provenance-anchor/` (crate `provenance-anchor`, 26 offline tests)
+- Code: `contracts/sp1/confidential/provenance-anchor/` (crate `provenance-anchor`, 32 offline tests)
 - Read first: `docs/STUCK-TAC-BOUNTY.md` §1, `contracts/sp1/confidential/DESIGN-btc-shielded-pool.md` §3
 - Fold it changes: `contracts/sp1/confidential/cxfer-core/src/burn_deposit.rs`
   (`fold_burn_deposit`, the `ncx > 256` bound), `contracts/sp1/confidential/src/reflect.rs` step 4
@@ -58,6 +58,28 @@ carrier`, `exit scriptPubKey does not match dest_spk_hash`, `carrier does not sp
 `exit in a carrier whose vin[0] holds a transparent Tacit op`, and `exit_vout already claimed by an earlier
 exit or want`. The sixth, `nullifier already spent`, is the one it cannot mirror alone: it needs the pool's
 whole spent set, which is §10 risk 6's residual.
+
+## 0.5 Genesis: what the ledger holds on the day this ships
+
+`funded` starts at zero and is raised only by `read_shield` over a `T_BTC_SHIELD` the reflection folds. That
+means **this crate can back only exits whose shield it has already seen.** On the day it is switched on, the
+custody the pool already holds is not in the ledger, so every pre-existing exit is refused by
+`debit` (`value > available()`), not admitted at a loss — the failure is closed, not silent.
+
+There are three ways to seed it, and this entry does not pick one:
+
+1. **Replay from the pool's own genesis.** Fold every historical `T_BTC_SHIELD` once, in block order, before
+   the first exit. Exact, and it costs one full rescan; the counters and the two sets end up identical to a
+   ledger that had run since genesis.
+2. **Checkpoint at the fork block.** Take `funded` as the sum of the pool's unspent note values at the fork
+   height, attested by the indexer's root at that height, and start the sets empty. Cheaper, but it trusts the
+   indexer's sum at one point in time — the same trust the fold already places in `pool_root`.
+3. **Start empty and treat old exits as out of scope.** Simplest to state, and it is what the code does today.
+   Under it, the numbers in §6 apply only to shields after the fork, and every note currently stuck remains
+   stuck — which is the situation the bounty is trying to fix.
+
+Whichever is chosen, the choice belongs in the fold's first cycle, not in this crate. §11.3 covers the related
+question of carrying `funded` across a generational rebase.
 
 ## 1. The problem, stated as an accounting gap
 
@@ -417,11 +439,11 @@ What *is* additive is the state, not the digest: the ledger is a new field, and 
 already exist in the reflection. That is what makes the change reviewable — but reviewable is not
 digest-compatible.
 
-## 8. What the 30 tests cover
+## 8. What the 32 tests cover
 
 All offline: `cargo +stable test -p provenance-anchor` (no prover, no network, no pool).
 
-Line counts: 3 174 lines of Rust (1 124 `lib.rs`, 2 050 `tests.rs`).
+Line counts: 3 277 lines of Rust (1 195 `lib.rs`, 2 082 `tests.rs`).
 
 | Test | What it pins |
 | --- | --- |
@@ -434,7 +456,7 @@ Line counts: 3 174 lines of Rust (1 124 `lib.rs`, 2 050 `tests.rs`).
 | `credit_shield_requires_a_matching_boundary` | a shield that moved nothing, of another asset, whose pool proof failed, or whose boundary does not open, credits nothing — and re-folding it mints nothing |
 | `read_shield_refuses_a_shield_that_does_not_ride_vin0` | a confirmed shield on a later input is a spend the pool rejected whole, so it credits nothing |
 | `read_shield_refuses_a_carrier_whose_witness_commitment_is_broken` | the merkle path alone is not enough: a carrier failing its BIP141 commitment is refused |
-| `credit_shield_dedups_on_the_shield_body_not_a_caller_key` | one verified shield body credits once whatever the caller passes, so a fresh key cannot re-mint; the ledger can only be credited through a shield |
+| `no_path_credits_backing_without_a_shield` | one verified shield body credits once whatever the caller passes, so a fresh key cannot re-mint; the ledger can only be credited through a shield |
 | `boundary_parse_rejects_every_wrong_length` | 824 and 826 bytes are refused |
 | `spend_parse_reads_the_exit_where_the_layout_puts_it` | §3 offset arithmetic, field by field |
 | `spend_parse_refuses_every_non_canonical_shape` | wrong opcode, every truncation, trailing bytes, zero/duplicate nullifier, `n_in = 0`, `has_exit = 2`, a spend that creates nothing |
@@ -456,9 +478,14 @@ Line counts: 3 174 lines of Rust (1 124 `lib.rs`, 2 050 `tests.rs`).
 | `read_exit_refuses_a_spend_the_live_pool_would_reject` | the witness must carry the pool's three-item stack, an unsatisfied `want` rejects the whole spend, and `h_anchor` must sit inside the 144-block window below the confirming block — each a way to anchor an exit riding a spend the pool never read |
 | `read_exit_refuses_a_carrier_that_already_claims_the_same_vout` | `claimed(vout)`: two exits naming one vout are both refused, two exits on two outputs both read |
 | `spend_parse_is_panic_free_on_a_hostile_corpus` | 4 000 pseudo-random payloads, runaway `n_in` |
+| `one_note_cannot_be_debited_through_a_second_carrier` | one note carried by two transactions has two outpoints but one commitment: the second debit is refused, so a `bind = 0` exit cannot be replayed into a second payout |
+| `valid_leaves_refuses_an_anchor_of_another_asset` | the leaf set of one fold cannot bottom out at another asset's exit |
 
-Run: `cd contracts/sp1/confidential/provenance-anchor && cargo +stable test --offline`
-Result: `test result: ok. 30 passed; 0 failed`.
+Run: `cd contracts/sp1/confidential/provenance-anchor && cargo test`
+Result: `test result: ok. 32 passed; 0 failed; 0 ignored` (rust 1.100.0, 19 s).
+
+This crate is not a workspace member, so `cargo test -p provenance-anchor` from
+`contracts/sp1/confidential/` fails with `did not match any packages`. Run it from the crate directory.
 
 ## 9. What this does not do
 
@@ -482,8 +509,10 @@ Stated the way the brief asks, worst first.
    proves the pool moved that much is `pool_ok`, the `resolveInput` / `depC` / `verify_btc_pool_spend`
    relation, which arrives as a closure. **If that relation is unsound or stubbed, the ledger inherits it and
    a caller can inflate either side.** A merge would have to wire the real check, not a stub.
-2. **The two idempotence sets grow without bound.** `shielded` and `exited_at` are `BTreeSet<[u8; 32]>`,
-   one entry per event, forever. At 4 546 unspent notes today that is nothing; over years it is the same
+2. **The three idempotence sets grow without bound.** `shielded`, `exited_at` and `exited_notes` are
+   `BTreeSet<[u8; 32]>`, one entry per event, forever. `exited_notes` is keyed on the note's own commitment
+   rather than its carrier, because a `bind = 0` exit may be carried by anyone: two carriers for one note are
+   two outpoints and one commitment, and keying on the outpoint alone paid it twice. At 4 546 unspent notes today that is nothing; over years it is the same
    problem the spent set and burn set already have, inherited rather than solved. A production version
    wants a rolling commitment or a nullifier set the pool already maintains.
 3. **There is no on-chain encoding in this crate.** §2 says the encoding is two `u64` fields that
@@ -494,7 +523,7 @@ Stated the way the brief asks, worst first.
    unresolved outpoint is a dangling input the DAG already rejects. I believe the argument, but it is an
    argument, not a machine-checked proof, and the re-anchoring path is exercised only on synthetic
    lineages in this crate — not against the real DAG.
-5. **Scope.** 2 545 lines of Rust (892 `lib.rs`, 1 653 `tests.rs`) for a design entry is more than the
+5. **Scope.** 3 277 lines of Rust (1 195 `lib.rs`, 2 082 `tests.rs`) for a design entry is more than the
    brief needs. If a maintainer wants less surface to review, the survivable cut is the whole `Lineage`
    half (§5), leaving the ledger and the exit reader: that is the part that is specific to pool exits, and
    it stands alone.
@@ -510,6 +539,10 @@ Stated the way the brief asks, worst first.
      case the scan covers.
    - `if (s.bind && ...) return reject('carrier does not spend the bound outpoint')` — `carrier_spends_bind`
      compares `bind` byte-exactly against `extract_inputs`.
+
+   **Now mirrored within one carrier: `carrier_repeats_a_nullifier`.** Two envelopes in the same carrier that
+   spend the same note are both refused at the read step, so one carrier cannot debit twice for value that left
+   once. The cross-block case is still the pool's.
 
    **Still not mirrored: `if (this.nullifiers.has(nf)) return reject('nullifier already spent')`.** That is the
    pool's cross-block spent set; this crate sees one carrier and cannot reach it. It does not need to for the
