@@ -2,7 +2,7 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=b5b5e2da';
+import { makeAtomicLane, fmt, fmtMost } from '/swap/atomic.js?cb=b5b5e2da';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
@@ -97,7 +97,7 @@ function paintProviders(m) {
   if (!m) { list.replaceChildren(); live.textContent = 'The boards could not be read just now.'; cap.textContent = 'The boards could not be read just now.'; setSum('pv-at', 'not read just now'); return; }
   const ps = m.providers || [], tb = m.totals?.b2e, te = m.totals?.e2b;
   const bNow = tb ? (tb.split ?? tb.now) : 0n; // BTC for ETH fills from several providers at once
-  const nowB = bNow > 0n ? `${fmt(bNow)} BTC` : null, nowE = te && te.now > 0n ? `${fmt(te.now)} ETH` : null;
+    const nowB = bNow > 0n ? `${fmtMost(bNow)} BTC` : null, nowE = te && te.now > 0n ? `${fmtMost(te.now)} ETH` : null;
   cap.innerHTML = !ps.length ? 'No provider is online. Swaps wait for one. Run one below.'
     : `Now, in one swap: ${nowB ? `up to <b class="num">${esc(nowB)}</b> for ETH` : 'no BTC for ETH'}, and ${nowE ? `up to <b class="num">${esc(nowE)}</b> for BTC` : 'no ETH for BTC'}.`;
   list.innerHTML = ps.length ? ps.map((p) => `<li data-pv="${esc(p.id)}"><span class="nm"><b>${esc(p.name)}</b><span class="num">${esc(String(p.id).slice(0, 10))}…</span></span>${side(p.b2e, 'b2e')}${side(p.e2b, 'e2b')}</li>`).join('') : '';
