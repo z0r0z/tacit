@@ -192,7 +192,16 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
         return 0;
       };
       rebalancer = makeRebalancer({
-        cfg: rc, rate: async () => ethPerBtc(), quiet, gate: poolTurn, turn,
+        // the rebalancing also waits for the reverse side: no ETH-for-BTC swap under way, and no live quote for one (the Bitcoin it spends is the coins that side locks from)
+        quiet: async () => {
+          if (!(await quiet())) return false;
+          const REV_END = new Set(['done', 'refunded', 'counter-took', 'aborted']);
+          for (const r of await rside.swaps.list()) if (!REV_END.has(r.phase)) return false;
+          const nowS = Math.floor(Date.now() / 1000);
+          for (const q of await rside.quotes.list().catch(() => [])) if (Number(q.validUntil) > nowS && !q.swapId && !q.settled) return false;
+          return true;
+        },
+        cfg: rc, rate: async () => ethPerBtc(), gate: poolTurn, turn,
         // nothing is planned while the auto-shield has a deposit on its way into the pool: that ETH is in neither the public balance nor the notes yet
         settled: async () => !(shield && shield.info().pending),
         inventory: async () => {

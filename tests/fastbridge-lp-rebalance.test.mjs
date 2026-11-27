@@ -410,3 +410,18 @@ test('a swap is closed only when the venue has paid out; a refund is said; the n
   settled = true; w.clock += 200;
   assert.equal((await r.step()).did, 'sent'); assert.equal(w.built, 2);
 });
+
+test('the unshield is asked about again inside the pool\'s turn: a swap that started in between takes its notes first, and nothing is spent', async () => {
+  let looks = 0, unshielded = 0;
+  const w = { clock: 2_000_000_000, store: null };
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, router: '0xe3985E6b61b814F7Cdb188766562ba71b446B46d', halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const c = cfg({ FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: VAULT, memo: `=:b:${q.get('destination')}`, expected_amount_out: '828000', expiry: w.clock + 600 }) });
+  const r = makeRebalancer({ cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(8), sats: Math.round(2 / MARKET * 1e8) }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9,
+    quiet: async () => { looks++; return looks < 3; },                      // quiet at the look, a swap has started by the time the turn comes
+    unshield: async () => { unshielded++; }, ethBalance: async () => ETH(0.1), ethNonce: async () => 0, ethReceipt: async () => null, sendEth: async () => { throw new Error('no'); },
+    address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02), load: async () => w.store, save: async (x) => { w.store = JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? String(v) : v))); }, log: () => {}, alert: () => {} });
+  assert.equal((await r.step()).did, 'quiet');
+  assert.equal(unshielded, 0, 'no note was spent');
+  assert.equal(w.store.pending, null, 'nothing was left half done');
+});

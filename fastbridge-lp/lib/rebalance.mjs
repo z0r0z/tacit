@@ -327,6 +327,7 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       if (plan.dir === 'btc2eth') {
         if (!btcBuild || !btcBroadcast || !btcStatus) { sayOnce('btc-heavy', { level: 'warn', msg: `rebalance: the provider is BTC-heavy: ${what} should be swapped to ETH on ${best.venue} (costs ${best.costBps} bps); the Bitcoin send is not wired`, vault: best.vault, memo: best.memo }, 12 * 3600); return { did: 'btc not automated' }; }
         // the Bitcoin is spent from the reverse address only, so the ETH-for-BTC side keeps what it needs (btcBuild says no when it would not); the signed transaction is kept before it is sent
+        if (!(await quiet())) { last.plan = `${plan.dir} (waiting: a swap started)`; return { did: 'quiet' }; }
         let built;
         try { built = await btcBuild({ to: best.vault, sats: plan.amountSats, memo: best.memo }); } catch (e) { sayOnce('btc-build', { level: 'warn', msg: 'rebalance: the Bitcoin send could not be built; nothing sent', error: err(e) }, 3 * 3600); return { did: 'failed' }; }
         st.pending = { id: `${now()}`, dir: 'btc2eth', stage: 'sending', amountSats: String(plan.amountSats), valueWei: String(plan.valueWei), txid: built.txid, hex: built.hex, fee: built.fee, rate: built.rate ?? null, inputs: built.inputs ?? null, bumps: 0, replaced: [], venue: best.venue, vault: best.vault, memo: best.memo, expectOut: String(best.out), costBps: best.costBps, fi: fiB, from: faddrB, at: now() };
@@ -342,7 +343,9 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       await keep();
       if (short > 0n) {
         const units = (short + UNIT - 1n) / UNIT + 50000n;                         // + the relay's fee, about 0.0005 ETH
-        try { await gate(() => unshield({ units, to: from })); } catch (e) { st.pending = null; await keep(); alert({ level: 'warn', msg: 'rebalance: the unshield could not be made; nothing was swapped', error: err(e) }); return { did: 'failed' }; }
+        // asked again inside the pool's turn, at the moment before a note is spent: a swap that started since the look takes the notes it needs first, and this waits
+        try { await gate(async () => { if (!(await quiet())) throw Object.assign(new Error('a swap started'), { busy: true }); return unshield({ units, to: from }); }); } catch (e) {
+          if (e && e.busy) { st.pending = null; await keep(); last.plan = `${plan.dir} (waiting: a swap started)`; return { did: 'quiet' }; } st.pending = null; await keep(); alert({ level: 'warn', msg: 'rebalance: the unshield could not be made; nothing was swapped', error: err(e) }); return { did: 'failed' }; }
         st.pending.at = now(); await keep();
         return { did: 'unshielding' };
       }
