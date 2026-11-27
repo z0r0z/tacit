@@ -254,6 +254,8 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       if (!best) { sayOnce('noquote', { level: 'warn', msg: 'rebalance: a swap is due but no venue gave a usable quote', why }); return { did: 'no quote' }; }
       if (best.costBps > cfg.maxCostBps) { sayOnce('dear', { level: 'info', msg: 'rebalance: a swap is due but the best quote costs more than the limit', best: best.venue, costBps: best.costBps, limit: cfg.maxCostBps }); return { did: 'dear', costBps: best.costBps }; }
       const what = plan.dir === 'eth2btc' ? `${mk(plan.amountWei)} ETH` : `${plan.amountSats} sats`;
+      // never while a swap is open or promised: the ETH it has promised is already out of what it holds and the BTC that pays for it is not yet in, so the sides read lopsided for a while
+      if (cfg.mode !== 'dry' && !(await quiet())) { calls = { dir: null, n: 0 }; last.plan = `${plan.dir} (waiting: a swap is open)`; return { did: 'quiet' }; }
       calls = calls.dir === plan.dir ? { dir: plan.dir, n: calls.n + 1 } : { dir: plan.dir, n: 1 };
       if (cfg.mode === 'dry') { sayOnce(`dry-${plan.dir}`, { level: 'info', msg: `rebalance (dry run): would swap ${what} (${plan.dir}) on ${best.venue}`, costBps: best.costBps, ethSharePct: plan.ethBps / 100, vault: best.vault, quotes: last.quotes }, 3600); return { did: 'dry', plan: plan.dir }; }
       if (calls.n < cfg.confirmLooks) { last.plan = `${plan.dir} (look ${calls.n} of ${cfg.confirmLooks})`; return { did: 'confirming' }; }
