@@ -48,7 +48,11 @@ const srv = createServer((req, res) => {
   if (!f.startsWith(DAPP) || !existsSync(f) || statSync(f).isDirectory()) { res.writeHead(404); return res.end(); }
   res.writeHead(200, { 'content-type': types[extname(f)] || 'application/octet-stream', 'cache-control': 'no-store' });
   res.end(readFileSync(f));
-}).listen(0);
+});
+await new Promise((resolve, reject) => {
+  srv.once('error', reject);
+  srv.listen(0, '127.0.0.1', resolve);
+});
 const BASE = `http://127.0.0.1:${srv.address().port}`;
 
 // Installed into the page: a fake ctx whose book and executors each test scripts.
@@ -127,7 +131,10 @@ const SETUP = () => {
 };
 
 let passed = 0;
-const b = await chromium.launch();
+const systemChrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+  || (existsSync(systemChrome) ? systemChrome : undefined);
+const b = await chromium.launch(executablePath ? { executablePath } : {});
 async function fresh() {
   const page = await b.newPage({ viewport: { width: 1100, height: 900 } });
   const errs = [];
@@ -276,13 +283,13 @@ await test('limit sell lists in walk-away pieces', async (page) => {
   await page.click('[data-act=side][data-v=sell]');
   await page.click('[data-act=type][data-v=limit]'); await settle(page);
   await page.fill('[data-k=limit-price]', '250');
-  await page.fill('[data-k=amount]', '70'); await settle(page);
+  await page.fill('[data-k=amount]', '750'); await settle(page);
   await clickGo(page); await modalPrimary(page);
   await waitModal(page, /Listed/);
   const l = (await calls(page, 'listForSale'))[0].args;
-  assert.equal(l.k, 7);
-  assert.equal(l.amountBase, '7000000000');
-  assert.equal(l.perLotSats, 2500);
+  assert.equal(l.k, 3);
+  assert.equal(l.amountBase, '75000000000');
+  assert.equal(l.perLotSats, 62500);
 });
 
 await test('the lots of a plan are checked ahead while its review is open, and the buy says how far the check has got', async (page) => {
