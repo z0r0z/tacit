@@ -1,5 +1,5 @@
 import { HISTORICAL_MESSAGES, inspectStorage, decryptPrivkey, signatureResult, addressActivity } from '/recover/core.js?cb=46e72e78';
-import { createRecoveryUI } from '/recover/ui.js?cb=304e83a5';
+import { createRecoveryUI } from '/recover/ui.js?cb=23cbe1ca';
 
 const decode = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 async function signAttempt({ provider, message, protocol }) {

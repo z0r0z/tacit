@@ -4,6 +4,7 @@ const { createRecoveryUI } = await import('../dapp/recover/ui.js');
 const storage={ length:0,key:()=>null,getItem:()=>null }; const root=document.querySelector('#r');
 createRecoveryUI({root,storage,inspect:()=>({slots:[],identities:[]}),decrypt:async()=>{},activity:async()=>({sats:0,txs:0}),signAttempt:async()=>{throw Error('not used')}});
 assert.match(root.textContent,/No saved wallet was found/); assert.match(root.textContent,/cannot be recovered/);
+assert.match(root.textContent,/Can’t find the address you remember/); assert.match(root.textContent,/Local Storage\\leveldb/); assert.match(root.textContent,/Do not upload or send/);
 const secret=new Uint8Array(32);secret[31]=1; storage.length=1;storage.key=()=> 'slot';storage.getItem=()=> 'blob';
 createRecoveryUI({root,storage,inspect:()=>({slots:[{key:'slot',network:'mainnet',binding:null,shape:'encrypted',address:'bc1qtest'}],identities:[]}),decrypt:async()=>secret,activity:async()=>({sats:12,txs:1}),signAttempt:async()=>{}});
 assert.match(root.textContent,/A saved wallet was found/); assert.equal(root.querySelector('.advanced').open,false); assert.equal(root.querySelectorAll('.provider').length,2);
