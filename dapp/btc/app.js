@@ -141,7 +141,7 @@ function paintFund(i) {
         + (volBtc ? `<div class="rt"><b class="num">${esc(volBtc)}</b><span>BTC traversed</span></div>` : '')
         + (volEth ? `<div class="rt"><b class="num">${esc(volEth)}</b><span>ETH traversed</span></div>` : '')
         + (medMin ? `<div class="rt"><b class="num">~${medMin}</b><span>min, typical swap</span></div>` : '');
-      rec = `<p class="rec">Tacit’s provider has finished <b class="num">${done}</b> swap${done === 1 ? '' : 's'}${esc(split)}${sinceTxt ? ` since ${esc(sinceTxt)}` : ''}.</p>`;
+      rec = `<p class="trk">Tacit’s provider has finished <b class="num">${done}</b> swap${done === 1 ? '' : 's'}${esc(split)}${sinceTxt ? ` since ${esc(sinceTxt)}` : ''}.</p>`;
     }
     if (rec && !(s && t && s.capacity)) { el.innerHTML = rec; ok = true; }
     if (s && t && s.capacity) {
