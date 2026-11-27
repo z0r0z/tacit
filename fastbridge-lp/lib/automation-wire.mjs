@@ -96,9 +96,9 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
 
   // the public ETH of the pool account: shielded into private notes (off unless FB_LP_AUTO_SHIELD=on), and the alerts for what the provider needs
   let shield = null, watch = null, rebalancer = null;
+  let sendFromImpl = null;                       // (set where the rebalancing is wired: the shield sends a fresh address's deposit through it)
   if (typeof ux.account === 'function' && typeof ux.rpc === 'function') {
     const address = ux.account(key).address, sc = shieldConfig(env);
-    let sendFromImpl = null;
     shield = makeShield({ cfg: sc, ux, key, address, quiet: async () => !(rebalancer && rebalancer.holding()) && (await quiet()), turn, load: () => kv.get('shield'), save: (r) => kv.put(r), log, alert, sendFrom: (x) => { if (!sendFromImpl) throw new Error('not ready'); return sendFromImpl(x); } });
     const sats = async () => {
       const a = [btc, rside && rside.btc].filter((b) => b && typeof b.satsUtxos === 'function');

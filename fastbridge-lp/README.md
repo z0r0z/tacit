@@ -407,6 +407,7 @@ node tests/fastbridge-reverse-service.test.mjs   # the reverse side: its service
 node tests/fastbridge-lp-reverse.test.mjs      # what the process puts around it: its key, options, notes and routing
 node tests/fastbridge-lp-upkeep.test.mjs       # a pair provider's upkeep: coin moves, accounting, the lean, note merges, buybacks
 node tests/fastbridge-lp-rebalance.test.mjs    # the rebalancing: when it swaps, which venue, and that nothing goes to an address the nodes do not agree on
+node tests/fastbridge-lp-wire.test.mjs         # the upkeep wired together starts (rebalancing, fresh addresses, auto-shield) with its dependencies stood in for
 node tests/fastbridge-fork.mjs          # the Ethereum side against the live pool on a mainnet fork (needs anvil, FORK, EXEC)
 ```
 
