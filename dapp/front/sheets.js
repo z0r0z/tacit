@@ -204,6 +204,15 @@ function renderAct() {
   };
 }
 const LEGACY_SHEET = [[/^(Make .* TAC public|Withdraw [\d.,]+ TAC)$/, 'tac'], [/^Withdraw .* ETH to /, 'eth'], [/^Withdraw .* cUSD as tacUSD$/, 'borrow']];
+// What the last balance read says of the notes a failed action took (its row's `notes`, kept by the page): unspent and back in the balance, or gone from it.
+// Nothing is said without notes or without a read made after the action ended (an older read cannot tell).
+function keptLine(it) {
+  const keys = Array.isArray(it.notes) ? it.notes : [];
+  if (!keys.length || !P.scan || (it.end && P.scan.since < it.end)) return '';
+  const all = P.scan.notes || [], seen = all.filter((n) => keys.includes(kNote(n)));
+  if (!seen.length) return 'Its note no longer shows in your private balance: it may have gone through after all. Read your balance again in a minute.';
+  return freeNotes(seen).length ? 'Its note is unspent and back in your private balance: nothing was spent.' : 'Its note is unspent: it shows in your private balance again once the relay lets go of it.';
+}
 function againLine(it) {
   if (it.status !== 'failed' || (it.kind !== 'job' && it.kind !== 'op') || otherKey(it)) return '';
   const s = String(it.err || '');
@@ -211,7 +220,8 @@ function againLine(it) {
   const own = it.sheet || LEGACY_SHEET.find(([re]) => re.test(String(it.label || '')))?.[1];
   const sheet = own && $(`#sheet-${own}`) ? own : null, link = sheet ? null : farmLinkOf(it);
   // a farm entry made from the Earn card has no sheet of its own to go back to: it is tried again from its farm, which takes the same two private notes
-  return html`${/nothing was spent/i.test(failText(it)) ? '' : html`<div class="actr-f">Nothing was spent: it is still in your private balance.</div>`}
+  const kept = keptLine(it);
+  return html`${kept ? html`<div class="actr-f">${kept}</div>` : /nothing was spent/i.test(failText(it)) ? '' : html`<div class="actr-f">Nothing was spent: it is still in your private balance.</div>`}
     <div class="brr-a">${link ? html`<a class="btn ghost" href="#${link}" data-link="${link}">Try again</a>`
       : html`<button class="btn ghost" type="button" data-act-again="${sheet || ''}">${sheet ? 'Try again' : 'Read my balance again'}</button>`}</div>`;
 }
