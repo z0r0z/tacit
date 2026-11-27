@@ -23,7 +23,7 @@ const wordAt = (hex, i) => BigInt('0x' + (strip(hex).slice(i * 64, (i + 1) * 64)
 const now = () => Math.floor(Date.now() / 1000);
 
 export function mountFarm(host, ctx) {
-  const { ethCall, batch, api, wallet, W, connect, fmtUnits: fmt, parseUnits, esc, usd, ethUsd, txLink, onDone, refarm = false, gasPrice = () => null, buyTac = '/#card=swap:ether:tac' } = ctx;
+  const { ethCall, batch, api, wallet, W, connect, fmtUnits: fmt, parseUnits, esc, usd, ethUsd, txLink, onDone, refarm = false, eager = true, gasPrice = () => null, buyTac = '/#card=swap:ether:tac' } = ctx;
   const F = { wdOpen: false, rseq: 0, ackKey: null, x: null, prog: null, mode: 'eth', outPct: '100', outAmt: '', outAs: 'both', q: null, seq: 0, w: null, wseq: 0, busy: false, tick: 0, err: false };
   const $ = (s) => host.querySelector(s);
   const plain = (v) => { const n = BigInt(v), b = 10n ** 18n, f = (n % b).toString().padStart(18, '0').replace(/0+$/, ''); return `${n / b}${f ? `.${f}` : ''}`; };
@@ -465,6 +465,6 @@ export function mountFarm(host, ctx) {
     host.scrollIntoView({ behavior: 'smooth', block: 'start' });
     return true;
   }
-  renderForm(); refresh();
+  renderForm(); if (eager) refresh();
   return { refresh, paint: renderStats, busy: () => F.busy, pairWith, use };
 }

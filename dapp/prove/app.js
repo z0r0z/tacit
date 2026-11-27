@@ -7,7 +7,7 @@ import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpd
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS, dayShare, termsFrom } from '/prove/tabmine.js?cb=ab8f8e8f';
 import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView, pressTurnsOn } from '/prove/review.js?cb=23bfbd4a';
-import { short, cells, opsText, tac, rewardWei, payPoints, payRuleText, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, proofSpan, dayWorkText, dayTotals, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=fb56a0bd';
+import { short, cells, opsText, tac, rewardWei, payPoints, payRuleText, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, proofSpan, dayWorkText, dayTotals, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=a14bed01';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
 const SAVED_ADDR = 'tacit-prove-address';                          // shared with the keeper page's card

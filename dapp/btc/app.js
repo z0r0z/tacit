@@ -3,7 +3,6 @@
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
 import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=19cd0850';
-import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=c42a3f60';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
@@ -51,10 +50,16 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) docu
 
 // ── the market: one read shared by the lane and the providers' list, again each minute while the page is seen ──
 let mkP = null, mkAt = 0;
+let marketModuleP = null;
+let marketWarmed = false;
+const marketModule = () => {
+  if (!marketWarmed) { marketWarmed = true; const t = $('warm'); if (t) document.head.append(t.content.cloneNode(true)); }
+  return (marketModuleP ||= import('/swap/atomic-market.js?cb=c42a3f60').catch((e) => { marketModuleP = null; throw e; }));
+};
 function market() {
   if (!mkP || Date.now() - mkAt > MARKET_MS - 5000) {
     mkAt = Date.now();
-    const p = readMarket().then((m) => { const x = { ...m, estimate: (d, a) => estimate(m, d, a) }; paintProviders(x); return x; });
+    const p = marketModule().then((M) => M.readMarket().then((m) => { const x = { ...m, estimate: (d, a) => M.estimate(m, d, a) }; paintProviders(x); return x; }));
     fund();
     p.catch(() => { if (mkP === p) mkP = null; paintProviders(null); });
     mkP = p;
@@ -68,7 +73,7 @@ const pctTxt = (x) => `${x < 1 ? x.toFixed(2) : x.toFixed(1)}%`;
 const feeTxt = (s, dir) => {
   const share = s.feeBps ? `${(s.feeBps / 100).toFixed(s.feeBps % 10 ? 2 : 1).replace(/\.0$/, '')}%` : '';
   const flat = s.flatFee > 0n ? (dir === 'b2e' ? sats(s.flatFee) : `${fmt(s.flatFee)} ETH`) : '';
-  const at = feeAtMin(s);
+  const at = s && s.min > 0n ? (Number((s.min * BigInt(s.feeBps)) / 10000n + s.flatFee) / Number(s.min)) * 100 : null;
   return `${[share, flat].filter(Boolean).join(' + ') || 'no fee'}${flat && at != null ? ` (${pctTxt(at)} at the minimum)` : ''}`;
 };
 // an amount of 8 places to its first two figures, rounded down, so it never says more than there is: 0.00753023 -> 0.0075, 0.07043193 -> 0.070, 1.53 -> 1.5
@@ -81,7 +86,7 @@ const SYM = { b2e: 'BTC', e2b: 'ETH' };
 function side(s, dir) {
   const head = dir === 'b2e' ? '<b><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>BTC → ETH</b>' : '<b><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>ETH → BTC</b>';
   if (!s) return `<div class="d">${head}<span>not offered</span></div>`;
-  const n = takeable(s), u = SYM[dir], f = feeTxt(s, dir), at = f.indexOf(' (');
+  const n = s.available != null && s.available < s.max ? s.available : s.max, u = SYM[dir], f = feeTxt(s, dir), at = f.indexOf(' (');
   // (what the fee is at the minimum stays whole: the line breaks before it)
   const fee = at < 0 ? esc(f) : `${esc(f.slice(0, at))} <span class="nw">${esc(f.slice(at + 1))}</span>`;
   return `<div class="d">${head}<span class="num">${esc(fmt(s.min))} to ${esc(fmt(s.max))} ${u}</span>`
@@ -89,7 +94,7 @@ function side(s, dir) {
 }
 function paintProviders(m) {
   const list = $('pv-list'), cap = $('cap'), live = $('live');
-  if (!m) { cap.textContent = 'The boards could not be read just now.'; setSum('pv-at', 'not read just now'); return; }
+  if (!m) { list.replaceChildren(); live.textContent = 'The boards could not be read just now.'; cap.textContent = 'The boards could not be read just now.'; setSum('pv-at', 'not read just now'); return; }
   const ps = m.providers || [], tb = m.totals?.b2e, te = m.totals?.e2b;
   const nowB = tb && tb.now > 0n ? `${fmt(tb.now)} BTC` : null, nowE = te && te.now > 0n ? `${fmt(te.now)} ETH` : null;
   cap.innerHTML = !ps.length ? 'No provider is online. Swaps wait for one. Run one below.'
@@ -116,15 +121,33 @@ const eth2 = (v) => (BigInt(v) > 0n ? twoFigures(v) : '0');
 const tacTxt = (wei) => { const t = Number(BigInt(wei || 0) / 10n ** 14n) / 1e4; return t.toLocaleString('en-US', { maximumFractionDigits: t < 100 ? 2 : 0 }); };
 function paintFund(i) {
   const el = $('pv-fund'), s = i && i.stats, t = i && i.target, b = (i && i.buyback) || {};
-  let ok = false;
+  let ok = false, rec = '', tiles = '';
   try {
+    // the track record: swaps the house provider has finished, by direction, and how many ended in a refund (what the provider counts, nothing the page adds up from elsewhere)
+    const ended = s ? Number(s.swaps) : NaN, refunded = s && s.refunds != null ? Number(s.refunds) : null;
+    if (Number.isInteger(ended) && ended > 0) {
+      const done = ended - (Number.isInteger(refunded) ? refunded : 0), fw = Number(s.swapsForward), rv = Number(s.swapsReverse);
+      const since0 = new Date(Number(s.since) * 1000), sinceTxt = Number.isFinite(since0.getTime()) ? since0.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+      // (the Bitcoin side of every swap finished, and the middle of the last fifty times: only when the provider says them)
+      let volBtc = '';
+      try { const v = BigInt(s.volumeSats ?? 0); if (v > 0n) { const n = Number(v) / 1e8; volBtc = (n < 0.01 ? n.toFixed(5) : n.toFixed(4)).replace(/0+$/, '').replace(/\.$/, ''); } } catch { volBtc = ''; }
+      const medMin = Number(s.medianSecs) > 0 ? Math.max(1, Math.round(Number(s.medianSecs) / 60)) : 0;
+      const split = Number.isInteger(fw) && Number.isInteger(rv) && fw + rv === ended ? ` (${fw} BTC to ETH, ${rv} ETH to BTC)` : '';
+      tiles = `<div class="rt"><b class="num">${done}</b><span>swap${done === 1 ? '' : 's'} finished</span></div>`
+        + (split ? `<div class="rt btc"><b class="num">${fw}</b><span>BTC → ETH</span></div><div class="rt eth"><b class="num">${rv}</b><span>ETH → BTC</span></div>` : '')
+        + (Number.isInteger(refunded) ? `<div class="rt"><b class="num">${refunded}</b><span>refunded</span></div>` : '')
+        + (volBtc ? `<div class="rt"><b class="num">${esc(volBtc)}</b><span>BTC moved</span></div>` : '')
+        + (medMin ? `<div class="rt"><b class="num">~${medMin}</b><span>min, typical swap</span></div>` : '');
+      rec = `<p class="rec">Tacit’s provider has finished <b class="num">${done}</b> swap${done === 1 ? '' : 's'}${esc(split)}${sinceTxt ? ` since ${esc(sinceTxt)}` : ''}${Number.isInteger(refunded) ? `, <b class="num">${refunded}</b> refunded` : ''}.</p>`;
+    }
+    if (rec && !(s && t && s.capacity)) { el.innerHTML = rec; ok = true; }
     if (s && t && s.capacity) {
       const goal = BigInt(t.eth) + BigInt(t.btcAsEth), have = BigInt(s.capacity.valueEth), re = BigInt(s.reinvestedEth || 0);
       const pct = goal > 0n ? Math.min(100, Number((have * 1000n) / goal) / 10) : 0;
       const since = new Date(Number(s.since) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       const figs = [t.reached ? `<b class="num">${esc(eth2(have))}</b> ETH, at its target` : `<b class="num">${esc(eth2(have))}</b> of ${esc(eth2(goal))} ETH`, re > 0n ? `${esc(fmt(re))} ETH of fees reinvested since ${esc(since)}` : `fees counted since ${esc(since)}`];
       if (b.startedAt || BigInt(b.routedEth || 0) > 0n) figs.push(`${esc(tacTxt(b.tacBought))} TAC bought`);
-      el.innerHTML = `<p>Tacit’s provider puts its fees, after network costs, back into its capacity until it holds ${esc(eth2(t.eth))} ETH and as much in BTC. Past that, they go to TAC buybacks.</p>`
+      el.innerHTML = rec + `<p>Tacit’s provider puts its fees, after network costs, back into its capacity until it holds ${esc(eth2(t.eth))} ETH and as much in BTC. Past that, they go to TAC buybacks.</p>`
         + `<div class="bar" role="progressbar" aria-label="Capacity against that target" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}"><i></i></div>`
         + `<p class="fig">${figs.map((f) => `<span>${f}</span>`).join(' · ')}</p>`;
       el.querySelector('.bar i').style.width = `${pct}%`;
@@ -132,6 +155,8 @@ function paintFund(i) {
     }
   } catch { ok = false; }
   el.hidden = !ok;
+  const recEl = $('rec');
+  if (recEl) { recEl.innerHTML = tiles; recEl.hidden = !tiles; }
 }
 
 // ── the sections under the tile: disclosures (<details>), closed by default and remembered per section ──
@@ -226,7 +251,7 @@ function paintChip() {
   $('acct-id').textContent = a || '';
   // the chip names the key by its tacit1 address, as the front page does (its first 16 characters and last 6)
   if (!on) { $('acct-tacit').textContent = ''; tacitOf = null; tacitAsked = false; }
-  else if (!tacitAsked) { tacitAsked = true; Promise.resolve(lane.tacitAddress?.()).then((t) => { tacitOf = t; if (t) { $('acct-tacit').textContent = t; $('wallet-label').textContent = `${t.slice(0, 16)}…${t.slice(-6)}`; } }, () => {}); }
+  else if (!tacitAsked) { tacitAsked = true; Promise.resolve(lane.tacitAddress?.()).then((t) => { if (!lane.unlocked || lane.address !== a) return; tacitOf = t; if (t) { $('acct-tacit').textContent = t; $('wallet-label').textContent = `${t.slice(0, 16)}…${t.slice(-6)}`; } }, () => {}); }
   $('wallet-label').textContent = on ? (tacitOf ? `${tacitOf.slice(0, 16)}…${tacitOf.slice(-6)}` : a ? `${a.slice(0, 6)}…${a.slice(-4)}` : 'Signed in') : 'Sign in';
   if (!on) { $('acct-pop').hidden = true; $('wallet').setAttribute('aria-expanded', 'false'); }
 }

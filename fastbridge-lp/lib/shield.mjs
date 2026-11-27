@@ -38,7 +38,7 @@ export function shieldConfig(env = process.env) {
   return c;
 }
 
-export function makeShield({ cfg, ux, key, address, quiet = async () => true, turn = (fn) => fn(), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {}, waitTries = 90, waitMs = 4000 }) {
+export function makeShield({ cfg, ux, key, address, quiet = async () => true, turn = (fn) => fn(), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {}, waitTries = 90, waitMs = 4000, sendFrom = null }) {
   let st = null, busy = false, halted = null, bal = null, nextAt = -Infinity, stuckSaid = -Infinity;
   const ethOf = async () => BigInt(await ux.rpc('eth_getBalance', [address, 'latest']));
   const keep = () => save({ id: 'shield', ...st });
@@ -65,7 +65,7 @@ export function makeShield({ cfg, ux, key, address, quiet = async () => true, tu
     const p = st.pending, amountWei = BigInt(p.amountWei);
     if (!p.tx) {
       // killed between the record and the send: sent if the account's nonce moved
-      const n = Number(BigInt(await ux.rpc('eth_getTransactionCount', [address, 'pending'])));
+      const n = Number(BigInt(await ux.rpc('eth_getTransactionCount', [p.src || address, 'pending'])));
       if (n > p.nonce) return stop('a deposit may have been sent without its transaction being kept; check the address\'s transactions before setting FB_LP_AUTO_SHIELD again', { index: p.index });
       st.pending = null; await keep();
       return { did: 'cleared' };
@@ -79,7 +79,7 @@ export function makeShield({ cfg, ux, key, address, quiet = async () => true, tu
     if (p.phase !== 'mined') { p.phase = 'mined'; await keep(); }
     // the deposit is rebuilt from its index: the same note, so the settle is the one the deposit asked for
     const built = await ux.buildRouterWrap({ walletPriv: key, amountWei, ticker: TICKER, index: p.index });
-    try { await settleDeposit({ ux, key, address, sent: { ...built, from: address, txHash: p.tx }, turn }); }
+    try { await settleDeposit({ ux, key, address, sent: { ...built, from: p.src || address, txHash: p.tx }, turn }); }
     catch (e) { return stop('a deposit was made and its settle did not go through; it is not repeated', { tx: p.tx, index: p.index, error: err(e) }); }
     st.pending = null; st.nextIndex = p.index + 1; st.shielded = String(BigInt(st.shielded) + amountWei); st.count += 1; st.lastTx = p.tx; st.lastAt = now();
     bal = null; nextAt = now() + cfg.everySecs;
@@ -128,6 +128,41 @@ export function makeShield({ cfg, ux, key, address, quiet = async () => true, tu
     } finally { busy = false; }
   }
 
+  // The ETH at another address of the provider's (a fresh one the rebalancing receives into) shielded into this key's notes through the same counter and the same pending record as the
+  // address's own deposits, so the two never use one wrap index: the deposit is sent from that address (`sendFrom`), the note is the key's. -> { did }
+  async function shieldFrom({ address: src, priv, reserveWei, minWei }) {
+    if (!cfg.enabled) return { did: 'off' };
+    if (halted) return { did: 'halted' };
+    if (busy) return { did: 'busy' };
+    if (typeof sendFrom !== 'function') return { did: 'no sender' };
+    busy = true;
+    try {
+      await state();
+      if (st.pending) return String(st.pending.src || address).toLowerCase() === String(src).toLowerCase() ? await finish() : { did: 'busy' };
+      const have = BigInt(await ux.rpc('eth_getBalance', [src, 'latest'])), room = have > reserveWei ? have - reserveWei : 0n, amountWei = room - (room % UNIT);
+      if (amountWei < minWei) return { did: 'low' };
+      const at = await index();
+      try { await checkDeposit({ ux, key, address: src, amountWei, ticker: TICKER, index: at }); }
+      catch (e) {
+        if (e && e.duplicate) { st.nextIndex = null; await keep(); return stop(`wrap index ${at} is already used on the pool; restart to read the history again`, { index: at }); }
+        alert({ level: 'warn', msg: 'auto-shield: a deposit from a fresh address would not go through, so nothing was sent', error: err(e) });
+        return { did: 'failed' };
+      }
+      const nonce = Number(BigInt(await ux.rpc('eth_getTransactionCount', [src, 'pending'])));
+      st.pending = { index: at, amountWei: String(amountWei), nonce, tx: null, phase: 'sent', at: now(), src };
+      await keep();
+      let sent;
+      try { sent = await turn(() => sendFrom({ amountWei, index: at, ticker: TICKER, priv })); }
+      catch (e) { st.pending = null; await keep(); alert({ level: 'warn', msg: 'auto-shield: a deposit from a fresh address could not be sent', error: err(e) }); return { did: 'failed' }; }
+      st.pending.tx = sent.txHash; await keep();
+      log({ level: 'info', msg: 'auto-shield: deposit sent from a fresh address', eth: eth(amountWei), index: at, tx: sent.txHash });
+      return await finish();
+    } catch (e) {
+      alert({ level: 'warn', msg: 'auto-shield: a step from a fresh address failed', error: err(e) });
+      return { did: 'failed' };
+    } finally { busy = false; }
+  }
+
   const info = () => ({ on: !!cfg.enabled, halted, reserveEth: eth(cfg.reserveWei), minEth: eth(cfg.minWei), pending: st && st.pending ? { index: st.pending.index, tx: st.pending.tx } : null, shielded: st ? { eth: eth(st.shielded), count: st.count, lastTx: st.lastTx, lastAt: st.lastAt } : null });
-  return { step, info, halted: () => halted };
+  return { step, shieldFrom, info, halted: () => halted };
 }
