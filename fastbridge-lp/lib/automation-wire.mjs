@@ -42,9 +42,10 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
 
   // the free notes of the pool ETH (one scan, shared by the report, the merge and the buyback)
   let notesRun = null, notesAt = 0, notesLast = null;
+  // (the pool names the asset with its 0x: a bare id found no note, so the merge, the buyback and the note report saw none)
   const ethNotes = async () => {
     if (notesLast && Date.now() - notesAt < 30000) return notesLast;
-    notesRun ||= Promise.resolve(ux.balance(key, { bridge: false, cbtc: false })).then(({ byAsset }) => { notesLast = ((byAsset[asset] && byAsset[asset].notes) || []).filter((n) => BigInt(n.value) > 0n); notesAt = Date.now(); return notesLast; }).finally(() => { notesRun = null; });
+    notesRun ||= Promise.resolve(ux.balance(key, { bridge: false, cbtc: false })).then(({ byAsset }) => { notesLast = ((((byAsset[`0x${asset.replace(/^0x/, '')}`] || byAsset[asset.replace(/^0x/, '')]) || {}).notes) || []).filter((n) => BigInt(n.value) > 0n); notesAt = Date.now(); return notesLast; }).finally(() => { notesRun = null; });
     return notesRun;
   };
   // nothing under way on the forward side: no swap open, no hold, nothing promised (a merge or a send then spends no note a lock waits on)
@@ -126,8 +127,7 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
       const evmTx = makeEvmTx({ secp: sp, keccak256 });
       const UNITW = 10n ** 10n, rpc = (m, p) => ux.rpc(m, p);
       const satsAll = async () => { let t = 0n; for (const b of [btc, rside.btc]) if (b && typeof b.satsUtxos === 'function') t += (await b.satsUtxos()).reduce((x, c) => x + BigInt(c.value), 0n); return t; };
-      // the provider's own ETH notes as the pool names the asset (with its 0x): the shared ethNotes above looks the id up bare and finds none, which is left as it is here
-      const ownEthNotes = async () => { const { byAsset } = await ux.balance(key, { bridge: false, cbtc: false }); const id = asset.replace(/^0x/, ''); return (((byAsset[`0x${id}`] || byAsset[id] || {}).notes) || []).filter((n) => BigInt(n.value) > 0n); };
+      const ownEthNotes = ethNotes;
       const publicWei = async () => BigInt(await rpc('eth_getBalance', [address, 'latest']));
       const ethPerBtc = () => { const c = rateFeed && rateFeed.current(); return c && Number(c.ethPerBtc) > 0 ? Number(c.ethPerBtc) : null; };   // (feed.rate() is a { num, den } ratio, not a price)
       rebalancer = makeRebalancer({
