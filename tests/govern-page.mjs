@@ -95,7 +95,18 @@ balances.set(rich.addr, 250n * TAC); balances.set(poor.addr, 99n * TAC);
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 const b = await chromium.launch({ channel: 'chromium-headless-shell' });
-async function open(holder, hash = '', { viewport = { width: 1280, height: 900 }, scheme = 'light' } = {}) {
+// a Tacit key this tab already opened elsewhere on the site, and tacit.js in a stand-in that hands its governance calls to this test: the real proof
+// is the worker suite's (tests/governance-worker.test.mjs) and the classic app's; here the page's own wiring is under test
+const tacitStandIn = `export const wallet = { priv: null, pub: null, mode: null };
+export function invalidateHoldingsCache() {}
+const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+export function governanceApi() { return {
+  readTacBalance: async () => 15000000000n,
+  votePrivate: async (id, c, tier) => window.__btcVote(id, c, String(tier), hex(wallet.pub)),
+  createProposal: async (c) => window.__btcPropose(JSON.stringify(c), hex(wallet.pub)),
+}; }`;
+const btcCalls = [];
+async function open(holder, hash = '', { viewport = { width: 1280, height: 900 }, scheme = 'light', tacitKey = null } = {}) {
   const ctx = await b.newContext({ viewport, colorScheme: scheme });
   const page = await ctx.newPage();
   const errs = [], csp = [], signed = [];
@@ -133,6 +144,21 @@ async function open(holder, hash = '', { viewport = { width: 1280, height: 900 }
     const announce = () => dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail: Object.freeze({ info, provider }) }));
     addEventListener('eip6963:requestProvider', announce);
   }, holder.addr);
+  if (tacitKey) {
+    await page.route(/\/tacit\.js(\?|$)/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: tacitStandIn }));
+    await page.exposeFunction('__btcVote', async (pid, choice, tier, pubHex) => {
+      btcCalls.push({ kind: 'vote', pid, choice, tier, pubHex });
+      const k = `gov:v:mainnet:${pid}:btc-${pubHex.slice(0, 32)}`, prior = await env.REGISTRY_KV.get(k, 'json');
+      await env.REGISTRY_KV.put(k, JSON.stringify({ proposal_id: pid, network: 'mainnet', kind: 'private', choice, weight: tier, tier, voter: pubHex, outpoints: [], voted_at: Math.floor(Date.now() / 1000), revote: !!prior }));
+      const p = await env.REGISTRY_KV.get(`gov:p:mainnet:${pid}`, 'json');        // the tally, as the worker's recount leaves it
+      p.tally.totals[choice] = String(BigInt(p.tally.totals[choice]) + BigInt(tier)); p.tally.total_weight = String(BigInt(p.tally.total_weight) + BigInt(tier));
+      p.tally.voters += 1; p.tally.private_voters += 1;
+      await env.REGISTRY_KV.put(`gov:p:mainnet:${pid}`, JSON.stringify(p));
+      return { ok: true, weight: tier, tier, revote: !!prior };
+    });
+    await page.exposeFunction('__btcPropose', async (json, pubHex) => { btcCalls.push({ kind: 'propose', c: JSON.parse(json), pubHex }); return { ok: true, id }; });
+    await page.addInitScript((k) => sessionStorage.setItem('tacit-tab-key-v1', JSON.stringify({ ...k, at: Date.now() })), tacitKey);
+  }
   await page.goto(`${BASE}/govern/${hash}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#side .eyebrow');
   return { page, errs, csp, signed };
@@ -181,36 +207,65 @@ let id;
   await page.context().close();
 }
 
-// 2. a Bitcoin vote is in the tally; the holder votes from Ethereum
+// 2. one holder votes from both chains in one go: the Ethereum wallet signs, the Tacit wallet proves a tier
+const tacitPriv = bytesToHex(sha256(new TextEncoder().encode('gov-page-tacit-key')));
+const tacitPub = bytesToHex(secp.getPublicKey(tacitPriv, true));
+const tacitKey = { mode: 'passkey', priv: tacitPriv, pubHex: tacitPub, label: 'Tacit', credentialId: 'test' };
 {
   await env.REGISTRY_KV.put(`gov:v:mainnet:${id}:btc-${'cd'.repeat(16)}`, JSON.stringify({
     proposal_id: id, network: 'mainnet', kind: 'private', choice: 1, weight: String(100n * 10n ** 8n), tier: String(100n * 10n ** 8n),
     voter: '02' + 'ab'.repeat(32), outpoints: [], voted_at: Math.floor(Date.now() / 1000) - 600, revote: false,
   }));
-  const { page, errs, csp, signed } = await open(rich, `#${id}`);
+  { const p = await env.REGISTRY_KV.get(`gov:p:mainnet:${id}`, 'json'); p.tally = { totals: ['0', String(100n * 10n ** 8n)], voters: 1, total_weight: String(100n * 10n ** 8n), public_voters: 0, private_voters: 1 }; await env.REGISTRY_KV.put(`gov:p:mainnet:${id}`, JSON.stringify(p)); }
+  const { page, errs, csp, signed } = await open(rich, `#${id}`, { tacitKey });
   await page.waitForSelector('#ballot');
+  await page.waitForFunction(() => /150 TAC/.test(document.querySelector('#side')?.textContent || ''));
+  ok(true, 'a Tacit wallet this tab already opened is used, and its Bitcoin TAC shows in the side card');
   await connect(page);
-  await page.waitForSelector('#weight');
-  ok(/250 TAC/.test(await text(page, '#weight')), 'the ballot shows the holder’s weight at the snapshot');
+  await page.waitForFunction(() => /250 TAC, held at block/.test(document.querySelector('#ballot')?.textContent || ''));
+  ok(await page.isChecked('[data-src="eth"]') && await page.isChecked('[data-src="btc"]'), 'both chains are ready to vote');
+  ok(await page.inputValue('#tier') === String(100n * 10n ** 8n), 'the Bitcoin tier starts at the highest it holds (≥ 100 of 150)');
   await page.click('.opt:has-text("Yes")');
+  ok(await text(page, '#vote') === 'Vote from both', 'one button votes from both');
+  await shot(page, 'gov-both-ready');
   await page.click('#vote');
-  await page.waitForFunction(() => /Voted with/.test(document.querySelector('#note')?.textContent || ''), null, { timeout: 30e3 });
-  ok(signed.length === 1 && signed[0].text === voteMessage(id, 0, 'Yes'), 'the wallet signed the vote for Yes');
-  ok(/Voted with 250 TAC/.test(await text(page, '#note')), 'the page says the vote counted 250 TAC');
-  ok(/You voted Yes with 250 TAC/.test(await text(page, '#mine')) && await text(page, '#vote') === 'Change vote', 'the ballot then shows the vote cast and offers to change it');
-  ok(/Bitcoin 100 TAC · 1/.test(await text(page, '#lane-b')), 'the Bitcoin side shows its 100 TAC and one voter');
-  ok(/Ethereum 250 TAC · 1/.test(await text(page, '#lane-e')), 'the Ethereum side shows 250 TAC and one voter');
+  await page.waitForFunction(() => /Voted at/.test(document.querySelector('#step-btc')?.textContent || '') && /Voted with/.test(document.querySelector('#step-eth')?.textContent || ''), null, { timeout: 30e3 });
+  ok(signed.length === 1 && signed[0].text === voteMessage(id, 0, 'Yes'), 'the Ethereum wallet signed the vote for Yes');
+  const bv = btcCalls.find((c) => c.kind === 'vote');
+  ok(bv && bv.pid === id && bv.choice === 0 && bv.tier === String(100n * 10n ** 8n) && bv.pubHex === tacitPub, 'tacit.js was asked for a Bitcoin vote for Yes at the 100 TAC tier, under the tab’s key');
+  ok(/Voted with 250 TAC/.test(await text(page, '#step-eth')) && /Voted at 100 TAC/.test(await text(page, '#step-btc')), 'each source says what it counted');
+  ok(/Bitcoin 200 TAC · 2/.test(await text(page, '#lane-b')) && /Ethereum 250 TAC · 1/.test(await text(page, '#lane-e')), 'each chain’s side shows its TAC and voters');
   const res = await page.$$eval('.res-h', (r) => r.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
-  ok(/^Yes ?250 TAC · 71.4%/.test(res[0]) && /^No ?100 TAC · 28.5%/.test(res[1]), `results add both chains (${res.join(' | ')})`);
+  ok(/^Yes ?350 TAC · 77.7%/.test(res[0]) && /^No ?100 TAC · 22.2%/.test(res[1]), `results add both chains (${res.join(' | ')})`);
+  ok(await text(page, '#vote') === 'Change vote from both' && (await page.$$eval('.src small b', (x) => x.map((e) => e.textContent))).length === 2, 'the ballot then shows both votes and offers to change them');
   const rows = await page.$$eval('.vrow', (r) => r.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
-  ok(rows.length === 2 && rows.some((r) => /^Ethereum ?0x.*Yes ?250/.test(r)) && rows.some((r) => /^Bitcoin ?key 02ababab… ?No ?≥ 100/.test(r)), `the vote list names each chain (${rows.join(' | ')})`);
-  ok(await page.$$eval('.vrow img.inv', (i) => i.length) === 2 && await page.$('.meta img.inv') && await page.$('#side .me img.inv'), 'each voter, the proposer and the account wear their zOrgz face');
+  ok(rows.length === 3 && rows.some((r) => /^Ethereum ?0x.*Yes ?250/.test(r)) && rows.filter((r) => /^Bitcoin ?key/.test(r)).length === 2, `the vote list names each chain (${rows.join(' | ')})`);
+  ok(await page.$$eval('.vrow img.inv', (i) => i.length) === 3 && await page.$('.meta img.inv') && await page.$$eval('#side .acct img.inv', (i) => i.length) === 2, 'each voter, the proposer and both of the holder’s accounts wear their zOrgz face');
   ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
   await shot(page, 'gov-voted');
   await page.click('.eyebrow a[href="#"]');
   await page.waitForSelector('.prop');
-  ok(/Yes · 71.4%/.test(await text(page, '.prop')) && /1 Bitcoin · 1 Ethereum/.test(await text(page, '.prop')), 'the list shows the lead and both chains’ voters');
+  ok(/Yes · 77.7%/.test(await text(page, '.prop')) && /2 Bitcoin · 1 Ethereum/.test(await text(page, '.prop')), 'the list shows the lead and both chains’ voters');
   await shot(page, 'gov-list');
+  // a proposal opened from the Tacit wallet
+  await page.click('a.btn.sm[href="#new"]');
+  await page.waitForSelector('#newform');
+  await page.click('[data-from="btc"]');
+  await page.fill('#f-title', 'From Bitcoin');
+  ok(await text(page, '#f-go') === 'Sign and open', 'a proposal can be opened from the Tacit wallet');
+  await page.click('#f-go');
+  await page.waitForFunction((pid) => location.hash === `#${pid}`, id, { timeout: 30e3 });
+  const bp = btcCalls.find((c) => c.kind === 'propose');
+  ok(bp && bp.c.title === 'From Bitcoin' && bp.c.network === 'mainnet' && bp.c.snapshot_height === 0 && bp.pubHex === tacitPub && signed.length === 1, 'tacit.js was asked to open it under the tab’s key, and the Ethereum wallet was not asked');
+  await page.context().close();
+}
+
+// the real tacit.js, loaded the way the page loads it, offers the governance calls the page makes
+{
+  const tacitUrl = /const TACIT_URL = '([^']+)'/.exec(readFileSync(join(DAPP, 'govern/app.js'), 'utf8'))[1];
+  const { page } = await open(poor);
+  const got = await page.evaluate(async (u) => { globalThis.__TACIT_NO_INIT__ = true; const T = await import(u); const g = T.governanceApi(); return [typeof g.votePrivate, typeof g.createProposal, typeof g.readTacBalance, g.tiers.length, !!T.wallet]; }, tacitUrl);
+  ok(JSON.stringify(got) === JSON.stringify(['function', 'function', 'function', 6, true]), `the real tacit.js exports governanceApi with the calls the page uses (${got})`);
   await page.context().close();
 }
 

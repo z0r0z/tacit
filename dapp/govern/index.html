@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /govern/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/govern/app.js?cb=a5a1dba0">
+<link rel="modulepreload" href="/govern/app.js?cb=6bbda4d2">
 <link rel="modulepreload" href="/trade/connect.js?cb=514272b7">
 <link rel="modulepreload" href="/walletconnect.js?cb=4740866f">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -38,9 +38,20 @@
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=fb6ec72f">
+<link rel="modulepreload" href="/trade/key.js?cb=e9a3a06d">
+<link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
+<link rel="modulepreload" href="/prf-wallet.js">
+<link rel="modulepreload" href="/tacit-chain-root.js">
+<link rel="modulepreload" href="/tacit-wallet-known.js?cb=ec5b5193">
+<link rel="modulepreload" href="/evm-wallet.js?cb=ed67f38d">
+<link rel="modulepreload" href="/identity-message.js">
+<link rel="modulepreload" href="/trade/sign-in.js?cb=62608560">
+<link rel="modulepreload" href="/sign-wait.js?cb=ab42ced1">
+<link rel="modulepreload" href="/tab-key.js?cb=e90d6a31">
+<link rel="modulepreload" href="/trade/btc-session.js?cb=26eb770f">
+<link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/govern/message.js?cb=c73bd573">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
-<link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -177,6 +188,31 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .track i { display: block; height: 100%; background: var(--ink); }
 .ballot { margin-top: 18px; padding: 16px; border: 1px solid var(--hair-2); border-radius: 14px; }
 .opt { display: flex; gap: 10px; align-items: center; padding: 7px 0; cursor: pointer; }
+/* your TAC, per chain */
+.acct { padding: 12px 0; border-top: 1px solid var(--hair); }
+.acct:first-of-type { border-top: 0; padding-top: 2px; }
+.acct-h { display: flex; align-items: center; gap: 12px; }
+.acct-h > div { display: grid; gap: 3px; min-width: 0; }
+.acct-h b { font: 400 21px/1.1 var(--serif); }
+.acct-h small { font-size: 11.5px; color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-h .lane { justify-self: start; }
+.acct .btn { margin-top: 10px; min-height: 40px; }
+.acct .inv { width: 40px; height: 40px; border-radius: 10px; }
+.inv.ph { display: inline-block; background: repeating-linear-gradient(45deg, var(--hair), var(--hair) 4px, transparent 4px, transparent 8px); }
+/* the ballot's sources */
+.srcs { display: grid; gap: 8px; }
+.src { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--hair-2); border-radius: 12px; background: var(--field); cursor: pointer; }
+.src.on { border-color: var(--ink); }
+.src.off { cursor: default; opacity: .78; }
+.src input { accent-color: var(--ink); margin: 0; flex: none; }
+.src-b { display: grid; gap: 3px; flex: 1; min-width: 0; }
+.src-b .lane { justify-self: start; }
+.src-l { font-size: 13px; }
+.src small { font-size: 11.5px; color: var(--mute); }
+.src small.ok { color: var(--ok); } .src small.err { color: var(--err); }
+.src .tier { width: auto; min-height: 38px; padding: 6px 36px 6px 12px; font-size: 12.5px; background-position: right 12px center; flex: none; }
+.src .linkbtn { flex: none; font-size: 12.5px; }
+.seg.two-way { grid-template-columns: 1fr 1fr; }
 /* the form */
 .form { display: grid; gap: 20px; }
 .f { display: grid; gap: 8px; min-width: 0; }
@@ -607,6 +643,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/govern/app.js?cb=a5a1dba0"></script>
+<script type="module" src="/govern/app.js?cb=6bbda4d2"></script>
 </body>
 </html>
