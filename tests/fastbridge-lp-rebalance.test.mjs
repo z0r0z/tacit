@@ -194,3 +194,56 @@ test('a quote over the cost limit is not taken; a swap busy with others, or a re
   w2.store = { v: 1, moved: '0', day: Math.floor(w2.clock / 86400), pending: { id: 'x', dir: 'eth2btc', stage: 'sending', amountWei: String(ETH(0.3)), targetPublic: String(ETH(0.32)), at: w2.clock, nonce: 5 }, done: 0 };
   assert.equal((await w2.build().step()).did, 'cleared', 'the nonce has not moved: it did not go');
 });
+
+// the Bitcoin leg: sats sold for ETH, the ETH landing at the provider's own pool account
+const BTC_VAULT = 'bc1q' + 'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
+function btcWorld({ mode = 'on', history = 9, kept = null, broadcastFails = null, confs = 0 } = {}) {
+  const w = { built: 0, broadcast: [], alerts: [], store: kept, clock: 2_000_000_000, confs };
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const c = cfg({ FB_LP_REBALANCE: mode, FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: BTC_VAULT, memo: `=:e:${q.get('destination')}`, expected_amount_out: '29800000', expiry: w.clock + 600 }) });
+  const build = () => makeRebalancer({
+    cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(1), sats: 4e7 }), fetchImpl, now: () => w.clock,
+    vaultHistory: async ({ chain }) => (chain === 'BTC' ? history : 0),
+    btcBuild: async ({ to, sats, memo }) => { w.built++; w.last = { to, sats, memo }; return { txid: 'ab'.repeat(32), hex: '02000000deadbeef', fee: 400 }; },
+    btcBroadcast: async (h) => { if (broadcastFails) throw new Error(broadcastFails); w.broadcast.push(h); },
+    btcStatus: async () => ({ confirmations: w.confs }),
+    ethBalance: async () => ETH(0.1), ethNonce: async () => 1, ethReceipt: async () => null, sendEth: async () => { throw new Error('no eth send in this direction'); },
+    address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02), quiet: async () => true,
+    load: async () => w.store, save: async (r) => { w.store = JSON.parse(JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? String(v) : v))); },
+    log: () => {}, alert: (a) => w.alerts.push(a),
+  });
+  w.r = build(); w.build = build;
+  return w;
+}
+
+test('BTC-heavy: the sats are built, kept, sent to the vault with a memo naming the provider\'s own account, counted once, and closed when confirmed', async () => {
+  const w = btcWorld();
+  const a = await w.r.step();
+  assert.equal(a.did, 'sent');
+  assert.equal(w.built, 1); assert.equal(w.broadcast.length, 1);
+  assert.equal(w.last.to, BTC_VAULT); assert.equal(w.last.memo, `=:e:${ETH_DEST}`);
+  assert.ok(w.last.sats > 0n && BigInt(w.store.moved) > 0n, 'counted against the day');
+  assert.equal(w.store.pending.stage, 'sent');
+  assert.equal((await w.r.step()).did, 'pending', 'not confirmed yet');
+  assert.equal(w.broadcast.length, 1, 'never sent twice');
+  w.confs = 1;
+  assert.equal((await w.r.step()).did, 'swapped');
+  assert.equal(w.store.pending, null);
+  assert.equal(w.r.holding(), false, 'the ETH shield is not held for this direction');
+});
+
+test('the Bitcoin leg: a dry run builds nothing; a vault with no history is refused; a restart in the middle sends the same bytes again, not a new payment', async () => {
+  const dry = btcWorld({ mode: 'dry' });
+  assert.equal((await dry.r.step()).did, 'dry'); assert.equal(dry.built, 0); assert.equal(dry.broadcast.length, 0);
+  const none = btcWorld({ history: 0 });
+  assert.equal((await none.r.step()).did, 'no quote'); assert.equal(none.built, 0);
+  const w = btcWorld({ broadcastFails: 'explorer down' });
+  assert.equal((await w.r.step()).did, 'failed');
+  assert.equal(w.store.pending.stage, 'sending', 'kept before it was sent');
+  const again = btcWorld({ kept: w.store });
+  const r = again.build();
+  assert.equal((await r.step()).did, 'sent');
+  assert.equal(again.built, 0, 'not built a second time');
+  assert.deepEqual(again.broadcast, ['02000000deadbeef'], 'the same transaction');
+});

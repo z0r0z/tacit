@@ -12,7 +12,7 @@
 
 import { resolve } from 'node:path';
 import { makeFileStore } from './store.mjs';
-import { recycleConfig, makeRecycler } from './recycle.mjs';
+import { recycleConfig, makeRecycler, agreedFeeRate, busyOutpoints } from './recycle.mjs';
 import { skewConfig, feeAtMinBps } from './skew.mjs';
 import { notesConfig } from './notes.mjs';
 import { buybackConfig, targetConfig, buybackTopic } from './buyback.mjs';
@@ -130,6 +130,44 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
       const ownEthNotes = ethNotes;
       const publicWei = async () => BigInt(await rpc('eth_getBalance', [address, 'latest']));
       const ethPerBtc = () => { const c = rateFeed && rateFeed.current(); return c && Number(c.ethPerBtc) > 0 ? Number(c.ethPerBtc) : null; };   // (feed.rate() is a { num, den } ratio, not a price)
+      // the Bitcoin leg: sats spent from the reverse address (its confirmed plain coins that no swap names), one output to the venue's vault, one OP_RETURN with the memo, change back to the
+      // reverse address; never below `keepSats` left there for the ETH-for-BTC side. Built and signed here, kept by the rebalancer, then sent: the same bytes if it is sent again.
+      const { reverseKeyOf } = await import('./reverse.mjs');
+      const { bech32 } = await import('../../dapp/vendor/tacit-deps.min.js');
+      const rkey = reverseKeyOf(key), rSpk = hex(rside.prims.p2wpkhScript(rside.prims.wallet.pub)), KEEP_SATS = Number(process.env.FB_LP_REBALANCE_KEEP_SATS ?? 150000);
+      const scriptOfBech32 = (addr) => { const d = bech32.decode(addr); const prog = bech32.fromWords(d.words.slice(1)); if (d.prefix !== 'bc' || d.words[0] !== 0 || (prog.length !== 20 && prog.length !== 32)) throw new Error('the vault address is not a segwit v0 address'); return Uint8Array.from([0x00, prog.length, ...prog]); };
+      const btcBuild = async ({ to, sats, memo }) => {
+        const amount = Number(sats);
+        if (!(amount >= 20000)) throw new Error('the amount is too small to send');
+        if (!/^=:e:0x[0-9a-fA-F]{40}(:[0-9]+(\/[0-9]+){0,2})?$/.test(memo) || memo.length > 80) throw new Error('the memo is not a plain swap to an ETH address');
+        const busy = busyOutpoints(await swapStore.list(), await rside.swaps.list());
+        const coins = (await (rside.btc.satsCoins ? rside.btc.satsCoins().then((r) => r.coins) : rside.btc.satsUtxos())).filter((c) => Number.isInteger(c.value) && c.value >= 10000 && !busy.has(`${c.txid}:${c.vout}`)).sort((a, b) => b.value - a.value);
+        const rate = await agreedFeeRate({ bases: C.btcBases, fetchImpl: (u, o) => fetch(u, o), target: '3', minAnswers: 2, cap: 40 });
+        const memoBytes = Buffer.from(memo, 'utf8'), vaultScript = scriptOfBech32(to);
+        const have = coins.reduce((t, c) => t + c.value, 0);
+        const pick = []; let sum = 0, fee = 0;
+        for (const c of coins) { pick.push(c); sum += c.value; fee = Math.ceil((11 + 68 * pick.length + 31 + (9 + vaultScript.length) + (11 + memoBytes.length)) * rate); if (sum >= amount + fee + 546) break; }
+        if (sum < amount + fee + 546) throw new Error('the reverse address does not hold enough plain coins for this send');
+        if (have - amount - fee < KEEP_SATS) throw new Error(`the send would leave the reverse address under ${KEEP_SATS} sats`);
+        if (fee * 10000 > amount * 100) throw new Error(`the fee (${fee} sats at ${rate} sat/vB) is over 1% of the send`);
+        const change = sum - amount - fee;
+        const hb = (h) => Uint8Array.from(h.match(/../g).map((x) => parseInt(x, 16)));
+        const tx = { version: 2, locktime: 0, inputs: pick.map((c) => ({ txid: c.txid, vout: c.vout, sequence: 0xfffffffd, witness: [] })), outputs: [{ value: amount, script: vaultScript }, { value: 0, script: Uint8Array.from([0x6a, memoBytes.length, ...memoBytes]) }, { value: change, script: hb(rSpk) }] };
+        pick.forEach((c, i) => { tx.inputs[i].witness = tacit.signP2wpkhInputWithKey(tx, i, c.value, rkey, rside.prims.wallet.pub); });
+        return { txid: tacit.txid(tx), hex: hex(tacit.serializeTx(tx)), fee };
+      };
+      // how often the vault has paid out lately, as its Bitcoin transactions show: the newest page of its history, counting those with an OUT: or REFUND: memo that spend from the vault
+      const btcVaultHistory = async (vault) => {
+        for (const base of C.btcBases || []) {
+          try {
+            const r = await fetch(`${String(base).replace(/\/$/, '')}/address/${vault}/txs`, { signal: AbortSignal.timeout(15000) });
+            if (!r.ok) continue;
+            const txs = await r.json();
+            return txs.filter((t) => (t.vout || []).some((o) => o.scriptpubkey_type === 'op_return' && /(4f55543a|524546554e443a)/i.test(String(o.scriptpubkey || ''))) && (t.vin || []).some((i) => i.prevout && i.prevout.scriptpubkey_address === vault)).length;
+          } catch { /* the next explorer */ }
+        }
+        return 0;
+      };
       rebalancer = makeRebalancer({
         cfg: rc, rate: async () => ethPerBtc(), quiet, gate: poolTurn, turn,
         inventory: async () => {
@@ -161,7 +199,9 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
           return rpc('eth_sendRawTransaction', [signed.raw]);
         },
         // how many times the venue's router has paid out of the vault in about the last 30 hours (TransferOut with the vault as its first topic): read from the Ethereum nodes
-        vaultHistory: async ({ router, vault }) => {
+        btcBuild, btcBroadcast: (h) => btc.broadcast({ revealHex: h }), btcStatus: (id) => btc.status(id),
+        vaultHistory: async ({ chain, router, vault }) => {
+          if (chain === 'BTC') return btcVaultHistory(vault);
           const topic0 = '0x' + Buffer.from(keccak256(new TextEncoder().encode('TransferOut(address,address,address,uint256,string)'))).toString('hex');
           const head = Number(BigInt(await rpc('eth_blockNumber', [])));
           const logs = await rpc('eth_getLogs', [{ address: router, fromBlock: '0x' + (head - 9000).toString(16), toBlock: '0x' + head.toString(16), topics: [topic0, '0x' + '0'.repeat(24) + String(vault).toLowerCase().replace(/^0x/, '')] }]);

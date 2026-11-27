@@ -97,18 +97,19 @@ export async function venueQuote({ venue, nodes, fetchImpl, from, to, amount, de
   const books = (await Promise.all(nodes.map((n) => getJson(fetchImpl, `${n}/${p}/inbound_addresses`).then((l) => ({ n, l }), (e) => { failed.push(`${new URL(n).host}: ${err(e)}`); return null; })))).filter(Boolean);
   const seen = books.map(({ n, l }) => ({ n, ib: l.find((x) => x.chain === from), out: l.find((x) => x.chain === to) })).filter((x) => x.ib && x.out);
   // one node is enough only when Ethereum itself vouches for the vault (below); with none to do that, two must agree
-  if (seen.length < (vaultHistory && from === 'ETH' ? 1 : 2)) throw new Error(`${venue}: only ${seen.length} node(s) answered; two must agree on the vault address${failed.length ? ` (not answering: ${failed.join('; ')})` : ''}`);
+  if (seen.length < (vaultHistory ? 1 : 2)) throw new Error(`${venue}: only ${seen.length} node(s) answered; two must agree on the vault address${failed.length ? ` (not answering: ${failed.join('; ')})` : ''}`);
   const ib = seen[0].ib;
   for (const s of seen) if (!same(s.ib.address, ib.address)) throw new Error(`${venue}: the nodes disagree on the ${from} vault address; nothing sent`);
   for (const s of seen) {
     for (const x of [s.ib, s.out]) if (x.halted || x.global_trading_paused || x.chain_trading_paused) throw new Error(`${venue}: trading on ${x.chain} is halted`);
   }
   if (!/^0x[0-9a-fA-F]{40}$/.test(ib.address) && from === 'ETH') throw new Error(`${venue}: the ETH vault address is malformed`);
-  if (from === 'ETH' && vaultHistory) {
+  if (from === 'BTC' && !/^bc1q[02-9ac-hj-np-z]{38,58}$/.test(ib.address)) throw new Error(`${venue}: the BTC vault address is not a plain bech32 address; nothing sent`);
+  if (vaultHistory) {
     // an address a node names is a vault only if the venue's own router (pinned here, not taken from the node) has paid out of it lately: a made-up or retired address has no such history
-    if (!same(ib.router, VENUES[venue].router)) throw new Error(`${venue}: the router the nodes name is not the one this provider knows; nothing sent`);
-    const n = await vaultHistory({ router: VENUES[venue].router, vault: ib.address });
-    if (!(n >= 3)) throw new Error(`${venue}: Ethereum shows no recent outbound payments from that vault through the venue's router (${n}); nothing sent`);
+    if (from === 'ETH' && !same(ib.router, VENUES[venue].router)) throw new Error(`${venue}: the router the nodes name is not the one this provider knows; nothing sent`);
+    const n = await vaultHistory({ chain: from, router: from === 'ETH' ? VENUES[venue].router : null, vault: ib.address });
+    if (!(n >= 3)) throw new Error(`${venue}: the chain shows no recent outbound payments from that vault (${n}); nothing sent`);
   }
   const q = await getJson(fetchImpl, `${seen[0].n}/${p}/quote/swap?from_asset=${asset(from)}&to_asset=${asset(to)}&amount=${amount}&destination=${destination}&tolerance_bps=${slipBps}`);
   if (!same(q.inbound_address, ib.address)) throw new Error(`${venue}: the quote names a vault address the nodes do not agree on; nothing sent`);
@@ -139,7 +140,7 @@ export async function bestQuote({ cfg, fetchImpl, dir, amount1e8, destination, e
   return { best: got[0] || null, all: got, why };
 }
 
-export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true, gate = (fn) => fn(), turn = (fn) => fn(), unshield, ethBalance, ethNonce, ethReceipt, sendEth, vaultHistory = null, sendBtc = null, address, btcDestination, gasReserveWei, fetchImpl = (...a) => fetch(...a), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
+export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true, gate = (fn) => fn(), turn = (fn) => fn(), unshield, ethBalance, ethNonce, ethReceipt, sendEth, vaultHistory = null, btcBuild = null, btcBroadcast = null, btcStatus = null, address, btcDestination, gasReserveWei, fetchImpl = (...a) => fetch(...a), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   let st = null, busy = false, nextAt = -Infinity, halted = null, last = null;
   const said = new Map();
   const sayOnce = (k, a, secs = 6 * 3600) => { if (now() - (said.get(k) ?? -Infinity) >= secs) { said.set(k, now()); alert(a); } };
@@ -162,6 +163,22 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       if (have >= BigInt(p.targetPublic)) { p.stage = 'send'; await keep(); return advance(); }
       if (now() - p.at > 3600) return stop('the unshielded ETH has not arrived after an hour', { want: mk(p.targetPublic), have: mk(have) });
       return { did: 'waiting for the unshield' };
+    }
+    if (p.dir === 'btc2eth') {
+      if (p.stage === 'sending') {
+        // sent again with the same bytes after a restart: the same transaction, so never a second payment
+        try { await btcBroadcast(p.hex); } catch (e) { if (!/already|known|exists|duplicate|conflict/i.test(err(e))) { sayOnce('btc-send', { level: 'warn', msg: 'rebalance: the Bitcoin send could not be broadcast yet; tried again next look', error: err(e), txid: p.txid }, 3600); return { did: 'failed' }; } }
+        p.stage = 'sent'; p.sentAt = now(); st.moved = String(BigInt(st.moved) + BigInt(p.valueWei)); await keep();
+        alert({ level: 'info', msg: 'rebalance: BTC sold for ETH', venue: p.venue, sats: p.amountSats, expectEth: mk(BigInt(p.expectOut) * UNIT), costBps: p.costBps, txid: p.txid });
+        return { did: 'sent', tx: p.txid };
+      }
+      if (p.stage === 'sent') {
+        const s2 = await btcStatus(p.txid).catch(() => null);
+        if (!s2 || !(s2.confirmations > 0)) { if (now() - p.sentAt > 6 * 3600) sayOnce('btc-unconf', { level: 'warn', msg: 'rebalance: the Bitcoin send has not confirmed for six hours', txid: p.txid }); return { did: 'pending' }; }
+        st.pending = null; st.done += 1; st.lastTx = p.txid; st.lastAt = now(); nextAt = now() + cfg.everySecs * 2; await keep();
+        return { did: 'swapped', tx: p.txid };
+      }
+      return stop(`an unknown stage "${p.stage}"`);
     }
     if (p.stage === 'send') {
       const amountWei = BigInt(p.amountWei), cheap = await bestQuote({ cfg, fetchImpl, dir: 'eth2btc', amount1e8: String(amountWei / UNIT), destination: btcDestination, ethPerBtc: await rateNow(), amountWei, vaultHistory, log });
@@ -225,8 +242,13 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       const what = plan.dir === 'eth2btc' ? `${mk(plan.amountWei)} ETH` : `${plan.amountSats} sats`;
       if (cfg.mode === 'dry') { sayOnce(`dry-${plan.dir}`, { level: 'info', msg: `rebalance (dry run): would swap ${what} (${plan.dir}) on ${best.venue}`, costBps: best.costBps, ethSharePct: plan.ethBps / 100, vault: best.vault, quotes: last.quotes }, 3600); return { did: 'dry', plan: plan.dir }; }
       if (plan.dir === 'btc2eth') {
-        if (!sendBtc) { sayOnce('btc-heavy', { level: 'warn', msg: `rebalance: the provider is BTC-heavy: ${what} should be swapped to ETH on ${best.venue} (costs ${best.costBps} bps); the Bitcoin send is not automated yet`, vault: best.vault, memo: best.memo }, 12 * 3600); return { did: 'btc not automated' }; }
-        return { did: 'btc not automated' };
+        if (!btcBuild || !btcBroadcast || !btcStatus) { sayOnce('btc-heavy', { level: 'warn', msg: `rebalance: the provider is BTC-heavy: ${what} should be swapped to ETH on ${best.venue} (costs ${best.costBps} bps); the Bitcoin send is not wired`, vault: best.vault, memo: best.memo }, 12 * 3600); return { did: 'btc not automated' }; }
+        // the Bitcoin is spent from the reverse address only, so the ETH-for-BTC side keeps what it needs (btcBuild says no when it would not); the signed transaction is kept before it is sent
+        let built;
+        try { built = await btcBuild({ to: best.vault, sats: plan.amountSats, memo: best.memo }); } catch (e) { sayOnce('btc-build', { level: 'warn', msg: 'rebalance: the Bitcoin send could not be built; nothing sent', error: err(e) }, 3 * 3600); return { did: 'failed' }; }
+        st.pending = { id: `${now()}`, dir: 'btc2eth', stage: 'sending', amountSats: String(plan.amountSats), valueWei: String(plan.valueWei), txid: built.txid, hex: built.hex, fee: built.fee, venue: best.venue, vault: best.vault, memo: best.memo, expectOut: String(best.out), costBps: best.costBps, at: now() };
+        await keep();
+        return await advance();
       }
       if (!(await quiet())) return { did: 'quiet' };
       // the ETH to sell must be public: what is short is unshielded from the provider's own notes (the shield leaves public ETH alone while this is under way)
@@ -245,6 +267,6 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       return { did: 'failed' };
     } finally { busy = false; }
   }
-  const info = () => ({ mode: cfg.mode, halted, pending: st && st.pending ? { stage: st.pending.stage, eth: mk(st.pending.amountWei) } : null, movedTodayEth: st ? mk(BigInt(st.moved)) : '0.0000', swaps: st ? st.done : 0, last });
-  return { step, info, holding: () => !!(st && st.pending), halted: () => halted };
+  const info = () => ({ mode: cfg.mode, halted, pending: st && st.pending ? { dir: st.pending.dir, stage: st.pending.stage, ...(st.pending.amountWei ? { eth: mk(st.pending.amountWei) } : { sats: st.pending.amountSats }) } : null, movedTodayEth: st ? mk(BigInt(st.moved)) : '0.0000', swaps: st ? st.done : 0, last });
+  return { step, info, holding: () => !!(st && st.pending && st.pending.dir === 'eth2btc'), halted: () => halted };
 }
