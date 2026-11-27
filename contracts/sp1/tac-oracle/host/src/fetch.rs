@@ -141,13 +141,16 @@ fn header_rlp(v: &Value) -> Result<Vec<u8>, String> {
     for k in ["extraData", "mixHash", "nonce"] {
         hexb(v, k)?.as_slice().encode(&mut p);
     }
-    let later: [(&str, bool); 6] = [
+    let later: [(&str, bool); 8] = [
         ("baseFeePerGas", true),
         ("withdrawalsRoot", false),
         ("blobGasUsed", true),
         ("excessBlobGas", true),
         ("parentBeaconBlockRoot", false),
         ("requestsHash", false),
+        // Glamsterdam: EIP-7928's block access list hash, then EIP-7843's slot number
+        ("blockAccessListHash", false),
+        ("slotNumber", true),
     ];
     for (k, is_qty) in later {
         if v.get(k).map_or(true, Value::is_null) {
@@ -240,4 +243,42 @@ pub fn input(heads: &Rpc, proofs: &Rpc, c: Config, anchor: u64, count: u64, log:
         }
     }
     Ok(Input { config: c, x, count, first_block: first, headers, intervals })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The page's fixtures (tests/fixtures): blocks as eth_getBlockByNumber returns them.
+    fn fixture(name: &str) -> Value {
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../tests/fixtures").join(name);
+        serde_json::from_slice(&std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))).unwrap()
+    }
+
+    fn rebuilds(b: &Value) -> bool {
+        header_rlp(b).is_ok_and(|raw| keccak256(&raw).as_slice() == hexb(b, "hash").unwrap().as_slice())
+    }
+
+    #[test]
+    fn a_glamsterdam_header_rebuilds_to_its_hash() {
+        // Sepolia block 12217539: blockAccessListHash and slotNumber after requestsHash
+        let b = &fixture("vault-feed-glamsterdam-block.json")["block"];
+        assert!(rebuilds(b));
+        let mut short = b.clone();
+        short.as_object_mut().unwrap().remove("slotNumber");
+        assert!(!rebuilds(&short), "the slot number is part of the hash");
+    }
+
+    #[test]
+    fn an_older_header_rebuilds_as_before() {
+        let fx = fixture("vault-feed-blocks.json");
+        for k in ["next", "sample"] {
+            assert!(rebuilds(&fx[k]), "{k}");
+            // a node may write a field its fork does not have as null
+            let mut nulls = fx[k].clone();
+            nulls["blockAccessListHash"] = Value::Null;
+            nulls["slotNumber"] = Value::Null;
+            assert_eq!(header_rlp(&nulls), header_rlp(&fx[k]), "{k}");
+        }
+    }
 }

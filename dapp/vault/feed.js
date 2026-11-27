@@ -38,10 +38,12 @@ const rlpString = (b) => (b.length === 1 && b[0] < 0x80 ? b : concat(prefix(b.le
 const rlpList = (items) => { const body = concat(...items); return concat(prefix(body.length, 0xc0), body); };
 
 // The header fields in order, and whether each is a number (shortest big-endian bytes) or fixed bytes. A node leaves out the ones its fork does not have.
+// Glamsterdam's two (EIP-7928's block access list hash, EIP-7843's slot number) come after requestsHash.
 const HEADER = [
   ['parentHash', 'b'], ['sha3Uncles', 'b'], ['miner', 'b'], ['stateRoot', 'b'], ['transactionsRoot', 'b'], ['receiptsRoot', 'b'], ['logsBloom', 'b'],
   ['difficulty', 'i'], ['number', 'i'], ['gasLimit', 'i'], ['gasUsed', 'i'], ['timestamp', 'i'], ['extraData', 'b'], ['mixHash', 'b'], ['nonce', 'b'],
   ['baseFeePerGas', 'i'], ['withdrawalsRoot', 'b'], ['blobGasUsed', 'i'], ['excessBlobGas', 'i'], ['parentBeaconBlockRoot', 'b'], ['requestsHash', 'b'],
+  ['blockAccessListHash', 'b'], ['slotNumber', 'i'],
 ];
 // The RLP header of a block as the node returned it (0x…), or an error when its hash is not the block's own: nothing wrong is ever sent.
 export function headerRlp(block) {
