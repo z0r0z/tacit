@@ -16,7 +16,7 @@
 <script async src="/front-guard.js?cb=51f5d28b"></script>
 <script src="/front-route.js?cb=834112f6"></script>
 <script type="module" src="/px-strip.js?cb=10c6841d" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=7716fe3d" as="style">
+<link rel="preload" href="/swap/card.css?cb=a6f78130" as="style">
 <link rel="preload" href="/fonts/newsreader-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/newsreader-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -456,11 +456,11 @@ main:focus { outline: none; }
 @media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
 @media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
 @media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
-:where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 580px; }
-@media (max-width: 640px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 370px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 356px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 338px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 602px; } }
+:where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 591px; }
+@media (max-width: 640px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 582px; } }
+@media (max-width: 370px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 582px; } }
+@media (max-width: 356px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 582px; } }
+@media (max-width: 338px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 607px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -2181,84 +2181,94 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .sk { background: var(--skel); }
 }
-/* ───────────────────────────── Graphite, the default skin: the hero and the card's frame ─────────────────────────────
-   Built around privacy. One light thing on a screen: the button. What is chosen is a raised grey plate, not a
-   highlight. Words are in the grotesk, figures in the mono, the headline in the serif with its second word in quiet italics.
-   The rules here restyle the ones above (the tab strip's sliding line is put away, not removed: the strip is a plate now). */
+/* ───────────────────────────── Atelier Mineral: the hero and the card's frame ─────────────────────────────
+   Warm limestone & alabaster in light mode, deep obsidian slate in dark mode, with burnt-amber privacy/focus cues.
+   Newsreader serif for display, Schibsted Grotesk for UI labels, IBM Plex Mono tabular numerals for all figures. */
 html:not([data-page="spx"]) {
-  & .hero h1 { font: 400 clamp(44px, 12vw, 68px)/1.02 var(--serif); letter-spacing: -.025em; }
+  & .pxb { background: var(--card); border-color: var(--hair-2); box-shadow: 0 2px 10px -6px rgba(14,17,22,.16); transition: border-color .16s, transform .2s var(--spring), box-shadow .16s; }
+  @media (hover: hover) { & .pxb:hover { border-color: var(--orange); transform: translateY(-1px); box-shadow: 0 8px 20px -12px rgba(14,17,22,.28); } }
+  & .hero h1 { font: 400 clamp(44px, 12vw, 68px)/1.02 var(--serif); letter-spacing: -.03em; }
   & .hero h1 .hero-w2 { font-style: italic; color: var(--mute); }
-  & .hero .sub { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
-  & .hero .sub b { font: 400 .88em var(--mono); color: var(--ink); }
-  & .hero-t { margin-bottom: 26px; }
-  & .hx { border-radius: 20px; border-color: var(--hair); background: linear-gradient(180deg, color-mix(in srgb, var(--card) 93%, #fff) 0, var(--card) 140px); }
-  /* the tabs: one plate, the chosen tab raised on it */
-  & .hx-h { margin: 12px 12px 4px; padding: 3px; border: 0; border-radius: 12px; background: var(--field); }
+  & .hero .sub { font: 400 15.5px/1.55 var(--sans); letter-spacing: -.005em; color: var(--mute); }
+  & .hero .sub b { font: 500 .88em var(--mono); color: var(--ink); padding: 1px 6px; border-radius: 6px; background: var(--field); border: 1px solid var(--hair); }
+  & .hero-t { margin-bottom: 24px; }
+  & .hx { border-radius: 24px; border: 1px solid var(--hair-2); background: linear-gradient(180deg, color-mix(in srgb, var(--raise) 65%, var(--card)) 0, var(--card) 130px); box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, #fff 55%, transparent); }
+  /* the tabs: recessed mineral rail, the chosen tab elevated with a crisp amber accent pip */
+  & .hx-h { margin: 14px 14px 4px; padding: 4px; border: 1px solid var(--hair); border-radius: 14px; background: var(--field); }
   & .hx-h::after { display: none; }
-  & .hx-h button { padding: 10px 0; border-radius: 9px; font: 500 14px/1 var(--sans); letter-spacing: 0; transition: background-color .2s, color .2s; }
-  & .hx-h button[aria-selected="true"] { background: var(--raise); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
-  & .hx-sk .t { height: 40px; margin: 0 -4px 6px; }
+  & .hx-h button { position: relative; padding: 10px 0; border-radius: 10px; font: 500 13.5px/1 var(--sans); letter-spacing: -.005em; transition: background-color .18s, color .18s, box-shadow .18s; }
+  & .hx-h button[aria-selected="true"] { background: var(--raise); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(14,17,22,.14), 0 0 0 1px var(--hair); }
+  & .hx-h button[aria-selected="true"]::after { content: ''; position: absolute; left: 32%; right: 32%; bottom: 3px; height: 2px; border-radius: 2px; background: var(--orange); }
+  & .hx-h button:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+  & .hx-sk .t { height: 42px; margin: 0 -2px 6px; border-radius: 14px; }
+  & .hx .btn { border-radius: 14px; font-weight: 600; letter-spacing: -.005em; }
+  @media (hover: hover) { & .hx .btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 26%, transparent), 0 10px 22px -12px rgba(14,17,22,.45); } }
+  & .hx .btn:active:not(:disabled) { transform: scale(.99); box-shadow: none; }
+  & .hx .btn:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
   & .hx-path { font-family: var(--sans); font-size: 12.5px; }
-  /* a choice of two in the card (Send or Request, Farm or LP only, from the wallet or from Bitcoin): the tab strip's plate, smaller */
-  & .hx-mode { background: var(--field); border-radius: 10px; }
+  & .hx-path li.on::before { background: var(--orange); border-color: var(--orange); color: #fff; }
+  /* a choice of two in the card (Send or Request, Farm or LP only, from the wallet or from Bitcoin): matching recessed plate */
+  & .hx-mode { background: var(--field); border: 1px solid var(--hair); border-radius: 11px; }
   & .hx-mode button { border-radius: 8px; font: 500 13px var(--sans); }
-  & .hx-mode button[aria-checked="true"] { background: var(--raise); }
-  /* Bridge and Borrow: two words with a rule under the chosen one, not a second row of plates */
-  & .hx-more { display: flex; gap: 18px; margin: 6px 4px 12px; padding: 0; background: none; border-bottom: 1px solid var(--hair); border-radius: 0; }
+  & .hx-mode button[aria-checked="true"] { background: var(--raise); box-shadow: 0 1px 2px rgba(14,17,22,.1); }
+  /* Bridge and Borrow: editorial underline in amber for the active mode */
+  & .hx-more { display: flex; gap: 20px; margin: 6px 4px 12px; padding: 0; background: none; border-bottom: 1px solid var(--hair); border-radius: 0; }
   & .hx-more button { flex: none; margin-bottom: -1px; padding: 8px 2px 10px; border-bottom: 2px solid transparent; border-radius: 0; font: 500 14px var(--sans); }
-  & .hx-more button[aria-selected="true"] { background: none; box-shadow: none; border-bottom-color: var(--ink); }
+  & .hx-more button[aria-selected="true"] { background: none; box-shadow: none; color: var(--ink); font-weight: 600; border-bottom-color: var(--orange); }
   /* a bridge's steps: a rail that runs from one chain's colour to the other's, a ring at each step between its ends */
   & .hx-brs { margin: 18px 4px 4px; font: 400 12px/1.35 var(--sans); }
   & .hx-brs li { padding-top: 22px; }
   & .hx-brs li::before, & .hx-brs li::after { left: 14px; top: 6px; height: 2px; border-radius: 2px; }
-  & .hx-brs li::before { background: linear-gradient(90deg, color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)), color-mix(in srgb, var(--from) calc(67% - var(--i, 0) * 33%), var(--to))); opacity: .55; }
+  & .hx-brs li::before { background: linear-gradient(90deg, color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)), color-mix(in srgb, var(--from) calc(67% - var(--i, 0) * 33%), var(--to))); opacity: .6; }
   & .hx-brs .dot { box-sizing: border-box; width: 14px; height: 14px; background: var(--card); border: 2px solid color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)); }
   & .hx-brs li:first-child .dot { background: var(--from); }
   & .hx-brs li:last-child .dot { background: var(--to); border-color: var(--to); }
-  /* the two ways on from a bridge, as chips */
+  /* the two ways on from a bridge, as crisp mineral pills */
   & #hx-brl { gap: 8px; margin-top: 14px; }
-  & .hx #hx-brl a { padding: 7px 13px; border: 1px solid var(--hair); border-radius: 999px; font: 400 12.5px var(--sans); text-decoration: none; }
-  @media (hover: hover) { & .hx #hx-brl a:hover { border-color: var(--hair-2); } }
+  & .hx #hx-brl a { padding: 7px 14px; background: var(--field); border: 1px solid var(--hair); border-radius: 999px; font: 500 12.5px var(--sans); text-decoration: none; }
+  @media (hover: hover) { & .hx #hx-brl a:hover { border-color: var(--ink); background: var(--raise); } }
   & .hx .lede-s, & .hx .hx-hv, & .hx-lead { font-family: var(--sans); }
-  /* the page under the card: every section it had, quieter, so the card stays the page's subject. Less air between sections, smaller headings, the
-     line under a heading in the grotesk, the asset tabs and figures in the card's own hands (grotesk for names, mono for numbers), the coin smaller */
+  /* quick starts & farms chips under the card: crisp alabaster/obsidian capsules */
+  & .hint, & .fms a { background: var(--card); border-color: var(--hair-2); box-shadow: 0 1px 2px rgba(14,17,22,.04); }
+  @media (hover: hover) { & .hint:hover, & .fms a:hover { background: var(--raise); border-color: var(--ink); } }
+  & .news, & .chb { background: var(--card); border-color: var(--hair-2); }
+  /* the page under the card: cohesive editorial rhythm so the card remains the clear anchor */
   & .sx { padding-top: 88px; }
   & .sx-h { margin-bottom: 32px; }
   & .sx-h h2 { font-size: clamp(28px, 3.4vw, 38px); }
   & .sx-h p { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
+  & .wd { border-radius: 22px; border-color: var(--hair-2); box-shadow: var(--float); }
   & .tc .sx-h { margin-bottom: 20px; }
   & .tc-stage { height: 112px; margin-bottom: 8px; }
   & .tc-tilt { scale: .42; }
   & .tc-shadow { bottom: 6px; width: 92px; }
   & .tc-as { margin-bottom: 22px; }
   & .tc-as button { font: 500 14px/1 var(--sans); letter-spacing: 0; }
+  & .tc-as [aria-selected="true"] { border-bottom-color: var(--orange); }
   & .tc-facts dd { font: 400 26px/1.15 var(--mono); letter-spacing: -.03em; }
   @media (min-width: 641px) { & .tc-facts { gap: 14px 48px; } }
-  @media (max-width: 640px) { & .tc-facts dd { font-size: clamp(13px, 4.1vw, 17px); } }   /* three figures to a row on a phone: the mono is wider than the serif was, so it is set to fit its column */
+  @media (max-width: 640px) { & .tc-facts dd { font-size: clamp(13px, 4.1vw, 17px); } & .hx { border-radius: 20px; } & .hx-h { margin: 10px 10px 2px; } }
   & .tc-links { margin-top: 26px; }
   & .tc-links .btn { border-radius: 12px; }
-  /* the glyph layer (glyphs.js). The field is fixed behind the whole page (chrome.css), which is why the page's ground is on <html> and <body> is clear; the stamp
-     lies behind its side's own words; and a rule of glyphs thins out to dots between the headline and the card. */
+  /* the glyph layer (glyphs.js). The field is fixed behind the whole page (chrome.css), which is why the page's ground is on <html> and <body> is clear */
   & body { background: transparent; }
-  & .hx canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .15; pointer-events: none; }
-  @media (max-width: 520px) { & .hx canvas.gx-stamp { opacity: .12; } }      /* (a narrow card puts it behind the label and the coin) */
+  & .hx canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .13; pointer-events: none; }
+  @media (max-width: 520px) { & .hx canvas.gx-stamp { opacity: .10; } }
   /* the wallet sheet's ways to sign in: Tacit's mark struck across them in glyphs (glyphs.js), seen through the rows, and behind each way's mark a breath of its colour */
   & #sheet-wallet .sheet-in { position: relative; isolation: isolate; }
-  & #sheet-wallet canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: .34; pointer-events: none; transition: opacity .15s ease; }
+  & #sheet-wallet canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: .28; pointer-events: none; transition: opacity .15s ease; }
   & #sheet-wallet .sheet-in:not(:has(#ws-in)) canvas.gx-stamp { display: none; }
-  & #ws-in .opt { --tone: transparent; background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), color-mix(in srgb, var(--field) 58%, transparent); }
+  & #ws-in .opt { --tone: transparent; background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), color-mix(in srgb, var(--field) 65%, transparent); }
   & #ws-in .opt:has(use[href="#tk-eth"]) { --tone: #627EEA; }
   & #ws-in .opt:has(use[href="#tk-btc"]), & #ws-in .opt:has(use[href="#i-key"]) { --tone: #F7931A; }
-  /* a way pointed at or focused carries its own mark, struck across its row alone (glyphs.js), as the card's "To" side carries its asset's; the
-     row is solid while it does, so the sheet's own mark does not show through it */
   & #ws-in .opt { position: relative; isolation: isolate; }
-  & #ws-in .opt canvas.gx-way { border-radius: inherit; opacity: .4; }
+  & #ws-in .opt canvas.gx-way { border-radius: inherit; opacity: .36; }
   & #ws-in .opt:has(> canvas.gx-way) { background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), var(--field); }
   @media (prefers-reduced-motion: reduce) { & #sheet-wallet canvas.gx-stamp { transition: none; } }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=7716fe3d" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=a6f78130" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
