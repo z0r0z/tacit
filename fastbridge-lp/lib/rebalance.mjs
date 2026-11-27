@@ -7,6 +7,7 @@
 //   FB_LP_REBALANCE_MIN_ETH   the least it swaps (0.15): a swap pays a fixed outbound fee, so a small one costs a large share
 //   FB_LP_REBALANCE_MAX_ETH   the most in one swap (0.3), FB_LP_REBALANCE_MAX_DAY_ETH the most in a UTC day (0.6)
 //   FB_LP_REBALANCE_MAX_COST_BPS  the worst all-in cost against the market it accepts (120): a quote above it is not taken
+//   FB_LP_REBALANCE_CONFIRM_LOOKS  how many looks in a row must call for the same swap before it is made (2): one odd reading of a balance is not acted on
 //   FB_LP_REBALANCE_VENUES    thorchain,mayachain (the quotes are compared; the best is taken)
 //   FB_LP_REBALANCE_NODES_THORCHAIN / _MAYACHAIN   comma lists of the venue's public API bases; the vault address a swap pays is taken only when two or more of them agree on it
 //
@@ -48,7 +49,7 @@ export function rebalanceConfig(env = process.env) {
     mode: sw || 'off', bandBps: int('FB_LP_REBALANCE_BAND_BPS', 1500, 200, 4000), targetBps: 5000,
     minSwapWei: eth('FB_LP_REBALANCE_MIN_ETH', '0.15'), maxSwapWei: eth('FB_LP_REBALANCE_MAX_ETH', '0.3'), maxPerDayWei: eth('FB_LP_REBALANCE_MAX_DAY_ETH', '0.6'),
     maxCostBps: int('FB_LP_REBALANCE_MAX_COST_BPS', 120, 10, 1000), slipBps: int('FB_LP_REBALANCE_SLIP_BPS', 100, 10, 1000), everySecs: int('FB_LP_REBALANCE_EVERY_SECS', 900, 60, 86400),
-    venues, nodes,
+    confirmLooks: int('FB_LP_REBALANCE_CONFIRM_LOOKS', 2, 1, 5), venues, nodes,
   };
   if (c.minSwapWei > c.maxSwapWei) throw new Error('FB_LP_REBALANCE_MIN_ETH must not be over FB_LP_REBALANCE_MAX_ETH');
   if (c.maxSwapWei > c.maxPerDayWei) throw new Error('FB_LP_REBALANCE_MAX_ETH must not be over FB_LP_REBALANCE_MAX_DAY_ETH');
@@ -141,7 +142,7 @@ export async function bestQuote({ cfg, fetchImpl, dir, amount1e8, destination, e
 }
 
 export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true, gate = (fn) => fn(), turn = (fn) => fn(), unshield, ethBalance, ethNonce, ethReceipt, sendEth, vaultHistory = null, btcBuild = null, btcBroadcast = null, btcStatus = null, address, btcDestination, gasReserveWei, fetchImpl = (...a) => fetch(...a), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
-  let st = null, busy = false, nextAt = -Infinity, halted = null, last = null;
+  let st = null, busy = false, nextAt = -Infinity, halted = null, last = null, calls = { dir: null, n: 0 };
   const said = new Map();
   const sayOnce = (k, a, secs = 6 * 3600) => { if (now() - (said.get(k) ?? -Infinity) >= secs) { said.set(k, now()); alert(a); } };
   const keep = () => save({ id: 'rebalance', ...st });
@@ -231,8 +232,8 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       const plan = planRebalance({ ethWei: inv.ethWei, sats: inv.sats, ethPerBtc: mkt, cfg, movedTodayWei: BigInt(st.moved) });
       last = { at: now(), ethBps: plan && plan.ethBps != null ? plan.ethBps : null, plan: plan && plan.dir ? plan.dir : plan && plan.skip ? `skip: ${plan.skip}` : 'in band' };
       nextAt = now() + cfg.everySecs;
-      if (!plan) return { did: 'in band' };
-      if (plan.skip) return { did: 'skip', why: plan.skip };
+      if (!plan) { calls = { dir: null, n: 0 }; return { did: 'in band' }; }
+      if (plan.skip) { calls = { dir: null, n: 0 }; return { did: 'skip', why: plan.skip }; }
       const dest = plan.dir === 'eth2btc' ? btcDestination : address;
       const amount1e8 = plan.dir === 'eth2btc' ? String(plan.amountWei / UNIT) : String(plan.amountSats);
       const { best, all, why } = await bestQuote({ cfg, fetchImpl, dir: plan.dir, amount1e8, destination: dest, ethPerBtc: mkt, amountWei: plan.amountWei, amountSats: plan.amountSats, vaultHistory, log });
@@ -240,7 +241,9 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       if (!best) { sayOnce('noquote', { level: 'warn', msg: 'rebalance: a swap is due but no venue gave a usable quote', why }); return { did: 'no quote' }; }
       if (best.costBps > cfg.maxCostBps) { sayOnce('dear', { level: 'info', msg: 'rebalance: a swap is due but the best quote costs more than the limit', best: best.venue, costBps: best.costBps, limit: cfg.maxCostBps }); return { did: 'dear', costBps: best.costBps }; }
       const what = plan.dir === 'eth2btc' ? `${mk(plan.amountWei)} ETH` : `${plan.amountSats} sats`;
+      calls = calls.dir === plan.dir ? { dir: plan.dir, n: calls.n + 1 } : { dir: plan.dir, n: 1 };
       if (cfg.mode === 'dry') { sayOnce(`dry-${plan.dir}`, { level: 'info', msg: `rebalance (dry run): would swap ${what} (${plan.dir}) on ${best.venue}`, costBps: best.costBps, ethSharePct: plan.ethBps / 100, vault: best.vault, quotes: last.quotes }, 3600); return { did: 'dry', plan: plan.dir }; }
+      if (calls.n < cfg.confirmLooks) { last.plan = `${plan.dir} (look ${calls.n} of ${cfg.confirmLooks})`; return { did: 'confirming' }; }
       if (plan.dir === 'btc2eth') {
         if (!btcBuild || !btcBroadcast || !btcStatus) { sayOnce('btc-heavy', { level: 'warn', msg: `rebalance: the provider is BTC-heavy: ${what} should be swapped to ETH on ${best.venue} (costs ${best.costBps} bps); the Bitcoin send is not wired`, vault: best.vault, memo: best.memo }, 12 * 3600); return { did: 'btc not automated' }; }
         // the Bitcoin is spent from the reverse address only, so the ETH-for-BTC side keeps what it needs (btcBuild says no when it would not); the signed transaction is kept before it is sent

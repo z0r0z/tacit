@@ -126,7 +126,16 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
       const { makeEvmTx } = await import('../../dapp/evm-tx.js');
       const evmTx = makeEvmTx({ secp: sp, keccak256 });
       const UNITW = 10n ** 10n, rpc = (m, p) => ux.rpc(m, p);
-      const satsAll = async () => { let t = 0n; for (const b of [btc, rside.btc]) if (b && typeof b.satsUtxos === 'function') t += (await b.satsUtxos()).reduce((x, c) => x + BigInt(c.value), 0n); return t; };
+      // all the provider's Bitcoin, the coins on their way (a move of the recycler between its two addresses) counted where they are going: confirmed alone would show a coin in flight as gone
+      const satsAll = async () => {
+        let t = 0n;
+        for (const b of [btc, rside.btc]) {
+          if (!b) continue;
+          if (typeof b.satsCoins === 'function') { const r = await b.satsCoins(); t += r.coins.reduce((x, c) => x + BigInt(c.value), 0n) + BigInt(r.pending || 0); }
+          else if (typeof b.satsUtxos === 'function') t += (await b.satsUtxos()).reduce((x, c) => x + BigInt(c.value), 0n);
+        }
+        return t;
+      };
       const ownEthNotes = ethNotes;
       const publicWei = async () => BigInt(await rpc('eth_getBalance', [address, 'latest']));
       const ethPerBtc = () => { const c = rateFeed && rateFeed.current(); return c && Number(c.ethPerBtc) > 0 ? Number(c.ethPerBtc) : null; };   // (feed.rate() is a { num, den } ratio, not a price)

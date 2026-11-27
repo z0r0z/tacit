@@ -7,7 +7,7 @@ const S = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const { rebalanceConfig, planRebalance, venueQuote, bestQuote, costBps, makeRebalancer } = await import(`${S}/fastbridge-lp/lib/rebalance.mjs`);
 
 const ETH = (n) => BigInt(Math.round(n * 1e8)) * 10n ** 10n;
-const cfg = (env = {}) => rebalanceConfig({ FB_LP_REBALANCE: 'on', ...env });
+const cfg = (env = {}) => rebalanceConfig({ FB_LP_REBALANCE: 'on', FB_LP_REBALANCE_CONFIRM_LOOKS: '1', ...env });
 const MARKET = 36;                                              // ETH per BTC
 const BTC_DEST = 'bc1qvufjyer5us77xfkvzu9zjm8gf2ws2m389xtm8e', ETH_DEST = '0x3af0145ffd8bf91e2072ab1a23ecba7dcb0a6c7b';
 const VAULT = '0x' + 'ab'.repeat(20);
@@ -246,4 +246,24 @@ test('the Bitcoin leg: a dry run builds nothing; a vault with no history is refu
   assert.equal((await r.step()).did, 'sent');
   assert.equal(again.built, 0, 'not built a second time');
   assert.deepEqual(again.broadcast, ['02000000deadbeef'], 'the same transaction');
+});
+
+test('a swap is made only when two looks in a row call for it: one odd reading of the balance is not acted on', async () => {
+  const w = btcWorld();
+  const c2 = rebalanceConfig({ FB_LP_REBALANCE: 'on', FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  assert.equal(c2.confirmLooks, 2);
+  let sats = 4e7, built = 0;
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: BTC_VAULT, memo: `=:e:${q.get('destination')}`, expected_amount_out: '29800000', expiry: w.clock + 600 }) });
+  const r = makeRebalancer({ cfg: c2, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(1), sats }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9,
+    btcBuild: async () => { built++; return { txid: 'cd'.repeat(32), hex: '02aa', fee: 300 }; }, btcBroadcast: async () => {}, btcStatus: async () => ({ confirmations: 0 }),
+    ethBalance: async () => ETH(0.1), ethNonce: async () => 1, ethReceipt: async () => null, sendEth: async () => { throw new Error('no'); }, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02),
+    load: async () => null, save: async () => {}, log: () => {}, alert: () => {} });
+  assert.equal((await r.step()).did, 'confirming'); assert.equal(built, 0);
+  w.clock += 1000; sats = 2.8e6;                                  // the next look reads the sides in band again
+  assert.equal((await r.step()).did, 'in band');
+  w.clock += 1000; sats = 4e7;
+  assert.equal((await r.step()).did, 'confirming', 'the count starts again');
+  w.clock += 1000;
+  assert.equal((await r.step()).did, 'sent'); assert.equal(built, 1);
 });
