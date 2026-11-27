@@ -667,7 +667,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/community/beat', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/nodes/list', '/nodes/status', '/nodes/records', '/nodes/relay', '/nodes/ad', '/nodes/credits', '/gas/done', '/outpoints/classify', '/metrics', '/metrics/event']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/cancel', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/community/beat', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/nodes/list', '/nodes/status', '/nodes/records', '/nodes/relay', '/nodes/ad', '/nodes/credits', '/gas/done', '/outpoints/classify', '/metrics', '/metrics/event']);
 // Usage counts (worker/src/metrics.js): one instance per environment, writing to the same store as the rest.
 const _metricsOfEnv = new WeakMap();
 function metricsOf(env) { let m = _metricsOfEnv.get(env); if (!m) { m = makeMetrics({ kv: env.REGISTRY_KV }); _metricsOfEnv.set(env, m); } return m; }
@@ -4637,6 +4637,19 @@ export function queueSender(ip) {
 }
 // What a job keeps of its sender: the same grouping, as a keyed hash instead of the network itself (a mint's own key is not an address and stays).
 export const senderKey = (env, s) => (!s || /^armed:/.test(s) ? s : 'n:' + ipBucket(env, s));
+// POST /confidential/cancel {jobId, secret} → drop the sender's own job while it still waits unclaimed (see confidential-settle.js cancelJob):
+// only the page that submitted it holds the secret whose hash the job carries. Metered on the strict bucket like a submit.
+async function handleConfidentialCancel(req, env, cors) {
+  const q = confSettler(env), h = { ...cors, 'Cache-Control': 'no-store' };
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, h);
+  const rl = await proveRateLimit(env, req.headers.get('CF-Connecting-IP') || 'anon');
+  if (!rl.ok) return jsonResponse({ ok: false, error: `too many requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...h, 'Retry-After': String(rl.retryAfter) });
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, h); }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonResponse({ ok: false, error: 'bad json' }, 400, h);
+  const r = await q.cancelJob({ jobId: body.jobId, secret: body.secret });
+  return jsonResponse(r, r.ok ? 200 : 409, h);
+}
 async function handleConfidentialSubmit(req, env, cors) {
   const q = confSettler(env);
   const sender = senderKey(env, queueSender(req.headers.get('CF-Connecting-IP')));
@@ -4678,7 +4691,7 @@ async function handleConfidentialSubmit(req, env, cors) {
       if (!cb.ok) return jsonResponse({ ok: false, error: `free relayed settles for today are used up (${cb.used}/${cb.cap}) — attach a fee above the floor, or prove-mode and settle it yourself`, code: 'free_budget', class: cls }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '3600' });
     }
     try {
-      const r = await q.submitJob({ type: body.type, memos: body.memos, mode: 'sealed', feeAsset: body.feeAsset, sealed: body.sealed, client: sender });
+      const r = await q.submitJob({ type: body.type, memos: body.memos, mode: 'sealed', feeAsset: body.feeAsset, sealed: body.sealed, client: sender, cancel: body.cancel });
       if (sealedFree && !r.deduped) { await spendDailyBudget(env, 'free').catch(() => {}); await spendDailyBudget(env, `free:${freeClassOf(body.type)}`).catch(() => {}); }
       return jsonResponse({ ok: true, ...r, ...(relay ? { relay: relay.state } : {}) }, 200, { ...cors, 'Cache-Control': 'no-store' });
     } catch (e) { return jsonResponse({ ok: false, error: String(e.message || e) }, 400, { ...cors, 'Cache-Control': 'no-store' }); }
@@ -4803,7 +4816,7 @@ async function handleConfidentialSubmit(req, env, cors) {
   const charge = feeless || postedFree ? { day: new Date().toISOString().slice(0, 10), names: ['free', `free:${freeClassOf(body.type)}`, ...(mintBurn ? [`bridgemint:${mintBurn}`] : [])] } : undefined;
   try {
     const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode, feeAsset: body.feeAsset, exit: body.exit,
-      publicValues: body.publicValues, proof: body.proof, paid: paidProve || undefined, sealed: body.sealed, charge, early: submitMode === 'prove' && body.ahead === true, free: postedFree, client: sender });
+      publicValues: body.publicValues, proof: body.proof, paid: paidProve || undefined, sealed: body.sealed, charge, early: submitMode === 'prove' && body.ahead === true, free: postedFree, client: sender, cancel: body.cancel });
     if (!r.deduped) wakeRelay();
     // Spend only on a job we actually accepted and will prove — a dedupe hit costs us nothing.
     if (!r.deduped) {
@@ -29202,6 +29215,7 @@ async function _routeFetch(req, env, ctx) {
     // /confidential/submit enqueues a user's confidential op; /confidential/job lets the relayer claim +
     // prove it; /confidential/ack records the on-chain settle; /confidential/status is the dapp poll.
     if (url.pathname === '/confidential/submit' && req.method === 'POST') return handleConfidentialSubmit(req, env, cors);
+    if (url.pathname === '/confidential/cancel' && req.method === 'POST') return handleConfidentialCancel(req, env, cors);
     if (url.pathname === '/confidential/job' && req.method === 'GET') return handleConfidentialJob(req, env, cors);
     if (url.pathname === '/confidential/queue' && req.method === 'GET') return handleConfidentialQueue(req, env, cors);
     if (url.pathname === '/confidential/wake' && req.method === 'GET') return handleConfidentialWake(req, env, cors);

@@ -28,8 +28,13 @@ function mockFetch(q) {
     const reply = (status, obj) => ({ ok: status >= 200 && status < 300, status, statusText: String(status), text: async () => JSON.stringify(obj) });
     if (url.pathname === '/confidential/submit' && opts.method === 'POST') {
       const b = JSON.parse(opts.body);
-      try { return reply(200, { ok: true, ...(await q.submitJob({ type: b.type, op: b.op, memos: b.memos, mode: b.mode, sealed: b.sealed })) }); }
+      try { return reply(200, { ok: true, ...(await q.submitJob({ type: b.type, op: b.op, memos: b.memos, mode: b.mode, sealed: b.sealed, cancel: b.cancel })) }); }
       catch (e) { return reply(400, { error: String(e.message) }); }
+    }
+    if (url.pathname === '/confidential/cancel' && opts.method === 'POST') {
+      const b = JSON.parse(opts.body);
+      const r = await q.cancelJob(b);
+      return reply(r.ok ? 200 : 409, r);
     }
     if (url.pathname === '/confidential/status') {
       const st = await q.jobStatus(url.searchParams.get('id'));
@@ -583,7 +588,8 @@ const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100
   const r = await relay.submitOp({ type: 'transfer', op, memos: ['0x01'] });
   assert.strictEqual(r.status, 'pending');
   assert.strictEqual(seen.length, 1); assert.strictEqual(seen[0].type, 'transfer'); assert.strictEqual(seen[0].op, op); assert.deepStrictEqual(seen[0].memos, ['0x01']);
-  assert.deepStrictEqual(bodies[0], { type: 'transfer', mode: 'sealed', sealed: sealedBox, memos: ['0x01'] }, 'the op is not in the body');
+  assert.match(String(bodies[0].cancel), /^0x[0-9a-f]{64}$/, 'a sealed job carries its cancel hash too');
+  { const { cancel: _c, ...rest } = bodies[0]; assert.deepStrictEqual(rest, { type: 'transfer', mode: 'sealed', sealed: sealedBox, memos: ['0x01'] }, 'the op is not in the body'); }
   const st = await relay.status(r.jobId);
   assert.strictEqual(st.sealed, true);
   const job = await q.nextJob();
@@ -694,6 +700,29 @@ const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100
   const again = await relay.submitOp({ type: 'wrap', op: { ...op, leaves: ['0xother'] }, mode: 'prove' });
   assert.strictEqual(again.jobId, j2);
   ok('the same prove-only op submitted again is the same job');
+}
+
+// ───────────────── a job left in the queue when its swap is built again is dropped there ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash });
+  const relay = makeConfidentialRelay({ base: '', fetchImpl: mockFetch(q) });
+  const { jobId } = await relay.submitOp({ type: 'route', op: { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1', reserveBPre: '1' }] }, memos: [] });
+  const left = [];
+  await assert.rejects(relay.waitForSettle(jobId, { intervalMs: 0, sleep: noSleep, queuedCheckMs: 0, whileQueued: async () => true, onLeft: (id) => left.push(id) }), (e) => e.staleQueued === true);
+  assert.deepStrictEqual(left, [jobId]);
+  const st = await q.jobStatus(jobId);
+  assert.strictEqual(st.status, 'failed', 'the relay will not take it');
+  assert.match(st.error, /cancelled by its sender/);
+  assert.strictEqual(await q.pendingCount(), 0, 'out of the queue');
+  assert.strictEqual(await relay.cancel(jobId), false, 'its secret is spent');
+
+  const b = await relay.submitOp({ type: 'route', op: { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '2', reserveBPre: '2' }] }, memos: [] });
+  await q.nextJob();
+  assert.strictEqual(await relay.cancel(b.jobId), false, 'one the relay has taken runs its course');
+  assert.strictEqual((await q.jobStatus(b.jobId)).status, 'proving');
+  const p = await relay.submitOp({ type: 'swap', op: swapOp, memos: [], mode: 'prove' });
+  assert.strictEqual(await relay.cancel(p.jobId), false, 'a prove-only job carries no secret');
+  ok('a stale queued job is cancelled with its secret before the wait ends; a claimed or prove-only one is not');
 }
 
 console.log(`\n${n} confidential-relay checks passed.`);
