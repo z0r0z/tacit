@@ -116,7 +116,7 @@ const eth2 = (v) => (BigInt(v) > 0n ? twoFigures(v) : '0');
 const tacTxt = (wei) => { const t = Number(BigInt(wei || 0) / 10n ** 14n) / 1e4; return t.toLocaleString('en-US', { maximumFractionDigits: t < 100 ? 2 : 0 }); };
 function paintFund(i) {
   const el = $('pv-fund'), s = i && i.stats, t = i && i.target, b = (i && i.buyback) || {};
-  let ok = false, rec = '';
+  let ok = false, rec = '', tiles = '';
   try {
     // the track record: swaps the house provider has finished, by direction, and how many ended in a refund (what the provider counts, nothing the page adds up from elsewhere)
     const ended = s ? Number(s.swaps) : NaN, refunded = s && s.refunds != null ? Number(s.refunds) : null;
@@ -124,6 +124,9 @@ function paintFund(i) {
       const done = ended - (Number.isInteger(refunded) ? refunded : 0), fw = Number(s.swapsForward), rv = Number(s.swapsReverse);
       const since0 = new Date(Number(s.since) * 1000), sinceTxt = Number.isFinite(since0.getTime()) ? since0.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
       const split = Number.isInteger(fw) && Number.isInteger(rv) && fw + rv === ended ? ` (${fw} BTC to ETH, ${rv} ETH to BTC)` : '';
+      tiles = `<div class="rt"><b class="num">${done}</b><span>swap${done === 1 ? '' : 's'} finished</span></div>`
+        + (split ? `<div class="rt btc"><b class="num">${fw}</b><span>BTC → ETH</span></div><div class="rt eth"><b class="num">${rv}</b><span>ETH → BTC</span></div>` : '')
+        + (Number.isInteger(refunded) ? `<div class="rt"><b class="num">${refunded}</b><span>refunded</span></div>` : '');
       rec = `<p class="rec">Tacit’s provider has finished <b class="num">${done}</b> swap${done === 1 ? '' : 's'}${esc(split)}${sinceTxt ? ` since ${esc(sinceTxt)}` : ''}${Number.isInteger(refunded) ? `, <b class="num">${refunded}</b> refunded` : ''}.</p>`;
     }
     if (rec && !(s && t && s.capacity)) { el.innerHTML = rec; ok = true; }
@@ -141,6 +144,8 @@ function paintFund(i) {
     }
   } catch { ok = false; }
   el.hidden = !ok;
+  const recEl = $('rec');
+  if (recEl) { recEl.innerHTML = tiles; recEl.hidden = !tiles; }
 }
 
 // ── the sections under the tile: disclosures (<details>), closed by default and remembered per section ──

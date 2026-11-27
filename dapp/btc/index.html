@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=26aeea90">
+<link rel="modulepreload" href="/btc/app.js?cb=0b467990">
 <link rel="modulepreload" href="/swap/atomic.js?cb=19cd0850">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -135,7 +135,18 @@ html[data-sec="chains/btc"] .hero { padding-top: clamp(8px, 2vh, 20px); }      /
 .hero .sub { margin: 0 auto; max-width: 30em; font: 400 clamp(18px, 2.4vw, 21px)/1.3 var(--serif); color: color-mix(in srgb, var(--ink) 72%, var(--mute)); text-wrap: balance; }
 .live { min-height: 20px; margin: 14px 0 0; font-size: 12.5px; color: var(--mute); }
 .live b { font-weight: 500; color: var(--ink); }
-.live span { white-space: nowrap; }      /* each part of the line whole: it breaks between them */
+.live span { white-space: nowrap; }
+/* the track record at the top: swaps finished, orange for Bitcoin sold for ETH, blue for ETH sold for Bitcoin (the numbers are darkened toward the ink so they stay readable) */
+.rec { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 18px auto 0; max-width: 34em; }
+.rec[hidden] { display: none; }
+.rt { flex: 1 1 92px; min-width: 84px; padding: 10px 8px 9px; text-align: center; background: var(--card); border: 1px solid var(--hair); border-top: 3px solid var(--hair-2); border-radius: 12px; }
+.rt b { display: block; font: 500 26px/1 var(--mono); letter-spacing: -.02em; color: var(--ink); }
+.rt span { display: block; margin-top: 6px; font-size: 11.5px; color: var(--mute); }
+.rt.btc { border-top-color: var(--orange); background: color-mix(in srgb, var(--orange) 9%, var(--card)); }
+.rt.btc b { color: color-mix(in srgb, var(--orange) 72%, var(--ink)); }
+.rt.eth { border-top-color: var(--blue); background: color-mix(in srgb, var(--blue) 10%, var(--card)); }
+.rt.eth b { color: color-mix(in srgb, var(--blue) 72%, var(--ink)); }
+@media (max-width: 480px) { .rec { display: grid; grid-template-columns: 1fr 1fr; } }      /* each part of the line whole: it breaks between them */
 
 /* the lane, drawn by swap/atomic.js in the card's own styles */
 .lane { margin: 26px 0 0; padding: 16px; background: var(--card); border: 1px solid var(--hair); border-radius: 20px; box-shadow: 0 30px 60px -48px rgba(0,0,0,.5); }
@@ -657,6 +668,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <h1 id="h">BTC <em>⇄</em> ETH</h1>
       <p class="sub">Swap Bitcoin and ETH directly. Your ETH arrives private. <a href="/docs/btc/">How it works</a></p>
       <p class="live num" id="live" role="status"></p>
+      <div class="rec" id="rec" role="group" aria-label="Track record of Tacit’s provider" hidden></div>
       <noscript><p>This page needs JavaScript.</p></noscript>
     </section>
 
@@ -793,6 +805,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/btc/app.js?cb=26aeea90"></script>
+<script type="module" src="/btc/app.js?cb=0b467990"></script>
 </body>
 </html>
