@@ -61,6 +61,8 @@ export function addUnits(amount, available) { const a = BigInt(amount), have = a
 
 const tidy = (s) => s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 export const fmt = (v) => tidy(fmtUnits(v, DEC, DEC));
+// A most to show: four significant figures, rounded down (so the figure shown can always be swapped; 0.18973122 reads 0.1897)
+export const fmtMost = (v) => { const n = BigInt(v), cut = BigInt(Math.max(0, n.toString().length - 4)); return fmt((n / 10n ** cut) * 10n ** cut); };
 // A small amount of a fee, readable: under 0.001 BTC in sats, under 0.001 ETH to six places (a 7-decimal figure cannot be read at a glance)
 export const smallAmt = (v, sym) => { const n = BigInt(v); return n > 0n && n < 100000n ? (sym === 'BTC' ? `\u2248 ${n.toLocaleString('en-US')} sats` : `${tidy(fmtUnits(n, DEC, 6))} ${sym}`) : `${fmt(n)} ${sym}`; };
 const nowSecs = () => Math.floor(Date.now() / 1000);
@@ -422,7 +424,13 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (C) return { label: C.phase === 'adding' && !C.mined ? 'Adding ETH…' : 'Starting the swap…', off: true };
     if (L.busy) return { label: 'Swapping…', off: true };
     if (!L.loaded) return { label: 'Loading…', off: true };
-    if (!D.unlocked) return { label: 'Sign in to swap', act: 'unlock' };
+    if (!D.unlocked) {
+      // an amount past the limits is said before the sign-in, not found after it (the press still signs in)
+      const t0 = termsFor(L.dir), a0 = amountBase(), sym = COINS[SIDES[L.dir][0]].sym;
+      if (t0 && a0 && t0.max >= t0.min && a0 > t0.max) return { label: `Sign in · at most ${fmtMost(t0.max)} ${sym}`, act: 'unlock' };
+      if (t0 && a0 && a0 < t0.min) return { label: `Sign in · at least ${fmt(t0.min)} ${sym}`, act: 'unlock' };
+      return { label: 'Sign in to swap', act: 'unlock' };
+    }
     if (!pair) return { label: 'Loading…', off: true };
     // nothing is swapped against a balance not read yet; a read that failed is offered again (the refresh also tries again by itself)
     if (bal == null) return L.unread?.[pk] ? { label: 'Read the balance again', act: 'reread' } : { label: 'Reading your balance…', off: true };
@@ -435,7 +443,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     // a provider that holds less than its own minimum cannot take any swap: say so, instead of a minimum nobody can meet and then a maximum under it
     if (t && t.max < t.min) return { label: 'No provider has enough right now', off: true };
     if (t && amount < t.min) return { label: `Minimum ${fmt(t.min)} ${c.sym}`, off: true };
-    if (t && amount > t.max) return { label: `Maximum ${fmt(t.max)} ${c.sym}`, off: true };
+    if (t && amount > t.max) return { label: `Maximum ${fmtMost(t.max)} ${c.sym}`, off: true };
     const held = heldOf(pk), exact = pk === 'eth' && L.fits && L.fits.amt === amount && L.fits.ok;
     if (bal != null && amount > bal && !exact) {
       if (pk === 'btc') {
@@ -498,7 +506,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       // the limits the ads name (what a provider holds now is the next row)
       // what the plan can fill: from the smallest amount any provider takes up to the most the best providers together can take now
       const lo = t ? t.min : ts[0].min, hi = t ? t.max : now0, fills = hi >= lo && hi > 0n;
-      out.push(['Limits', fills ? `${fmt(lo)}\u2060–\u2060${fmt(hi)} ${c.sym}` : 'none until a provider refills', fills && !(amount && t && (amount < t.min || amount > t.max)) ? '' : 'warn']);
+      out.push(['Limits', fills ? `${fmt(lo)}\u2060–\u2060${fmtMost(hi)} ${c.sym}` : 'none until a provider refills', fills && !(amount && t && (amount < t.min || amount > t.max)) ? '' : 'warn']);
       out.push([ts.length === 1 ? 'Provider' : 'Providers', ts.length === 1 ? (m.providers.find((p) => p[L.dir])?.name || 'Provider') : `${ts.length} online`, '']);
     }
     if (amount && !D.unlocked) out.push(['Price', 'after you sign in', '']);
