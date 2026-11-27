@@ -29,7 +29,7 @@
 // A spent salt is never asked about again; the free ones are asked at most every spentEveryMs, and an RPC that cannot answer leaves the
 // marks as they were, so a free salt is never wrongly called spent.
 //
-// Storage (KV): sl:seen:<salt> (kept 3 days), sl:m:<day>:<miner> ({ shares, weight, best }), sl:miners:<day> ([miner]), sl:bank (best first),
+// Storage (KV): sl:seen:<salt> (kept until the salt's day can no longer be sent, the end of the day after it, and seenSlackSecs more), sl:m:<day>:<miner> ({ shares, weight, best }), sl:miners:<day> ([miner]), sl:bank (best first),
 // sl:bank:looked and sl:bank:market:looked (when the free ones were last asked about),
 // sl:rate:<client> (when it last sent), sl:live ({ miner: { at, house } }), sl:hour:<n> (shares in UTC hour n).
 import { keccak_256 } from '@noble/hashes/sha3';
@@ -57,7 +57,7 @@ export const SALT_POOL = Object.freeze({
   recentKeep: 30,           // the newest good finds kept for that feed
   perCall: 64,              // salts one send may carry
   sendEveryMs: 20_000,      // one send per client this often
-  seenSecs: 3 * 86400,
+  seenSlackSecs: 600,      // a seen salt is kept this long past the last moment its day is taken
   daySecs: 40 * 86400,
   liveMs: 15 * 60_000,      // an address that sent shares this recently is grinding now
 });
@@ -224,11 +224,14 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
         const nonce = shape[2] == null ? 0 : Number(shape[2]);
         if (scheme === 'createx' && shape[2] != null) { rejected.push({ salt: raw, why: 'a nonce is for market salts only' }); continue; }
         if (nonce > cfg.nonceMax) { rejected.push({ salt: raw, why: `nonce over ${cfg.nonceMax}` }); continue; }
-        if (!days.includes(parseInt(salt.slice(44, 48), 16))) { rejected.push({ salt: raw, why: 'not ground today' }); continue; }
+        const saltDay = parseInt(salt.slice(44, 48), 16);
+        if (!days.includes(saltDay)) { rejected.push({ salt: raw, why: 'not ground today' }); continue; }
         const { address, bits } = scheme === 'market' ? marketAddress(salt, nonce, cfg) : saltAddress(salt, cfg);
         if (bits < cfg.minBits) { rejected.push({ salt: raw, why: `${bits} zero bits, under ${cfg.minBits}` }); continue; }
         if (await kv.get(`sl:seen:${salt}`) != null) { rejected.push({ salt: raw, why: 'already counted' }); continue; }
-        await write(`sl:seen:${salt}`, { miner, at: t }, cfg.seenSecs);
+        // Only today's and yesterday's salts are taken, so a salt of day D cannot come back after the end of day D + 1.
+        const lastMs = ((saltDay === days[0] ? day : day - 1) + 2) * DAY_MS;
+        await write(`sl:seen:${salt}`, { miner, at: t }, Math.max(60, Math.ceil((lastMs - t) / 1000) + cfg.seenSlackSecs));
         const w = 2 ** Math.min(bits - cfg.minBits, cfg.maxWeightBits);
         accepted++; weight += w;
         if (!rec.best || bits > rec.best.bits) rec.best = { address, bits, salt };
