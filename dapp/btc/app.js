@@ -2,11 +2,11 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt, fmtMost } from '/swap/atomic.js?cb=cd272d93';
+import { makeAtomicLane, fmt, fmtMost } from '/swap/atomic.js?cb=93c1d925';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
-import { makeAddEth } from '/btc/add-eth.js?cb=d423798a';
+import { makeAddEth } from '/btc/add-eth.js?cb=fde9beb8';
 import { mountSendPanel } from '/btc/panel.js?cb=4e01aedd';
 import { makePayout } from '/btc/payout.js?cb=3b028d52';
 
@@ -279,7 +279,7 @@ for (const ev of ['pointerenter', 'focusin', 'touchstart']) $('atomic').addEvent
 // panel, or a swap found again from the key, which does not know its amount) the amount is chosen here, up to the largest private amount that goes in one
 // withdrawal (Max), and the dialog sends it and shows the Etherscan link.
 async function withdraw({ id = null, units = null } = {}) {
-  const { overlay } = await import('/trade/sheet.js?cb=d857446c');
+  const { overlay } = await import('/trade/sheet.js?cb=4814776a');
   const o = overlay({ title: 'Send ETH to an address' });
   const own = lane.ethAddress(), fixed = units != null && units > 0n;
   const field = 'min-height:40px;padding:6px 10px;font:13px var(--mono, monospace)';

@@ -1,6 +1,6 @@
 import { makeBtcSession, short } from '/trade/btc-session.js?cb=26eb770f';
-import { overlay, esc } from '/trade/sheet.js?cb=d857446c';
-import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=62608560';
+import { overlay, esc } from '/trade/sheet.js?cb=4814776a';
+import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=844fa80a';
 import { count } from '/metrics.js?cb=48a20c0d';
 import { notesAt } from '/trade/ext-notes.js?cb=e050b7c2';
 

@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-T1JtsvbtA+Y7/4Jzn0l6/gqISnHIYtC9Lp4KsTeYql4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Rd/imXBmSK3Tv6C4OutuJu9PzlJAycBGi6iT8A7/lPQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -16,7 +16,7 @@
 <script async src="/front-guard.js?cb=51f5d28b"></script>
 <script src="/front-route.js?cb=834112f6"></script>
 <script type="module" src="/px-strip.js?cb=10c6841d" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=7716fe3d" as="style">
+<link rel="preload" href="/swap/card.css?cb=a6f78130" as="style">
 <link rel="preload" href="/fonts/newsreader-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/newsreader-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -32,8 +32,8 @@
 <meta property="og:description" content="The Tacit chain: stake TAC privately, earn from every payment and pay privately. A zk-rollup settled on Ethereum, connected to Bitcoin by proof.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F4F1EA" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1116" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /auto-claim.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js /rescan-gate.js /pub-address.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
@@ -156,21 +156,23 @@
     color-scheme: dark;
   }
 }
-/* Graphite: grey ground and cards, a raised plate for what is chosen, the serif Newsreader and the grotesk Schibsted for words (figures stay in the mono) */
+/* Atelier Mineral: warm limestone ground, pure alabaster cards and deep obsidian slate dark mode; Newsreader serif + Schibsted Grotesk UI + IBM Plex Mono figures */
 :root {
-  --paper: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --raise: #FFFFFF;
-  --ink: #17181B; --mute: #5C5D62; --faint: #636468; --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24);
-  --scrim: rgba(23,24,27,.36); --lift: 0 22px 44px -28px rgba(23,24,27,.45); --skel: rgba(23,24,27,.08); --skel-hi: rgba(23,24,27,.02); --bar: #8B8C91;
-  --float: 0 1px 2px rgba(23,24,27,.05), 0 30px 70px -50px rgba(23,24,27,.45);
+  --paper: #F4F1EA; --card: #FFFEFB; --field: #EFECE4; --raise: #FFFFFF; --soft: #F7F5EE;
+  --ink: #14171A; --mute: #525962; --faint: #676F79; --hair: rgba(20,23,26,.09); --hair-2: rgba(20,23,26,.20);
+  --orange: #D96B08; --ok: #0E7A4B; --warn: #B45309; --err: #C4321D;
+  --scrim: rgba(14,17,22,.42); --lift: 0 20px 44px -26px rgba(14,17,22,.34); --skel: rgba(20,23,26,.07); --skel-hi: rgba(20,23,26,.02); --bar: #828A96;
+  --float: 0 1px 2px rgba(20,23,26,.05), 0 18px 42px -26px rgba(20,23,26,.22), 0 0 0 1px rgba(20,23,26,.06);
   --serif: 'Newsreader', 'Newsreader Fallback', 'Newsreader Fallback T', Georgia, serif;
   --sans: 'Schibsted Grotesk', 'Schibsted Grotesk Fallback', system-ui, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #131417; --card: #1A1B1F; --field: #15161A; --raise: #2A2B31;
-    --ink: #E4E4E1; --mute: #9A9BA1; --faint: #86878D; --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22);
-    --skel: rgba(228,228,225,.07); --skel-hi: rgba(228,228,225,.15); --bar: #66676D;
-    --float: 0 0 0 1px rgba(228,228,225,.04), 0 40px 90px -50px #000;
+    --paper: #0E1116; --card: #161B22; --field: #10141B; --raise: #232A35; --soft: #12171F;
+    --ink: #F0ECE3; --mute: #9BA3B0; --faint: #7E8796; --hair: rgba(240,236,227,.09); --hair-2: rgba(240,236,227,.20);
+    --orange: #F59E28; --ok: #4ADE80; --warn: #F59E28; --err: #F87171;
+    --scrim: rgba(4,6,10,.72); --lift: 0 24px 52px -24px rgba(0,0,0,.92); --skel: rgba(240,236,227,.07); --skel-hi: rgba(240,236,227,.14); --bar: #646D7C;
+    --float: 0 0 0 1px rgba(240,236,227,.07), 0 28px 64px -28px rgba(0,0,0,.85);
   }
 }
 /* the SPX page (made from this one, with a look of its own) keeps its own face where Graphite names the grotesk */
@@ -454,11 +456,11 @@ main:focus { outline: none; }
 @media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
 @media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
 @media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
-:where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 580px; }
-@media (max-width: 640px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 370px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 356px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 338px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 602px; } }
+:where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 591px; }
+@media (max-width: 640px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 582px; } }
+@media (max-width: 370px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 582px; } }
+@media (max-width: 356px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 582px; } }
+@media (max-width: 338px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 607px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -2179,84 +2181,114 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .sk { background: var(--skel); }
 }
-/* ───────────────────────────── Graphite, the default skin: the hero and the card's frame ─────────────────────────────
-   Built around privacy. One light thing on a screen: the button. What is chosen is a raised grey plate, not a
-   highlight. Words are in the grotesk, figures in the mono, the headline in the serif with its second word in quiet italics.
-   The rules here restyle the ones above (the tab strip's sliding line is put away, not removed: the strip is a plate now). */
+/* ───────────────────────────── Atelier Mineral: the hero and the card's frame ─────────────────────────────
+   Warm limestone & alabaster in light mode, deep obsidian slate in dark mode, with burnt-amber privacy/focus cues.
+   Newsreader serif for display, Schibsted Grotesk for UI labels, IBM Plex Mono tabular numerals for all figures. */
 html:not([data-page="spx"]) {
-  & .hero h1 { font: 400 clamp(44px, 12vw, 68px)/1.02 var(--serif); letter-spacing: -.025em; }
+  & .pxb { background: var(--card); border-color: var(--hair-2); box-shadow: 0 2px 10px -6px rgba(14,17,22,.16); transition: border-color .16s, transform .2s var(--spring), box-shadow .16s; }
+  @media (hover: hover) { & .pxb:hover { border-color: var(--orange); transform: translateY(-1px); box-shadow: 0 8px 20px -12px rgba(14,17,22,.28); } }
+  & .hero h1 { font: 400 clamp(44px, 12vw, 68px)/1.02 var(--serif); letter-spacing: -.03em; }
   & .hero h1 .hero-w2 { font-style: italic; color: var(--mute); }
-  & .hero .sub { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
-  & .hero .sub b { font: 400 .88em var(--mono); color: var(--ink); }
-  & .hero-t { margin-bottom: 26px; }
-  & .hx { border-radius: 20px; border-color: var(--hair); background: linear-gradient(180deg, color-mix(in srgb, var(--card) 93%, #fff) 0, var(--card) 140px); }
-  /* the tabs: one plate, the chosen tab raised on it */
-  & .hx-h { margin: 12px 12px 4px; padding: 3px; border: 0; border-radius: 12px; background: var(--field); }
+  & .hero .sub { font: 400 15.5px/1.55 var(--sans); letter-spacing: -.005em; color: var(--mute); }
+  & .hero .sub b { font: 500 .88em var(--mono); color: var(--ink); padding: 1px 6px; border-radius: 6px; background: var(--field); border: 1px solid var(--hair); }
+  & .hero-t { margin-bottom: 24px; }
+  & .hx { border-radius: 24px; border: 1px solid var(--hair-2); background: linear-gradient(180deg, color-mix(in srgb, var(--raise) 65%, var(--card)) 0, var(--card) 130px); box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, #fff 55%, transparent); }
+  /* the tabs: recessed mineral rail, the chosen tab elevated with a crisp amber accent pip */
+  & .hx-h { margin: 14px 14px 4px; padding: 4px; border: 1px solid var(--hair); border-radius: 14px; background: var(--field); }
   & .hx-h::after { display: none; }
-  & .hx-h button { padding: 10px 0; border-radius: 9px; font: 500 14px/1 var(--sans); letter-spacing: 0; transition: background-color .2s, color .2s; }
-  & .hx-h button[aria-selected="true"] { background: var(--raise); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
-  & .hx-sk .t { height: 40px; margin: 0 -4px 6px; }
+  & .hx-h button { position: relative; padding: 10px 0; border-radius: 10px; font: 500 13.5px/1 var(--sans); letter-spacing: -.005em; transition: background-color .18s, color .18s, box-shadow .18s; }
+  & .hx-h button[aria-selected="true"] { background: var(--raise); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(14,17,22,.14), 0 0 0 1px var(--hair); }
+  & .hx-h button[aria-selected="true"]::after { content: ''; position: absolute; left: 32%; right: 32%; bottom: 3px; height: 2px; border-radius: 2px; background: var(--orange); }
+  & .hx-h button:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+  & .hx-sk .t { height: 42px; margin: 0 -2px 6px; border-radius: 14px; }
+  & .hx .btn { border-radius: 14px; font-weight: 600; letter-spacing: -.005em; }
+  @media (hover: hover) { & .hx .btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 26%, transparent), 0 10px 22px -12px rgba(14,17,22,.45); } }
+  & .hx .btn:active:not(:disabled) { transform: scale(.99); box-shadow: none; }
+  & .hx .btn:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
   & .hx-path { font-family: var(--sans); font-size: 12.5px; }
-  /* a choice of two in the card (Send or Request, Farm or LP only, from the wallet or from Bitcoin): the tab strip's plate, smaller */
-  & .hx-mode { background: var(--field); border-radius: 10px; }
+  & .hx-path li.on::before { background: var(--orange); border-color: var(--orange); color: #fff; }
+  /* a choice of two in the card (Send or Request, Farm or LP only, from the wallet or from Bitcoin): matching recessed plate */
+  & .hx-mode { background: var(--field); border: 1px solid var(--hair); border-radius: 11px; }
   & .hx-mode button { border-radius: 8px; font: 500 13px var(--sans); }
-  & .hx-mode button[aria-checked="true"] { background: var(--raise); }
-  /* Bridge and Borrow: two words with a rule under the chosen one, not a second row of plates */
-  & .hx-more { display: flex; gap: 18px; margin: 6px 4px 12px; padding: 0; background: none; border-bottom: 1px solid var(--hair); border-radius: 0; }
+  & .hx-mode button[aria-checked="true"] { background: var(--raise); box-shadow: 0 1px 2px rgba(14,17,22,.1); }
+  /* Bridge and Borrow: editorial underline in amber for the active mode */
+  & .hx-more { display: flex; gap: 20px; margin: 6px 4px 12px; padding: 0; background: none; border-bottom: 1px solid var(--hair); border-radius: 0; }
   & .hx-more button { flex: none; margin-bottom: -1px; padding: 8px 2px 10px; border-bottom: 2px solid transparent; border-radius: 0; font: 500 14px var(--sans); }
-  & .hx-more button[aria-selected="true"] { background: none; box-shadow: none; border-bottom-color: var(--ink); }
+  & .hx-more button[aria-selected="true"] { background: none; box-shadow: none; color: var(--ink); font-weight: 600; border-bottom-color: var(--orange); }
   /* a bridge's steps: a rail that runs from one chain's colour to the other's, a ring at each step between its ends */
   & .hx-brs { margin: 18px 4px 4px; font: 400 12px/1.35 var(--sans); }
   & .hx-brs li { padding-top: 22px; }
   & .hx-brs li::before, & .hx-brs li::after { left: 14px; top: 6px; height: 2px; border-radius: 2px; }
-  & .hx-brs li::before { background: linear-gradient(90deg, color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)), color-mix(in srgb, var(--from) calc(67% - var(--i, 0) * 33%), var(--to))); opacity: .55; }
+  & .hx-brs li::before { background: linear-gradient(90deg, color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)), color-mix(in srgb, var(--from) calc(67% - var(--i, 0) * 33%), var(--to))); opacity: .6; }
   & .hx-brs .dot { box-sizing: border-box; width: 14px; height: 14px; background: var(--card); border: 2px solid color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)); }
   & .hx-brs li:first-child .dot { background: var(--from); }
   & .hx-brs li:last-child .dot { background: var(--to); border-color: var(--to); }
-  /* the two ways on from a bridge, as chips */
+  /* the two ways on from a bridge, as crisp mineral pills */
   & #hx-brl { gap: 8px; margin-top: 14px; }
-  & .hx #hx-brl a { padding: 7px 13px; border: 1px solid var(--hair); border-radius: 999px; font: 400 12.5px var(--sans); text-decoration: none; }
-  @media (hover: hover) { & .hx #hx-brl a:hover { border-color: var(--hair-2); } }
+  & .hx #hx-brl a { padding: 7px 14px; background: var(--field); border: 1px solid var(--hair); border-radius: 999px; font: 500 12.5px var(--sans); text-decoration: none; }
+  @media (hover: hover) { & .hx #hx-brl a:hover { border-color: var(--ink); background: var(--raise); } }
   & .hx .lede-s, & .hx .hx-hv, & .hx-lead { font-family: var(--sans); }
-  /* the page under the card: every section it had, quieter, so the card stays the page's subject. Less air between sections, smaller headings, the
-     line under a heading in the grotesk, the asset tabs and figures in the card's own hands (grotesk for names, mono for numbers), the coin smaller */
+  /* quick starts & farms chips under the card: crisp alabaster/obsidian capsules */
+  & .hint, & .fms a { background: var(--card); border-color: var(--hair-2); box-shadow: 0 1px 2px rgba(14,17,22,.04); }
+  @media (hover: hover) { & .hint:hover, & .fms a:hover { background: var(--raise); border-color: var(--ink); } }
+  & .news, & .chb { background: var(--card); border-color: var(--hair-2); }
+  /* the page under the card: cohesive editorial rhythm so the card remains the clear anchor */
   & .sx { padding-top: 88px; }
   & .sx-h { margin-bottom: 32px; }
   & .sx-h h2 { font-size: clamp(28px, 3.4vw, 38px); }
   & .sx-h p { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
+  & .wd { border-radius: 22px; border-color: var(--hair-2); box-shadow: var(--float); }
   & .tc .sx-h { margin-bottom: 20px; }
   & .tc-stage { height: 112px; margin-bottom: 8px; }
   & .tc-tilt { scale: .42; }
   & .tc-shadow { bottom: 6px; width: 92px; }
   & .tc-as { margin-bottom: 22px; }
   & .tc-as button { font: 500 14px/1 var(--sans); letter-spacing: 0; }
+  & .tc-as [aria-selected="true"] { border-bottom-color: var(--orange); }
   & .tc-facts dd { font: 400 26px/1.15 var(--mono); letter-spacing: -.03em; }
   @media (min-width: 641px) { & .tc-facts { gap: 14px 48px; } }
-  @media (max-width: 640px) { & .tc-facts dd { font-size: clamp(13px, 4.1vw, 17px); } }   /* three figures to a row on a phone: the mono is wider than the serif was, so it is set to fit its column */
+  @media (max-width: 640px) { & .tc-facts dd { font-size: clamp(13px, 4.1vw, 17px); } & .hx { border-radius: 20px; } & .hx-h { margin: 10px 10px 2px; } }
   & .tc-links { margin-top: 26px; }
   & .tc-links .btn { border-radius: 12px; }
-  /* the glyph layer (glyphs.js). The field is fixed behind the whole page (chrome.css), which is why the page's ground is on <html> and <body> is clear; the stamp
-     lies behind its side's own words; and a rule of glyphs thins out to dots between the headline and the card. */
+  /* the glyph layer (glyphs.js). The field is fixed behind the whole page (chrome.css), which is why the page's ground is on <html> and <body> is clear */
   & body { background: transparent; }
-  & .hx canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .15; pointer-events: none; }
-  @media (max-width: 520px) { & .hx canvas.gx-stamp { opacity: .12; } }      /* (a narrow card puts it behind the label and the coin) */
-  /* the wallet sheet's ways to sign in: Tacit's mark struck across them in glyphs (glyphs.js), seen through the rows, and behind each way's mark a breath of its colour */
+  & .hx canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .13; pointer-events: none; }
+  @media (max-width: 520px) { & .hx canvas.gx-stamp { opacity: .10; } }
+  /* the wallet sheet & sign-in modals: frosted backdrop, crisp mineral cards, amber-edged identity panel */
+  & dialog.sheet { border-radius: 22px; border: 1px solid var(--hair-2); box-shadow: var(--sheet-shadow); }
+  & dialog.sheet::backdrop { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  & .sheet-head h2 { font: 400 30px/1.05 var(--serif); letter-spacing: -.02em; }
+  & .sheet-head .x { border-radius: 999px; border: 1px solid transparent; }
+  @media (hover: hover) { & .sheet-head .x:hover { background: var(--field); border-color: var(--hair); } }
+  & .sheet-head .x:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+  & .who { background: var(--field); border: 1px solid var(--hair-2); border-radius: 16px; box-shadow: inset 3px 0 0 var(--orange); }
+  & .opt, & .way, & .picker button { border-radius: 16px; border-color: var(--hair-2); transition: border-color .16s, background-color .16s, transform .18s var(--spring), box-shadow .16s, opacity .2s; }
+  @media (hover: hover) { & .opt:hover:not(:disabled), & .way:hover:not(:disabled), & .picker button:hover { border-color: var(--ink); transform: translateY(-1px); box-shadow: 0 8px 20px -14px rgba(14,17,22,.32); } }
+  & .opt:focus-visible, & .way:focus-visible, & .picker button:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+  & .opt.main { border-color: var(--ink); background: var(--raise); box-shadow: 0 2px 10px -6px rgba(14,17,22,.18); }
+  & .seg { background: var(--field); border: 1px solid var(--hair); border-radius: 13px; }
+  & .seg button { border-radius: 10px; font-weight: 500; }
+  & .seg button:is([aria-selected="true"], [aria-checked="true"]) { background: var(--raise); box-shadow: 0 1px 3px rgba(14,17,22,.12); }
+  @media (max-width: 640px) {
+    & dialog.sheet { border-radius: 22px 22px 0 0; }
+    & .sheet-head { padding-top: 24px; }
+    & .sheet-head::before { content: ''; position: absolute; top: 8px; left: 50%; width: 38px; height: 4px; margin-left: -19px; border-radius: 999px; background: var(--hair-2); }
+  }
   & #sheet-wallet .sheet-in { position: relative; isolation: isolate; }
-  & #sheet-wallet canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: .34; pointer-events: none; transition: opacity .15s ease; }
+  & #sheet-wallet canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: .20; pointer-events: none; transition: opacity .15s ease; }
+  @media (prefers-color-scheme: dark) { & #sheet-wallet canvas.gx-stamp { opacity: .13; } }
   & #sheet-wallet .sheet-in:not(:has(#ws-in)) canvas.gx-stamp { display: none; }
-  & #ws-in .opt { --tone: transparent; background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), color-mix(in srgb, var(--field) 58%, transparent); }
+  & #ws-in .opt { --tone: transparent; background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), color-mix(in srgb, var(--field) 65%, transparent); }
   & #ws-in .opt:has(use[href="#tk-eth"]) { --tone: #627EEA; }
   & #ws-in .opt:has(use[href="#tk-btc"]), & #ws-in .opt:has(use[href="#i-key"]) { --tone: #F7931A; }
-  /* a way pointed at or focused carries its own mark, struck across its row alone (glyphs.js), as the card's "To" side carries its asset's; the
-     row is solid while it does, so the sheet's own mark does not show through it */
   & #ws-in .opt { position: relative; isolation: isolate; }
-  & #ws-in .opt canvas.gx-way { border-radius: inherit; opacity: .4; }
+  & #ws-in .opt canvas.gx-way { border-radius: inherit; opacity: .36; }
   & #ws-in .opt:has(> canvas.gx-way) { background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), var(--field); }
   @media (prefers-reduced-motion: reduce) { & #sheet-wallet canvas.gx-stamp { transition: none; } }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=7716fe3d" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=a6f78130" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -2266,7 +2298,7 @@ html:not([data-page="spx"]) {
 header.top { position: relative; z-index: 30; container: top / inline-size; }
 /* one header on every page, so moving between a section's views (some are the front page, some pages of their own) moves nothing: the same height,
    and, where the sections are named, the same place for them whatever the page's label beside the mark */
-header.top { padding-top: 22px; padding-bottom: 8px; }
+header.top { padding-top: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--hair); }
 @container top (min-width: 900px) { header.top .brand { min-width: 160px; } }
 header.top .top-r { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
 
@@ -2282,7 +2314,7 @@ header.top .sn > .sm { margin-left: auto; }
   transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 /* the look's own rules each sit under the rule they restyle, at the same weight */
-.sn > a, .sn summary { font: 400 14px/1 var(--sans, var(--mono)); }
+.sn > a, .sn summary { font: 500 13.5px/1 var(--sans, var(--mono)); border-radius: 999px; letter-spacing: -.005em; }
 .sn summary::-webkit-details-marker { display: none; }
 /* the menu is a <details>: a page's own rules for details and summary (a border, a "+", a margin) are not for it */
 header.top .sm { margin: 0; padding: 0; border: 0; font: inherit; }
@@ -2292,8 +2324,8 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 .sn svg.fill, .sf svg.fill { fill: currentColor; stroke: none; }
 .sn > a { display: none; }
 .sn > a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { color: var(--ink); background: var(--hair); }
-@media (hover: hover) { .sn > a:hover, .sn summary:hover { color: var(--ink); background: var(--hair); } }
+.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { color: var(--ink); background: var(--raise, var(--card)); box-shadow: inset 0 0 0 1px var(--hair-2, var(--hair)), 0 1px 2px rgba(20,23,26,.06); }
+@media (hover: hover) { .sn > a:hover, .sn summary:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 6%, transparent); } .sn > a[aria-current="page"]:hover, .sn summary.here:hover, .sm[open] > summary:hover { background: var(--raise, var(--card)); } }
 .sn > a:active, .sn summary:active { transform: scale(.93); }
 .sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
 @container top (min-width: 540px) { .sn > a { display: inline-flex; } }
@@ -2327,15 +2359,15 @@ header.top .chip {
   font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
-header.top .chip { background: var(--card, transparent); border-radius: 10px; font: 500 14px/1 var(--sans, var(--mono)); }
+header.top .chip { background: var(--raise, var(--card, transparent)); border-radius: 999px; border-color: var(--hair-2, var(--hair-strong, var(--hair))); font: 500 13.5px/1 var(--sans, var(--mono)); box-shadow: 0 1px 2px rgba(20,23,26,.05); }
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
-header.top .chip .dot.on { background: var(--ok); }
-header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); }
-header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; }
+header.top .chip .dot.on { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
+header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 22%, transparent); }
+header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; box-shadow: none; }
 header.top .chip.act { background: transparent; }
 header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
-@media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
+@media (hover: hover) { header.top .chip:hover { border-color: var(--ink); background: var(--raise, var(--card)); } header.top .chip.act:hover { border-color: transparent; background: color-mix(in srgb, var(--ink) 6%, transparent); } }
 header.top .chip:active { transform: scale(.97); }
 header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
@@ -2354,11 +2386,12 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 /* the phone's bar: the first four sections and More, fixed to the foot of the window; the footer keeps clear of it */
 .bn { display: none; }
 @media (max-width: 539px) {
-  .bn { position: fixed; z-index: 29; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(5, 1fr); padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
-    background: color-mix(in srgb, var(--paper, var(--bg, #fff)) 92%, transparent); border-top: 1px solid var(--hair); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
-  .bn a { display: grid; justify-items: center; gap: 3px; min-height: 44px; padding: 5px 2px 3px; border-radius: 12px; color: var(--mute); font: 500 10.5px/1.1 var(--mono); text-decoration: none; -webkit-tap-highlight-color: transparent; }
-  .bn a svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-  .bn a[aria-current="page"] { color: var(--ink); background: var(--hair); }
+  .bn { position: fixed; z-index: 29; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    background: color-mix(in srgb, var(--card, var(--bg, #fff)) 90%, transparent); border-top: 1px solid var(--hair-2, var(--hair)); box-shadow: 0 -8px 24px -18px rgba(0,0,0,.35); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+  .bn a { position: relative; display: grid; justify-items: center; gap: 3px; min-height: 44px; padding: 5px 2px 3px; border-radius: 12px; color: var(--mute); font: 500 10.5px/1.1 var(--sans, var(--mono)); text-decoration: none; -webkit-tap-highlight-color: transparent; transition: color .15s, background-color .15s; }
+  .bn a svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .bn a[aria-current="page"] { color: var(--ink); background: color-mix(in srgb, var(--ink) 7%, transparent); }
+  .bn a[aria-current="page"]::before { content: ''; position: absolute; top: 0; left: 28%; right: 28%; height: 2px; border-radius: 0 0 2px 2px; background: var(--orange); }
   .bn a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
   footer.sf { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
   #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
@@ -2400,10 +2433,10 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh-more a b { grid-column: 2; font-weight: 500; } .sh-more a small { grid-column: 2; font-size: 12px; color: var(--mute); } .sh-more a i { grid-column: 3; grid-row: 1 / span 2; font-style: normal; color: var(--mute); }
 /* in Graphite the sections' words are set in the grotesk, as the header's are; a page that has no --sans keeps its own face */
 .sh p, .sh-t a, .sh-more a, .bn a { font-family: var(--sans, var(--mono)); }
-.sh-t { border-radius: 10px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); }
-.sh-t a { border-radius: 8px; }
-.sh-t a[aria-current="page"] { background: var(--raise, var(--card)); }
-.sh-t .sh-i { border-radius: 8px; background: var(--raise, var(--card)); }
+.sh-t { border-radius: 12px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); border: 1px solid var(--hair); }
+.sh-t a { border-radius: 9px; font-weight: 500; }
+.sh-t a[aria-current="page"] { background: var(--raise, var(--card)); box-shadow: 0 1px 3px rgba(20,23,26,.08); }
+.sh-t .sh-i { border-radius: 9px; background: var(--raise, var(--card)); box-shadow: 0 1px 3px rgba(20,23,26,.08); }
 /* each page of its own, as the view of its section: its own heading (and the switch the section's tabs now are) gives way to the section's head; everything
    else the page has stays, its notes, explainers and status lines included, and what belongs to the other view is out of the way */
 /* (the vault is stamped with its section alone, data-sec="borrow", until chrome.js names the side from the address; the page's own rules already keep
@@ -2423,17 +2456,17 @@ html[data-sec="rewards/"] #find-h { display: none !important; }
 
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
-  position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
-  width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
-  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px;
-  box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
+  position: absolute; z-index: 5; top: calc(100% + 10px); right: 0; display: grid; gap: 2px; box-sizing: border-box;
+  width: max-content; min-width: 228px; max-width: calc(100vw - 32px); padding: 7px;
+  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 18px;
+  box-shadow: 0 24px 52px -24px rgba(14,17,22,.45), 0 2px 8px rgba(14,17,22,.08);
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
-.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
-.sm-p a { font: 400 14px/1 var(--sans, var(--mono)); }
+.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 11px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; transition: background-color .14s; }
+.sm-p a { font: 500 13.5px/1 var(--sans, var(--mono)); }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
-.sm-p a[aria-current="page"] { background: var(--hair); }
+.sm-p a[aria-current="page"] { background: var(--field, var(--hair)); box-shadow: inset 0 0 0 1px var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
 .sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
 .sm-p .pr { display: flex; }
@@ -2479,18 +2512,18 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 .sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
 @media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
 
-/* Graphite's palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
-   its head, so the one block recolours them all and a page's own styles are untouched. The values are the front page's (index.html keeps them with the rest of its
-   tokens). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and are left out: the SPX page, by
-   its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the build gives it. */
+/* Atelier Mineral palette, for every page that wears the header: warm limestone & alabaster in light mode, deep obsidian slate in dark mode, with burnt-amber accent.
+   Two pages keep a ground of their own and are left out: the SPX page, by its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu. */
 :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-  --paper: #E6E6E4; --bg: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --ink: #17181B; --mute: #5C5D62;
-  --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24); --hair-strong: rgba(23,24,27,.24); --skel: rgba(23,24,27,.08);
+  --paper: #F4F1EA; --bg: #F4F1EA; --card: #FFFEFB; --field: #EFECE4; --raise: #FFFFFF; --ink: #14171A; --mute: #525962; --faint: #676F79;
+  --hair: rgba(20,23,26,.09); --hair-2: rgba(20,23,26,.20); --hair-strong: rgba(20,23,26,.20); --skel: rgba(20,23,26,.07);
+  --orange: #D96B08; --ok: #0E7A4B; --warn: #B45309; --err: #C4321D;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-    --paper: #131417; --bg: #131417; --card: #1A1B1F; --field: #15161A; --ink: #E4E4E1; --mute: #9A9BA1;
-    --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22); --hair-strong: rgba(228,228,225,.22); --skel: rgba(228,228,225,.07);
+    --paper: #0E1116; --bg: #0E1116; --card: #161B22; --field: #10141B; --raise: #232A35; --ink: #F0ECE3; --mute: #9BA3B0; --faint: #7E8796;
+    --hair: rgba(240,236,227,.09); --hair-2: rgba(240,236,227,.20); --hair-strong: rgba(240,236,227,.20); --skel: rgba(240,236,227,.07);
+    --orange: #F59E28; --ok: #4ADE80; --warn: #F59E28; --err: #F87171;
   }
 }
 
@@ -17194,7 +17227,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=5c4726df').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=c3bcd451').catch((e) => { SWC.p = null; throw e; }));
 // Intent on Shield or Swap is a useful head start: fetch both the card and the
 // private action engine, and warm the fee/log reads they need before submit.
 const hxActionWarm = () => { swcLoad().catch(() => {}); hxWarm(); hxWarmWrap(); };
@@ -17827,7 +17860,7 @@ async function hxBtcMarket(addr) {
   const r = xtOf(addr), b = r && xtBridge(r);
   if (!b) return;
   try {
-    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=e9fcfd77')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
+    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=c87253b2')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
     await BTC_MKT.get(b.hex).open();
   } catch (e) { toast(`The ${b.name} market on Bitcoin did not open: ${errText(e)}`, true); }
 }

@@ -2295,7 +2295,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=a0a52215').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=cf448b36').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -2883,7 +2883,7 @@ let lane = null, laneP = null;
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 async function openLane() {
   try {
-    laneP ||= import('/swap/bitcoin.js?cb=8b6109c3').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
+    laneP ||= import('/swap/bitcoin.js?cb=94ffb49f').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
     await laneP;
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = laneP = null; }
@@ -2923,7 +2923,7 @@ async function openAtomic() {
   try {
     // the same lane as /btc/, with the same two helpers: ETH added from the Ethereum wallet in one press, and "Receive as" (the ETH kept private or sent on).
     // The page's own panels (the Bitcoin send, the ETH send) are on /btc/, so a finished swap's next step opens them there.
-    atomicP ||= Promise.all([import('/swap/atomic.js?cb=cd272d93'), import('/btc/add-eth.js?cb=d423798a'), import('/btc/payout.js?cb=3b028d52')]).then(([mod, ae, po]) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir ,
+    atomicP ||= Promise.all([import('/swap/atomic.js?cb=93c1d925'), import('/btc/add-eth.js?cb=fde9beb8'), import('/btc/payout.js?cb=3b028d52')]).then(([mod, ae, po]) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir ,
       shield: ae.makeAddEth({ getUx }), payout: po.makePayout({ getUx }),
       onNext: ({ act }) => { if (act === 'send') location.href = '/btc/?dir=e2b#mybtc'; else if (act === 'withdraw') location.href = '/btc/#myeth'; } })));
     await atomicP;
