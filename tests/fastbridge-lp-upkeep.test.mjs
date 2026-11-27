@@ -295,20 +295,22 @@ test('the TAC bought: the provider\'s share of each buy, pro rata to its part of
 const kvMem = () => { const m = new Map(); return { get: async (id) => (m.has(id) ? JSON.parse(m.get(id)) : null), put: async (r) => { m.set(r.id, JSON.stringify(r)); }, m }; };
 const autoCfg = (env = {}) => ({ recycle: recycleConfig({}, env), skew: skewConfig({}, env), notes: notesConfig({}, env), buyback: buybackConfig({}, env), target: targetConfig({}, env) });
 test('a look: swaps that ended before it began are not counted; then each new one is, the lean follows what is held, and /info carries it all', async () => {
-  const fwd = [{ id: 'old', phase: 'done', quoteId: 'q0', takes: [] }];
+  const fwd = [{ id: 'old', phase: 'done', quoteId: 'q0', amount: '17', takes: [], offer: { evm: { amount: '29000' } } }];
   const rev = [];
   const kv = kvMem();
   let eth = 2n * 10n ** 8n, sats = 30_000_000n;           // 2 ETH and 0.3 BTC (0.009 ETH at this rate): ETH heavy
   const a = makeAutomation({
-    cfg: autoCfg(), kv, rate: () => RATE, fwd: store(fwd), rev: store(rev), fwdQuote: async (id) => (id === 'q1' ? { btcValue: '1000000', evmAmount: '29000', mkt: { num: String(RATE.num), den: String(RATE.den) } } : null),
+    cfg: autoCfg(), kv, rate: () => RATE, fwd: store(fwd), rev: store(rev), fwdQuote: async (id) => (/^q[01]$/.test(id) ? { btcValue: '1000000', evmAmount: '29000', mkt: { num: String(RATE.num), den: String(RATE.den) } } : null),
     ethFree: async () => eth, btcSats: async () => sats, txFee: async () => 700, relayFee: async () => 0n, feeAtMin: { fwd: 87, rev: 95 }, now: () => 5000,
   });
   await a.tick();
-  assert.equal(a.info().stats.swaps, 0, 'the old swap is not counted'); assert.equal(a.skew(), 15);
+  assert.equal(a.info().stats.swaps, 0, 'the old swap is not counted in P&L');
+  assert.equal(a.info().stats.volumeSats, '1000000', 'the old swap is still counted in traversed volume from its canonical quote, not record.amount'); assert.equal(a.skew(), 15);
   fwd.push({ id: 'new', phase: 'done', quoteId: 'q1', takes: [T('t')], offer: { evm: { amount: '29000' } } });
   await a.tick();
   const i = a.info();
   assert.equal(i.stats.swaps, 1); assert.equal(i.stats.feesEarnedSats, String(1000000n - 966667n)); assert.equal(i.stats.networkCostSats, '700');
+  assert.equal(i.stats.volumeSats, '2000000'); assert.equal(i.stats.volumeEth, '58000');
   assert.equal(i.target.reached, false); assert.equal(i.buyback.on, false); assert.equal(i.buyback.routedEth, '0'); assert.equal(i.skewBps, 15);
   assert.ok(i.stats.capacity && i.stats.capacity.eth === String(eth));
   eth = 1000n; sats = 10n ** 9n; await a.tick(); assert.equal(a.skew(), -15, 'BTC heavy: the rate falls');

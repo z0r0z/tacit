@@ -74,14 +74,15 @@ export function makeAutomation({ cfg, kv, rate, fwd, rev = null, fwdQuote, revQu
       log({ level: 'info', msg: 'stats: a swap is counted', id: rec.id, dir: 'rev', end: e.end, feeEth: String(e.feeEth), costSats: String(e.costSats), owed: owe });
       if (e.end === 'lost') alert({ level: 'alert', msg: 'stats: an ETH -> BTC swap ended with its Bitcoin lock taken and no claim recorded', id: rec.id, sats: String(e.lossSats) });
     }
-    // the Bitcoin moved and the time taken by the swaps counted above that finished (each once; those from before the accounting are not in it)
+    // Both assets actually traversed by every finished swap. Quotes carry canonical amounts in both directions; unlike P&L, volume needs no historical market rate.
     let vol = 0;
     for (const [list, tag, ends] of [[await fwd.list(), 'f:', ['done']], [rev ? await rev.list() : [], 'r:', ['done']]]) {
       for (const rec of list) {
         const c = st.counted[tag + rec.id];
-        if (c && c !== 'before' && ends.includes(rec.phase)) {
+        if (c && ends.includes(rec.phase)) {
           const quote = rec.quoteId ? await (tag === 'f:' ? fwdQuote(rec.quoteId) : revQuote(rec.quoteId)).catch(() => null) : null;
-          if (addVolume(st, { id: tag + rec.id, sats: rec.amount, eth: quote && quote.evmAmount, secs: Number(rec.updated) - Number(rec.created) })) vol++;
+          const eth = quote && quote.evmAmount != null ? quote.evmAmount : tag === 'f:' && rec.offer && rec.offer.evm ? rec.offer.evm.amount : null;
+          if (addVolume(st, { id: tag + rec.id, sats: quote && quote.btcValue != null ? quote.btcValue : rec.amount, eth, secs: Number(rec.updated) - Number(rec.created) })) vol++;
         }
       }
     }

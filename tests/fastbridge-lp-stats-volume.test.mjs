@@ -30,7 +30,7 @@ test('odd durations are left out of the time and the last fifty are kept; an old
   assert.equal(statsView(old).volumeSats, '7');
 });
 
-test('an old sats-only volume can backfill ETH without counting BTC twice', () => {
+test('a legacy volume is rebuilt because its direction-dependent BTC amount was unreliable', () => {
   const st = emptyStats(1000); st.vol = { ids: { a: 1 }, sats: '12', durs: [60] };
   assert.equal(addVolume(st, { id: 'a', sats: '12', eth: '34', secs: 60 }), true);
   assert.equal(statsView(st).volumeSats, '12'); assert.equal(statsView(st).volumeEth, '34');

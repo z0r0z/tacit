@@ -21,7 +21,7 @@ export function emptyStats(now) {
   return {
     v: 1, since: now, swaps: 0, swapsForward: 0, swapsReverse: 0, refunds: 0,
     feesEarnedSats: '0', feesEarnedEth: '0', networkCostSats: '0', networkCostEth: '0', lossesSats: '0', lossesEth: '0',
-    netEth: '0', reinvestedEth: '0', owedEth: '0', counted: {}, vol: { ids: {}, ethIds: {}, sats: '0', eth: '0', durs: [] }, capacity: { first: null, last: null, daily: [] },
+    netEth: '0', reinvestedEth: '0', owedEth: '0', counted: {}, vol: { schema: 2, ids: {}, ethIds: {}, sats: '0', eth: '0', durs: [] }, capacity: { first: null, last: null, daily: [] },
     buyback: { routedEth: '0', feesEth: '0', sends: 0, tacBought: '0', lastTx: null, lastAt: null, day: null, dayRouted: '0', pending: null, attributed: '0', fromBlock: null, log: [] },
   };
 }
@@ -60,7 +60,8 @@ export function addSwap(st, e, { rate, owe = false }) {
 // What a finished swap moved (the Bitcoin side of it, in sats) and how long it took (seconds from when it was accepted to its last step): kept for the swaps counted above only, each once.
 // The last fifty durations are kept for a typical time (the median).
 export function addVolume(st, { id, sats, eth, secs }) {
-  st.vol ||= { ids: {}, ethIds: {}, sats: '0', eth: '0', durs: [] };
+  // v2 rebuilds legacy totals because v1 used rec.amount, whose asset differs by direction.
+  if (!st.vol || st.vol.schema !== 2) st.vol = { schema: 2, ids: {}, ethIds: {}, sats: '0', eth: '0', durs: [] };
   st.vol.ids ||= {}; st.vol.ethIds ||= {};
   let added = false;
   if (!st.vol.ids[id]) {
