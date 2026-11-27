@@ -49,10 +49,10 @@ async function body(req, limit = 4096) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
 }
 
-export async function handleCommunity(req, res, { upstream, cors, rpcURL, priorityKey }) {
+export async function handleCommunity(req, res, { upstream, cors, rpcURL, priorityKey, enabled = false }) {
   const send = (code, value) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...cors }); res.end(JSON.stringify(value)); };
   if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
-  if (!rpcURL || !priorityKey) return send(503, { error: 'the community lane is not available yet' });
+  if (!enabled || !rpcURL || !priorityKey) return send(503, { error: 'the community lane is not available yet' });
   const token = String(req.headers['x-ceremony-token'] || '').trim();
   if (!/^[0-9a-f]{32}$/i.test(token)) return send(401, { error: 'join the line before proving community participation' });
   const key = tokenHash(token);

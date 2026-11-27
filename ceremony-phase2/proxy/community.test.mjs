@@ -34,7 +34,7 @@ test('a signed queue place receives bounded tiers from current holdings', async 
     else result = calls++ < 2 ? '0x1' : '0x0';
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result }));
   });
-  const proxy = await listen((req, res) => handleCommunity(req, res, { upstream: upstream.url, cors: {}, rpcURL: rpc.url, priorityKey: 'private-key' }));
+  const proxy = await listen((req, res) => handleCommunity(req, res, { upstream: upstream.url, cors: {}, rpcURL: rpc.url, priorityKey: 'private-key', enabled: true }));
   try {
     const headers = { 'x-ceremony-token': token };
     const challenge = await fetch(proxy.url + '/api/community/challenge', { method: 'POST', headers }).then((r) => r.json());
