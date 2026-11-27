@@ -20,7 +20,7 @@ export function hexBytes(h) {
 // What the coordinator signs: the receipt as Go's encoding/json writes it, without the signature. The fields go in the struct's order,
 // and Go writes <, > and & (and U+2028, U+2029) as \u escapes where JSON.stringify leaves them as they are.
 export function signedBytes(r) {
-  const json = JSON.stringify({ index: r.index, name: r.name, handle: r.handle, contribution_hash: r.contribution_hash, file_sha256: r.file_sha256, prev_file_sha256: r.prev_file_sha256, at: r.at });
+  const json = JSON.stringify({ index: r.index, name: r.name, handle: r.handle, contribution_hash: r.contribution_hash, file_sha256: r.file_sha256, prev_file_sha256: r.prev_file_sha256, at: r.at, support: Array.isArray(r.support) && r.support.length ? r.support : undefined });
   return new TextEncoder().encode(json.replace(/[<>&\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`));
 }
 

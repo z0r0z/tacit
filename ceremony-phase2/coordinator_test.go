@@ -922,6 +922,63 @@ func TestPoolLaneWaitsBehindPeople(t *testing.T) {
 	}
 }
 
+func TestCommunityLaneSelectsOnlyAtNewTurn(t *testing.T) {
+	c := newFixture(t).chain(t)
+	c.PerIP = -1
+	c.CommunityEvery = 3
+	alice, _, _ := c.Join("alice", "", "192.0.2.1")
+	bob, _, _ := c.Join("bob", "", "192.0.2.2")
+	carol, _, _ := c.Join("carol", "", "192.0.2.3")
+	// Make the next accepted contribution the third Tacit turn. Alice's already-open claim window is sacrosanct.
+	c.mu.Lock()
+	c.state.HeadIndex = c.state.BaseIndex + 2
+	c.mu.Unlock()
+	if _, err := c.UpgradeCommunity(carol, "0x1111111111111111111111111111111111111111", 2, []string{"tac", "wei"}); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := c.Poll(alice); st.Ahead != 0 || st.State != "claim" {
+		t.Fatalf("an offered turn must not move: %+v", st)
+	}
+	if st, _ := c.Poll(carol); st.Ahead != 2 || st.Community != 2 {
+		t.Fatalf("upgrade is recorded without jumping the live turn: %+v", st)
+	}
+	// Once that turn ends, selection occurs before a new claim window opens.
+	c.mu.Lock()
+	c.removeL(c.queue[0])
+	c.expireL()
+	c.mu.Unlock()
+	if st, _ := c.Poll(carol); st.Ahead != 0 || st.State != "claim" {
+		t.Fatalf("oldest highest-tier supporter gets the reserved turn: %+v", st)
+	}
+	if st, _ := c.Poll(bob); st.Ahead != 1 {
+		t.Fatalf("ordinary FIFO remains behind the one reserved turn: %+v", st)
+	}
+	_ = bob
+}
+
+func TestCommunityUpgradeRouteIsPrivate(t *testing.T) {
+	c := newFixture(t).chain(t)
+	c.PrioritySecret = "test-secret"
+	tok, _, _ := c.Join("alice", "", "192.0.2.1")
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+	body := `{"supporter":"0x1111111111111111111111111111111111111111","level":1,"signals":["zorgz"]}`
+	if r := call(t, srv, "POST", "/api/community", tok, strings.NewReader(body), -1); r.Code != 404 {
+		t.Fatalf("unauthenticated route should be hidden: %d %v", r.Code, r.Body)
+	}
+	req, _ := http.NewRequest("POST", srv.URL+"/api/community", strings.NewReader(body))
+	req.Header.Set(TokenHeader, tok)
+	req.Header.Set("X-Ceremony-Priority-Key", "test-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("authenticated upgrade: %d", resp.StatusCode)
+	}
+}
+
 // One address may contribute AcceptedPerIP times over the ceremony; the count survives a restart.
 func TestAcceptedPerIPCap(t *testing.T) {
 	f := newFixture(t)

@@ -1,6 +1,6 @@
 // The "contribute in this browser" path: the work is done by ceremony-phase2/browser (copied to ./browser/), here are only its
 // entry point and the wasm/worker plumbing the page needs.
-import { runContribution } from '/praxis/browser/flow.js?cb=56b42e6f';
+import { runContribution } from '/praxis/browser/flow.js?cb=acff61ae';
 
 export const WINDOW = 'https://tacit-praxis-ceremony.onrender.com/api/c';
 
@@ -20,8 +20,8 @@ const spawnBeat = () => {
   return { post: (m) => w.postMessage(m), onmessage: (f) => { w.onmessage = (e) => f(e.data); }, terminate: () => w.terminate() };
 };
 
-export function contributeHere({ name, handle, onStatus, signal }) {
-  return runContribution({ api: WINDOW, name, handle, spawn, spawnBeat, workers: cores(), onStatus, signal });
+export function contributeHere({ name, handle, onStatus, onJoined, signal }) {
+  return runContribution({ api: WINDOW, name, handle, spawn, spawnBeat, workers: cores(), onStatus, onJoined, signal });
 }
 
 // What to tell a person for each phase, in plain words. The time left comes from how fast the work has gone so far.

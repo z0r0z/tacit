@@ -322,6 +322,9 @@ func serve(args []string) error {
 	fs.BoolVar(&cfg.NoPool, "no-pool", false, "close the prover pool's lane: its machines' joins are refused while people wait")
 	fs.IntVar(&cfg.PerName, "per-name", 0, "contributors that may share a numbered name (hd-1, hd-2, ...), queued and accepted (0: no limit)")
 	fs.IntVar(&cfg.AcceptedPerIP, "accepted-per-ip", 3, "contributions accepted from one client address over the ceremony (0: no limit)")
+	fs.IntVar(&cfg.CommunityEvery, "community-every", 0, "reserve every Nth newly available turn for a verified community ticket (0: disabled)")
+	fs.StringVar(&cfg.PrioritySecret, "priority-secret", "", "shared secret for the proxy's private community-verification route")
+	prioritySecretFile := fs.String("priority-secret-file", "", "read the proxy's private community-verification secret from this file")
 	fs.DurationVar(&cfg.DownloadStart, "download-start", 10*time.Minute, "from the claim, time for the head's download to start (or an offline upload)")
 	fs.DurationVar(&cfg.DownloadBy, "download-by", 75*time.Minute, "from the claim, time for the head's download to complete")
 	fs.DurationVar(&cfg.UploadStart, "upload-start", 105*time.Minute, "from the claim, time for the upload to start")
@@ -336,6 +339,16 @@ func serve(args []string) error {
 	}
 	if fs.NArg() != 2 {
 		return usageErr("serve [--heartbeat 60s] [--claim-window 3m] [--slot-cap 2h] [--queue-cap 100] [--per-ip 1] [--client-ip-header H --trusted-proxies CIDR,...] [--admin 127.0.0.1:8081] <dir> <addr>")
+	}
+	if *prioritySecretFile != "" {
+		b, err := os.ReadFile(*prioritySecretFile)
+		if err != nil {
+			return fmt.Errorf("--priority-secret-file: %w", err)
+		}
+		cfg.PrioritySecret = strings.TrimSpace(string(b))
+		if cfg.PrioritySecret == "" {
+			return errors.New("--priority-secret-file is empty")
+		}
 	}
 	for _, s := range strings.Split(*proxies, ",") {
 		if s = strings.TrimSpace(s); s == "" {

@@ -17,6 +17,7 @@ import { createServer } from 'node:http';
 import { startMirror } from './mirror.mjs';
 import { dayTally, DAY_MS } from './credits.mjs';
 import { handleWrite, isWrite, WRITE_METHODS, WRITE_HEADERS } from './write.mjs';
+import { COMMUNITY_PATHS, handleCommunity } from './community.mjs';
 
 const UPSTREAM = String(process.env.COORDINATOR_URL || '').replace(/\/$/, '');
 const PORT = Number(process.env.PORT || 10000);
@@ -60,6 +61,7 @@ createServer(async (req, res) => {
   const cors = origin && ORIGINS.includes(origin) ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : {};
   if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors, 'Access-Control-Allow-Methods': WRITE_METHODS, 'Access-Control-Allow-Headers': WRITE_HEADERS, 'Access-Control-Max-Age': '600' }); return res.end(); }
   const path = (req.url || '').split('?')[0];
+  if (COMMUNITY_PATHS.has(path)) return handleCommunity(req, res, { upstream: UPSTREAM, cors, rpcURL: process.env.ETH_RPC_URL, priorityKey: process.env.COMMUNITY_PRIORITY_KEY, enabled: process.env.COMMUNITY_ENABLED === '1' });
   if (isWrite(path)) return handleWrite(req, res, { upstream: UPSTREAM, cors, ipHeaders: process.env.CLIENT_IP_HEADERS ? process.env.CLIENT_IP_HEADERS.split(',').map((x) => x.trim().toLowerCase()) : undefined });
   if (req.method === 'GET' && path === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"ok":true}'); }
   if (req.method === 'GET' && path === '/api/mirror') {
@@ -71,7 +73,7 @@ createServer(async (req, res) => {
     let head = null;
     try { head = v.status === 200 && !v.stale ? JSON.parse(v.body) : null; } catch {}
     res.writeHead(head ? 200 : 502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...cors });
-    return res.end(JSON.stringify(head ? { open: head.closed === false, coordinator: PUBLIC_URL, key: process.env.COORDINATOR_KEY || null, queue: head.queue, index: head.index, browser: process.env.BROWSER_CONTRIBUTE === '1' } : { error: 'the coordinator did not answer' }));
+    return res.end(JSON.stringify(head ? { open: head.closed === false, coordinator: PUBLIC_URL, key: process.env.COORDINATOR_KEY || null, queue: head.queue, index: head.index, browser: process.env.BROWSER_CONTRIBUTE === '1', community: process.env.COMMUNITY_ENABLED === '1' && !!(process.env.ETH_RPC_URL && process.env.COMMUNITY_PRIORITY_KEY) } : { error: 'the coordinator did not answer' }));
   }
   if (req.method === 'GET' && path === '/api/credits') {
     const day = Number(new URL(req.url, 'http://x').searchParams.get('day'));

@@ -1,6 +1,6 @@
 // The Tacit Praxis ceremony page: the wall of contributors (each receipt's signature checked in the browser against the coordinator's key,
 // each face the zOrgz invader its address picks, as on the prover pool page), the stats, the rewards, and the command to take part.
-import { cleanName, hasName, addressOf, rewardProgress, COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl, SUCCINCT_LINKS } from '/praxis/receipt.js?cb=e43d425d';
+import { cleanName, hasName, addressOf, rewardProgress, COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl, SUCCINCT_LINKS } from '/praxis/receipt.js?cb=0122766d';
 import { invaderSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { chime } from '/reward-pop.js?cb=88973dac';
 
@@ -78,6 +78,11 @@ function tile(r, fresh) {
   meta.append(el('span', 'num', `#${r.index}`), time);
   if (isProver(r)) meta.append(el('span', 'bd', 'prover'));
   if (isHouse(r)) { const h = el('span', 'bd house', 'Tacit'); h.title = 'made by Tacit’s own machines, to test the ceremony'; meta.append(h); }
+  for (const s of Array.isArray(r.support) ? r.support : []) {
+    const badge = el('span', 'bd', ({ tac: 'TAC', wei: '.wei', zorgz: 'zOrgz' })[s] || s);
+    badge.title = 'community holding verified by the coordinator when this contribution joined';
+    meta.append(badge);
+  }
   b.append(face(faceKey(r)), tick, nm, meta);
   b.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(r.contribution_hash); } catch { return; }
@@ -281,12 +286,23 @@ $('cta-go').addEventListener('click', (e) => {
 
 // ── contribute in this browser: one big button; the run shows four plain steps
 let webRun = null;
+let communityAddress = '';
+$('community-connect').addEventListener('click', async () => {
+  const b = $('community-connect');
+  b.disabled = true; $('community-status').textContent = 'Opening your wallet…';
+  try {
+    const community = await import('/praxis/community.js?cb=3f8a376a');
+    communityAddress = await community.connectCommunityWallet();
+    b.textContent = `${communityAddress.slice(0, 6)}…${communityAddress.slice(-4)} ready`;
+    $('community-status').textContent = 'Ready. When you join, your wallet will ask for one harmless signature bound to this queue place.';
+  } catch (e) { $('community-status').textContent = String(e.message || e); b.disabled = false; }
+});
 async function startWeb() {
   const handleRaw = $('addr').value.trim();
   if (handleRaw && !isAddress(handleRaw) && !confirm('That does not look like a 0x address (0x and 40 letters or digits), so no TAC could be sent to it. Continue without one?')) { $('addr').focus(); return; }
   const handle = isAddress(handleRaw) ? handleRaw : '';
   const name = (cleanName($('name').value) || (handle ? '' : 'a browser')) || handle;
-  const web = await import('/praxis/web.js?cb=91081de8');
+  const web = await import('/praxis/web.js?cb=a50d161a');
   web.resetClock();
   const ac = new AbortController();
   webRun = ac;
@@ -309,7 +325,18 @@ async function startWeb() {
   const warn = (e) => { e.preventDefault(); e.returnValue = ''; };
   addEventListener('beforeunload', warn);
   try {
-    const r = await web.contributeHere({ name, handle, signal: ac.signal, onStatus: mark });
+    const onJoined = communityAddress ? async (token) => {
+      $('community-status').textContent = 'Sign the community proof in your wallet…';
+      try {
+        const community = await import('/praxis/community.js?cb=3f8a376a');
+        const proof = await community.proveCommunity(token, communityAddress);
+        document.querySelectorAll('#community [data-signal]').forEach((x) => x.classList.toggle('on', proof.signals.includes(x.dataset.signal)));
+        $('community-status').textContent = `${proof.signals.map(community.signalLabel).join(' + ')} verified · community tier ${proof.level}. Your place is eligible for a reserved turn.`;
+      } catch (e) {
+        $('community-status').textContent = `${String(e.message || e)} You remain in the ordinary line.`;
+      }
+    } : undefined;
+    const r = await web.contributeHere({ name, handle, signal: ac.signal, onStatus: mark, onJoined });
     mark({ phase: 'done' });
     $('web-msg').textContent = 'Accepted. You are in the chain.';
     await refresh();
@@ -342,7 +369,8 @@ async function drawQueue() {
     if (/^https?:\/\/[A-Za-z0-9.\-]+(:\d{1,5})?$/.test(v.coordinator || '') || /^https?:\/\/\[[0-9A-Fa-f:]+\](:\d{1,5})?$/.test(v.coordinator || '')) { coordinator = v.coordinator; drawCommand(); }
     $('queue').textContent = v.open === false ? 'Closed.' : waitText(v.queue);
     if (Number.isInteger(v.queue)) setNum($('n-queue'), v.queue);
-    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=91081de8'); const can = web.capable(); $('web').hidden = !can; if (can && !webRun) $('cmd-alt').open = false; }
+    $('community').hidden = !(v.browser === true && v.community === true && v.open !== false);
+    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=a50d161a'); const can = web.capable(); $('web').hidden = !can; if (can && !webRun) $('cmd-alt').open = false; }
   } catch { $('queue').textContent = ''; }
 }
 

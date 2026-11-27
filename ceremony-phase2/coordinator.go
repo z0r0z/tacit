@@ -22,14 +22,15 @@ import (
 // Receipt of an accepted contribution, signed by the coordinator. A contributor shares it; anyone checks it against the
 // published transcript and the files.
 type Receipt struct {
-	Index            int    `json:"index"` // the file this contribution produced: phase2-<index>
-	Name             string `json:"name"`
-	Handle           string `json:"handle"`
-	ContributionHash string `json:"contribution_hash"` // SHA-256 of the serialized accumulator (as Succinct's tool prints it)
-	FileSHA256       string `json:"file_sha256"`
-	PrevFileSHA256   string `json:"prev_file_sha256"`
-	At               string `json:"at"`
-	Signature        string `json:"signature,omitempty"`
+	Index            int      `json:"index"` // the file this contribution produced: phase2-<index>
+	Name             string   `json:"name"`
+	Handle           string   `json:"handle"`
+	ContributionHash string   `json:"contribution_hash"` // SHA-256 of the serialized accumulator (as Succinct's tool prints it)
+	FileSHA256       string   `json:"file_sha256"`
+	PrevFileSHA256   string   `json:"prev_file_sha256"`
+	At               string   `json:"at"`
+	Support          []string `json:"support,omitempty"` // coordinator-verified community signals; the external wallet stays private
+	Signature        string   `json:"signature,omitempty"`
 }
 
 func (r Receipt) signedBytes() []byte {
@@ -81,6 +82,11 @@ type Config struct {
 	// AcceptedPerIP: contributions accepted from one client address (an IPv6 /48) over the whole ceremony, after which it
 	// may not join again (0: no limit). Kept in accepted.json, never published.
 	AcceptedPerIP int
+	// CommunityEvery reserves every Nth newly available turn for the oldest verified community ticket. Zero disables
+	// the lane. It never moves a ticket whose claim window has begun, so enabling it cannot disturb the live slot.
+	CommunityEvery int
+	// PrioritySecret authenticates the private proxy-to-coordinator upgrade route. It is never sent to a browser.
+	PrioritySecret string
 	// The client's address is the socket's unless the connection comes from one of TrustedProxies, in which case it is
 	// the last address in ClientIPHeader (e.g. X-Forwarded-For).
 	ClientIPHeader string
@@ -146,7 +152,10 @@ type ticket struct {
 	HeadSince time.Time `json:"head_since,omitzero"`
 	Claimed   time.Time `json:"claimed,omitzero"`
 	// Lane "pool": a machine of the prover pool that contributes when idle; it waits behind every person in the queue.
-	Lane      string `json:"lane,omitempty"`
+	Lane      string   `json:"lane,omitempty"`
+	Community int      `json:"community,omitempty"`
+	Supporter string   `json:"supporter,omitempty"`
+	Signals   []string `json:"signals,omitempty"`
 	lastSeen  time.Time
 	partBusy  bool // a part of a chunked upload is arriving (parts.go)
 	uploading bool // the upload's body is arriving
@@ -374,6 +383,7 @@ func (c *Coordinator) expireL() {
 	}
 	c.queue = kept
 	for len(c.queue) > 0 {
+		c.arrangeCommunityL()
 		t := c.queue[0]
 		if t.HeadSince.IsZero() {
 			t.HeadSince = now
@@ -389,6 +399,34 @@ func (c *Coordinator) expireL() {
 	}
 	if changed {
 		c.saveQueueL()
+	}
+}
+
+// arrangeCommunityL selects a community turn only at the instant a new claim window is about to start. The head index
+// makes the cadence deterministic across restarts. A claimed ticket, or even an unclaimed ticket whose window already
+// began, is never moved.
+func (c *Coordinator) arrangeCommunityL() {
+	if c.CommunityEvery < 2 || len(c.queue) < 2 || !c.queue[0].HeadSince.IsZero() || !c.queue[0].Claimed.IsZero() {
+		return
+	}
+	next := c.state.HeadIndex - c.state.BaseIndex + 1
+	if next%c.CommunityEvery != 0 {
+		return
+	}
+	best := -1
+	for i, t := range c.queue {
+		if t.Lane == "pool" || t.Community <= 0 || !t.Claimed.IsZero() {
+			continue
+		}
+		if best < 0 || t.Community > c.queue[best].Community {
+			best = i
+		}
+	}
+	if best > 0 {
+		t := c.queue[best]
+		copy(c.queue[1:best+1], c.queue[0:best])
+		c.queue[0] = t
+		c.logf("queue: %s (%s) selected for community turn (%s)", short(t.Token), t.Name, strings.Join(t.Signals, ","))
 	}
 }
 
@@ -668,11 +706,13 @@ func (c *Coordinator) Ban(prefix string) (int, error) {
 
 // Status of a place in the queue, as the client sees it.
 type Status struct {
-	Ahead       int    `json:"ahead"`
-	State       string `json:"state"` // "waiting", "claim" (yours: claim it), "active" (claimed)
-	ClaimBy     string `json:"claim_by,omitempty"`
-	Expires     string `json:"expires,omitempty"`
-	PollSeconds int    `json:"poll_seconds"`
+	Ahead       int      `json:"ahead"`
+	State       string   `json:"state"` // "waiting", "claim" (yours: claim it), "active" (claimed)
+	ClaimBy     string   `json:"claim_by,omitempty"`
+	Expires     string   `json:"expires,omitempty"`
+	PollSeconds int      `json:"poll_seconds"`
+	Community   int      `json:"community,omitempty"`
+	Signals     []string `json:"signals,omitempty"`
 }
 
 func (c *Coordinator) pollSeconds() int {
@@ -681,7 +721,7 @@ func (c *Coordinator) pollSeconds() int {
 }
 
 func (c *Coordinator) statusL(t *ticket, i int) Status {
-	s := Status{Ahead: i, State: "waiting", PollSeconds: c.pollSeconds()}
+	s := Status{Ahead: i, State: "waiting", PollSeconds: c.pollSeconds(), Community: t.Community, Signals: append([]string(nil), t.Signals...)}
 	if i == 0 {
 		if t.Claimed.IsZero() {
 			s.State = "claim"
@@ -692,6 +732,31 @@ func (c *Coordinator) statusL(t *ticket, i int) Status {
 		}
 	}
 	return s
+}
+
+// UpgradeCommunity marks an existing place as verified without changing the current head. The next community turn is
+// selected by expireL only after the live claim window ends.
+func (c *Coordinator) UpgradeCommunity(tok, supporter string, level int, signals []string) (Status, error) {
+	if level < 1 || level > 2 || !regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`).MatchString(supporter) || len(signals) < 1 || len(signals) > 3 {
+		return Status{}, refuse(400, "invalid community proof", nil)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.expireL()
+	t, i := c.findL(tok)
+	if t == nil {
+		return Status{}, refuse(404, "no such place in the queue (it may have run out)", nil)
+	}
+	if t.Lane != "" {
+		return Status{}, refuse(403, "the community lane is for people", nil)
+	}
+	if level < t.Community {
+		level = t.Community
+	}
+	t.Community, t.Supporter, t.Signals = level, strings.ToLower(supporter), append([]string(nil), signals...)
+	c.saveQueueL()
+	c.logf("queue: %s (%s) verified for community level %d (%s)", short(t.Token), t.Name, level, strings.Join(signals, ","))
+	return c.statusL(t, i), nil
 }
 
 // Join the queue.
@@ -1071,6 +1136,9 @@ func (c *Coordinator) accept(upload, name, handle string, owner *ticket) (*Recei
 	}
 	syncDir(c.Dir)
 	r := Receipt{Index: idx, Name: name, Handle: handle, ContributionHash: hash, FileSHA256: sum, PrevFileSHA256: headSHA, At: c.clock().UTC().Format(time.RFC3339)}
+	if owner != nil {
+		r.Support = append([]string(nil), owner.Signals...)
+	}
 	r.Signature = hex.EncodeToString(ed25519.Sign(c.key, r.signedBytes()))
 	ns := c.state
 	ns.Receipts = append(append([]Receipt(nil), c.state.Receipts...), r)
