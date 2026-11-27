@@ -32,6 +32,8 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
 // A proposal's Ethereum address, derived from its (compressed, secp256k1) proposer_pubkey — the same key as
 // the Bitcoin/Tacit wallet, address-derived the standard Ethereum way. Pure and offline.
 function ethAddressFromCompressedPubHex(pubHex) {
+  // a proposal opened from an Ethereum wallet (the /govern/ page) records the address itself
+  if (/^0x[0-9a-fA-F]{40}$/.test(String(pubHex || ''))) return String(pubHex).toLowerCase();
   try {
     const pt = secp.ProjectivePoint.fromHex(String(pubHex || '').replace(/^0x/, ''));
     return '0x' + bytesToHex(keccak_256(pt.toRawBytes(false).slice(1)).slice(12));
