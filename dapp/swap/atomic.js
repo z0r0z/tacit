@@ -1137,7 +1137,14 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   }
   function dismiss(id) { const s = dismissed(); s.add(id); try { localStorage.setItem(DISMISS_KEY, JSON.stringify([...s].slice(-50))); } catch { /* storage is a convenience */ } paintRecs(); }
   const setAmt = (v) => { L.amt = v; L.sticky = false; if (L.cls === 'err' && !L.busy) say(''); onState(); requote(); };
-  host.addEventListener('input', (e) => { if (e.target.id === 'a-amt') { fit(e.target); setAmt(e.target.value.trim()); } });
+  // the field takes a number only: digits, one point (a comma is taken as one), at most DEC decimals (what the swap reads); a paste is cleaned the same way
+  const cleanAmt = (v) => { const t = String(v).replace(/,/g, '.').replace(/[^\d.]/g, ''), i = t.indexOf('.'); return i < 0 ? t : t.slice(0, i + 1) + t.slice(i + 1).replace(/\./g, '').slice(0, DEC); };
+  host.addEventListener('input', (e) => {
+    if (e.target.id !== 'a-amt') return;
+    const el = e.target, v = cleanAmt(el.value);
+    if (v !== el.value) { const at = Math.max(0, (el.selectionStart ?? v.length) - (el.value.length - v.length)); el.value = v; try { el.setSelectionRange(at, at); } catch {} }
+    fit(el); setAmt(v);
+  });
   host.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'a-amt' && !$('a-go').disabled) $('a-go').click(); });
   host.addEventListener('click', (e) => {
     const t = e.target;
