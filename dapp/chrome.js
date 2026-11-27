@@ -157,12 +157,13 @@
       ["swap", "Swap", "/#/defi/swap", "Public or private swaps at the best route."],
       ["farm", "Farm", "/farm/", "Pick a farm, put ETH in, earn TAC."],
       ["stake", "Stake", "/tac/?v=stake#private", "Stake TAC on the Tacit chain: it earns a share of every payment, with no lock."]]],
-    "chains": ["Chains", "Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.", [
-      ["move", "Move", "/#/chains/move", "Make it private, or take it back out: pick what and where it goes. ↕ flips to withdraw."],
+    "chains": ["Chains", "Choose where your money starts and where you want it to arrive.", [
+      ["overview", "Overview", "/#/chains/overview", "Start here: compare every route by asset, destination, speed and privacy."],
+      ["move", "Private balance", "/#/chains/move", "Move between a public wallet and your private Tacit balance."],
       ["btc", "BTC ⇄ ETH", "/btc/", "Swap Bitcoin and ETH directly. Your ETH arrives private."],
-      ["bridge", "Bridge", "/#/chains/bridge", "TAC between Bitcoin and Ethereum, either way, with the steps, fee and time up front."],
-      ["fast", "Fast bridge", "/fast/", "TAC from Bitcoin in minutes, paid out by a provider for a fee; or be a provider."],
-      ["notes", "Notes", "/tac/?v=notes#bridge", "Your TAC notes on Bitcoin: merge, split, bridge them all; and everything getting ready or on the way."]]],
+      ["bridge", "TAC bridge", "/#/chains/bridge", "Move TAC between Bitcoin and Ethereum with the trustless standard route."],
+      ["fast", "Fast TAC", "/fast/", "Move TAC from Bitcoin in minutes through a provider for a quoted fee."],
+      ["notes", "Bitcoin notes", "/tac/?v=notes#bridge", "Manage, merge or split your TAC notes on Bitcoin."]]],
     "borrow": ["Borrow", "Borrow without selling your BTC or TAC.", [
       ["btc", "Against BTC", "/vault/#btc", "Lock BTC (you keep the key), mint cBTC, borrow cUSD."],
       ["tac", "Against TAC", "/vault/", "Keep your TAC, borrow TACD or TACE. No interest; one fee when you borrow."]]],

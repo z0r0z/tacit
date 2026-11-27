@@ -1263,7 +1263,9 @@ html[data-view="portfolio"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi, #sheet-ta
    or TAC's page cut to the one part the view is, in one column; or the More page, with nothing of the landing ── */
 html[data-sec]:not([data-page="tac"]) :is(.hero > :not(#hx), #dash, #how, #tac, .pg, .sx.pi, #hx .hx-h) { display: none !important; }
 html[data-sec="chains/bridge"] #hx .hx-more, html[data-sec="menu/"] .hero { display: none !important; }
+html[data-sec="chains/overview"] .hero { display: none !important; }
 html[data-sec]:not([data-page="tac"]) .hero { padding-top: 0; }
+html:not([data-sec="chains/overview"]) #page-chains { display: none; }
 html[data-sec][data-page="tac"] .tpg { display: block; padding-top: 0; }
 html[data-sec][data-page="tac"] .tpg > * { max-width: 460px; margin-left: auto; margin-right: auto; position: static; }
 /* every view keeps #tpg-act, where a button that opens the swap card puts it; "Manage your TAC" (#tpg-notes) is the Notes view's alone */
@@ -1284,6 +1286,33 @@ html[data-sec="defi/stake"] .tcd-tabs { grid-template-columns: 1fr 1fr; }
 html[data-sec="chains/notes"] :is(.tpg > :not(#tpg-where, #tpg-notes, #tpg-side, #tpg-act), #tpg-side > :not(#tpg-notes), #tac-bal, #tpg-where > summary, #tpg-br > summary) { display: none !important; }   /* the notes card sits in the side column (#tpg-side): the column stays, the rest of it goes */
 html[data-sec="chains/notes"][data-page="tac"] .tpg > * { max-width: 720px; }
 html[data-sec="chains/notes"] #tpg-where { border: 0; }
+/* ── Chains overview: decisions first. The tools keep their own pages; this page says which one matches the job. ── */
+.cpg { max-width: 920px; margin: 0 auto; padding: 8px 0 40px; }
+.cpg-intro { max-width: 650px; margin: 0 auto 24px; text-align: center; }
+.cpg-intro .k { margin: 0 0 7px; font: 500 11px/1.2 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
+.cpg-intro h2 { margin: 0; font: 400 clamp(30px, 5vw, 46px)/1.05 var(--serif); letter-spacing: -.02em; }
+.cpg-intro p:last-child { margin: 12px auto 0; color: var(--mute); text-wrap: balance; }
+.cpg-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.cpg-card { --tone: var(--ink); position: relative; display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 4px 14px; align-items: start; min-height: 154px; padding: 20px; color: inherit; background: linear-gradient(145deg, color-mix(in srgb, var(--tone) 8%, var(--card)), var(--card) 60%); border: 1px solid var(--hair); border-radius: 18px; box-shadow: var(--float); text-decoration: none; transition: border-color .15s, transform .2s var(--spring), box-shadow .2s; }
+.cpg-card.btc { --tone: #f7931a; } .cpg-card.eth { --tone: #627eea; } .cpg-card.tac { --tone: #b79234; }
+.cpg-ic { grid-row: 1 / span 3; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: color-mix(in srgb, var(--tone) 13%, var(--field)); border: 1px solid color-mix(in srgb, var(--tone) 20%, var(--hair)); }
+.cpg-ic .tk { width: 30px; height: 30px; }
+.cpg-ic.pair { position: relative; } .cpg-ic.pair .tk { position: absolute; width: 27px; height: 27px; } .cpg-ic.pair .tk:first-child { translate: -7px -5px; } .cpg-ic.pair .tk:last-child { translate: 7px 6px; }
+.cpg-card h3 { margin: 1px 0 0; font: 400 24px/1.1 var(--serif); letter-spacing: -.01em; }
+.cpg-card > i { font: normal 18px/1 var(--mono); color: var(--mute); transition: translate .15s, color .15s; }
+.cpg-card p { grid-column: 2 / -1; margin: 5px 0 0; font-size: 13px; line-height: 1.5; color: var(--mute); text-wrap: pretty; }
+.cpg-card small { grid-column: 2 / -1; align-self: end; margin-top: 10px; font: 500 11.5px/1.4 var(--mono); color: var(--ink); }
+@media (hover: hover) { .cpg-card:hover { border-color: color-mix(in srgb, var(--tone) 45%, var(--hair)); transform: translateY(-2px); box-shadow: 0 20px 42px -30px color-mix(in srgb, var(--tone) 42%, transparent); } .cpg-card:hover > i { color: var(--ink); translate: 3px 0; } }
+.cpg-compare { margin-top: 18px; padding: 20px; background: color-mix(in srgb, var(--ink) 3%, var(--card)); border: 1px solid var(--hair); border-radius: 18px; }
+.cpg-compare h3 { margin: 0 0 14px; font: 400 24px/1.1 var(--serif); }
+.cpg-routes { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; overflow: hidden; background: var(--hair); border: 1px solid var(--hair); border-radius: 12px; }
+.cpg-route { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; padding: 14px 16px; color: inherit; background: var(--card); text-decoration: none; }
+.cpg-route b { font-weight: 500; } .cpg-route i { grid-row: 1 / span 2; grid-column: 2; font-style: normal; color: var(--mute); } .cpg-route span { font-size: 12px; line-height: 1.45; color: var(--mute); }
+@media (hover: hover) { .cpg-route:hover b, .cpg-route:hover i { color: var(--orange); } }
+.cpg-note { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 14px 2px 0; padding-top: 14px; border-top: 1px solid var(--hair); font-size: 12.5px; color: var(--mute); }
+.cpg-note a { flex: none; color: var(--ink); font-weight: 500; }
+@media (max-width: 680px) { .cpg-grid { grid-template-columns: 1fr; } .cpg-card { min-height: 0; } .cpg-routes { grid-template-columns: 1fr; } }
+@media (max-width: 420px) { .cpg { padding-top: 0; } .cpg-card { grid-template-columns: 42px minmax(0, 1fr) auto; padding: 16px; } .cpg-ic { width: 42px; height: 42px; border-radius: 12px; } .cpg-card h3 { font-size: 22px; } .cpg-note { align-items: flex-start; flex-direction: column; gap: 8px; } }
 .ppg { padding: 28px 0 8px; }
 .ppg-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 0 0 22px; }
 .ppg-head h1 { font: 400 clamp(40px, 6vw, 56px)/1 var(--serif); letter-spacing: -.02em; margin: 0; }
@@ -2359,6 +2388,11 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh.sh-l { max-width: 560px; text-align: left; } .sh.sh-l .sh-more { margin-top: 18px; }
 @media (hover: hover) { .sh-t a:hover { color: var(--ink); } }
 @media (max-width: 520px) { .sh { margin-top: 18px; } .sh-t { display: grid; grid-auto-columns: 1fr; } .sh-t a { padding: 6px 6px; font-size: 12px; } }
+/* Chains has several distinct routes. On a phone they are a legible 3 × 2 map, not six squeezed labels in one row. */
+@media (max-width: 640px) {
+  .sh[data-of="chains"] .sh-t { display: grid; grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .sh[data-of="chains"] .sh-t a { min-width: 0; padding-inline: 6px; white-space: normal; text-wrap: balance; }
+}
 .sh-more { list-style: none; margin: 22px auto 0; padding: 4px 18px; max-width: 560px; text-align: left; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
 .sh-more li + li { border-top: 1px solid var(--hair); }
 .sh-more a { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 2px 14px; padding: 14px 2px; color: var(--ink); font: 400 14px/1.3 var(--mono); text-decoration: none; }
@@ -2479,7 +2513,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=4c9196f2" defer></script>
+<script src="/chrome.js?cb=411895d5" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -2626,6 +2660,47 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <section class="ppg" id="page-portfolio" aria-labelledby="ppg-h">
     <div class="ppg-head"><div><h1 id="ppg-h" tabindex="-1">Portfolio</h1><p>Everything you hold, by asset. Where it sits is the small print.</p></div><button class="link" type="button" id="ppg-re">Refresh</button></div>
     <div id="ppg-body"></div>
+  </section>
+  <section class="cpg" id="page-chains" aria-labelledby="cpg-h">
+    <header class="cpg-intro">
+      <p class="k">Start with the outcome</p>
+      <h2 id="cpg-h">Where should your money go?</h2>
+      <p>Pick the destination you want. The next screen shows the amount, route, fee, time and recovery path before anything is sent.</p>
+    </header>
+    <div class="cpg-grid">
+      <a class="cpg-card eth" href="/#/chains/move">
+        <span class="cpg-ic"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span>
+        <h3>Use a private balance</h3><i aria-hidden="true">→</i>
+        <p>Move an asset between your public Ethereum wallet and Tacit’s private pool.</p>
+        <small>Wallet ⇄ private balance · supported assets</small>
+      </a>
+      <a class="cpg-card btc" href="/btc/">
+        <span class="cpg-ic pair"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span>
+        <h3>Swap BTC and ETH</h3><i aria-hidden="true">→</i>
+        <p>Exchange native Bitcoin and ETH directly. ETH arrives in your private Tacit balance.</p>
+        <small>BTC ⇄ private ETH · direct swap</small>
+      </a>
+      <a class="cpg-card tac" href="/#/chains/bridge">
+        <span class="cpg-ic"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span>
+        <h3>Move TAC across chains</h3><i aria-hidden="true">→</i>
+        <p>Use the trustless standard bridge for TAC between Bitcoin and Ethereum, in either direction.</p>
+        <small>Bitcoin ⇄ Ethereum · every TAC note</small>
+      </a>
+      <a class="cpg-card tac" href="/fast/">
+        <span class="cpg-ic"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span>
+        <h3>Move TAC faster</h3><i aria-hidden="true">→</i>
+        <p>Receive TAC on Ethereum in minutes through a provider. Its quote includes the fee and capacity.</p>
+        <small>Bitcoin → Ethereum · provider route</small>
+      </a>
+    </div>
+    <aside class="cpg-compare" aria-labelledby="cpg-route-h">
+      <h3 id="cpg-route-h">Standard or fast TAC bridge?</h3>
+      <div class="cpg-routes">
+        <a class="cpg-route" href="/#/chains/bridge"><b>Standard bridge</b><i aria-hidden="true">→</i><span>Trustless, works in both directions and with every supported TAC note. Takes longer.</span></a>
+        <a class="cpg-route" href="/fast/"><b>Fast route</b><i aria-hidden="true">→</i><span>Provider liquidity pays out in minutes. Bitcoin → Ethereum only, with a quoted fee and limit.</span></a>
+      </div>
+    </aside>
+    <p class="cpg-note"><span>Already have TAC notes on Bitcoin? Merge or split them, or follow notes that are still moving.</span><a href="/tac/?v=notes#bridge">Manage Bitcoin notes →</a></p>
   </section>
   <section class="hero" aria-labelledby="hero-h">
     <a class="pxb" href="/praxis/" id="pxb"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>Tacit Praxis ceremony.</b> The cryptography for smart contracts on Bitcoin: help build its key, earn up to 5 TAC.</span><i aria-hidden="true">→</i></a>
