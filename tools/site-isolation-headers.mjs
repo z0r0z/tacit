@@ -9,13 +9,20 @@ import { ISOLATION_RULES } from './site-isolation-rules.mjs';
 
 const SITE = 'srv-d7tt961j2pic7399utag';
 const key = execFileSync('security', ['find-generic-password', '-s', 'tacit-render-api-key', '-w'], { encoding: 'utf8' }).trim();
-const api = (method, body) => fetch(`https://api.render.com/v1/services/${SITE}/headers`, {
+const api = (method, body, query = '') => fetch(`https://api.render.com/v1/services/${SITE}/headers${query}`, {
   method,
   headers: { authorization: `Bearer ${key}`, accept: 'application/json', 'content-type': 'application/json' },
   body: body && JSON.stringify(body),
 });
-const listed = await (await api('GET')).json().catch(() => []);
-const existing = (Array.isArray(listed) ? listed : []).map((x) => x.header ?? x.headerRule ?? x);
+// Render lists 20 rules a page by default: read every page, or rules past the first look missing and are added again
+const existing = [];
+for (let cursor = ''; ;) {
+  const page = await (await api('GET', null, `?limit=100${cursor && `&cursor=${encodeURIComponent(cursor)}`}`)).json().catch(() => []);
+  if (!Array.isArray(page) || !page.length) break;
+  existing.push(...page.map((x) => x.header ?? x.headerRule ?? x));
+  cursor = page[page.length - 1].cursor;
+  if (page.length < 100 || !cursor) break;
+}
 const has = (path, name, value) => existing.some((h) => h.path === path && String(h.name).toLowerCase() === name.toLowerCase() && h.value === value);
 for (const [path, name, value] of ISOLATION_RULES) {
   if (has(path, name, value)) { console.log('have', path, name); continue; }
