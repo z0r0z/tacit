@@ -149,6 +149,13 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
         if (!x.stale && f && !f.ready && f.missing) { P.record = f.missing; P.cta = `Record ${f.missing} price${f.missing === 1 ? '' : 's'} to open borrowing`; P.hint = recordHint(f.missing, viaOf(x.V) ? BATCH_MAX : 0, 'your borrow'); return P; }
         P.cta = 'Borrowing is paused'; P.hint = 'Borrowing waits until prices are recorded.'; return P;
       }
+      if (x.room != null && x.room < x.s.minDebt) {
+        P.cta = 'Borrowing unavailable';
+        P.hint = x.room === 0n
+          ? `Current capacity is fully used. New borrowing resumes when at least ${syn(x, x.s.minDebt)} ${sym} is available.`
+          : `${syn(x, x.room)} ${sym} is available; a new position needs at least ${syn(x, x.s.minDebt)} ${sym}.`;
+        return P;
+      }
       if (none) { P.cta = 'Enter an amount'; P.hint = 'The TAC it needs is added from your wallet in the same step.'; return P; }
       const held = d.tacBal ?? 0n, check = (collateral) => M.checkBorrow({ amount: amt, collateral, debt: m.debt, pB: d.pB, mint: x.s.mint, feeBps: d.feeBps, room: x.room, minDebt: x.s.minDebt });
       let c = check(m.collateral), add = 0n;

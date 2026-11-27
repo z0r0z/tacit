@@ -1,5 +1,5 @@
 // node tests/prove-chain.test.mjs -- the prove page's day figures: an address's work across the proof pool and the board, and how long a proof takes
-import { dayTotals, proofSpan, cleanMiner, payPoints, payRuleText } from '../dapp/prove/chain.js';
+import { dayWorkText, dayTotals, proofSpan, cleanMiner, payPoints, payRuleText } from '../dapp/prove/chain.js';
 let fails = 0; const check = (n, c) => { console.log((c ? 'ok   ' : 'FAIL ') + n); if (!c) fails++; };
 
 const A = '0x66f5A1225e6ac772c461f2b4d8028bf9568f3db5', B = '0x9194efdf03174a804f3552f4f7b7a4bb74badb7f', a = A.toLowerCase();
@@ -16,6 +16,11 @@ const A = '0x66f5A1225e6ac772c461f2b4d8028bf9568f3db5', B = '0x9194efdf03174a804
   check('one address written two ways is one row', (() => { const m = dayTotals([{ miner: A, proofs: 1, points: 20 }], [{ miner: a, proofs: 1, points: 100 }]); return m.size === 1 && m.get(a).proofs === 2 && m.get(a).points === 120; })());
   check('an address with board work only is there too', dayTotals([], board).get(a).proofs === 91 && dayTotals([], board).get(a).pool.proofs === 0);
   check('nothing read is an empty day, and rows without an address are passed over', dayTotals().size === 0 && dayTotals(null, undefined).size === 0 && dayTotals([null, {}], [{ proofs: 3 }]).size === 0);
+  check('the two kinds of work are named separately beside their points', dayWorkText(d.get(a)) === '78 pool proofs · 91 GPU jobs · 4,140 points');
+  check('the leaderboard form is compact', dayWorkText(d.get(a), { compact: true }) === '78 pool · 91 GPU · 4,140 pts');
+  check('one kind reads naturally, including singular work', dayWorkText(dayTotals([{ miner: A, proofs: 1, points: 20 }]).get(a)) === '1 pool proof · 20 points' && dayWorkText(dayTotals([], [{ miner: A, proofs: 1, points: 1000 }]).get(a)) === '1 GPU job · 1,000 points');
+  check('a pool-only fallback works before the split tally is read', dayWorkText({ proofs: 3, points: 60 }) === '3 proofs · 60 points');
+  check('points can be left off a pace estimate', dayWorkText({ proofs: 5, pool: { proofs: 4 }, board: { proofs: 1 } }, { points: false }) === '4 pool proofs · 1 GPU job');
 }
 
 // --- how long a proof takes: a range from the quicker quarter to the slow tenth, since GPUs and laptops both prove

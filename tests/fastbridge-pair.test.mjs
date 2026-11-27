@@ -5,7 +5,7 @@
 //   node tests/fastbridge-pair.test.mjs        (Node 22)
 
 import assert from 'node:assert/strict';
-import { makePairClient, SATS_ASSET, ETH_ASSET, rateOf, describeFwd, describeRev } from '../dapp/fastbridge-pair.js';
+import { makePairClient, SATS_ASSET, ETH_ASSET, rateOf, describeFwd, describeRev, busyLine } from '../dapp/fastbridge-pair.js';
 import { saveCopy, loadCopy, signed } from '../dapp/fast/pair-keep.js';
 import { makeLocalStore } from '../dapp/fastbridge-client.js';
 import { secp, hmac, sha256 as sha256h } from '../dapp/vendor/tacit-deps.min.js';
@@ -837,6 +837,14 @@ test('two swap ids give unrelated secrets (t, the lock blinding, the claim outpu
   const seed = new Uint8Array(32).fill(7);
   const a = X.deriveSwapSecrets({ seed, swapId: new Uint8Array(36).fill(1) }), b = X.deriveSwapSecrets({ seed, swapId: new Uint8Array(36).fill(2) });
   assert.ok(a.t !== b.t && a.rOut !== b.rOut && a.rLock !== b.rLock && a.t !== a.rOut && a.t !== a.rLock);
+});
+
+test('a busy Bitcoin is said on a card that waits for a confirmation, and is not said when the fee for the next block is low', () => {
+  assert.equal(busyLine(null), ''); assert.equal(busyLine({ fee: 2 }), ''); assert.equal(busyLine({ fee: null }), '');
+  assert.match(busyLine({ fee: 7.6 }), /Bitcoin is busy: the next block takes about 8 sat\/vB or more/);
+  const rec = { id: 'a'.repeat(72), role: 'bl', phase: 'broadcast', phaseAt: 0, amount: '26000', provider: 'p', created: 0 };
+  assert.match(describeFwd(rec, () => 100, { height: 1, at: 90, fee: 9 }).detail, /Bitcoin is busy/);
+  assert.doesNotMatch(describeFwd(rec, () => 100, { height: 1, at: 90, fee: 2 }).detail, /busy/);
 });
 
 let passed = 0;

@@ -7,7 +7,7 @@
 //                              readBought, balanceAt, recycler, feeAtMin, now, log, alert })
 //   await a.tick()      a.skew()      a.info() -> the fields /info adds
 
-import { emptyStats, addSwap, addCost, sampleCapacity, forwardEntry, reverseEntry, statsView, satsToEth, ethToSats } from './stats.mjs';
+import { emptyStats, addSwap, addVolume, addCost, sampleCapacity, forwardEntry, reverseEntry, statsView, satsToEth, ethToSats } from './stats.mjs';
 import { skewBps } from './skew.mjs';
 import { noteReport, planMerge } from './notes.mjs';
 import { planBuyback, attributeBuys } from './buyback.mjs';
@@ -74,6 +74,15 @@ export function makeAutomation({ cfg, kv, rate, fwd, rev = null, fwdQuote, revQu
       log({ level: 'info', msg: 'stats: a swap is counted', id: rec.id, dir: 'rev', end: e.end, feeEth: String(e.feeEth), costSats: String(e.costSats), owed: owe });
       if (e.end === 'lost') alert({ level: 'alert', msg: 'stats: an ETH -> BTC swap ended with its Bitcoin lock taken and no claim recorded', id: rec.id, sats: String(e.lossSats) });
     }
+    // the Bitcoin moved and the time taken by the swaps counted above that finished (each once; those from before the accounting are not in it)
+    let vol = 0;
+    for (const [list, tag, ends] of [[await fwd.list(), 'f:', ['done']], [rev ? await rev.list() : [], 'r:', ['done']]]) {
+      for (const rec of list) {
+        const c = st.counted[tag + rec.id];
+        if (c && c !== 'before' && ends.includes(rec.phase) && addVolume(st, { id: tag + rec.id, sats: rec.amount, secs: Number(rec.updated) - Number(rec.created) })) vol++;
+      }
+    }
+    if (vol) await keep();
     return n;
   }
 

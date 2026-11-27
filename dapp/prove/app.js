@@ -7,7 +7,7 @@ import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpd
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS, dayShare, termsFrom } from '/prove/tabmine.js?cb=ab8f8e8f';
 import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView, pressTurnsOn } from '/prove/review.js?cb=23bfbd4a';
-import { short, cells, opsText, tac, rewardWei, payPoints, payRuleText, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, proofSpan, dayTotals, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=e4dfccf1';
+import { short, cells, opsText, tac, rewardWei, payPoints, payRuleText, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, proofSpan, dayWorkText, dayTotals, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=a14bed01';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
 const SAVED_ADDR = 'tacit-prove-address';                          // shared with the keeper page's card
@@ -372,15 +372,15 @@ function paintNet() {
   paintBoard();
 }
 
-// Today's provers: their proofs, the TAC those earn at today's rate so far and how fast they usually prove (from the newest proofs), and
-// under them how the day's TAC is shared.
+// Today's contributors: pool proofs and GPU-board jobs are kept apart, beside their points and estimated TAC at today's rate so far. Under
+// them, how the day's TAC is shared and when its final rate is known.
 function paintBoard() {
   // ranked by what the day pays them, pool proofs and board work together; before today's tallies are read, the pool's own count
   const day = today();
   const top = day.size ? [...day.values()].sort((a, b) => b.points - a.points || b.proofs - a.proofs) : pool?.top || [], pts = new Map([...day].map(([k, m]) => [k, m.points]));
   const per = pointRate(), daily = points?.terms?.dailyWei, said = per && /^[1-9]\d*$/.test(String(daily ?? ''));
   $('#board-rate').hidden = !said;
-  if (said) $('#board-rate').textContent = `${Number(tac(daily, 0)).toLocaleString('en-US')} TAC a day, shared by points: ${tac(per, 4)} TAC a point so far`;
+  if (said) $('#board-rate').textContent = `Up to ${Number(tac(daily, 0)).toLocaleString('en-US')} TAC a day · ${tac(per, 4)} TAC a point so far · paid after the UTC day ends`;
   // how a proof's points follow the time it took (the pool's terms.pay), so a faster proof earning more is no surprise
   const rule = payRuleText(pool?.terms?.pay, pool?.terms?.pointsPerProof);
   $('#board-rule').textContent = rule; $('#board-rule').hidden = !rule;
@@ -388,7 +388,8 @@ function paintBoard() {
   if (!top.length) { if (!$('#board .empty')) $('#board').innerHTML = '<li class="empty">Nobody yet. Be first.</li>'; return; }
   const row = (m, i) => {
     const r = rewardWei(pts.get(String(m.miner).toLowerCase()), per), s = median(feed.filter((p) => p.miner === m.miner).map((p) => p.secs));
-    return `<li${m.miner === me() ? ' class="me"' : ''} style="--w:${Math.max(3, Math.round((by(m) / lead) * 100))}%"><span class="rk num">${i + 1}.</span>${who(m.miner)}<small>${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}</small><b>${r ? `${tac(r)} TAC` : ''}</b><small class="spd">${s ? `${esc(took(s))} each` : '–'}</small></li>`;
+    const work = day.size ? dayWorkText(m, { compact: true }) : `${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}`;
+    return `<li${m.miner === me() ? ' class="me"' : ''} style="--w:${Math.max(3, Math.round((by(m) / lead) * 100))}%"><span class="rk num">${i + 1}.</span>${who(m.miner)}<small class="work">${work}</small><b>${r ? `≈ ${tac(r)} TAC` : ''}</b><small class="spd">${s ? `${esc(took(s))} each` : '–'}</small></li>`;
   };
   const mine = me() ? top.findIndex((m) => String(m.miner).toLowerCase() === me()) : -1;
   $('#board').innerHTML = top.slice(0, 8).map(row).join('') + (mine >= 8 ? `<li class="gap" aria-hidden="true"></li>${row(top[mine], mine)}` : '');
@@ -464,10 +465,10 @@ function paint() {
   paintPot();
   const mineRow = me() ? today().get(me()) || null : null;
   const earned = mineRow ? rewardWei(mineRow.points, pointRate()) : null;
-  $('#today').textContent = mineRow ? `${mineRow.proofs} ${mineRow.proofs === 1 ? 'proof' : 'proofs'}${earned ? ` · ${tac(earned)} TAC` : ''}` : (l.today || '—');
+  $('#today').textContent = mineRow ? `${dayWorkText(mineRow)}${earned ? ` · ≈ ${tac(earned)} TAC` : ''}` : (l.today || '—');
   $('#today-row').hidden = !mineRow && !l.today;
   $('#payout-row').hidden = !mineRow;
-  if (mineRow) $('#payout').textContent = `after the day ends, in ${untilDayEnds()}`;
+  if (mineRow) $('#payout').textContent = `estimate settles after the UTC day ends · in ${untilDayEnds()}`;
   // At this address's rate so far today (from two hours into the day: there are only as many proofs as people press for), never past what
   // this computer's own pace or a count a day allows.
   const mySecs = median(feed.filter((p) => String(p.miner).toLowerCase() === me()).map((p) => p.secs));
@@ -480,9 +481,9 @@ function paint() {
   const poolEarned = poolPart?.points ? rewardWei(poolPart.points, pointRate()) : null;
   const per = poolEarned && poolPart.proofs ? poolEarned / BigInt(poolPart.proofs) : rewardWei(pool?.terms?.pointsPerProof, pointRate());
   const boardPace = boardPart?.points && into >= 1 / 12 ? rewardWei(Math.round(boardPart.points / into), pointRate()) : null;
-  const paceWei = (perDay && per ? per * BigInt(perDay) : 0n) + (boardPace || 0n), paceProofs = perDay + (boardPace ? Math.round(boardPart.proofs / into) : 0);
+  const paceWei = (perDay && per ? per * BigInt(perDay) : 0n) + (boardPace || 0n), paceBoard = boardPace ? Math.round(boardPart.proofs / into) : 0;
   $('#pace-row').hidden = !paceWei;
-  if (paceWei) $('#pace').textContent = `about ${tac(paceWei)} TAC a day (${paceProofs} proofs)`;
+  if (paceWei) $('#pace').textContent = `about ${tac(paceWei)} TAC a day (${dayWorkText({ proofs: perDay + paceBoard, pool: { proofs: perDay }, board: { proofs: paceBoard } }, { points: false })})`;
   const credited = points?.account?.creditedWei;
   $('#paid-row').hidden = !/^\d+$/.test(String(credited ?? ''));
   const paid = $('#paid-row').hidden ? paidShown : `${esc(tac(credited))} TAC · <a href="/rewards/">Rewards</a>`;

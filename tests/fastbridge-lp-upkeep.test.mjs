@@ -460,6 +460,29 @@ test('auto-shield keeps one deposit in flight and waits the gap before the next'
   assert.equal((await slow.s.step()).did, 'wait', 'the least gap between deposits');
 });
 
+test('auto-shield from a fresh address: the deposit is sent from that address through the same counter, a restart settles it, and one address cannot shield while another\'s deposit is pending', async () => {
+  const store = memStore(), froms = [];
+  const m = mkShield({ bal: () => E('0.3') }, undefined, store, { sendFrom: async ({ amountWei, index, priv }) => { froms.push({ amountWei, index, priv }); return { txHash: '0x' + 'bb'.repeat(32) }; } });
+  const fresh = { address: '0xfresh1', priv: new Uint8Array(32).fill(2), reserveWei: E('0.002'), minWei: E('0.01') };
+  const r = await m.s.shieldFrom(fresh);
+  assert.equal(r.did, 'shielded');
+  assert.equal(froms.length, 1); assert.equal(froms[0].amountWei, E('0.298'), 'the balance less the gas it keeps'); assert.equal(froms[0].index, 7);
+  assert.equal(m.c.sent.length, 0, 'the address\'s own account sent nothing'); assert.equal(m.c.settled, 1);
+  assert.equal(store.get().nextIndex, 8, 'the one counter moved on');
+  assert.equal((await m.s.shieldFrom({ ...fresh, reserveWei: E('0.3') })).did, 'low', 'nothing under the least');
+  // a deposit from one address is pending: another address waits, the same one carries it on
+  const store2 = memStore();
+  const a = mkShield({ bal: () => E('0.3'), receipt: null }, undefined, store2, { sendFrom: async () => ({ txHash: '0x' + 'cc'.repeat(32) }) });
+  assert.equal((await a.s.shieldFrom(fresh)).did, 'pending');
+  assert.equal((await a.s.shieldFrom({ ...fresh, address: '0xfresh2' })).did, 'busy');
+  assert.equal(store2.get().pending.src, '0xfresh1');
+  const b = mkShield({ bal: () => E('0.3') }, undefined, store2, { sendFrom: async () => { throw new Error('not again'); } });
+  assert.equal((await b.s.step()).did, 'shielded', 'after a restart the address\'s own step settles it, nothing sent again');
+  assert.equal(b.c.settled, 1);
+  const off = mkShield({ bal: () => E('0.3') }, {}, undefined, { sendFrom: async () => ({ txHash: '0x' + 'dd'.repeat(32) }) });
+  assert.equal((await off.s.shieldFrom(fresh)).did, 'off');
+});
+
 test('auto-shield: a restart settles the pending deposit and does not send it again', async () => {
   const store = memStore();
   const a = mkShield({ bal: () => E('1'), receipt: null }, undefined, store);

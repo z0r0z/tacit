@@ -7,7 +7,7 @@ const S = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const { rebalanceConfig, planRebalance, venueQuote, bestQuote, costBps, makeRebalancer } = await import(`${S}/fastbridge-lp/lib/rebalance.mjs`);
 
 const ETH = (n) => BigInt(Math.round(n * 1e8)) * 10n ** 10n;
-const cfg = (env = {}) => rebalanceConfig({ FB_LP_REBALANCE: 'on', ...env });
+const cfg = (env = {}) => rebalanceConfig({ FB_LP_REBALANCE: 'on', FB_LP_REBALANCE_CONFIRM_LOOKS: '1', ...env });
 const MARKET = 36;                                              // ETH per BTC
 const BTC_DEST = 'bc1qvufjyer5us77xfkvzu9zjm8gf2ws2m389xtm8e', ETH_DEST = '0x3af0145ffd8bf91e2072ab1a23ecba7dcb0a6c7b';
 const VAULT = '0x' + 'ab'.repeat(20);
@@ -74,6 +74,21 @@ test('a venue quote is taken only when two nodes agree on the vault, trading is 
   await bad([[nodes[0], book()], [nodes[1], book()]], quoteOf({ recommended_min_amount_in: '9000000' }), /least/);
 });
 
+test('with Ethereum vouching for the vault (its router has paid out of it lately), one node is enough; a router that is not the pinned one, or a vault with no history, is refused', async () => {
+  const MAYA_ROUTER = '0xe3985E6b61b814F7Cdb188766562ba71b446B46d';
+  const args = { venue: 'mayachain', from: 'ETH', to: 'BTC', amount: '5000000', destination: BTC_DEST, slipBps: 100, now: NOW };
+  const nodes = ['https://a.example', 'https://b.example'];
+  const one = (over, quote = quoteOf()) => venueFetch({ books: new Map([[nodes[0], book({ ETH: { router: MAYA_ROUTER, ...over } })], [nodes[1], null]]), quote });
+  const seenArgs = [];
+  const ok = await venueQuote({ ...args, nodes, fetchImpl: one({}), vaultHistory: async (x) => { seenArgs.push(x); return 12; } });
+  assert.equal(ok.vault, VAULT); assert.equal(seenArgs[0].router, MAYA_ROUTER, 'the router asked about is the pinned one, not the node\'s');
+  await assert.rejects(() => venueQuote({ ...args, nodes, fetchImpl: one({ router: '0x' + '22'.repeat(20) }), vaultHistory: async () => 12 }), /not the one this provider knows/);
+  await assert.rejects(() => venueQuote({ ...args, nodes, fetchImpl: one({}), vaultHistory: async () => 1 }), /no recent outbound payments/);
+  await assert.rejects(() => venueQuote({ ...args, nodes, fetchImpl: one({}) }), /only 1 node/, 'with nothing to vouch for the vault, two nodes must agree as before');
+  const two = new Map([[nodes[0], book({ ETH: { router: MAYA_ROUTER } })], [nodes[1], book({ ETH: { router: MAYA_ROUTER, address: '0x' + 'cd'.repeat(20) } })]]);
+  await assert.rejects(() => venueQuote({ ...args, nodes, fetchImpl: venueFetch({ books: two, quote: quoteOf() }), vaultHistory: async () => 12 }), /disagree/, 'two nodes that differ are still refused');
+});
+
 test('the best venue is the cheaper one; one that is halted or disagrees is left out and the other is used', async () => {
   const c = cfg({ FB_LP_REBALANCE_NODES_THORCHAIN: 'https://t1.example,https://t2.example', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://m1.example,https://m2.example' });
   const amountWei = ETH(0.3), out = { thorchain: '830000', mayachain: '845000' };
@@ -115,6 +130,13 @@ function world({ mode = 'on', publicWei = ETH(0.1), inv = { ethWei: ETH(8), sats
   w.r = build(); w.build = build;
   return w;
 }
+
+test('a look that cannot read the market says so in info, and sends nothing', async () => {
+  const w = world({ publicWei: ETH(1) });
+  const r = makeRebalancer({ cfg: cfg({ FB_LP_REBALANCE: 'on' }), rate: async () => ({ num: 1n, den: 2n }), inventory: async () => ({ ethWei: ETH(8), sats: 5e6 }), ethBalance: async () => ETH(1), ethNonce: async () => 1, ethReceipt: async () => null, sendEth: async () => { throw new Error('no'); }, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02), load: async () => null, save: async () => {}, now: () => w.clock });
+  assert.equal((await r.step()).did, 'unread');
+  assert.match(r.info().last.plan, /no market price/);
+});
 
 test('off sends nothing, a dry run says what it would do and sends nothing', async () => {
   const off = world({ mode: 'off' });
@@ -171,4 +193,188 @@ test('a quote over the cost limit is not taken; a swap busy with others, or a re
   const w2 = world({ publicWei: ETH(1) });
   w2.store = { v: 1, moved: '0', day: Math.floor(w2.clock / 86400), pending: { id: 'x', dir: 'eth2btc', stage: 'sending', amountWei: String(ETH(0.3)), targetPublic: String(ETH(0.32)), at: w2.clock, nonce: 5 }, done: 0 };
   assert.equal((await w2.build().step()).did, 'cleared', 'the nonce has not moved: it did not go');
+});
+
+// the Bitcoin leg: sats sold for ETH, the ETH landing at the provider's own pool account
+const BTC_VAULT = 'bc1q' + 'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
+function btcWorld({ mode = 'on', history = 9, kept = null, broadcastFails = null, confs = 0 } = {}) {
+  const w = { built: 0, broadcast: [], alerts: [], store: kept, clock: 2_000_000_000, confs };
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const c = cfg({ FB_LP_REBALANCE: mode, FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: BTC_VAULT, memo: `=:e:${q.get('destination')}`, expected_amount_out: '29800000', expiry: w.clock + 600 }) });
+  const build = () => makeRebalancer({
+    cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(1), sats: 4e7 }), fetchImpl, now: () => w.clock,
+    vaultHistory: async ({ chain }) => (chain === 'BTC' ? history : 0),
+    btcBuild: async ({ to, sats, memo }) => { w.built++; w.last = { to, sats, memo }; return { txid: 'ab'.repeat(32), hex: '02000000deadbeef', fee: 400 }; },
+    btcBroadcast: async (h) => { if (broadcastFails) throw new Error(broadcastFails); w.broadcast.push(h); },
+    btcStatus: async () => ({ confirmations: w.confs }),
+    ethBalance: async () => ETH(0.1), ethNonce: async () => 1, ethReceipt: async () => null, sendEth: async () => { throw new Error('no eth send in this direction'); },
+    address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02), quiet: async () => true,
+    load: async () => w.store, save: async (r) => { w.store = JSON.parse(JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? String(v) : v))); },
+    log: () => {}, alert: (a) => w.alerts.push(a),
+  });
+  w.r = build(); w.build = build;
+  return w;
+}
+
+test('BTC-heavy: the sats are built, kept, sent to the vault with a memo naming the provider\'s own account, counted once, and closed when confirmed', async () => {
+  const w = btcWorld();
+  const a = await w.r.step();
+  assert.equal(a.did, 'sent');
+  assert.equal(w.built, 1); assert.equal(w.broadcast.length, 1);
+  assert.equal(w.last.to, BTC_VAULT); assert.equal(w.last.memo, `=:e:${ETH_DEST}`);
+  assert.ok(w.last.sats > 0n && BigInt(w.store.moved) > 0n, 'counted against the day');
+  assert.equal(w.store.pending.stage, 'sent');
+  assert.equal((await w.r.step()).did, 'pending', 'not confirmed yet');
+  assert.equal(w.broadcast.length, 1, 'never sent twice');
+  w.confs = 1;
+  assert.equal((await w.r.step()).did, 'swapped');
+  assert.equal(w.store.pending, null);
+  assert.equal(w.r.holding(), false, 'the ETH shield is not held for this direction');
+});
+
+test('the Bitcoin leg: a dry run builds nothing; a vault with no history is refused; a restart in the middle sends the same bytes again, not a new payment', async () => {
+  const dry = btcWorld({ mode: 'dry' });
+  assert.equal((await dry.r.step()).did, 'dry'); assert.equal(dry.built, 0); assert.equal(dry.broadcast.length, 0);
+  const none = btcWorld({ history: 0 });
+  assert.equal((await none.r.step()).did, 'no quote'); assert.equal(none.built, 0);
+  const w = btcWorld({ broadcastFails: 'explorer down' });
+  assert.equal((await w.r.step()).did, 'failed');
+  assert.equal(w.store.pending.stage, 'sending', 'kept before it was sent');
+  const again = btcWorld({ kept: w.store });
+  const r = again.build();
+  assert.equal((await r.step()).did, 'sent');
+  assert.equal(again.built, 0, 'not built a second time');
+  assert.deepEqual(again.broadcast, ['02000000deadbeef'], 'the same transaction');
+});
+
+test('a swap is made only when two looks in a row call for it: one odd reading of the balance is not acted on', async () => {
+  const w = btcWorld();
+  const c2 = rebalanceConfig({ FB_LP_REBALANCE: 'on', FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  assert.equal(c2.confirmLooks, 2);
+  let sats = 4e7, built = 0;
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: BTC_VAULT, memo: `=:e:${q.get('destination')}`, expected_amount_out: '29800000', expiry: w.clock + 600 }) });
+  const r = makeRebalancer({ cfg: c2, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(1), sats }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9,
+    btcBuild: async () => { built++; return { txid: 'cd'.repeat(32), hex: '02aa', fee: 300 }; }, btcBroadcast: async () => {}, btcStatus: async () => ({ confirmations: 0 }),
+    ethBalance: async () => ETH(0.1), ethNonce: async () => 1, ethReceipt: async () => null, sendEth: async () => { throw new Error('no'); }, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02),
+    load: async () => null, save: async () => {}, log: () => {}, alert: () => {} });
+  assert.equal((await r.step()).did, 'confirming'); assert.equal(built, 0);
+  w.clock += 1000; sats = 2.8e6;                                  // the next look reads the sides in band again
+  assert.equal((await r.step()).did, 'in band');
+  w.clock += 1000; sats = 4e7;
+  assert.equal((await r.step()).did, 'confirming', 'the count starts again');
+  w.clock += 1000;
+  assert.equal((await r.step()).did, 'sent'); assert.equal(built, 1);
+});
+
+test('a dry run in band still shows what a least-size swap would cost in each direction, with the vault checks, and sends nothing', async () => {
+  const w = btcWorld({ mode: 'dry' });
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, router: '0xe3985E6b61b814F7Cdb188766562ba71b446B46d', halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const c = cfg({ FB_LP_REBALANCE: 'dry', FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  const isEth = (q) => q.get('from_asset') === 'ETH.ETH';
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: isEth(q) ? VAULT : BTC_VAULT, memo: isEth(q) ? `=:b:${q.get('destination')}` : `=:e:${q.get('destination')}`, expected_amount_out: isEth(q) ? '420000' : '4180000', expiry: w.clock + 600 }) });
+  const sent = [];
+  const r = makeRebalancer({ cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(1), sats: 2.8e6 }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9, btcBuild: async () => { sent.push('b'); return {}; }, btcBroadcast: async () => { sent.push('c'); }, btcStatus: async () => ({}),
+    ethBalance: async () => ETH(0.1), ethNonce: async () => 1, ethReceipt: async () => null, sendEth: async () => { sent.push('e'); }, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02), load: async () => null, save: async () => {}, log: () => {}, alert: (a) => w.alerts.push(a) });
+  assert.equal((await r.step()).did, 'in band');
+  const probe = w.alerts.find((a) => /least size/.test(a.msg));
+  assert.ok(probe && probe.eth2btc.vault === VAULT && probe.btc2eth.vault === BTC_VAULT, 'both directions quoted, each with its own vault');
+  assert.ok(Number.isFinite(probe.eth2btc.costBps) && Number.isFinite(probe.btc2eth.costBps));
+  assert.deepEqual(sent, [], 'nothing was sent');
+});
+
+test('nothing is swapped while a swap is open, in either direction, and it goes ahead once none is', async () => {
+  const w = btcWorld();
+  let quiet = false, built = 0;
+  const c = cfg({ FB_LP_REBALANCE: 'on', FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: BTC_VAULT, memo: `=:e:${q.get('destination')}`, expected_amount_out: '29800000', expiry: w.clock + 600 }) });
+  const r = makeRebalancer({ cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(1), sats: 4e7 }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9, quiet: async () => quiet,
+    btcBuild: async () => { built++; return { txid: 'ee'.repeat(32), hex: '02bb', fee: 300 }; }, btcBroadcast: async () => {}, btcStatus: async () => ({ confirmations: 0 }),
+    ethBalance: async () => ETH(0.1), ethNonce: async () => 1, ethReceipt: async () => null, sendEth: async () => { throw new Error('no'); }, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02), load: async () => null, save: async () => {}, log: () => {}, alert: () => {} });
+  for (let i = 0; i < 3; i++) { assert.equal((await r.step()).did, 'quiet'); w.clock += 1000; }
+  assert.equal(built, 0);
+  quiet = true;
+  assert.equal((await r.step()).did, 'sent'); assert.equal(built, 1);
+});
+
+test('with fresh addresses on, the ETH is unshielded to an address for this swap only and sent from it, the next swap uses the next one, and the shield is not held', async () => {
+  const bal = { }, sent = [], unshielded = [], nonces = {};
+  const fa = (i) => `0xf${String(i).padStart(39, '0')}`;
+  const w = { clock: 2_000_000_000, store: null, alerts: [] };
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, router: '0xe3985E6b61b814F7Cdb188766562ba71b446B46d', halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const c = cfg({ FB_LP_REBALANCE_FRESH: 'on', FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  assert.equal(c.fresh, true);
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: VAULT, memo: `=:b:${q.get('destination')}`, expected_amount_out: '828000', expiry: w.clock + 600 }) });
+  const r = makeRebalancer({ cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(8), sats: Math.round(2 / MARKET * 1e8) }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9,
+    unshield: async ({ units, to }) => { unshielded.push({ units, to }); bal[to] = (bal[to] || 0n) + BigInt(units) * 10n ** 10n; },
+    ethBalance: async (a) => bal[a || ETH_DEST] ?? (a ? 0n : ETH(0.1)), ethNonce: async (a) => nonces[a] ?? 0, ethReceipt: async () => ({ status: '0x1' }),
+    sendEth: async ({ to, value, memo, fi }) => { sent.push({ to, value, memo, fi }); nonces[fa(fi)] = (nonces[fa(fi)] || 0) + 1; return '0x' + 'f1'.repeat(32); },
+    freshAddress: fa, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02), load: async () => w.store, save: async (x) => { w.store = JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? String(v) : v))); }, log: () => {}, alert: (a) => w.alerts.push(a) });
+  assert.equal((await r.step()).did, 'unshielding');
+  assert.equal(unshielded[0].to, fa(0), 'unshielded to the first fresh address, not the pool account');
+  assert.equal(r.holding(), false, 'the pool account\'s ETH is not held: the shield has nothing to leave alone');
+  assert.equal((await r.step()).did, 'sent');
+  assert.equal(sent[0].fi, 0); assert.equal(sent[0].to, VAULT);
+  const want = ETH(0.3) + c.freshGasWei;
+  assert.ok(bal[fa(0)] >= want && bal[fa(0)] < want + ETH(0.0006), 'the address got the swap and its gas, and not more than the relay\'s fee over');
+  assert.equal((await r.step()).did, 'swapped');
+  assert.equal(w.store.fresh.next, 1);
+  w.clock += 5000;
+  assert.equal((await r.step()).did, 'unshielding');
+  assert.equal(unshielded[1].to, fa(1), 'the next swap, the next address');
+});
+
+test('BTC sold with fresh addresses on: the memo names a fresh address, the ETH is waited for there and shielded from it, and the next swap uses the next address', async () => {
+  const fa = (i) => `0xf${String(i).padStart(39, '0')}`;
+  const w = { clock: 2_000_000_000, store: null, confs: 0, bal: {}, shielded: [], memos: [], built: 0 };
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const c = cfg({ FB_LP_REBALANCE_FRESH: 'on', FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: BTC_VAULT, memo: `=:e:${q.get('destination')}`, expected_amount_out: '29800000', expiry: w.clock + 600 }) });
+  const r = makeRebalancer({ cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(1), sats: 4e7 }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9,
+    btcBuild: async ({ memo }) => { w.built++; w.memos.push(memo); return { txid: String(w.built).repeat(64).slice(0, 64), hex: '02cc', fee: 300 }; }, btcBroadcast: async () => {}, btcStatus: async () => ({ confirmations: w.confs }),
+    ethBalance: async (a) => w.bal[a] ?? 0n, ethNonce: async () => 0, ethReceipt: async () => null, sendEth: async () => { throw new Error('no'); },
+    freshAddress: fa, shieldFresh: async ({ fi, address }) => { w.shielded.push({ fi, address }); return { did: 'shielded' }; },
+    address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02), load: async () => w.store, save: async (x) => { w.store = JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? String(v) : v))); }, log: () => {}, alert: () => {} });
+  assert.equal((await r.step()).did, 'sent');
+  assert.equal(w.memos[0], `=:e:${fa(0)}`, 'the ETH comes to a fresh address, not the pool account');
+  assert.equal(w.store.fresh.next, 1, 'counted at once, so the next swap does not reuse it');
+  assert.equal((await r.step()).did, 'pending');
+  w.confs = 1;
+  assert.equal((await r.step()).did, 'arriving');
+  assert.equal((await r.step()).did, 'waiting for the ETH'); assert.equal(w.shielded.length, 0);
+  w.bal[fa(0)] = ETH(0.297);
+  assert.equal((await r.step()).did, 'arrived');
+  assert.equal((await r.step()).did, 'swapped'); assert.deepEqual(w.shielded, [{ fi: 0, address: fa(0) }]);
+  assert.equal(w.store.pending, null);
+  w.clock += 5000; w.confs = 0;
+  assert.equal((await r.step()).did, 'sent'); assert.equal(w.memos[1], `=:e:${fa(1)}`, 'the next swap, the next address');
+});
+
+test('a Bitcoin send that waits is replaced by the same inputs at a higher fee, within the cap; whichever of the two confirms closes the swap', async () => {
+  const w = { clock: 2_000_000_000, store: null, builds: [], broadcast: [], confirmed: new Set(), market: 1 };
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const c = cfg({ FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example', FB_LP_REBALANCE_BUMP_SECS: '600', FB_LP_REBALANCE_MAX_BUMPS: '2', FB_LP_REBALANCE_MAX_FEE_RATE: '20' });
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: BTC_VAULT, memo: `=:e:${q.get('destination')}`, expected_amount_out: '29800000', expiry: w.clock + 600 }) });
+  let n = 0;
+  const r = makeRebalancer({ cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(1), sats: 4e7 }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9,
+    btcBuild: async ({ feeRate, inputs }) => { n++; w.builds.push({ feeRate: feeRate ?? 1, inputs }); return { txid: String(n).repeat(64).slice(0, 64), hex: `02${n}`, fee: 200 * (feeRate ?? 1), rate: feeRate ?? 1, inputs: inputs || [{ txid: 'aa'.repeat(32), vout: 0, value: 900000 }] }; },
+    btcBroadcast: async (h) => { w.broadcast.push(h); }, btcStatus: async (id) => ({ confirmations: w.confirmed.has(id) ? 1 : 0 }), btcFeeRate: async () => w.market, btcInputsOf: async () => [{ txid: 'aa'.repeat(32), vout: 0, value: 900000 }],
+    ethBalance: async () => ETH(0.1), ethNonce: async () => 0, ethReceipt: async () => null, sendEth: async () => { throw new Error('no'); }, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02),
+    load: async () => w.store, save: async (x) => { w.store = JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? String(v) : v))); }, log: () => {}, alert: () => {} });
+  assert.equal((await r.step()).did, 'sent');
+  const first = w.store.pending.txid;
+  w.clock += 300; w.market = 8;
+  assert.equal((await r.step()).did, 'pending'); assert.equal(w.builds.length, 1, 'not before the wait is long enough');
+  w.clock += 400;
+  assert.equal((await r.step()).did, 'pending');
+  assert.equal(w.builds.length, 2); assert.equal(w.builds[1].feeRate, 11, 'a quarter over the market, and one more');
+  assert.deepEqual(w.builds[1].inputs, [{ txid: 'aa'.repeat(32), vout: 0, value: 900000 }], 'the same coins, so the two cannot both be paid');
+  assert.deepEqual(w.broadcast, ['021', '022']); assert.deepEqual(w.store.pending.replaced, [first]); assert.equal(w.store.pending.bumps, 1);
+  w.clock += 700; w.market = 80;
+  await r.step(); assert.equal(w.builds[2].feeRate, 20, 'never above the cap'); w.clock += 700;
+  await r.step(); assert.equal(w.builds.length, 3, 'two bumps at most');
+  w.confirmed.add(first);                                                  // the first one is the one that was mined after all
+  assert.equal((await r.step()).did, 'swapped'); assert.equal(w.store.pending, null);
 });

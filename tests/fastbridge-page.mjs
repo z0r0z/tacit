@@ -137,9 +137,9 @@ try {
   {
     const { page, bad, shot } = await visit(`/fast/?lp=${encodeURIComponent(lp.base)}&claimPub=${claimPub}`);
     await page.waitForFunction(() => /fee/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
-    // its own heading, under a header of sections the Chains section's head (#sec-head) over it with the Fast bridge tab marked
+    // its own heading, under a header of sections the Chains section's head (#sec-head) over it with the Fast TAC tab marked
     const own = await page.evaluate(() => document.querySelector('.hero h1')?.textContent.trim() || ''), sec = await page.evaluate(() => document.querySelector('#sec-head') ? `${document.querySelector('#sec-head h1')?.textContent}|${document.querySelector('#sec-head .sh-t a[aria-current="page"]')?.textContent}` : '');
-    ok((await page.title()) === 'tacit fast' && /^Bridge in minutes/.test(own) && (!sec || sec === 'Chains|Fast bridge'), `the page is "tacit fast", headed "Bridge in minutes"${sec ? ' (under Chains, its Fast bridge tab marked)' : ''}`);
+    ok((await page.title()) === 'tacit fast' && /^Bridge in minutes/.test(own) && (!sec || sec === 'Chains|Fast TAC'), `the page is "tacit fast", headed "Bridge in minutes"${sec ? ' (under Chains, its Fast TAC tab marked)' : ''}`);
     ok(await page.$eval('#fx-alt a', (a) => a.getAttribute('href') === '/#card=bridge'), 'the regular bridge is linked from the card');
     ok(await page.$eval('#provide', (e) => !e.hidden) && (await text(page, '#pv-go')) === 'Open wallet', 'anyone who comes by finds the provider panel, with a way to open the wallet');
     ok(/0\.30% \+ 0\.000002 TAC fee/.test(await text(page, '#fx-lp')), `the provider's fee is shown (${await text(page, '#fx-lp')})`);

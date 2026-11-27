@@ -143,6 +143,14 @@ export function slowBlockLine(tip, nowSecs, safe) {
   if (!tip || !(Number(tip.at) > 0) || nowSecs - Number(tip.at) < SLOW_BLOCK_SECS) return '';
   return `No Bitcoin block for ${Math.floor((nowSecs - Number(tip.at)) / 60)} min. Blocks come every 10 min on average; gaps of an hour happen. ${safe}`;
 }
+// Bitcoin busy: a backlog (after a long gap between blocks, say) makes a payment at a low fee wait several blocks, whatever its own rate. Said while the next block asks
+// `BUSY_FEE` sat/vB or more (`tip.fee`, as the explorers give it): words only. The page raises the fee of its own payments by itself, within a small limit.
+export const BUSY_FEE = 5;
+export function busyLine(tip) {
+  const f = tip && Number(tip.fee);
+  if (!(f >= BUSY_FEE)) return '';
+  return `Bitcoin is busy: the next block takes about ${Math.round(f)} sat/vB or more, and a payment below that waits for a few blocks. This page raises the fee of its own payments by itself, within a small limit.`;
+}
 const SAFE_FWD = 'Your swap is safe: if it does not finish, your BTC returns to your address.';
 const SAFE_REV = 'Your swap is safe: nothing of yours moves until the provider’s BTC is confirmed.';
 const SAFE_TAKE = 'The BTC is yours: it only has to confirm, with hours to spare.';
@@ -156,7 +164,7 @@ export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000), tip 
   // (a lock found again from the key says nothing of the provider sending ETH until an offer was seen: fastbridge-bl.js 'offered')
   if (rec.claimFromKey && rec.phase === 'offered' && !rec.offerSeen) return { ...checking('b2e', rec, rec.providerName || null), title: 'Checking your swap…', detail: 'Found again from your key. The provider has not shown an offer for it yet. If none comes, your BTC returns to your Bitcoin address.', checking: false };
   const [at, title, detail0, eta] = FWD_SAYS[rec.phase] || [0, rec.phase, '', null];
-  const detail = rec.phase === 'broadcast' ? join(detail0, slowBlockLine(tip, now(), SAFE_FWD)) : detail0;
+  const detail = rec.phase === 'broadcast' ? join(detail0, busyLine(tip), slowBlockLine(tip, now(), SAFE_FWD)) : detail0;
   const state = FWD_DONE.has(rec.phase) ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' ? 'stopped' : 'working';
   const lockAt = rec.lockAt || rec.confirmedAt || null;
   // a claim the relay could not prove (it proves a claim only with a private input) is sent again while there is time, and the page says so
@@ -194,7 +202,7 @@ export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip 
   if (rec.phase === 'accepted' && rec.offer) {
     const need = confsForSats(rec.offer.btc.value), confs = Number(rec.lockConfs) || 0;
     title = 'Provider sent BTC';
-    detail = join(`Waiting for ${waitWords(need)}${confs > 0 ? ` (${confs} so far)` : ''}. A block takes about 10 min, sometimes more. Your ETH goes in after that${rec.pre ? ' and is made ready meanwhile' : ''}.`, slowBlockLine(tip, now(), SAFE_REV));
+    detail = join(`Waiting for ${waitWords(need)}${confs > 0 ? ` (${confs} so far)` : ''}. A block takes about 10 min, sometimes more. Your ETH goes in after that${rec.pre ? ' and is made ready meanwhile' : ''}.`, busyLine(tip), slowBlockLine(tip, now(), SAFE_REV));
   } else if (rec.phase === 'locking') detail = lockingWords(rec, detail);
   else if (rec.phase === 'taking') detail = join(detail, slowBlockLine(tip, now(), SAFE_TAKE));
   // (a swap found again from the key whose provider has not yet taken its pool offer is said as being told, not as waiting for a claim: tellRecovered)
@@ -778,7 +786,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   async function readTip() {
     if (now() - tipAt < 30 || !btc.tip || !btc.blockTime) return;
     tipAt = now();
-    tipRead ||= (async () => { try { const h = await btc.tip(); tipSeen = { height: h, at: await btc.blockTime(h) }; } catch { /* read again in 30 s */ } })().finally(() => { tipRead = null; });
+    tipRead ||= (async () => { try { const h = await btc.tip(); tipSeen = { height: h, at: await btc.blockTime(h), fee: btc.feeRate ? await Promise.resolve().then(() => btc.feeRate(0)).catch(() => null) : null }; } catch { /* read again in 30 s */ } })().finally(() => { tipRead = null; });
     await tipRead;
   }
   const WAITS = new Set(['broadcast', 'accepted', 'taking']);
