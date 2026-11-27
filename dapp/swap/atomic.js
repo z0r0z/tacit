@@ -501,6 +501,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const ts = (m.providers || []).map((p) => p[L.dir]).filter(Boolean), now0 = ts.reduce((a, s) => { const n = s.available != null && s.available < s.max ? s.available : s.max; return n >= s.min && n > a ? n : a; }, 0n);
     const out = [];
     if (m.rate) out.push(['Market', (L.dir === 'b2e' ? rateText(m.rate) : `1 ETH = ${tidy((1 / m.rate).toFixed(6))} BTC`) + (m.rateAt ? ` (price from ${Math.max(1, Math.round((Date.now() / 1000 - m.rateAt) / 60))} min ago)` : ''), '']);
+    if (!m.rate) out.push(['Market', 'price not read just now', '']);
     if (!ts.length) out.push(['Providers', m.unreached ? 'not reached just now: check your connection' : 'none online right now', 'warn']);
     else {
       // the limits the ads name (what a provider holds now is the next row)

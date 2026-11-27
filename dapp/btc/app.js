@@ -2,7 +2,7 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt, fmtMost } from '/swap/atomic.js?cb=9b0d0905';
+import { makeAtomicLane, fmt, fmtMost } from '/swap/atomic.js?cb=0ed5d7fa';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
@@ -105,6 +105,7 @@ function paintProviders(m) {
   // the line at the top: each part kept whole (the line breaks between them), and what can be swapped now to two figures, rounded down
   const bits = [];
   if (m.rate) bits.push(`<b class="num">1 BTC = ${esc(m.rate.toLocaleString('en-US', { maximumFractionDigits: m.rate >= 100 ? 1 : 3 }))} ETH</b>${m.rateAt ? ` <span class="mute">(price from ${Math.max(1, Math.round((Date.now() / 1000 - m.rateAt) / 60))} min ago)</span>` : ''}`);
+  if (!m.rate) bits.push('price not read just now');
   bits.push(ps.length ? `${ps.length} provider${ps.length === 1 ? '' : 's'} online` : m.unreached ? 'providers not reached just now' : 'no provider online');
   const upB = bNow > 0n ? `${twoFigures(bNow)} BTC` : null, upE = te && te.now > 0n ? `${twoFigures(te.now)} ETH` : null;
   if (upB || upE) bits.push(`up to ${[upB, upE].filter(Boolean).map(esc).join(' or ')} now`);

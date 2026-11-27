@@ -2923,7 +2923,7 @@ async function openAtomic() {
   try {
     // the same lane as /btc/, with the same two helpers: ETH added from the Ethereum wallet in one press, and "Receive as" (the ETH kept private or sent on).
     // The page's own panels (the Bitcoin send, the ETH send) are on /btc/, so a finished swap's next step opens them there.
-    atomicP ||= Promise.all([import('/swap/atomic.js?cb=9b0d0905'), import('/btc/add-eth.js?cb=d423798a'), import('/btc/payout.js?cb=3b028d52')]).then(([mod, ae, po]) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir ,
+    atomicP ||= Promise.all([import('/swap/atomic.js?cb=0ed5d7fa'), import('/btc/add-eth.js?cb=d423798a'), import('/btc/payout.js?cb=3b028d52')]).then(([mod, ae, po]) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir ,
       shield: ae.makeAddEth({ getUx }), payout: po.makePayout({ getUx }),
       onNext: ({ act }) => { if (act === 'send') location.href = '/btc/?dir=e2b#mybtc'; else if (act === 'withdraw') location.href = '/btc/#myeth'; } })));
     await atomicP;
