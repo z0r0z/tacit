@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src https://api.tacit.finance 'self' https: http://127.0.0.1:* http://localhost:* wss://relay.walletconnect.org; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com">
 <meta name="color-scheme" content="light dark">
-<title>tacit governance</title>
-<meta name="description" content="TAC holders signal on proposals: vote and open them with TAC on Ethereum or Bitcoin.">
+<title>tacit gov</title>
+<meta name="description" content="Signal proposals for TAC holders, voted with TAC on Bitcoin and Ethereum.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
 <link rel="canonical" href="https://tacit.finance/govern/">
 <meta property="og:url" content="https://tacit.finance/govern/">
-<meta property="og:title" content="tacit governance">
-<meta property="og:description" content="TAC holders signal on proposals: vote and open them with TAC on Ethereum or Bitcoin.">
+<meta property="og:title" content="tacit gov">
+<meta property="og:description" content="Signal proposals for TAC holders, voted with TAC on Bitcoin and Ethereum.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /govern/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/govern/app.js?cb=0c348385">
+<link rel="modulepreload" href="/govern/app.js?cb=598aef45">
 <link rel="modulepreload" href="/trade/connect.js?cb=514272b7">
 <link rel="modulepreload" href="/walletconnect.js?cb=4740866f">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -203,6 +203,56 @@ select.fld { appearance: none; -webkit-appearance: none; padding-right: 44px; cu
 .unit { position: relative; display: block; }
 .unit .fld { padding-right: 52px; }
 .unit i { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); font-style: normal; font-size: 12px; color: var(--mute); pointer-events: none; }
+/* status, chains */
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 11px; letter-spacing: .04em; border: 1px solid var(--hair-2); color: var(--mute); }
+.pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pill.live { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.pill.wait { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.pill.done { color: var(--ink); }
+.lane { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 10.5px; letter-spacing: .03em; }
+.lane.b { color: var(--orange); background: color-mix(in srgb, var(--orange) 14%, transparent); }
+.lane.e { color: var(--ink); background: var(--hair); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+.dot.b { background: var(--orange); } .dot.e { background: var(--ink); }
+/* the list */
+.prop { gap: 8px; padding: 16px 18px; }
+.prop b { font-size: 14.5px; line-height: 1.35; }
+.prop-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11.5px; }
+.prop-meta { display: flex; justify-content: space-between; gap: 6px 14px; flex-wrap: wrap; font-size: 12px; }
+.lead { color: var(--ink); }
+.mini { display: block; height: 4px; border-radius: 2px; background: var(--hair); overflow: hidden; }
+.mini i { display: block; height: 100%; background: var(--ink); }
+.blank { padding: 34px 16px; text-align: center; border: 1px dashed var(--hair-2); border-radius: 12px; color: var(--mute); font-size: 13px; }
+.blank p { margin: 0 0 8px; }
+.skel { height: 104px; border-radius: 12px; background: linear-gradient(90deg, var(--hair) 0%, color-mix(in srgb, var(--hair) 40%, transparent) 50%, var(--hair) 100%); background-size: 200% 100%; animation: sk 1.4s linear infinite; }
+.skel.tall { height: 260px; }
+@keyframes sk { to { background-position: -200% 0; } }
+/* a proposal */
+.gate > .prop-top { justify-content: flex-start; margin: 0 0 10px; }
+.meta { border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); padding: 6px 0; margin: 4px 0 0; }
+.meta .kv b a { color: var(--ink); }
+.sec { margin-top: 22px; }
+.res-legend { display: flex; align-items: center; gap: 6px 16px; flex-wrap: wrap; margin-bottom: 12px; font-size: 11.5px; color: var(--mute); }
+.res-legend .eyebrow { margin-right: auto !important; }
+.res { margin-bottom: 14px; }
+.res-h { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; margin-bottom: 6px; }
+.res-h b { font-weight: 400; color: var(--mute); font-size: 12.5px; }
+.res.win .res-h span { font-weight: 500; }
+.track { display: flex; height: 10px; border-radius: 5px; }
+.track i.b { background: var(--orange); }
+.track i.e { background: var(--ink); }
+.opts { display: grid; gap: 8px; margin-bottom: 4px; }
+.opt { padding: 12px 14px; border: 1px solid var(--hair-2); border-radius: 12px; background: var(--field); transition: border-color .15s; }
+.opt input { accent-color: var(--ink); margin: 0; }
+.opt.on { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink) inset; }
+.ballot { background: color-mix(in srgb, var(--field) 50%, transparent); }
+.ballot .btn { margin-top: 14px; }
+.feed { display: grid; border-top: 1px solid var(--hair); }
+.vrow { display: grid; grid-template-columns: 76px minmax(0, 1fr) minmax(0, auto) auto; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--hair); font-size: 12px; }
+.vrow .vwho { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vrow .vch { color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vrow b { font-weight: 400; text-align: right; }
+.vrow .vt { grid-column: 2 / -1; font-size: 11px; margin-top: -6px; }
 .form .btn { margin-top: 4px; }
 .form .status:empty { display: none; }
 </style>
@@ -475,7 +525,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 <div class="shell">
 
   <header class="top">
-    <a class="brand" href="/" aria-label="tacit governance"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>governance</i></a>
+    <a class="brand" href="/" aria-label="tacit gov"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>gov</i></a>
     <div class="top-r">
       <!-- chrome:nav:begin -->
       <nav class="sn" aria-label="Sections">
@@ -512,8 +562,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
   <main>
     <section class="hero" aria-labelledby="h">
-      <h1 id="h"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span>tacit <em>governance</em></span></h1>
-      <p class="sub">Signal proposals for TAC holders: ask a question, and holders on Ethereum and Bitcoin vote with their TAC.</p>
+      <h1 id="h"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span>tacit <em>gov</em></span></h1>
+      <p class="sub">Signal proposals for TAC holders. Ask a question; holders on Bitcoin and Ethereum answer with their TAC.</p>
       <noscript><p class="note">This page needs JavaScript.</p></noscript>
     </section>
 
@@ -546,6 +596,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/govern/app.js?cb=0c348385"></script>
+<script type="module" src="/govern/app.js?cb=598aef45"></script>
 </body>
 </html>
