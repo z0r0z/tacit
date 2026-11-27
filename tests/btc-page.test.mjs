@@ -268,7 +268,7 @@ const RPCV = { balance: 10n ** 18n, receipt: { status: '0x1' } };
 const hex = (v) => '0x' + BigInt(v).toString(16);
 // the house provider's /info, with what its upkeep adds (fastbridge-lp/lib/automation.mjs): null answers 404, as a provider without it does
 const HOUSE = 'https://tacit-fastbridge-pair-lp.onrender.com';
-let houseInfo = { v: 1, stats: { since: 1795608000, swaps: 4, reinvestedEth: '1234567', netEth: '1234567', capacity: { eth: '320000000', sats: '1500000', valueEth: '365000000' } }, target: { eth: '1000000000', btcAsEth: '1000000000', reached: false }, skewBps: 0, buyback: { on: false, startedAt: null, routedEth: '0', tacBought: '0', sends: 0 } };
+let houseInfo = { v: 1, stats: { since: 1795608000, swaps: 4, swapsForward: 3, swapsReverse: 1, refunds: 0, reinvestedEth: '1234567', netEth: '1234567', capacity: { eth: '320000000', sats: '1500000', valueEth: '365000000' } }, target: { eth: '1000000000', btcAsEth: '1000000000', reached: false }, skewBps: 0, buyback: { on: false, startedAt: null, routedEth: '0', tacBought: '0', sends: 0 } };
 const BAD = [], FLAKY = { on: false, asked: [] };
 // the network: the board and the public nodes are answered here, everything else off the machine is refused
 async function wire(page, { ads, boardDelayMs = 0 }) {
@@ -332,6 +332,7 @@ console.log('the page: the marks, the line, the lane');
   await page.waitForFunction(() => !document.querySelector('#pv-fund').hidden, null, { timeout: 10000 });
   const fundLine = await text(page, '#pv-fund');
   ok(/back into its capacity until it holds 10 ETH and as much in BTC\. Past that, they go to TAC buybacks\./.test(fundLine) && /3\.6 of 20 ETH/.test(fundLine) && /0\.01234567 ETH of fees reinvested since Nov 2\d/.test(fundLine) && !/TAC bought/.test(fundLine), `the house provider's fees: the rule, capacity against its target, what was reinvested; no buyback figure before buybacks start (${fundLine})`);
+  ok(/Tacit’s provider has finished 4 swaps \(3 BTC to ETH, 1 ETH to BTC\) since Nov 2\d, 0 refunded\./.test(fundLine), `the track record: swaps finished, by direction, refunds (${fundLine.slice(0, 140)})`);
   const barW = await page.$eval('#pv-fund .bar i', (e) => e.getBoundingClientRect().width / e.parentElement.getBoundingClientRect().width);
   ok(Math.abs(barW - 0.1825) < 0.01, `the bar is at 18% of the target (${barW.toFixed(3)})`);
 
