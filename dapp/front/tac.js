@@ -67,7 +67,9 @@ render.tac = () => {
   tacPoolPlace();
 };
 load.tac = () => {
-  if (chainOn() && !S.key) (window.requestIdleCallback || setTimeout)(() => chainMods().catch(() => {}));
+  // The live panel can paint without the action modules, but every primary TAC
+  // action needs them. Fetch them once the first paint has had an idle turn.
+  if (chainOn()) (window.requestIdleCallback || setTimeout)(() => chainMods().catch(() => {}));
   loadTacPrice(false, !!$('#tac-px')?.open).then(paintTacPrice).catch(() => {});
   if (S.key) loadHeld().then(() => rerender('tac'), () => {});
   tpgWhyRead();
@@ -1832,6 +1834,20 @@ document.addEventListener('click', (e) => {
   ctx.TCARD.way = d.tcdWay; tcardQuote().then(() => { if (e.detail === 0) $(`#tcd-q [data-tcd-way="${d.tcdWay}"]`)?.focus(); }, () => {});
   if (busyNow) toast(d.tcdWay === 'own' ? 'Switched to gas in ETH. Press Shield again.' : 'Switched to gas in TAC. Press Shield again.');
 });
+// A clear move toward Stake, Pay or Withdraw is enough to start the shared
+// chain client. Shield also warms its existing proof-log read. These calls are
+// idempotent and never construct, sign or submit a transaction.
+const tcardIntentWarm = (e) => {
+  if (!ctx.TACP.on) return;
+  const b = e.target.closest?.('[data-tpg], [data-tcd-tab], [data-tcd-step], [data-tcd-fill]');
+  if (!b) return;
+  const action = b.dataset.tpg || b.dataset.tcdTab || b.dataset.tcdStep || (b.dataset.tcdFill != null ? 'shield' : '');
+  if (!['priv', 'shield', 'pay', 'send', 'withdraw'].includes(action)) return;
+  chainMods().catch(() => {});
+  chainWarm();
+  if (action === 'priv' || action === 'shield') chainWrapWarm();
+};
+for (const type of ['pointerover', 'pointerdown', 'focusin']) document.addEventListener(type, tcardIntentWarm, { passive: true });
 const tpgStick = () => { for (const el of [$('#tpg-side'), $('#tpg-act')]) if (el && !el.hidden) el.style.setProperty('--stick', `${Math.min(20, innerHeight - el.offsetHeight - 20)}px`); };
 if (typeof ResizeObserver === 'function') { const ro = new ResizeObserver(tpgStick); for (const el of [$('#tpg-side'), $('#tpg-act')]) if (el) ro.observe(el); }
 window.addEventListener('resize', tpgStick);

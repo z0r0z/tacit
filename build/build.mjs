@@ -243,7 +243,7 @@ const tradeAssetPage = (slug) => readFileSync(join(DAPP_DIR, TRADE_PAGE), 'utf8'
 // TAC's page, /tac/, is the front page at TAC's address: the same document and module, which draws TAC's page when its address is /tac/, so a Tacit
 // key opened on either is open on both (it is held in memory only) and moving between them loads nothing again. tac/index.html is made from
 // index.html here, differing only in the head's name for it, the swap card's preloads (the card is drawn there only when a tile opens it), a preload
-// of front/tac.js (which the module imports to draw TAC's page, under the URL it imports) and a mark on <html> that lays it out as TAC's page before
+// of front/tac.js and chain/live.js (both are imported immediately on TAC's page, under the URLs the module imports) and a mark on <html> that lays it out as TAC's page before
 // the module runs; it is made last, once index.html's tokens and pin are final, and `--verify-only` fails when it is not what this makes.
 const TAC_PAGE_DESC = 'The Tacit chain: stake TAC privately, earn from every payment and pay privately. A zk-rollup settled on Ethereum, connected to Bitcoin by proof.';
 const TAC_PAGE_SWAPS = [
@@ -255,6 +255,7 @@ const TAC_PAGE_SWAPS = [
 ];
 const TAC_PAGE_UNPRELOAD = /<link rel="modulepreload" href="\/(?:swap\/(?:card|route|aggregate|solvers|link|route-name)|trade\/(?:wallet|util|fmt)|points-note)\.js\?cb=[0-9a-f]{8}">\n/g;
 const TAC_PAGE_PRELOAD = /\bimport\('(\/front\/tac\.js\?cb=[0-9a-f]{8})'\)/g;
+const TAC_PAGE_LIVE_PRELOAD = /\bimport\('(\/chain\/live\.js\?cb=[0-9a-f]{8})'\)/g;
 function tacPageOf(text) {
   for (const [a, b] of TAC_PAGE_SWAPS) {
     if (text.split(a).length !== 2) throw new Error(`index.html has no single ${a}: update TAC_PAGE_SWAPS in build/build.mjs`);
@@ -264,10 +265,13 @@ function tacPageOf(text) {
   if (card !== 10) throw new Error(`index.html preloads ${card} of the swap card's 10 modules: update TAC_PAGE_UNPRELOAD in build/build.mjs`);
   text = text.replace(TAC_PAGE_UNPRELOAD, '');
   const tacJs = [...text.matchAll(TAC_PAGE_PRELOAD)].map((m) => m[1]);
+  const liveJs = [...text.matchAll(TAC_PAGE_LIVE_PRELOAD)].map((m) => m[1]);
   if (tacJs.length !== (existsSync(TAC_JS) ? 1 : 0)) throw new Error(`index.html imports /front/tac.js ${tacJs.length} times: update tacPageOf in build/build.mjs`);
+  if (liveJs.length !== 1) throw new Error(`index.html imports /chain/live.js ${liveJs.length} times: update tacPageOf in build/build.mjs`);
   if (tacJs.length) {
-    if (text.split('<!-- preload:end -->').length !== 2 || text.includes(`href="${tacJs[0]}"`)) throw new Error('index.html should have one <!-- preload:end --> and no preload of /front/tac.js: update tacPageOf in build/build.mjs');
-    text = text.replace('<!-- preload:end -->', `<link rel="modulepreload" href="${tacJs[0]}">\n<!-- preload:end -->`);
+    const preloads = [...tacJs, ...liveJs];
+    if (text.split('<!-- preload:end -->').length !== 2 || preloads.some((u) => text.includes(`href="${u}"`))) throw new Error('index.html should have one <!-- preload:end --> and no TAC-page-only preload: update tacPageOf in build/build.mjs');
+    text = text.replace('<!-- preload:end -->', `${preloads.map((u) => `<link rel="modulepreload" href="${u}">`).join('\n')}\n<!-- preload:end -->`);
   }
   const desc = /(<meta (?:name="description"|property="og:description") content=")[^"]*(">)/g;
   if ((text.match(desc) || []).length !== 2) throw new Error('index.html should have one description and one og:description: update tacPageOf in build/build.mjs');
