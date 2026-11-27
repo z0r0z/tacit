@@ -21,7 +21,7 @@ export function emptyStats(now) {
   return {
     v: 1, since: now, swaps: 0, swapsForward: 0, swapsReverse: 0, refunds: 0,
     feesEarnedSats: '0', feesEarnedEth: '0', networkCostSats: '0', networkCostEth: '0', lossesSats: '0', lossesEth: '0',
-    netEth: '0', reinvestedEth: '0', owedEth: '0', counted: {}, vol: { ids: {}, sats: '0', durs: [] }, capacity: { first: null, last: null, daily: [] },
+    netEth: '0', reinvestedEth: '0', owedEth: '0', counted: {}, vol: { ids: {}, ethIds: {}, sats: '0', eth: '0', durs: [] }, capacity: { first: null, last: null, daily: [] },
     buyback: { routedEth: '0', feesEth: '0', sends: 0, tacBought: '0', lastTx: null, lastAt: null, day: null, dayRouted: '0', pending: null, attributed: '0', fromBlock: null, log: [] },
   };
 }
@@ -59,13 +59,16 @@ export function addSwap(st, e, { rate, owe = false }) {
 
 // What a finished swap moved (the Bitcoin side of it, in sats) and how long it took (seconds from when it was accepted to its last step): kept for the swaps counted above only, each once.
 // The last fifty durations are kept for a typical time (the median).
-export function addVolume(st, { id, sats, secs }) {
-  st.vol ||= { ids: {}, sats: '0', durs: [] };
-  if (st.vol.ids[id]) return false;
-  st.vol.ids[id] = 1;
-  st.vol.sats = s(big(st.vol.sats) + big(sats));
-  if (Number.isFinite(secs) && secs > 0 && secs < 2 * DAY) { st.vol.durs.push(Math.round(secs)); if (st.vol.durs.length > 50) st.vol.durs.splice(0, st.vol.durs.length - 50); }
-  return true;
+export function addVolume(st, { id, sats, eth, secs }) {
+  st.vol ||= { ids: {}, ethIds: {}, sats: '0', eth: '0', durs: [] };
+  st.vol.ids ||= {}; st.vol.ethIds ||= {};
+  let added = false;
+  if (!st.vol.ids[id]) {
+    st.vol.ids[id] = 1; st.vol.sats = s(big(st.vol.sats) + big(sats)); added = true;
+    if (Number.isFinite(secs) && secs > 0 && secs < 2 * DAY) { st.vol.durs ||= []; st.vol.durs.push(Math.round(secs)); if (st.vol.durs.length > 50) st.vol.durs.splice(0, st.vol.durs.length - 50); }
+  }
+  if (eth != null && !st.vol.ethIds[id]) { st.vol.ethIds[id] = 1; st.vol.eth = s(big(st.vol.eth) + big(eth)); added = true; }
+  return added;
 }
 const medianOf = (xs) => { if (xs.length < 3) return null; const a = xs.slice().sort((x, y) => x - y), m = a.length >> 1; return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2); };
 
@@ -122,7 +125,7 @@ export function statsView(st, extra = {}) {
     feesEarnedSats: st.feesEarnedSats, feesEarnedEth: st.feesEarnedEth, networkCostSats: st.networkCostSats, networkCostEth: st.networkCostEth,
     lossesSats: st.lossesSats, lossesEth: st.lossesEth, netEth: st.netEth, reinvestedEth: st.reinvestedEth, owedEth: st.owedEth,
     capacity: last ? { eth: last.eth, sats: last.sats, valueEth: last.valueEth, at: last.at, firstValueEth: first.valueEth, firstAt: first.at } : null,
-    volumeSats: st.vol ? st.vol.sats : '0', medianSecs: st.vol ? medianOf(st.vol.durs) : null,
+    volumeSats: st.vol ? st.vol.sats : '0', volumeEth: st.vol ? (st.vol.eth || '0') : '0', medianSecs: st.vol ? medianOf(st.vol.durs || []) : null,
     units: { eth: '1e-8 ETH', sats: 'sats' },
     ...extra,
   };

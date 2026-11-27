@@ -79,7 +79,10 @@ export function makeAutomation({ cfg, kv, rate, fwd, rev = null, fwdQuote, revQu
     for (const [list, tag, ends] of [[await fwd.list(), 'f:', ['done']], [rev ? await rev.list() : [], 'r:', ['done']]]) {
       for (const rec of list) {
         const c = st.counted[tag + rec.id];
-        if (c && c !== 'before' && ends.includes(rec.phase) && addVolume(st, { id: tag + rec.id, sats: rec.amount, secs: Number(rec.updated) - Number(rec.created) })) vol++;
+        if (c && c !== 'before' && ends.includes(rec.phase)) {
+          const quote = rec.quoteId ? await (tag === 'f:' ? fwdQuote(rec.quoteId) : revQuote(rec.quoteId)).catch(() => null) : null;
+          if (addVolume(st, { id: tag + rec.id, sats: rec.amount, eth: quote && quote.evmAmount, secs: Number(rec.updated) - Number(rec.created) })) vol++;
+        }
       }
     }
     if (vol) await keep();

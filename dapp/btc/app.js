@@ -131,14 +131,16 @@ function paintFund(i) {
       // (the Bitcoin side of every swap finished, and the middle of the last fifty times: only when the provider says them)
       let volBtc = '';
       try { const v = BigInt(s.volumeSats ?? 0); if (v > 0n) { const n = Number(v) / 1e8; volBtc = (n < 0.01 ? n.toFixed(5) : n.toFixed(4)).replace(/0+$/, '').replace(/\.$/, ''); } } catch { volBtc = ''; }
+      let volEth = '';
+      try { const v = BigInt(s.volumeEth ?? 0); if (v > 0n) { const n = Number(v) / 1e8; volEth = (n < 0.01 ? n.toFixed(5) : n.toFixed(4)).replace(/0+$/, '').replace(/\.$/, ''); } } catch { volEth = ''; }
       const medMin = Number(s.medianSecs) > 0 ? Math.max(1, Math.round(Number(s.medianSecs) / 60)) : 0;
       const split = Number.isInteger(fw) && Number.isInteger(rv) && fw + rv === ended ? ` (${fw} BTC to ETH, ${rv} ETH to BTC)` : '';
       tiles = `<div class="rt"><b class="num">${done}</b><span>swap${done === 1 ? '' : 's'} finished</span></div>`
         + (split ? `<div class="rt btc"><b class="num">${fw}</b><span>BTC → ETH</span></div><div class="rt eth"><b class="num">${rv}</b><span>ETH → BTC</span></div>` : '')
-        + (Number.isInteger(refunded) ? `<div class="rt"><b class="num">${refunded}</b><span>refunded</span></div>` : '')
-        + (volBtc ? `<div class="rt"><b class="num">${esc(volBtc)}</b><span>BTC moved</span></div>` : '')
+        + (volBtc ? `<div class="rt"><b class="num">${esc(volBtc)}</b><span>BTC traversed</span></div>` : '')
+        + (volEth ? `<div class="rt"><b class="num">${esc(volEth)}</b><span>ETH traversed</span></div>` : '')
         + (medMin ? `<div class="rt"><b class="num">~${medMin}</b><span>min, typical swap</span></div>` : '');
-      rec = `<p class="rec">Tacit’s provider has finished <b class="num">${done}</b> swap${done === 1 ? '' : 's'}${esc(split)}${sinceTxt ? ` since ${esc(sinceTxt)}` : ''}${Number.isInteger(refunded) ? `, <b class="num">${refunded}</b> refunded` : ''}.</p>`;
+      rec = `<p class="rec">Tacit’s provider has finished <b class="num">${done}</b> swap${done === 1 ? '' : 's'}${esc(split)}${sinceTxt ? ` since ${esc(sinceTxt)}` : ''}.</p>`;
     }
     if (rec && !(s && t && s.capacity)) { el.innerHTML = rec; ok = true; }
     if (s && t && s.capacity) {

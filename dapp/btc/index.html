@@ -124,9 +124,9 @@ html[data-sec="chains/btc"] .hero { padding-top: clamp(8px, 2vh, 20px); }      /
 .live b { font-weight: 500; color: var(--ink); }
 .live span { white-space: nowrap; }
 /* the track record at the top: swaps finished, orange for Bitcoin sold for ETH, blue for ETH sold for Bitcoin (the numbers are darkened toward the ink so they stay readable) */
-.rec { display: flex; flex-wrap: wrap; justify-content: center; gap: 1px; margin: 16px auto 0; max-width: 46em; overflow: hidden; background: var(--hair); border: 1px solid var(--hair); border-radius: 14px; box-shadow: 0 14px 28px -26px rgba(0,0,0,.55); }
+.rec { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 16px auto 0; max-width: 46em; overflow: hidden; background: var(--hair); border: 1px solid var(--hair); border-radius: 14px; box-shadow: 0 14px 28px -26px rgba(0,0,0,.55); }
 .rec[hidden] { display: none; }
-.rt { flex: 1 1 92px; min-width: 84px; padding: 10px 8px 9px; text-align: center; background: var(--card); border: 0; border-top: 3px solid var(--hair-2); border-radius: 0; }
+.rt { min-width: 0; padding: 12px 10px 11px; text-align: center; background: var(--card); border: 0; border-top: 3px solid var(--hair-2); border-radius: 0; }
 .rt b { display: block; font: 500 22px/1 var(--mono); letter-spacing: -.02em; color: var(--ink); }
 .rt span { display: block; margin-top: 5px; font-size: 10.5px; color: var(--mute); }
 .rt.btc { border-top-color: var(--orange); background: color-mix(in srgb, var(--orange) 8%, var(--card)); }
