@@ -56,7 +56,7 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/assets/f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b/bid-intents?network=mainnet" crossorigin fetchpriority="low">
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload:begin -->
-<link rel="modulepreload" href="/trade/app.js?cb=4e120506">
+<link rel="modulepreload" href="/trade/app.js?cb=faef4c73">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
@@ -81,7 +81,7 @@
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/community-nodes.js">
 <link rel="modulepreload" href="/nodes-pin.js">
-<link rel="modulepreload" href="/trade/farm.js?cb=431619ca">
+<link rel="modulepreload" href="/trade/farm.js?cb=6111c81f">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=fb6ec72f">
 <link rel="modulepreload" href="/points-note.js?cb=40738db7">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
@@ -212,6 +212,9 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 @media (min-width: 981px) { .grid.side-info { grid-template-areas: "chart side" "depth side"; grid-template-rows: auto 1fr; } .grid.side-info .p-info { grid-area: auto; } .grid.side-info .p-depth { align-self: start; } .side .facts li { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
 
 .p-chart { grid-area: chart; } .p-depth { grid-area: depth; } .p-info { grid-area: info; }
+.p-depth { content-visibility: auto; contain-intrinsic-size: auto 720px; }
+.p-farm { content-visibility: auto; contain-intrinsic-size: auto 760px; }
+.p-info { content-visibility: auto; contain-intrinsic-size: auto 420px; }
 @media (max-width: 980px) { .grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "ticket" "chart" "farm" "depth" "info"; } .side { display: contents; } .p-ticket { grid-area: ticket; } .p-farm { grid-area: farm; } }
 .panel { background: var(--card); border: 1px solid var(--hair); border-radius: 18px; padding: 22px; min-width: 0; }
 @media (max-width: 480px) { .panel { padding: 18px 14px; } }
@@ -945,6 +948,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/trade/app.js?cb=4e120506"></script>
+<script type="module" src="/trade/app.js?cb=faef4c73"></script>
 </body>
 </html>

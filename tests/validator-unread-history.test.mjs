@@ -129,9 +129,12 @@ test('an Ethereum read that fails while the spent notes are checked is a read to
   assert.match(await btc.crossLaneBlocked(spender), /evm-spent/, 'read and spent: a note already consumed is still refused');
 });
 
-test('the provider daemon gives its log to the chain view', async () => {
+test('the provider daemon gives its log to every chain view', async () => {
   const { readFileSync } = await import('node:fs');
-  assert.match(readFileSync(new URL('../fastbridge-lp/server.mjs', import.meta.url), 'utf8'), /makeNodeBtcChain\(\{[^}]*secp, log,\s*\}\)/s);
+  const source = readFileSync(new URL('../fastbridge-lp/server.mjs', import.meta.url), 'utf8');
+  const chainViews = source.match(/makeNodeBtcChain\(\{[\s\S]*?\n\}\);/g) || [];
+  assert.ok(chainViews.length > 0, 'the provider daemon constructs a Bitcoin chain view');
+  for (const call of chainViews) assert.match(call, /\blog(?:\s*:|,)/, 'each Bitcoin chain view receives the daemon logger');
 });
 
 let passed = 0;

@@ -190,6 +190,9 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 @media (min-width: 981px) { .grid.side-info { grid-template-areas: "chart side" "depth side"; grid-template-rows: auto 1fr; } .grid.side-info .p-info { grid-area: auto; } .grid.side-info .p-depth { align-self: start; } .side .facts li { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
 
 .p-chart { grid-area: chart; } .p-depth { grid-area: depth; } .p-info { grid-area: info; }
+.p-depth { content-visibility: auto; contain-intrinsic-size: auto 720px; }
+.p-farm { content-visibility: auto; contain-intrinsic-size: auto 760px; }
+.p-info { content-visibility: auto; contain-intrinsic-size: auto 420px; }
 @media (max-width: 980px) { .grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "ticket" "chart" "farm" "depth" "info"; } .side { display: contents; } .p-ticket { grid-area: ticket; } .p-farm { grid-area: farm; } }
 .panel { background: var(--card); border: 1px solid var(--hair); border-radius: 18px; padding: 22px; min-width: 0; }
 @media (max-width: 480px) { .panel { padding: 18px 14px; } }

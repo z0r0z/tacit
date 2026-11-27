@@ -116,15 +116,24 @@ const eth2 = (v) => (BigInt(v) > 0n ? twoFigures(v) : '0');
 const tacTxt = (wei) => { const t = Number(BigInt(wei || 0) / 10n ** 14n) / 1e4; return t.toLocaleString('en-US', { maximumFractionDigits: t < 100 ? 2 : 0 }); };
 function paintFund(i) {
   const el = $('pv-fund'), s = i && i.stats, t = i && i.target, b = (i && i.buyback) || {};
-  let ok = false;
+  let ok = false, rec = '';
   try {
+    // the track record: swaps the house provider has finished, by direction, and how many ended in a refund (what the provider counts, nothing the page adds up from elsewhere)
+    const ended = s ? Number(s.swaps) : NaN, refunded = s && s.refunds != null ? Number(s.refunds) : null;
+    if (Number.isInteger(ended) && ended > 0) {
+      const done = ended - (Number.isInteger(refunded) ? refunded : 0), fw = Number(s.swapsForward), rv = Number(s.swapsReverse);
+      const since0 = new Date(Number(s.since) * 1000), sinceTxt = Number.isFinite(since0.getTime()) ? since0.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+      const split = Number.isInteger(fw) && Number.isInteger(rv) && fw + rv === ended ? ` (${fw} BTC to ETH, ${rv} ETH to BTC)` : '';
+      rec = `<p class="rec">Tacit’s provider has finished <b class="num">${done}</b> swap${done === 1 ? '' : 's'}${esc(split)}${sinceTxt ? ` since ${esc(sinceTxt)}` : ''}${Number.isInteger(refunded) ? `, <b class="num">${refunded}</b> refunded` : ''}.</p>`;
+    }
+    if (rec && !(s && t && s.capacity)) { el.innerHTML = rec; ok = true; }
     if (s && t && s.capacity) {
       const goal = BigInt(t.eth) + BigInt(t.btcAsEth), have = BigInt(s.capacity.valueEth), re = BigInt(s.reinvestedEth || 0);
       const pct = goal > 0n ? Math.min(100, Number((have * 1000n) / goal) / 10) : 0;
       const since = new Date(Number(s.since) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       const figs = [t.reached ? `<b class="num">${esc(eth2(have))}</b> ETH, at its target` : `<b class="num">${esc(eth2(have))}</b> of ${esc(eth2(goal))} ETH`, re > 0n ? `${esc(fmt(re))} ETH of fees reinvested since ${esc(since)}` : `fees counted since ${esc(since)}`];
       if (b.startedAt || BigInt(b.routedEth || 0) > 0n) figs.push(`${esc(tacTxt(b.tacBought))} TAC bought`);
-      el.innerHTML = `<p>Tacit’s provider puts its fees, after network costs, back into its capacity until it holds ${esc(eth2(t.eth))} ETH and as much in BTC. Past that, they go to TAC buybacks.</p>`
+      el.innerHTML = rec + `<p>Tacit’s provider puts its fees, after network costs, back into its capacity until it holds ${esc(eth2(t.eth))} ETH and as much in BTC. Past that, they go to TAC buybacks.</p>`
         + `<div class="bar" role="progressbar" aria-label="Capacity against that target" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}"><i></i></div>`
         + `<p class="fig">${figs.map((f) => `<span>${f}</span>`).join(' · ')}</p>`;
       el.querySelector('.bar i').style.width = `${pct}%`;
