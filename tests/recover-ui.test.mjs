@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict'; import { JSDOM } from './_jsdom.mjs';
+const dom = new JSDOM('<div id="r"></div>', { url:'https://tacit.finance/recover/' }); Object.assign(globalThis,{window:dom.window,document:dom.window.document,addEventListener:()=>{}});
+const { createRecoveryUI } = await import('../dapp/recover/ui.js');
+const storage={ length:0,key:()=>null,getItem:()=>null }; const root=document.querySelector('#r');
+createRecoveryUI({root,storage,inspect:()=>({slots:[],identities:[]}),decrypt:async()=>{},activity:async()=>({sats:0,txs:0}),signAttempt:async()=>{throw Error('not used')}});
+assert.match(root.textContent,/No saved Tacit wallet slots/); assert.match(root.textContent,/cannot be recovered/);
+const secret=new Uint8Array(32);secret[31]=1; storage.length=1;storage.key=()=> 'slot';storage.getItem=()=> 'blob';
+createRecoveryUI({root,storage,inspect:()=>({slots:[{key:'slot',network:'mainnet',binding:null,shape:'encrypted',address:'bc1qtest'}],identities:[]}),decrypt:async()=>secret,activity:async()=>({sats:12,txs:1}),signAttempt:async()=>{}});
+root.querySelector('input').value='passphrase';root.querySelector('form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await new Promise(r=>setTimeout(r));
+assert.equal(root.querySelector('.secret code').textContent,'00'.repeat(31)+'01');root.querySelectorAll('.secret button')[1].click();assert.equal(root.querySelector('.secret'),null);
+console.log('recover ui: ok');
