@@ -5,6 +5,7 @@ import { esc } from '/trade/sheet.js?cb=d857446c';
 import { API, $, fmtUnits, rpc } from '/trade/util.js?cb=9c8b4133';
 import { TAC as TAC_ERC20 } from '/trade/farm-read.js?cb=fb6ec72f';
 import { GOV_NETWORK, PROPOSE_FLOOR_TAC, CATEGORIES, voteMessage, proposeMessage } from '/govern/message.js?cb=c73bd573';
+import { invaderSvg } from '/prove/invader.js?cb=e8a5ec59';
 
 // TAC holders signal on proposals here. A holder with TAC in an Ethereum wallet votes or opens a proposal by signing a message (nothing is sent on chain);
 // the API reads the TAC held at the proposal's snapshot block. Holders with TAC on Bitcoin vote privately in the Classic app, by proving a balance tier;
@@ -72,7 +73,7 @@ const pill = (p) => {
 const when = (p) => (p.status === 'active' ? left(p.voting_ends_at) : `ended ${new Date(p.voting_ends_at * 1000).toLocaleDateString()}`);
 const totals = (p) => (p.tally?.totals || []).map(big);
 const isAddr = (v) => /^0x[0-9a-fA-F]{40}$/.test(v || '');
-const proposer = (p) => (isAddr(p.proposer_pubkey) ? addrView(p.proposer_pubkey, 5) : `Bitcoin key ${esc(String(p.proposer_pubkey || '').slice(0, 8))}…`);
+const proposer = (p) => `<span class="who-f">${face(p.proposer_pubkey, 22)}${isAddr(p.proposer_pubkey) ? addrView(p.proposer_pubkey, 5) : `Bitcoin key ${esc(String(p.proposer_pubkey || '').slice(0, 8))}…`}</span>`;
 const isBtc = (v) => v.kind === 'private';
 // per choice, the TAC from each chain, from the proposal's vote list (a Bitcoin vote counts its proven tier)
 function lanes(p) {
@@ -81,6 +82,15 @@ function lanes(p) {
   return { btc, eth };
 }
 const ago = (t) => { const s = Math.max(0, Math.floor(Date.now() / 1000) - t); return s < 90 ? 'just now' : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`; };
+// a face for every holder: the zOrgz invader their address (or Bitcoin key) picks, as the prover and praxis pages draw it
+const faces = new Map();
+function face(key, px = 28) {
+  const k = isAddr(key) ? key.toLowerCase() : /^[0-9a-f]{66}$/i.test(key || '') ? `0x${key}` : '';
+  if (!k) return '';
+  if (!faces.has(k)) { let src = ''; try { src = `data:image/svg+xml;base64,${btoa(invaderSvg(k, 128))}`; } catch { /* no face */ } faces.set(k, src); }
+  const src = faces.get(k);
+  return src ? `<img class="inv" src="${src}" width="${px}" height="${px}" alt="">` : '';
+}
 const chainTag = (btc) => `<span class="lane ${btc ? 'b' : 'e'}">${btc ? 'Bitcoin' : 'Ethereum'}</span>`;
 
 // ── views ──
@@ -94,9 +104,9 @@ function render() {
 function renderSide() {
   const side = $('#side'); if (!side) return;
   const on = !!W.account;
-  side.innerHTML = `<p class="eyebrow">Your TAC</p>
+  side.innerHTML = `${on ? `<div class="me">${face(W.account, 56)}<div><p class="eyebrow" style="margin:0 0 4px">Your TAC on Ethereum</p><b class="num">${S.bal == null ? '…' : `${esc(fmtUnits(S.bal, 18, 2))} TAC`}</b></div></div>` : '<p class="eyebrow">Your TAC</p>'}
     <div class="kv"><span>Account</span><b>${on ? addrView(W.account, 5) : 'Not connected'}</b></div>
-    <div class="kv"><span>On Ethereum</span><b class="num">${on ? (S.bal == null ? '…' : `${esc(fmtUnits(S.bal, 18, 2))} TAC`) : '—'}</b></div>
+    ${on ? '' : '<div class="kv"><span>On Ethereum</span><b class="num">—</b></div>'}
     <div class="kv"><span>On Bitcoin</span><b><a href="${CLASSIC}">In the Classic app</a></b></div>
     <div class="kv"><span>To open a proposal</span><b class="num">${PROPOSE_FLOOR_TAC} TAC</b></div>
     ${on ? '' : '<button class="btn ghost" type="button" id="side-connect">Connect wallet</button>'}
@@ -121,7 +131,7 @@ function listView() {
       const tl = p.tally || {};
       return `<a class="prop" href="#${p.id}">
         <span class="prop-top">${pill(p)}<span class="mute">${esc(when(p))}</span></span>
-        <b>${esc(p.title)}</b>
+        <span class="prop-t">${face(p.proposer_pubkey, 36)}<b>${esc(p.title)}</b></span>
         <span class="mini"><i style="width:${sum > 0n ? pctOf(t[bi], sum) : 0}%"></i></span>
         <span class="prop-meta">${lead}<span class="mute">${esc(fmtTac(tl.total_weight))} TAC · ${tl.private_voters || 0} Bitcoin · ${tl.public_voters || 0} Ethereum</span></span></a>`;
     }).join('') : `<div class="blank"><p>No ${S.filter === 'active' ? 'open ' : ''}proposals${S.filter ? '' : ' yet'}.</p><a class="linkbtn" href="#new">Open one</a></div>`;
@@ -165,7 +175,7 @@ function detailView() {
   const votes = (p.votes || []).slice(0, 50);
   const feed = votes.length ? `<div class="sec"><p class="eyebrow">Votes <span class="who">${p.votes.length}</span></p><div class="feed">${votes.map((v) => {
     const btc = isBtc(v);
-    return `<div class="vrow">${chainTag(btc)}<span class="vwho">${btc ? `key ${esc(String(v.voter || '').slice(0, 8))}…` : isAddr(v.voter) ? addrView(v.voter, 4) : '—'}</span>
+    return `<div class="vrow">${face(v.voter, 32) || '<span class="inv"></span>'}<span class="vwho">${chainTag(btc)} ${btc ? `key ${esc(String(v.voter || '').slice(0, 8))}…` : isAddr(v.voter) ? addrView(v.voter, 4) : '—'}</span>
       <span class="vch">${esc(p.choices[v.choice] ?? '')}</span><b class="num">${btc ? '≥ ' : ''}${esc(fmtTac(v.weight))}</b><span class="mute vt">${esc(ago(v.voted_at || 0))}</span></div>`;
   }).join('')}</div></div>` : '';
   return `${back}<div class="prop-top">${pill(p)}<span class="mute">${esc(when(p))}</span></div>

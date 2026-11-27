@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /govern/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/govern/app.js?cb=598aef45">
+<link rel="modulepreload" href="/govern/app.js?cb=a5a1dba0">
 <link rel="modulepreload" href="/trade/connect.js?cb=514272b7">
 <link rel="modulepreload" href="/walletconnect.js?cb=4740866f">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -39,6 +39,8 @@
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=fb6ec72f">
 <link rel="modulepreload" href="/govern/message.js?cb=c73bd573">
+<link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
+<link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -248,11 +250,20 @@ select.fld { appearance: none; -webkit-appearance: none; padding-right: 44px; cu
 .ballot { background: color-mix(in srgb, var(--field) 50%, transparent); }
 .ballot .btn { margin-top: 14px; }
 .feed { display: grid; border-top: 1px solid var(--hair); }
-.vrow { display: grid; grid-template-columns: 76px minmax(0, 1fr) minmax(0, auto) auto; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--hair); font-size: 12px; }
-.vrow .vwho { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv { display: inline-block; flex: none; border-radius: 8px; image-rendering: pixelated; background: var(--hair); }
+.who-f { display: inline-flex; align-items: center; gap: 8px; }
+.who-f .inv { border-radius: 6px; }
+.me { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; }
+.me .inv { border-radius: 12px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--orange) 60%, transparent); }
+.me b { font: 400 22px/1 var(--serif); }
+.prop-t { display: flex; align-items: center; gap: 12px; }
+.prop-t .inv { border-radius: 9px; }
+.vrow { display: grid; grid-template-columns: 32px minmax(0, 1fr) minmax(0, auto) auto; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--hair); font-size: 12px; }
+.vrow .vwho { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vrow .vch { color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vrow b { font-weight: 400; text-align: right; }
-.vrow .vt { grid-column: 2 / -1; font-size: 11px; margin-top: -6px; }
+.vrow .vt { grid-column: 2 / -1; font-size: 11px; margin-top: -8px; }
+.vrow > .inv { width: 32px; height: 32px; }
 .form .btn { margin-top: 4px; }
 .form .status:empty { display: none; }
 </style>
@@ -596,6 +607,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/govern/app.js?cb=598aef45"></script>
+<script type="module" src="/govern/app.js?cb=a5a1dba0"></script>
 </body>
 </html>

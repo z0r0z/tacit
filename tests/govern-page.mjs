@@ -204,6 +204,7 @@ let id;
   ok(/^Yes ?250 TAC · 71.4%/.test(res[0]) && /^No ?100 TAC · 28.5%/.test(res[1]), `results add both chains (${res.join(' | ')})`);
   const rows = await page.$$eval('.vrow', (r) => r.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
   ok(rows.length === 2 && rows.some((r) => /^Ethereum ?0x.*Yes ?250/.test(r)) && rows.some((r) => /^Bitcoin ?key 02ababab… ?No ?≥ 100/.test(r)), `the vote list names each chain (${rows.join(' | ')})`);
+  ok(await page.$$eval('.vrow img.inv', (i) => i.length) === 2 && await page.$('.meta img.inv') && await page.$('#side .me img.inv'), 'each voter, the proposer and the account wear their zOrgz face');
   ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
   await shot(page, 'gov-voted');
   await page.click('.eyebrow a[href="#"]');
