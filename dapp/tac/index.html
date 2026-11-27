@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ozxvt6C7E2ppmjm57Ut3CPM009B2vvBwqSwcfCWg+Es=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ThQVxfxVXPSBqSk2Xy4oyJfrkDTb4Vx8QF80wcVdJ70=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -21,7 +21,7 @@
 <link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-<script defer src="/front-route.js?cb=231f6ad8"></script>
+<script defer src="/front-route.js?cb=84bf48f7"></script>
 <title>tacit TAC</title>
 <link rel="canonical" href="https://tacit.finance/tac/">
 <meta name="description" content="The Tacit chain: stake TAC privately, earn from every payment and pay privately. A zk-rollup settled on Ethereum, connected to Bitcoin by proof.">
@@ -89,7 +89,8 @@
 <link rel="modulepreload" href="/net-pick.js?cb=9229f173">
 <link rel="modulepreload" href="/rescan-gate.js?cb=69bb32ff">
 <link rel="modulepreload" href="/pub-address.js?cb=cb1da32d">
-<link rel="modulepreload" href="/front/tac.js?cb=497296f7">
+<link rel="modulepreload" href="/front/tac.js?cb=3da7bf93">
+<link rel="modulepreload" href="/chain/live.js?cb=e54acdeb">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -678,6 +679,7 @@ a.hx-pr:hover .rt b { text-decoration: underline; text-decoration-color: var(--h
 #pts-lb { scroll-margin-top: 18px; }
 
 /* ── the sections under the hero: one idea each, a centred title, then its picture ── */
+.sx, .pg, .pi { content-visibility: auto; contain-intrinsic-size: auto 900px; }
 .sx { padding: 128px 0 0; }
 @media (max-width: 720px) { .sx { padding-top: 88px; } .sx.fm { padding-top: 28px; } }
 .sx-h { display: grid; justify-items: center; gap: 12px; margin: 0 0 48px; text-align: center; }
@@ -980,7 +982,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 .x.share svg { width: 18px; height: 18px; }
 
 /* A sheet's switch is the card's: a soft track with the choice a raised pill on it, so a sheet and the card it opens over are drawn by one hand. */
-.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; margin: 0 0 18px; padding: 3px; border-radius: 15px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; margin: 0 0 18px; padding: 3px; border-radius: 15px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 /* The Prove sheet: who proves (one choice), then only what that way needs */
 .spw { display: grid; gap: 6px; margin: 6px 0 16px; }
 .spw-o { display: flex; align-items: flex-start; gap: 10px; padding: 11px 14px; border: 1px solid var(--hair-2); border-radius: 12px; cursor: pointer; transition: border-color .15s; }
@@ -1002,6 +1004,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 .seg.sub button { min-height: 32px; border-radius: 10px; font-size: 13px; }
 .seg.sub:has(button[data-chain]) { overflow-x: auto; scrollbar-width: none; }
 .seg.sub .cmk { display: flex; justify-content: center; margin: 0 0 2px; }
+@media (max-width: 420px) { .seg button { min-width: 0; padding-inline: 5px; font-size: 12px; } }
 @media (max-width: 560px) { .seg.sub button[data-chain]:not([aria-selected="true"]) .cn { display: none; } .seg.sub button[data-chain]:not([aria-selected="true"]) .cmk { margin: 0; } }
 
 .bal { display: flex; align-items: center; gap: 14px; padding: 14px 0; margin-bottom: 16px; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
@@ -1260,7 +1263,9 @@ html[data-view="portfolio"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi, #sheet-ta
    or TAC's page cut to the one part the view is, in one column; or the More page, with nothing of the landing ── */
 html[data-sec]:not([data-page="tac"]) :is(.hero > :not(#hx), #dash, #how, #tac, .pg, .sx.pi, #hx .hx-h) { display: none !important; }
 html[data-sec="chains/bridge"] #hx .hx-more, html[data-sec="menu/"] .hero { display: none !important; }
+html[data-sec="chains/overview"] .hero { display: none !important; }
 html[data-sec]:not([data-page="tac"]) .hero { padding-top: 0; }
+html:not([data-sec="chains/overview"]) #page-chains { display: none; }
 html[data-sec][data-page="tac"] .tpg { display: block; padding-top: 0; }
 html[data-sec][data-page="tac"] .tpg > * { max-width: 460px; margin-left: auto; margin-right: auto; position: static; }
 /* every view keeps #tpg-act, where a button that opens the swap card puts it; "Manage your TAC" (#tpg-notes) is the Notes view's alone */
@@ -1281,6 +1286,33 @@ html[data-sec="defi/stake"] .tcd-tabs { grid-template-columns: 1fr 1fr; }
 html[data-sec="chains/notes"] :is(.tpg > :not(#tpg-where, #tpg-notes, #tpg-side, #tpg-act), #tpg-side > :not(#tpg-notes), #tac-bal, #tpg-where > summary, #tpg-br > summary) { display: none !important; }   /* the notes card sits in the side column (#tpg-side): the column stays, the rest of it goes */
 html[data-sec="chains/notes"][data-page="tac"] .tpg > * { max-width: 720px; }
 html[data-sec="chains/notes"] #tpg-where { border: 0; }
+/* ── Chains overview: decisions first. The tools keep their own pages; this page says which one matches the job. ── */
+.cpg { max-width: 920px; margin: 0 auto; padding: 8px 0 40px; }
+.cpg-intro { max-width: 650px; margin: 0 auto 24px; text-align: center; }
+.cpg-intro .k { margin: 0 0 7px; font: 500 11px/1.2 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
+.cpg-intro h2 { margin: 0; font: 400 clamp(30px, 5vw, 46px)/1.05 var(--serif); letter-spacing: -.02em; }
+.cpg-intro p:last-child { margin: 12px auto 0; color: var(--mute); text-wrap: balance; }
+.cpg-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.cpg-card { --tone: var(--ink); position: relative; display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 4px 14px; align-items: start; min-height: 154px; padding: 20px; color: inherit; background: linear-gradient(145deg, color-mix(in srgb, var(--tone) 8%, var(--card)), var(--card) 60%); border: 1px solid var(--hair); border-radius: 18px; box-shadow: var(--float); text-decoration: none; transition: border-color .15s, transform .2s var(--spring), box-shadow .2s; }
+.cpg-card.btc { --tone: #f7931a; } .cpg-card.eth { --tone: #627eea; } .cpg-card.tac { --tone: #b79234; }
+.cpg-ic { grid-row: 1 / span 3; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: color-mix(in srgb, var(--tone) 13%, var(--field)); border: 1px solid color-mix(in srgb, var(--tone) 20%, var(--hair)); }
+.cpg-ic .tk { width: 30px; height: 30px; }
+.cpg-ic.pair { position: relative; } .cpg-ic.pair .tk { position: absolute; width: 27px; height: 27px; } .cpg-ic.pair .tk:first-child { translate: -7px -5px; } .cpg-ic.pair .tk:last-child { translate: 7px 6px; }
+.cpg-card h3 { margin: 1px 0 0; font: 400 24px/1.1 var(--serif); letter-spacing: -.01em; }
+.cpg-card > i { font: normal 18px/1 var(--mono); color: var(--mute); transition: translate .15s, color .15s; }
+.cpg-card p { grid-column: 2 / -1; margin: 5px 0 0; font-size: 13px; line-height: 1.5; color: var(--mute); text-wrap: pretty; }
+.cpg-card small { grid-column: 2 / -1; align-self: end; margin-top: 10px; font: 500 11.5px/1.4 var(--mono); color: var(--ink); }
+@media (hover: hover) { .cpg-card:hover { border-color: color-mix(in srgb, var(--tone) 45%, var(--hair)); transform: translateY(-2px); box-shadow: 0 20px 42px -30px color-mix(in srgb, var(--tone) 42%, transparent); } .cpg-card:hover > i { color: var(--ink); translate: 3px 0; } }
+.cpg-compare { margin-top: 18px; padding: 20px; background: color-mix(in srgb, var(--ink) 3%, var(--card)); border: 1px solid var(--hair); border-radius: 18px; }
+.cpg-compare h3 { margin: 0 0 14px; font: 400 24px/1.1 var(--serif); }
+.cpg-routes { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; overflow: hidden; background: var(--hair); border: 1px solid var(--hair); border-radius: 12px; }
+.cpg-route { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; padding: 14px 16px; color: inherit; background: var(--card); text-decoration: none; }
+.cpg-route b { font-weight: 500; } .cpg-route i { grid-row: 1 / span 2; grid-column: 2; font-style: normal; color: var(--mute); } .cpg-route span { font-size: 12px; line-height: 1.45; color: var(--mute); }
+@media (hover: hover) { .cpg-route:hover b, .cpg-route:hover i { color: var(--orange); } }
+.cpg-note { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 14px 2px 0; padding-top: 14px; border-top: 1px solid var(--hair); font-size: 12.5px; color: var(--mute); }
+.cpg-note a { flex: none; color: var(--ink); font-weight: 500; }
+@media (max-width: 680px) { .cpg-grid { grid-template-columns: 1fr; } .cpg-card { min-height: 0; } .cpg-routes { grid-template-columns: 1fr; } }
+@media (max-width: 420px) { .cpg { padding-top: 0; } .cpg-card { grid-template-columns: 42px minmax(0, 1fr) auto; padding: 16px; } .cpg-ic { width: 42px; height: 42px; border-radius: 12px; } .cpg-card h3 { font-size: 22px; } .cpg-note { align-items: flex-start; flex-direction: column; gap: 8px; } }
 .ppg { padding: 28px 0 8px; }
 .ppg-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 0 0 22px; }
 .ppg-head h1 { font: 400 clamp(40px, 6vw, 56px)/1 var(--serif); letter-spacing: -.02em; margin: 0; }
@@ -1833,6 +1865,9 @@ html[data-page="tac"] #tcd-seg:empty { min-height: 32px; }
 /* the other parts drawn a moment after the page keep their places too, so nothing under them moves when they arrive */
 #tpg-mid:empty { min-height: 324px; }
 #tpg-chain:empty { min-height: 1010px; }
+#tpg-mid { content-visibility: auto; contain-intrinsic-size: auto 324px; }
+#tpg-chain { content-visibility: auto; contain-intrinsic-size: auto 1010px; }
+#tpg-earn { content-visibility: auto; contain-intrinsic-size: auto 620px; }
 #tcd-tabs:empty { min-height: 65px; }
 #tpg-p:empty { min-height: 336px; }
 @media (max-width: 639px) { #tpg-mid:empty { min-height: 398px; } .cl-mid .cl-note, .cl-pool figcaption { min-height: 36px; } #tpg-chain:empty { min-height: 1283px; } }
@@ -2353,6 +2388,11 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh.sh-l { max-width: 560px; text-align: left; } .sh.sh-l .sh-more { margin-top: 18px; }
 @media (hover: hover) { .sh-t a:hover { color: var(--ink); } }
 @media (max-width: 520px) { .sh { margin-top: 18px; } .sh-t { display: grid; grid-auto-columns: 1fr; } .sh-t a { padding: 6px 6px; font-size: 12px; } }
+/* Chains has several distinct routes. On a phone they are a legible 3 × 2 map, not six squeezed labels in one row. */
+@media (max-width: 640px) {
+  .sh[data-of="chains"] .sh-t { display: grid; grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .sh[data-of="chains"] .sh-t a { min-width: 0; padding-inline: 6px; white-space: normal; text-wrap: balance; }
+}
 .sh-more { list-style: none; margin: 22px auto 0; padding: 4px 18px; max-width: 560px; text-align: left; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
 .sh-more li + li { border-top: 1px solid var(--hair); }
 .sh-more a { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 2px 14px; padding: 14px 2px; color: var(--ink); font: 400 14px/1.3 var(--mono); text-decoration: none; }
@@ -2473,7 +2513,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=4c9196f2" defer></script>
+<script src="/chrome.js?cb=411895d5" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -2620,6 +2660,47 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <section class="ppg" id="page-portfolio" aria-labelledby="ppg-h">
     <div class="ppg-head"><div><h1 id="ppg-h" tabindex="-1">Portfolio</h1><p>Everything you hold, by asset. Where it sits is the small print.</p></div><button class="link" type="button" id="ppg-re">Refresh</button></div>
     <div id="ppg-body"></div>
+  </section>
+  <section class="cpg" id="page-chains" aria-labelledby="cpg-h">
+    <header class="cpg-intro">
+      <p class="k">Start with the outcome</p>
+      <h2 id="cpg-h">Where should your money go?</h2>
+      <p>Pick the destination you want. The next screen shows the amount, route, fee, time and recovery path before anything is sent.</p>
+    </header>
+    <div class="cpg-grid">
+      <a class="cpg-card eth" href="/#/chains/move">
+        <span class="cpg-ic"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span>
+        <h3>Use a private balance</h3><i aria-hidden="true">→</i>
+        <p>Move an asset between your public Ethereum wallet and Tacit’s private pool.</p>
+        <small>Wallet ⇄ private balance · supported assets</small>
+      </a>
+      <a class="cpg-card btc" href="/btc/">
+        <span class="cpg-ic pair"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span>
+        <h3>Swap BTC and ETH</h3><i aria-hidden="true">→</i>
+        <p>Exchange native Bitcoin and ETH directly. ETH arrives in your private Tacit balance.</p>
+        <small>BTC ⇄ private ETH · direct swap</small>
+      </a>
+      <a class="cpg-card tac" href="/#/chains/bridge">
+        <span class="cpg-ic"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span>
+        <h3>Move TAC across chains</h3><i aria-hidden="true">→</i>
+        <p>Use the trustless standard bridge for TAC between Bitcoin and Ethereum, in either direction.</p>
+        <small>Bitcoin ⇄ Ethereum · every TAC note</small>
+      </a>
+      <a class="cpg-card tac" href="/fast/">
+        <span class="cpg-ic"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span>
+        <h3>Move TAC faster</h3><i aria-hidden="true">→</i>
+        <p>Receive TAC on Ethereum in minutes through a provider. Its quote includes the fee and capacity.</p>
+        <small>Bitcoin → Ethereum · provider route</small>
+      </a>
+    </div>
+    <aside class="cpg-compare" aria-labelledby="cpg-route-h">
+      <h3 id="cpg-route-h">Standard or fast TAC bridge?</h3>
+      <div class="cpg-routes">
+        <a class="cpg-route" href="/#/chains/bridge"><b>Standard bridge</b><i aria-hidden="true">→</i><span>Trustless, works in both directions and with every supported TAC note. Takes longer.</span></a>
+        <a class="cpg-route" href="/fast/"><b>Fast route</b><i aria-hidden="true">→</i><span>Provider liquidity pays out in minutes. Bitcoin → Ethereum only, with a quoted fee and limit.</span></a>
+      </div>
+    </aside>
+    <p class="cpg-note"><span>Already have TAC notes on Bitcoin? Merge or split them, or follow notes that are still moving.</span><a href="/tac/?v=notes#bridge">Manage Bitcoin notes →</a></p>
   </section>
   <section class="hero" aria-labelledby="hero-h">
     <a class="pxb" href="/praxis/" id="pxb"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>Tacit Praxis ceremony.</b> The cryptography for smart contracts on Bitcoin: help build its key, earn up to 5 TAC.</span><i aria-hidden="true">→</i></a>
@@ -4762,7 +4843,7 @@ const render = {}, load = {};
 const tacCtx = () => ({ $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TK, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brHolds, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getDeviceMods, getUx, hexToBytes, html, hxChainEth, hxDevAny, hxLive, hxPreset, hxUsd, hxWalletBal, hxWalletBals, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, payingAccount, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, heldParts, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tokOutNow, tokenSync, tokenWallet, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your, get CH() { return CH; }, get T() { return T; }, get TACP() { return TACP; }, get TCARD() { return TCARD; }, get TCO() { return TCO; }, get TPOOL() { return TPOOL; }, get TREQ() { return TREQ; }, get brLooking() { return brLooking; } });
 // front-tac:end
 let TAC_CODE = null;
-const tacReady = lazy(() => import('/front/tac.js?cb=497296f7').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
+const tacReady = lazy(() => import('/front/tac.js?cb=3da7bf93').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
 const withTac = (f) => (TAC_CODE ? f() : tacReady().then(f, () => {}));
 for (const k of ["tac"]) render[k] = () => { if (!TAC_CODE) withTac(() => rerender(k)); };
 for (const k of ["tac"]) load[k] = () => tacReady().then(() => load[k]());
@@ -14300,7 +14381,7 @@ const VE = { p: null, E: null, M: null, VS: null, at: 0, who: null, feedAt: 0, s
 class VaultStop extends Error { constructor() { super('Cancelled in your wallet. Nothing was sent.'); } }
 const veNo = (e) => (swcNo(e)?.userStopped ? new VaultStop() : e);
 const veEsc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => escMap[c]);
-const vaultEng = () => (VE.p ||= Promise.all([import('/vault/engine.js?cb=9a968a9d'), import('/vault/deployments.js?cb=02c84743'), import('/vault/chain.js?cb=3c1d1b84'), import('/vault/feed.js?cb=bd584ab8'), import('/vault/math.js?cb=ac1ed53e')])
+const vaultEng = () => (VE.p ||= Promise.all([import('/vault/engine.js?cb=c6d26f51'), import('/vault/deployments.js?cb=02c84743'), import('/vault/chain.js?cb=3c1d1b84'), import('/vault/feed.js?cb=bd584ab8'), import('/vault/math.js?cb=ac1ed53e')])
   .then(([eng, { DEPLOYMENTS }, C, Fd, M]) => {
     const A = /^0x[0-9a-fA-F]{40}$/, hint = (h) => (h && ['tac', 'synth', 'oracle', 'feed'].every((k) => A.test(h[k] || '')) ? Object.fromEntries(['tac', 'synth', 'oracle', 'feed'].map((k) => [k, h[k].toLowerCase()])) : null);
     VE.M = M;
@@ -17104,7 +17185,10 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=6776ea8b').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=cbeeffd4').catch((e) => { SWC.p = null; throw e; }));
+// Intent on Shield or Swap is a useful head start: fetch both the card and the
+// private action engine, and warm the fee/log reads they need before submit.
+const hxActionWarm = () => { swcLoad().catch(() => {}); hxWarm(); hxWarmWrap(); };
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {
@@ -17341,7 +17425,7 @@ function paintHx() {
     if (HX.tab === 'swap' && ['shield', 'swap', 'withdraw'].includes(k) && SWC.card?.busy) return; hxKeepAmt(() => { hxSetTab(k); HX.q = null; }); paintHx(); if (focusIt) $(`[data-hxm="${k}"]`)?.focus(); };
   for (const b of $$('[data-hxm]', el)) b.onclick = () => pickTab(b.dataset.hxm);
   for (const b of $$('[data-hxm="send"]', el)) for (const ev of ['pointerenter', 'pointerdown', 'focus']) b.addEventListener(ev, hxWarm, { once: true });
-  for (const b of $$('[data-hxm="swap"], [data-hxm="shield"]', el)) for (const ev of ['pointerenter', 'pointerdown', 'focus']) b.addEventListener(ev, () => { swcLoad().catch(() => {}); }, { once: true });
+  for (const b of $$('[data-hxm="swap"], [data-hxm="shield"]', el)) for (const ev of ['pointerenter', 'pointerdown', 'focus']) b.addEventListener(ev, hxActionWarm, { once: true });
   for (const b of $$('[data-hxm="more"]', el)) for (const ev of ['pointerenter', 'pointerdown', 'focus']) b.addEventListener(ev, () => hxBwLoad(), { once: true });
   const mt = $('.hx-more', el);
   if (mt) mt.onkeydown = (e) => { const d = { ArrowRight: 1, ArrowLeft: -1 }[e.key]; if (!d) return; e.preventDefault(); const i = HX_MORE.findIndex(([x]) => x === HX.tab); pickTab(HX_MORE[(i + d + HX_MORE.length) % HX_MORE.length][0], true); };
@@ -17806,6 +17890,15 @@ document.addEventListener('click', (e) => {
   if (sc) { e.preventDefault(); document.getElementById(sc.dataset.scroll)?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); return; }
   if (e.target.closest?.('[data-signin]')) openSheet('wallet');
 });
+// Warm action links elsewhere on the landing page too. Delegation covers links
+// rendered later without adding listeners to every button.
+const hxActionIntent = (e) => {
+  const b = e.target.closest?.('[data-hx]'), spec = b?.dataset.hx || '';
+  if (spec.startsWith('shield:') || spec.startsWith('swap:')) hxActionWarm();
+};
+document.addEventListener('pointerover', hxActionIntent, { passive: true });
+document.addEventListener('pointerdown', hxActionIntent, { passive: true });
+document.addEventListener('focusin', hxActionIntent);
 {
   const stage = $('.tc-stage'), hand = $('.tc-hand'), ic = $('#tc-ic'), tabs = $$('[data-tc]'), TC = { k: 'tac', half: null, back: null, out: null };
   const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
