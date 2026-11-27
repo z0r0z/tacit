@@ -39,7 +39,7 @@ const ZERO32 = '0x' + '0'.repeat(64);
 const PREFIX = '/evm-pool/keeper';
 
 export class IntakeError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, retryAfter) { super(message); this.status = status; if (retryAfter) this.retryAfter = retryAfter; }
 }
 const bad = (m) => new IntakeError(400, m);
 // The L1 data fee of a send (0 on a chain without one). One that cannot be read refuses the request: a quote or a fee check that guessed zero
@@ -257,7 +257,7 @@ export function hintArgs(j) {
 export function makeRateLimiter({ perMin = 20, burst = 10, maxClients = 10_000, now = () => Date.now() } = {}) {
   const buckets = new Map();
   const fill = (b, t) => { b.tokens = Math.min(burst, b.tokens + ((t - b.at) * perMin) / 60_000); b.at = t; };
-  return (key) => {
+  const check = (key) => {
     const t = now();
     let b = buckets.get(key);
     if (!b) {
@@ -271,6 +271,13 @@ export function makeRateLimiter({ perMin = 20, burst = 10, maxClients = 10_000, 
     b.tokens -= 1;
     return true;
   };
+  // Whole seconds until this client has a token again, so a 429 can say how long to wait.
+  check.retryAfter = (key) => {
+    const b = buckets.get(key);
+    if (!b) return 1;
+    return Math.max(1, Math.ceil(((1 - b.tokens) * 60_000) / perMin / 1000));
+  };
+  return check;
 }
 
 export { ipKey };
@@ -306,9 +313,11 @@ export function createIntakeHandler({
   const forwarders = new Set((cfg.forwarders || []).map((a) => v4(ipKey(a))));
   const allowance = (perMin, burst) => {
     const one = makeRateLimiter({ perMin, burst }), many = makeRateLimiter({ perMin: perMin * 10, burst: burst * 10 });
-    return (key) => (forwarders.has(v4(key)) ? many(key) : one(key));
+    const check = (key) => (forwarders.has(v4(key)) ? many(key) : one(key));
+    check.retryAfter = (key) => (forwarders.has(v4(key)) ? many : one).retryAfter(key);
+    return check;
   };
-  const limited = allowance(cfg.ratePerMin, Math.max(1, Math.min(10, cfg.ratePerMin)));
+  const limited = allowance(cfg.ratePerMin, Math.max(1, Math.min(30, cfg.ratePerMin)));
   // Reads a wallet makes around every spend (head, quote, events) have their own, larger allowance.
   const readLimited = allowance(cfg.ratePerMin * 6, Math.max(1, Math.min(30, cfg.ratePerMin * 3)));
   let gateway = null;   // the private route's, made on first use
@@ -588,9 +597,10 @@ export function createIntakeHandler({
     }
     const p = url.pathname.replace(/\/$/, '');
     const sealed = () => (gateway ||= makeSealedGateway({ secret: cfg.gatewayKey, handle, prefix: PREFIX, now }));
-    const send = (code, body) => {
+    const tooFast = (l, r) => new IntakeError(429, 'rate limited: too many requests from this address, wait and ask again (a batch of spends should be paced)', l.retryAfter(clientKey(r)));
+    const send = (code, body, retryAfter) => {
       const text = JSON.stringify(body);
-      const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store', ...(code === 429 ? { 'Retry-After': '10' } : {}) };
+      const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store', ...(code === 429 ? { 'Retry-After': String(retryAfter || 10) } : {}) };
       // A history page is megabytes of repeated JSON: sent compressed to a client that takes it (a fresh browser reads dozens of them).
       if (text.length > 2048 && /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''))) {
         return gzip(text, (err, z) => {
@@ -618,12 +628,12 @@ export function createIntakeHandler({
       }
       if (p === `${PREFIX}/sealed` && req.method === 'POST') {
         if (!cfg.gatewayKey) return send(404, { error: 'no private route' });
-        if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!readLimited(clientKey(req))) throw tooFast(readLimited, req);
         return await sealed().handle(req, res, send);
       }
       if (p === `${PREFIX}/events` && req.method === 'GET') {
         if (!leafSync) return send(404, { error: 'no event feed' });
-        if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!readLimited(clientKey(req))) throw tooFast(readLimited, req);
         const from = url.searchParams.get('from') ?? '0';
         if (!/^\d{1,12}$/.test(from)) throw bad('from must be a block number');
         // ?facts=1 adds each event's public facts (recipient, amount, fee, sender, target, block time) so far, and the block
@@ -634,35 +644,35 @@ export function createIntakeHandler({
       }
       if (p === `${PREFIX}/totals` && req.method === 'GET') {
         if (!leafSync?.totals) return send(404, { error: 'no totals' });
-        if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!readLimited(clientKey(req))) throw tooFast(readLimited, req);
         const t = leafSync.totals();
         return t ? send(200, { chainId: chain.chainId, pool: chain.pool, ...t }) : send(503, { error: 'the stored history does not have every amount yet' });
       }
       if (p === `${PREFIX}/point` && req.method === 'GET') {
         if (!leafSync?.point || !cfg.pointsAddress) return send(404, { error: 'no catch-up registry' });
-        if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!readLimited(clientKey(req))) throw tooFast(readLimited, req);
         const pt = leafSync.point();
         if (!pt) return send(503, { error: 'the stored history has not been read yet' });
         const data = encodeFunctionData({ abi: POST_ABI, functionName: 'post', args: [BigInt(pt.size), BigInt(pt.block), pt.filled] });
         return send(200, { chainId: chain.chainId, pool: chain.pool, registry: getAddress(cfg.pointsAddress), ...pt, data });
       }
       if (p === `${PREFIX}/head` && req.method === 'GET') {
-        if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!readLimited(clientKey(req))) throw tooFast(readLimited, req);
         return send(200, { chainId: chain.chainId, pool: chain.pool, ...(await headNow()) });
       }
       if (p === `${PREFIX}/quote` && req.method === 'GET') {
         if (!cfg.relay) return send(404, { error: 'relaying is off' });
-        if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!readLimited(clientKey(req))) throw tooFast(readLimited, req);
         return send(200, await quote(url.searchParams.get('gas')));
       }
       if (p === `${PREFIX}/reserve` && req.method === 'POST') {
         if (!cfg.relay) return send(404, { error: 'relaying is off' });
-        if (!limited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!limited(clientKey(req))) throw tooFast(limited, req);
         return send(200, await reserve(await readJson(req, cfg.maxBody), clientKey(req)));
       }
       if (p === `${PREFIX}/cancel` && req.method === 'POST') {
         if (!pipeline) return send(404, { error: 'this keeper does not queue' });
-        if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!readLimited(clientKey(req))) throw tooFast(readLimited, req);
         const b = obj(await readJson(req, cfg.maxBody), 'body');
         if (typeof b.reservation !== 'string' || !/^[0-9a-f]{24}$/.test(b.reservation)) throw bad('reservation must be a reservation id');
         await pipeline.cancel(b.reservation);
@@ -670,21 +680,21 @@ export function createIntakeHandler({
       }
       if (p === `${PREFIX}/relay` && req.method === 'POST') {
         if (!cfg.relay) return send(404, { error: 'relaying is off' });
-        if (!limited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!limited(clientKey(req))) throw tooFast(limited, req);
         return send(200, await relay(await readJson(req, cfg.maxBody)));
       }
       if (p === `${PREFIX}/rpc` && req.method === 'POST') {
         if (!chain.rpcRequest) return send(404, { error: 'no chain reads here' });
-        if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!readLimited(clientKey(req))) throw tooFast(readLimited, req);
         const out = await (rpcPass ||= makeRpcPassthrough({ request: chain.rpcRequest, chainId: chain.chainId })).handle(await readJson(req, RPC_BODY), clientKey(req));
         return send(out.status, out.body);
       }
       if (p === `${PREFIX}/receive` && req.method === 'POST') {
-        if (!limited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!limited(clientKey(req))) throw tooFast(limited, req);
         return send(200, await accept('receive', await readJson(req, cfg.maxBody)));
       }
       if ((p === `${PREFIX}/deposit` || p === `${PREFIX}/wrap`) && req.method === 'POST') {
-        if (!limited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        if (!limited(clientKey(req))) throw tooFast(limited, req);
         const body = await readJson(req, cfg.maxBody);
         return send(200, await accept(p.endsWith('/deposit') ? 'deposit' : 'wrap', body));
       }
@@ -697,7 +707,7 @@ export function createIntakeHandler({
       if (e instanceof IntakeError) {
         // A refused relay says why in the log (no address or IP), so a refusal a wallet reports can be traced.
         if (/\/relay$/.test(p) && e.status !== 429) log(`relay refused ${e.status}: ${e.message}${e.needFee ? ` (needs ${e.needFee})` : ''}`);
-        return send(e.status, { error: e.message, ...(e.stale ? { stale: true } : {}), ...(e.needFee ? { needFee: e.needFee } : {}) });
+        return send(e.status, { error: e.message, ...(e.stale ? { stale: true } : {}), ...(e.needFee ? { needFee: e.needFee } : {}) }, e.retryAfter);
       }
       log(`intake error: ${safeErr(e)}`);
       return send(500, { error: 'internal error' });
