@@ -158,25 +158,26 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
       const { bech32 } = await import('../../dapp/vendor/tacit-deps.min.js');
       const rkey = reverseKeyOf(key), rSpk = hex(rside.prims.p2wpkhScript(rside.prims.wallet.pub)), KEEP_SATS = Number(process.env.FB_LP_REBALANCE_KEEP_SATS ?? 150000);
       const scriptOfBech32 = (addr) => { const d = bech32.decode(addr); const prog = bech32.fromWords(d.words.slice(1)); if (d.prefix !== 'bc' || d.words[0] !== 0 || (prog.length !== 20 && prog.length !== 32)) throw new Error('the vault address is not a segwit v0 address'); return Uint8Array.from([0x00, prog.length, ...prog]); };
-      const btcBuild = async ({ to, sats, memo }) => {
+      const btcBuild = async ({ to, sats, memo, feeRate = null, inputs = null }) => {
         const amount = Number(sats);
         if (!(amount >= 20000)) throw new Error('the amount is too small to send');
         if (!/^=:e:0x[0-9a-fA-F]{40}(:[0-9]+(\/[0-9]+){0,2})?$/.test(memo) || memo.length > 80) throw new Error('the memo is not a plain swap to an ETH address');
         const busy = busyOutpoints(await swapStore.list(), await rside.swaps.list());
-        const coins = (await (rside.btc.satsCoins ? rside.btc.satsCoins().then((r) => r.coins) : rside.btc.satsUtxos())).filter((c) => Number.isInteger(c.value) && c.value >= 10000 && !busy.has(`${c.txid}:${c.vout}`)).sort((a, b) => b.value - a.value);
-        const rate = await agreedFeeRate({ bases: C.btcBases, fetchImpl: (u, o) => fetch(u, o), target: '3', minAnswers: 2, cap: 40 });
+        // a replacement spends exactly the coins of the send it replaces (so the two cannot both confirm); a first send chooses its coins
+        const coins = inputs ? inputs.map((c) => ({ txid: c.txid, vout: c.vout, value: c.value })) : (await (rside.btc.satsCoins ? rside.btc.satsCoins().then((r) => r.coins) : rside.btc.satsUtxos())).filter((c) => Number.isInteger(c.value) && c.value >= 10000 && !busy.has(`${c.txid}:${c.vout}`)).sort((a, b) => b.value - a.value);
+        const rate = feeRate || await agreedFeeRate({ bases: C.btcBases, fetchImpl: (u, o) => fetch(u, o), target: '3', minAnswers: 2, cap: 40 });
         const memoBytes = Buffer.from(memo, 'utf8'), vaultScript = scriptOfBech32(to);
         const have = coins.reduce((t, c) => t + c.value, 0);
         const pick = []; let sum = 0, fee = 0;
-        for (const c of coins) { pick.push(c); sum += c.value; fee = Math.ceil((11 + 68 * pick.length + 31 + (9 + vaultScript.length) + (11 + memoBytes.length)) * rate); if (sum >= amount + fee + 546) break; }
+        for (const c of coins) { pick.push(c); sum += c.value; fee = Math.ceil((11 + 68 * pick.length + 31 + (9 + vaultScript.length) + (11 + memoBytes.length)) * rate); if (!inputs && sum >= amount + fee + 546) break; }
         if (sum < amount + fee + 546) throw new Error('the reverse address does not hold enough plain coins for this send');
-        if (have - amount - fee < KEEP_SATS) throw new Error(`the send would leave the reverse address under ${KEEP_SATS} sats`);
+        if (!inputs && have - amount - fee < KEEP_SATS) throw new Error(`the send would leave the reverse address under ${KEEP_SATS} sats`);
         if (fee * 10000 > amount * 100) throw new Error(`the fee (${fee} sats at ${rate} sat/vB) is over 1% of the send`);
         const change = sum - amount - fee;
         const hb = (h) => Uint8Array.from(h.match(/../g).map((x) => parseInt(x, 16)));
         const tx = { version: 2, locktime: 0, inputs: pick.map((c) => ({ txid: c.txid, vout: c.vout, sequence: 0xfffffffd, witness: [] })), outputs: [{ value: amount, script: vaultScript }, { value: 0, script: Uint8Array.from([0x6a, memoBytes.length, ...memoBytes]) }, { value: change, script: hb(rSpk) }] };
         pick.forEach((c, i) => { tx.inputs[i].witness = tacit.signP2wpkhInputWithKey(tx, i, c.value, rkey, rside.prims.wallet.pub); });
-        return { txid: tacit.txid(tx), hex: hex(tacit.serializeTx(tx)), fee };
+        return { txid: tacit.txid(tx), hex: hex(tacit.serializeTx(tx)), fee, rate, inputs: pick.map((c) => ({ txid: c.txid, vout: c.vout, value: c.value })) };
       };
       // how often the vault has paid out lately, as its Bitcoin transactions show: the newest page of its history, counting those with an OUT: or REFUND: memo that spend from the vault
       const btcVaultHistory = async (vault) => {
@@ -225,6 +226,13 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
         },
         // how many times the venue's router has paid out of the vault in about the last 30 hours (TransferOut with the vault as its first topic): read from the Ethereum nodes
         btcBuild, btcBroadcast: (h) => btc.broadcast({ revealHex: h }), btcStatus: (id) => btc.status(id),
+        btcInputsOf: async (txid) => {
+          const t = await btc.fetchTx(txid);
+          const own = rSpk.toLowerCase(), ins = (t.vin || []).map((i) => ({ txid: i.txid, vout: i.vout, value: i.prevout && i.prevout.value, spk: String((i.prevout && i.prevout.scriptpubkey) || '').toLowerCase() }));
+          if (!ins.length || ins.some((i) => !Number.isInteger(i.value) || i.spk !== own)) throw new Error('an input is not a coin of the reverse address');
+          return ins.map(({ txid: a, vout, value }) => ({ txid: a, vout, value }));
+        },
+        btcFeeRate: () => agreedFeeRate({ bases: C.btcBases, fetchImpl: (u, o) => fetch(u, o), target: '2', minAnswers: 2, cap: 100 }),
         vaultHistory: async ({ chain, router, vault }) => {
           if (chain === 'BTC') return btcVaultHistory(vault);
           const topic0 = '0x' + Buffer.from(keccak256(new TextEncoder().encode('TransferOut(address,address,address,uint256,string)'))).toString('hex');

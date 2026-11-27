@@ -53,7 +53,7 @@ export function rebalanceConfig(env = process.env) {
     mode: sw || 'off', bandBps: int('FB_LP_REBALANCE_BAND_BPS', 1500, 200, 4000), targetBps: 5000,
     minSwapWei: eth('FB_LP_REBALANCE_MIN_ETH', '0.15'), maxSwapWei: eth('FB_LP_REBALANCE_MAX_ETH', '0.3'), maxPerDayWei: eth('FB_LP_REBALANCE_MAX_DAY_ETH', '0.6'),
     maxCostBps: int('FB_LP_REBALANCE_MAX_COST_BPS', 120, 10, 1000), slipBps: int('FB_LP_REBALANCE_SLIP_BPS', 100, 10, 1000), everySecs: int('FB_LP_REBALANCE_EVERY_SECS', 900, 60, 86400),
-    confirmLooks: int('FB_LP_REBALANCE_CONFIRM_LOOKS', 2, 1, 5), fresh: freshOn, freshGasWei: eth('FB_LP_REBALANCE_FRESH_GAS_ETH', '0.0015'), venues, nodes,
+    confirmLooks: int('FB_LP_REBALANCE_CONFIRM_LOOKS', 2, 1, 5), bumpSecs: int('FB_LP_REBALANCE_BUMP_SECS', 1800, 300, 86400), maxBumps: int('FB_LP_REBALANCE_MAX_BUMPS', 4, 0, 10), maxFeeRate: int('FB_LP_REBALANCE_MAX_FEE_RATE', 25, 2, 200), fresh: freshOn, freshGasWei: eth('FB_LP_REBALANCE_FRESH_GAS_ETH', '0.0015'), venues, nodes,
   };
   if (c.minSwapWei > c.maxSwapWei) throw new Error('FB_LP_REBALANCE_MIN_ETH must not be over FB_LP_REBALANCE_MAX_ETH');
   if (c.maxSwapWei > c.maxPerDayWei) throw new Error('FB_LP_REBALANCE_MAX_ETH must not be over FB_LP_REBALANCE_MAX_DAY_ETH');
@@ -145,7 +145,7 @@ export async function bestQuote({ cfg, fetchImpl, dir, amount1e8, destination, e
   return { best: got[0] || null, all: got, why };
 }
 
-export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true, gate = (fn) => fn(), turn = (fn) => fn(), unshield, ethBalance, ethNonce, ethReceipt, sendEth, freshAddress = null, shieldFresh = null, vaultHistory = null, btcBuild = null, btcBroadcast = null, btcStatus = null, address, btcDestination, gasReserveWei, fetchImpl = (...a) => fetch(...a), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
+export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true, gate = (fn) => fn(), turn = (fn) => fn(), unshield, ethBalance, ethNonce, ethReceipt, sendEth, freshAddress = null, shieldFresh = null, vaultHistory = null, btcBuild = null, btcBroadcast = null, btcStatus = null, btcFeeRate = null, btcInputsOf = null, address, btcDestination, gasReserveWei, fetchImpl = (...a) => fetch(...a), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   let st = null, busy = false, nextAt = -Infinity, halted = null, last = null, calls = { dir: null, n: 0 };
   const said = new Map();
   const sayOnce = (k, a, secs = 6 * 3600) => { if (now() - (said.get(k) ?? -Infinity) >= secs) { said.set(k, now()); alert(a); } };
@@ -179,8 +179,25 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
         return { did: 'sent', tx: p.txid };
       }
       if (p.stage === 'sent') {
-        const s2 = await btcStatus(p.txid).catch(() => null);
-        if (!s2 || !(s2.confirmations > 0)) { if (now() - p.sentAt > 6 * 3600) sayOnce('btc-unconf', { level: 'warn', msg: 'rebalance: the Bitcoin send has not confirmed for six hours', txid: p.txid }); return { did: 'pending' }; }
+        let s2 = await btcStatus(p.txid).catch(() => null);
+        for (const old of p.replaced || []) { if (s2 && s2.confirmations > 0) break; const o2 = await btcStatus(old).catch(() => null); if (o2 && o2.confirmations > 0) { s2 = o2; p.txid = old; } }
+        if (!s2 || !(s2.confirmations > 0)) {
+          // a send that waits is replaced by the same transaction at a higher fee (its inputs signal replacement), at most `maxBumps` times, never above the cap, the new bytes kept before they are sent
+          if (btcFeeRate && !p.inputs && btcInputsOf) { try { p.inputs = await btcInputsOf(p.txid); await keep(); } catch { /* read again at the next look */ } }   // (a send made before the inputs were kept: read from the transaction itself)
+          if (btcFeeRate && p.inputs && (p.bumps || 0) < cfg.maxBumps && now() - (p.bumpAt || p.sentAt) > cfg.bumpSecs) {
+            try {
+              const market = Number(await btcFeeRate());
+              const rate = Math.min(cfg.maxFeeRate, Math.ceil(Math.max(market, Number(p.rate || 1)) * 1.25 + 1));
+              if (rate > Number(p.rate || 0) * 1.1) {
+                const nb = await btcBuild({ to: p.vault, sats: BigInt(p.amountSats), memo: p.memo, feeRate: rate, inputs: p.inputs });
+                p.replaced = [...(p.replaced || []), p.txid]; p.txid = nb.txid; p.hex = nb.hex; p.fee = nb.fee; p.rate = rate; p.inputs = nb.inputs; p.bumps = (p.bumps || 0) + 1; p.bumpAt = now(); await keep();
+                try { await btcBroadcast(nb.hex); } catch (e) { if (!/already|known|exists|duplicate/i.test(err(e))) sayOnce('btc-bump', { level: 'warn', msg: 'rebalance: the replacement Bitcoin send could not be broadcast yet', error: err(e) }, 3600); }
+                alert({ level: 'info', msg: 'rebalance: the Bitcoin send waited, so it was replaced at a higher fee', rate, fee: nb.fee, txid: nb.txid, bumps: p.bumps });
+              } else p.bumpAt = now();
+            } catch (e) { p.bumpAt = now(); sayOnce('btc-bump', { level: 'warn', msg: 'rebalance: the Bitcoin send could not be replaced at a higher fee', error: err(e) }, 3600); }
+          }
+          if (now() - p.sentAt > 6 * 3600) sayOnce('btc-unconf', { level: 'warn', msg: 'rebalance: the Bitcoin send has not confirmed for six hours', txid: p.txid }); return { did: 'pending' };
+        }
         if (p.fi != null) { p.stage = 'arrive'; p.arriveAt = now(); await keep(); return { did: 'arriving' }; }
         st.pending = null; st.done += 1; st.lastTx = p.txid; st.lastAt = now(); nextAt = now() + cfg.everySecs * 2; await keep();
         return { did: 'swapped', tx: p.txid };
@@ -285,7 +302,7 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
         // the Bitcoin is spent from the reverse address only, so the ETH-for-BTC side keeps what it needs (btcBuild says no when it would not); the signed transaction is kept before it is sent
         let built;
         try { built = await btcBuild({ to: best.vault, sats: plan.amountSats, memo: best.memo }); } catch (e) { sayOnce('btc-build', { level: 'warn', msg: 'rebalance: the Bitcoin send could not be built; nothing sent', error: err(e) }, 3 * 3600); return { did: 'failed' }; }
-        st.pending = { id: `${now()}`, dir: 'btc2eth', stage: 'sending', amountSats: String(plan.amountSats), valueWei: String(plan.valueWei), txid: built.txid, hex: built.hex, fee: built.fee, venue: best.venue, vault: best.vault, memo: best.memo, expectOut: String(best.out), costBps: best.costBps, fi: fiB, from: faddrB, at: now() };
+        st.pending = { id: `${now()}`, dir: 'btc2eth', stage: 'sending', amountSats: String(plan.amountSats), valueWei: String(plan.valueWei), txid: built.txid, hex: built.hex, fee: built.fee, rate: built.rate ?? null, inputs: built.inputs ?? null, bumps: 0, replaced: [], venue: best.venue, vault: best.vault, memo: best.memo, expectOut: String(best.out), costBps: best.costBps, fi: fiB, from: faddrB, at: now() };
         await keep();
         return await advance();
       }

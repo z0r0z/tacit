@@ -351,3 +351,30 @@ test('BTC sold with fresh addresses on: the memo names a fresh address, the ETH 
   w.clock += 5000; w.confs = 0;
   assert.equal((await r.step()).did, 'sent'); assert.equal(w.memos[1], `=:e:${fa(1)}`, 'the next swap, the next address');
 });
+
+test('a Bitcoin send that waits is replaced by the same inputs at a higher fee, within the cap; whichever of the two confirms closes the swap', async () => {
+  const w = { clock: 2_000_000_000, store: null, builds: [], broadcast: [], confirmed: new Set(), market: 1 };
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const c = cfg({ FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example', FB_LP_REBALANCE_BUMP_SECS: '600', FB_LP_REBALANCE_MAX_BUMPS: '2', FB_LP_REBALANCE_MAX_FEE_RATE: '20' });
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: BTC_VAULT, memo: `=:e:${q.get('destination')}`, expected_amount_out: '29800000', expiry: w.clock + 600 }) });
+  let n = 0;
+  const r = makeRebalancer({ cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(1), sats: 4e7 }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9,
+    btcBuild: async ({ feeRate, inputs }) => { n++; w.builds.push({ feeRate: feeRate ?? 1, inputs }); return { txid: String(n).repeat(64).slice(0, 64), hex: `02${n}`, fee: 200 * (feeRate ?? 1), rate: feeRate ?? 1, inputs: inputs || [{ txid: 'aa'.repeat(32), vout: 0, value: 900000 }] }; },
+    btcBroadcast: async (h) => { w.broadcast.push(h); }, btcStatus: async (id) => ({ confirmations: w.confirmed.has(id) ? 1 : 0 }), btcFeeRate: async () => w.market, btcInputsOf: async () => [{ txid: 'aa'.repeat(32), vout: 0, value: 900000 }],
+    ethBalance: async () => ETH(0.1), ethNonce: async () => 0, ethReceipt: async () => null, sendEth: async () => { throw new Error('no'); }, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02),
+    load: async () => w.store, save: async (x) => { w.store = JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? String(v) : v))); }, log: () => {}, alert: () => {} });
+  assert.equal((await r.step()).did, 'sent');
+  const first = w.store.pending.txid;
+  w.clock += 300; w.market = 8;
+  assert.equal((await r.step()).did, 'pending'); assert.equal(w.builds.length, 1, 'not before the wait is long enough');
+  w.clock += 400;
+  assert.equal((await r.step()).did, 'pending');
+  assert.equal(w.builds.length, 2); assert.equal(w.builds[1].feeRate, 11, 'a quarter over the market, and one more');
+  assert.deepEqual(w.builds[1].inputs, [{ txid: 'aa'.repeat(32), vout: 0, value: 900000 }], 'the same coins, so the two cannot both be paid');
+  assert.deepEqual(w.broadcast, ['021', '022']); assert.deepEqual(w.store.pending.replaced, [first]); assert.equal(w.store.pending.bumps, 1);
+  w.clock += 700; w.market = 80;
+  await r.step(); assert.equal(w.builds[2].feeRate, 20, 'never above the cap'); w.clock += 700;
+  await r.step(); assert.equal(w.builds.length, 3, 'two bumps at most');
+  w.confirmed.add(first);                                                  // the first one is the one that was mined after all
+  assert.equal((await r.step()).did, 'swapped'); assert.equal(w.store.pending, null);
+});
