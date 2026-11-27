@@ -17,6 +17,7 @@
 import { secp, keccak_256, sha256, hmac, concatBytes } from './vendor/tacit-deps.min.js';
 import { makeBtcShieldedPool } from './btc-shielded-pool.js';
 import { poolAsset, extDataHash } from './evm-pool-zk.js';
+import { L_BJJ } from './btc-pool-zk.js';
 import { sharedSecrets } from './evm-pool-scan.js';
 import { relaysOf, orderQuotes, QUOTE_MS } from './evm-pool-relays.js';
 import { collectQuotes } from './evm-pool-open-relays.js';
@@ -211,6 +212,13 @@ export function recipientOf(keys, address) {
   return { ...r };
 }
 
+// Receive-box keys and addresses, kept across wallet instances: each box's keys take two scalar multiplications, and the
+// boxes a wallet watches are derived again by every wallet made for the same key (token pools, a chain switch, the worker).
+const RECV_KEYS = new Map(), RECV_BOXES = new Map();
+const keep = (m, k, make) => { let r = m.get(k); if (r === undefined) { r = make(); if (m.size >= 4096) m.delete(m.keys().next().value); m.set(k, r); } return r; };
+const recvKeys = (zk, w, i) => keep(RECV_KEYS, `${w.a}:${w.n}:${i}`, () => receiveKeys(zk, w, i));
+const recvBox = (npk, router) => keep(RECV_BOXES, `${npk}:${router}`, () => receiveBoxAddress(npk, RECEIVE_FEE_BPS, router));
+
 // ── chain ──
 
 const TRANSACT_TOPIC = hex(keccak_256(te.encode('Transact(bytes32,bytes32,bytes32,bytes32,uint256,bytes32,address,int256,address,uint256,bytes,bytes)')));
@@ -234,6 +242,8 @@ export function batchedRpc(rpc, { wait = 15, max = 40 } = {}) {
   };
   const call = (method, params = [], opts) => (opts ? rpc(method, params, opts) : new Promise((ok, no) => { q.push({ method, params, ok, no }); t ||= setTimeout(flush, wait); }));
   call.batch = rpc.batch;
+  // the node that answered last, as jsonRpc names it (readNew compares the nodes that named the tip and answered the logs)
+  Object.defineProperty(call, 'node', { get: () => rpc.node });
   return call;
 }
 
@@ -424,7 +434,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   const ethOnly = (what) => { if (isToken) throw new Error(`${what} is for the ETH pools, not a token pool`); };
   const asset = poolAsset({ chainId: BigInt(chain.chainId), pool: chain.pool, token });
   const boxes = new Map();      // an index's address is fixed by the key, so each is derived once
-  const boxOf = (i) => { if (!boxes.has(i)) boxes.set(i, receiveBoxAddress(receiveKeys(zk, keys.zkWallet, i).npk, RECEIVE_FEE_BPS, chain.router)); return boxes.get(i); };
+  const boxOf = (i) => { if (!boxes.has(i)) boxes.set(i, recvBox(recvKeys(zk, keys.zkWallet, i).npk, chain.router)); return boxes.get(i); };
   const box = boxOf(RECEIVE_INDEX);
   const topicOf = (a) => '0x' + a.slice(2).toLowerCase().padStart(64, '0');
   const confirmations = chain.confirmations ?? 12;
@@ -473,10 +483,17 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     }
   }
 
-  // Spend and nullifier keys of a stored note, from the wallet keys: never stored.
+  // Spend and nullifier keys of a stored note, from the wallet keys: never stored. An owned note's scalars are the wallet's
+  // plus the note's tweaks (as ownedKeys has them), without the public points ownedKeys also multiplies out.
+  const ownedScalars = (s) => {
+    if (!zk.noteTweaks) return zk.ownedKeys(keys.zkWallet, s);
+    const { tA, tN } = zk.noteTweaks(s), sk = (keys.zkWallet.a + tA) % L_BJJ, nk = (keys.zkWallet.n + tN) % L_BJJ;
+    if (sk === 0n || nk === 0n) throw new Error('btc-pool-zk: degenerate note key');
+    return { sk, nk };
+  };
   function withKeys(n) {
     if (n.nk) return n;
-    const k = n.kind === 'receive' ? receiveKeys(zk, keys.zkWallet, n.box ?? RECEIVE_INDEX) : zk.ownedKeys(keys.zkWallet, unhex(n.s));
+    const k = n.kind === 'receive' ? recvKeys(zk, keys.zkWallet, n.box ?? RECEIVE_INDEX) : ownedScalars(unhex(n.s));
     return { ...n, sk: k.sk.toString(), nk: k.nk.toString(), nf: zk.nullifier(k.nk, BigInt(n.leaf), n.index).toString() };
   }
   saved = { ...saved, notes: saved.notes.map(withKeys) };
@@ -536,6 +553,14 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       spentSeen: behind ? saved.spentSeen : saved.block, held: [...(behind ? saved.held ?? [] : []), ...saved.notes.map((n) => n.index)],
     };
   };
+  // Starts the state over for a rebuild from the chain. In a `partial` wallet a state that held the whole history is read whole again (`whole`:
+  // from the pool's first block, not from a catch-up point), and the stored one stays until the new read is kept, so the notes behind the
+  // point never drop out of the balance or out of storage.
+  const rebuildWhole = () => {
+    const whole = partial && !saved.from;
+    saved = whole ? { ...rebuilt(), whole: true } : rebuilt(); view = null;
+    if (!whole) persist();
+  };
 
   // Appends `transacts` to a copy of `state`, keeping a path for each leaf found to be ours: a memo that opens, or
   // the leaf a Received event of one of our boxes names (the same transaction, so the same batch). The state's tree is
@@ -580,7 +605,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       const i = boxIndex.get(r.box) ?? RECEIVE_INDEX;
       const n = receivedNote(zk, keys.zkWallet, i, r);
       const leaf = leafAt.get(r.index) ?? -1n;
-      if (leaf < 0n || n.v === 0n || n.v < dustFloor || zk.leafOf(asset, n.v, receiveKeys(zk, keys.zkWallet, i).npk, n.rho) !== leaf) { tree.untrack(r.index); continue; }
+      if (leaf < 0n || n.v === 0n || n.v < dustFloor || zk.leafOf(asset, n.v, recvKeys(zk, keys.zkWallet, i).npk, n.rho) !== leaf) { tree.untrack(r.index); continue; }
       notes.set(`${r.index}`, withKeys({ index: r.index, leaf: leaf.toString(), v: n.v.toString(), rho: n.rho.toString(), block: r.block, tx: r.tx, kind: 'receive', box: i }));
     }
     // A spent note is dropped with its path; nullifiers that are not ours are not kept. It is remembered for a few days apart from
@@ -608,17 +633,20 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     return st;
   }
 
+  // The window narrows when a read fails for its size. A limit a node names holds for the rest of the read; a quarter taken on a vaguer
+  // answer (often an upstream timeout) widens again, doubling after every four windows read, as far as that limit.
   async function logs(address, topics, from, to) {
     const out = [];
-    let step = Number(chain.logChunk ?? 5000), busy = 0;
+    let cap = Number(chain.logChunk ?? 5000), step = cap, busy = 0, run = 0;
     for (let a = from; a <= to;) {
       const b = Math.min(to, a + step - 1);
       try {
         for (const l of await chain.rpc('eth_getLogs', [{ address, topics, fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16) }])) out.push(l);
         a = b + 1; busy = 0;
+        if (step < cap && ++run >= 4) { step = Math.min(cap, step * 2); run = 0; }
       } catch (e) {
         const f = logFailure(e, step);
-        if (f?.step) { step = f.step; continue; }
+        if (f?.step) { if (f.step !== Math.max(1, Math.floor(step / 4))) cap = f.step; step = f.step; run = 0; continue; }
         if (f?.busy && ++busy <= 6) { await sleep(1500 * busy); continue; }
         throw e;
       }
@@ -702,7 +730,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       const at = saved.from;
       if (e?.tail || !/ out of order /.test(e?.message || '') || (!at && Date.now() - healedAt < 600_000)) throw e;
       healedAt = Date.now();
-      saved = rebuilt(); view = null; readAt = 0; persist();
+      rebuildWhole(); readAt = 0;
       const f = feed; feed = false;
       try { return await readNew(); }
       catch (e2) {
@@ -795,7 +823,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     const tip = Number(BigInt(await chain.rpc('eth_blockNumber'))), tipNode = chain.rpc.node;
     const safe = Math.min(tip - confirmations, until);
     // Nothing read yet: the newest point the pool vouches for, the history behind it read later.
-    if (saved.block < Number(chain.deployBlock ?? 0) && !saved.tree.size && until === Infinity) {
+    if (saved.block < Number(chain.deployBlock ?? 0) && !saved.tree.size && until === Infinity && !saved.whole) {
       const pt = await readPoint(safe);
       if (pt) { saved = { ...saved, block: pt.block, tree: zk.incTree({ size: pt.size, root: pt.root.toString(), filled: pt.filled.map(String), tracked: {} }), notes: [], from: { size: pt.size, block: pt.block, root: pt.root.toString() } }; view = null; persist(); }
     }
@@ -1219,7 +1247,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   let feedOffs = 0, feedWas = false;
   async function rescanFromChain() {
     await reading.catch(() => {});
-    saved = rebuilt(); view = null; readAt = 0; persist();
+    rebuildWhole(); readAt = 0;
     if (!feedOffs++) feedWas = feed;
     feed = false;
     try { return await sync(); } finally { if (!--feedOffs) feed = feedWas; }
@@ -1367,7 +1395,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     // ETH at a receive box not yet swept into a note. → wei
     waiting: async (index = RECEIVE_INDEX) => BigInt(await chain.rpc('eth_getBalance', [boxOf(index), 'latest'])),
     // Asks the relayer to watch a receive box (and look now).
-    watchReceive: (index = RECEIVE_INDEX) => keeperPost('/receive', { chainId: chain.chainId, npk: receiveKeys(zk, keys.zkWallet, index).npk.toString(), feeBps: RECEIVE_FEE_BPS }),
+    watchReceive: (index = RECEIVE_INDEX) => keeperPost('/receive', { chainId: chain.chainId, npk: recvKeys(zk, keys.zkWallet, index).npk.toString(), feeBps: RECEIVE_FEE_BPS }),
 
     // Pays `amount` wei (or 'max') out of the pool to `to` (0x…). → tx hash. `quote`: one spendQuote gave, for the spend to go through that relay at that fee.
     async withdraw({ to, amount, via = null, maxFee = null, quote = null, onStep = () => {}, onSend = null, onSent = null }) {
@@ -1413,7 +1441,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     async refundBox() {
       const i = saved.nextRefund++;
       persist();
-      const npk = receiveKeys(zk, keys.zkWallet, i).npk;
+      const npk = recvKeys(zk, keys.zkWallet, i).npk;
       if (keeper) await keeperPost('/receive', { chainId: chain.chainId, npk: npk.toString(), feeBps: RECEIVE_FEE_BPS }).catch(() => {});
       return boxOf(i);
     },
@@ -1510,7 +1538,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     // any amount. → tx hash.
     async sweep({ index = RECEIVE_INDEX, onStep = () => {} } = {}) {
       ethOnly('Sweeping a receive box');
-      const npk = receiveKeys(zk, keys.zkWallet, index).npk, box = boxOf(index);
+      const npk = recvKeys(zk, keys.zkWallet, index).npk, box = boxOf(index);
       for (let round = 0; round < 4; round++) {
         await sync();
         const [bal, n] = await Promise.all([

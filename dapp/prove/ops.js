@@ -11,7 +11,7 @@ import { bodyType } from '/rpc-body.js';
 import { secp, keccak_256, sha256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmAccount } from '/evm-account.js?cb=282a0d33';
 import { makeEvmTx } from '/evm-tx.js?cb=4e36f545';
-import { makeNostrBoard, mergeBoards } from '/nostr-board.js?cb=0feadbff';
+import { makeNostrBoard, mergeBoards } from '/nostr-board.js?cb=2d1b0c4b';
 import { makeAutoRelay, AUTO_RESERVE_WEI } from '/prove/autorelay.js?cb=6d43079e';
 
 const $ = (s, el = document) => el.querySelector(s);

@@ -244,9 +244,18 @@ export function makeChainClient({ cfg, rpcCall, priv, system, root = undefined, 
     const [pool, shares] = await Promise.all([call('pool()'), call('shares()')]);
     return { pool: big(pool), shares: big(shares) };
   }
+  // The leader asked for incoming payments, kept for a minute (or to the end of its slot) so the poll does not ask for its fee each time.
+  let lastBase = null;
+  async function incomingBase() {
+    const now = Date.now();
+    if (lastBase && now - lastBase.at < 60e3 && now < lastBase.until) return lastBase.base;
+    const p = await pick().catch(() => null);
+    lastBase = p ? { base: p.base, until: p.until ?? Infinity, at: now } : null;
+    return p?.base ?? null;
+  }
   async function incomingNotes() {
     await ready();
-    const bases = [...new Set([cfg.leader, (await pick().catch(() => null))?.base].filter(Boolean))];
+    const bases = [...new Set([cfg.leader, await incomingBase()].filter(Boolean))];
     const rs = (await Promise.all(bases.map((b) => api('GET', '/pending-notes', undefined, b).catch(() => null))))
       .filter((x) => x?.ok && Array.isArray(x.leaves) && x.leaves.length && x.memos?.length === x.leaves.length);
     const seen = new Set(), r = { ok: true, leaves: [], memos: [] };
@@ -330,10 +339,13 @@ export function makeChainClient({ cfg, rpcCall, priv, system, root = undefined, 
   }
   const forget = (id) => { const e = kept().find((x) => x.id === id); if (e) noteMade(e); keepAll(kept().filter((x) => x.id !== id)); };
   const mark = (id, meta) => keepAll(kept().map((e) => (e.id === id ? { ...e, ...meta } : e)));
+  // Every leaf and nullifier is asked at once; a landed leaf counts first, and a probe that fails counts as not yet.
   async function settled(e) {
-    for (const l of e.leaves || []) if ((await api('GET', `/leaf/${l}`)).ok) return 'landed';
-    for (const nf of e.nullifiers || []) if (await leader.spent(nf)) return 'spent';
-    return null;
+    const [ls, ns] = await Promise.all([
+      Promise.all((e.leaves || []).map((l) => api('GET', `/leaf/${l}`).then((r) => !!r.ok, () => false))),
+      Promise.all((e.nullifiers || []).map((nf) => leader.spent(nf).then((x) => !!x, () => false))),
+    ]);
+    return ls.includes(true) ? 'landed' : ns.includes(true) ? 'spent' : null;
   }
   const madeKeys = new Set();
   const noteMade = (e) => { for (const l of e.leaves || []) madeKeys.add(leafKey(l)); };
@@ -491,11 +503,17 @@ export function makeChainClient({ cfg, rpcCall, priv, system, root = undefined, 
     ownLeaf: (key) => madeKeys.has(key) || kept().some((e) => (e.leaves || []).some((l) => leafKey(l) === key)),
     async pending() {
       await ready();
-      const gone = new Set();
-      for (const e of kept()) {
-        if (!e.deposit && Date.now() - e.at > KEEP_MS) { gone.add(e.id); noteMade(e); continue; }
-        if (await settled(e).catch(() => null)) { gone.add(e.id); noteMade(e); hopNote(e); }
-      }
+      const gone = new Set(), list = kept();
+      let i = 0;
+      // up to four kept spends are checked at a time
+      const work = async () => {
+        while (i < list.length) {
+          const e = list[i++];
+          if (!e.deposit && Date.now() - e.at > KEEP_MS) { gone.add(e.id); noteMade(e); continue; }
+          if (await settled(e).catch(() => null)) { gone.add(e.id); noteMade(e); hopNote(e); }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, list.length) }, work));
       const left = kept().filter((e) => !gone.has(e.id));
       if (gone.size) keepAll(left);
       return left;

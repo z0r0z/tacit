@@ -27,6 +27,7 @@ const P2WPKH_DUST = 294;
 // sat/vB: Bitcoin Core's default minimum relay fee. The page's quoted rate follows the recent blocks (fee-floor.js, never under twice this), so it can be under 1.
 const MIN_RELAY_RATE = 0.1;
 const MAX_NOTES = 24;
+const PICK_STEPS = 200_000;               // search steps pickNotes takes before it gives up
 const DEFAULT_MAX_FEE_SATS = 100_000;     // guards against a mistyped fee rate
 const KERNEL_DOMAIN = 'tacit-kernel-v1';
 
@@ -347,21 +348,24 @@ export function makeCbtcRedeem({ pool, secp, sha256, prims: defaultPrims = null,
   const isCbtc = (x) => x.amount != null && BigInt(x.amount) > 0n && (x.assetId == null || lc(x.assetId) === lc(CBTC_ZK_ASSET_ID));
   const burnable = (x) => x.live === true && x.confirmed !== false && x.credited !== false;
 
-  // Notes summing to exactly vBtc (the burn takes no change), fewest first, among those Bitcoin's proof holds; null when none do.
+  // Notes summing to exactly vBtc (the burn takes no change), fewest first, among those Bitcoin's proof holds; null when none do,
+  // or when none is found within a fixed number of steps (a long list of notes that cannot match stays quick).
   function pickNotes(notes, vBtc) {
     const want = BigInt(vBtc);
     const usable = (notes || []).filter((x) => isCbtc(x) && burnable(x))
       .sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : BigInt(b.amount) < BigInt(a.amount) ? -1 : 0));
     const suffix = new Array(usable.length + 1).fill(0n);
     for (let i = usable.length - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + BigInt(usable[i].amount);
+    let budget = PICK_STEPS;
     const go = (i, left, k, chosen) => {
+      if (--budget < 0) return null;
       if (left === 0n) return k === 0 ? chosen : null;
       if (k === 0 || i >= usable.length || suffix[i] < left) return null;
       const a = BigInt(usable[i].amount);
       if (a <= left) { const r = go(i + 1, left - a, k - 1, [...chosen, usable[i]]); if (r) return r; }
       return go(i + 1, left, k, chosen);
     };
-    for (let k = 1; k <= Math.min(MAX_NOTES, usable.length); k++) { const r = go(0, want, k, []); if (r) return r; }
+    for (let k = 1; k <= Math.min(MAX_NOTES, usable.length) && budget > 0; k++) { const r = go(0, want, k, []); if (r) return r; }
     return null;
   }
 

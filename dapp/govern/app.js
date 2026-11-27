@@ -54,14 +54,27 @@ async function getJson(path, init) {
   if (!r.ok) throw Object.assign(new Error(j.error || `The server answered ${r.status}.`), { status: r.status });
   return j;
 }
-async function loadList() {
-  S.loadErr = ''; render();
-  try { S.list = (await getJson('/proposals')).proposals || []; } catch { S.loadErr = 'Could not load proposals. Try again in a moment.'; }
-  render();
+// a quiet refresh keeps the last good data on screen when a read fails; the error shows only when nothing has loaded
+async function loadList({ quiet = false } = {}) {
+  if (!quiet) { S.loadErr = ''; render(); }
+  try { S.list = (await getJson('/proposals')).proposals || []; S.loadErr = ''; } catch { if (!quiet || !S.list) S.loadErr = 'Could not load proposals. Try again in a moment.'; }
+  if (S.route.name === 'list') render();
 }
+const sameTally = (a, b) => a?.status === b?.status && JSON.stringify(a?.tally) === JSON.stringify(b?.tally);
 async function loadProposal(id, { quiet = false } = {}) {
   if (!quiet) { S.p = null; S.loadErr = ''; render(); }
-  try { S.p = (await getJson(`/proposal/${id}?votes=1`)).proposal; } catch (e) { S.loadErr = e.status === 404 ? 'No such proposal.' : 'Could not load this proposal. Try again in a moment.'; }
+  const had = S.p?.id === id ? S.p : null;
+  try {
+    // a refresh reads the proposal alone first; the vote list is fetched again only when the tally moved
+    let p = had?.votes ? (await getJson(`/proposal/${id}`)).proposal : null;
+    if (p && sameTally(p, had)) p.votes = had.votes;
+    else p = (await getJson(`/proposal/${id}?votes=1`)).proposal;
+    if (S.route.id !== id) return;
+    S.p = p; S.loadErr = '';
+  } catch (e) {
+    if (S.route.id !== id) return;
+    if (!had) S.loadErr = e.status === 404 ? 'No such proposal.' : 'Could not load this proposal. Try again in a moment.';
+  }
   render(); readWeight();
 }
 const balanceCall = (who, block) => rpc('eth_call', [{ to: TAC_ERC20, data: `0x70a08231${'0'.repeat(24)}${who.slice(2).toLowerCase()}` }, block]);
@@ -146,6 +159,8 @@ function render() {
   root.innerHTML = S.route.name === 'new' ? newView() : S.route.name === 'detail' ? detailView() : listView();
   wire(root);
   renderSide();
+  const note = $('#note', root);
+  if (note && S.note) { note.className = `status${S.bad ? ' err' : ''}`; note.textContent = S.note; }
 }
 // the holder's own TAC on each chain, and the way in to each
 function renderSide() {
@@ -427,7 +442,7 @@ addEventListener('hashchange', route);
 // open proposals keep their tallies fresh while the page is in view (not while a wallet is asked to sign)
 setInterval(() => {
   if (S.busy || document.visibilityState !== 'visible') return;
-  if (S.route.name === 'list' && S.list) loadList();
+  if (S.route.name === 'list' && S.list) loadList({ quiet: true });
   else if (S.route.name === 'detail' && S.p?.status === 'active') loadProposal(S.route.id, { quiet: true });
 }, 60e3);
 route();

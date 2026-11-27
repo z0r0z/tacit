@@ -58,4 +58,13 @@ await check('more calls than a batch takes go in several', async () => {
   assert.deepEqual(nd.seen.map((x) => (Array.isArray(x) ? x.length : 1)), [3, 2]);
 });
 
+await check('the node that answered last is the one jsonRpc names', async () => {
+  const nd = node(), inner = jsonRpc(['https://a', 'https://b'], async (url, init) => { if (url === 'https://a') throw new TypeError('fetch failed'); return nd.fetchImpl(url, init); });
+  const r = batchedRpc(inner);
+  assert.equal(r.node, undefined);
+  await r('eth_chainId');
+  assert.equal(r.node, 'https://b');
+  assert.equal(r.node, inner.node);
+});
+
 console.log(`${n} passed`);

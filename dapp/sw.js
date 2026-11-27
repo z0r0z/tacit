@@ -285,7 +285,8 @@ async function _cacheFirst(req, cacheName) {
     // Skipped for immutable cache (the content never changes by definition).
     // Detached promise — the SW may be killed before revalidate completes;
     // worst case the next visit re-revalidates.
-    if (cacheName === STATIC_CACHE) {
+    // Fonts are not revalidated: they never change at their paths (a new font needs a CACHE_VERSION label bump).
+    if (cacheName === STATIC_CACHE && !new URL(req.url).pathname.startsWith('/fonts/')) {
       _revalidate(req, cache).catch(() => {});
     }
     return cached;

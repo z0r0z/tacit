@@ -5,11 +5,23 @@ export function createRecoveryUI({ root, storage, inspect, decrypt, activity, si
   let openKey = null, clearTimer = null;
   const clearSecret = () => { if (openKey) openKey.fill(0); openKey = null; clearTimeout(clearTimer); root.querySelectorAll('.secret').forEach((e) => e.remove()); };
   const revealSignatureKey = (out, result) => {
-    clearSecret(); openKey = result.priv;
-    const hex = Array.from(result.priv, (x) => x.toString(16).padStart(2, '0')).join('');
+    clearSecret(); openKey = Uint8Array.from(result.priv); // a fresh copy each time, so hiding never zeroes result.priv
+    const hex = Array.from(openKey, (x) => x.toString(16).padStart(2, '0')).join('');
     const wrap = document.createElement('div'); wrap.className = 'secret';
     wrap.innerHTML = `<strong>Private key</strong><p>Anyone with this key controls these funds. Import it from the main app’s Wallet → Import key.</p><code>${hex}</code><div class="actions"><button>Copy key</button><button class="secondary">Hide key</button></div>`;
     out.append(wrap); wrap.querySelectorAll('button')[0].onclick = () => copy(hex); wrap.querySelectorAll('button')[1].onclick = clearSecret; clearTimer = setTimeout(clearSecret, 120000);
+  };
+  const showAttempt = (out, r) => {
+    const a = r.activity, unknown = !a;
+    out.className = `attempt-result ${a?.txs ? 'hit' : ''}`;
+    out.innerHTML = `<div><code>${esc(r.address)}</code><b>${unknown ? 'Activity could not be checked' : `${a.sats.toLocaleString()} sats · ${a.txs ? 'Activity found' : 'No activity found'}`}</b></div>${unknown ? '<button class="secondary retry">Check again</button>' : ''}${unknown || a.txs ? '<button class="reveal">Reveal recovery key</button>' : ''}`;
+    out.querySelector('.reveal')?.addEventListener('click', () => revealSignatureKey(out, r));
+    out.querySelector('.retry')?.addEventListener('click', async (e) => {
+      e.currentTarget.disabled = true;
+      try { r.activity = await activity(r.address, 'mainnet'); } catch { r.activity = null; }
+      if (out.querySelector('.secret')) clearSecret();
+      showAttempt(out, r);
+    });
   };
   const render = async () => {
     clearSecret(); const found = inspect(storage), hasSlots = found.slots.length > 0;
@@ -33,7 +45,7 @@ export function createRecoveryUI({ root, storage, inspect, decrypt, activity, si
         const row = document.createElement('div'); row.className = 'attempt'; row.innerHTML = `<div><b>${messageLabel[message]}</b><small>${message === 'current' ? 'Start here' : 'Older Tacit version'}</small></div><div class="attempt-actions"></div><div class="attempt-result" aria-live="polite"></div>`; group.querySelector('.message-list').append(row);
         for (const protocol of ['ecdsa', 'bip322']) {
           const button = document.createElement('button'); button.className = protocol === 'ecdsa' ? '' : 'secondary'; button.textContent = protocol === 'ecdsa' ? 'Try standard' : 'Try BIP-322'; row.querySelector('.attempt-actions').append(button);
-          button.onclick = async () => { const out = row.querySelector('.attempt-result'); button.disabled = true; out.textContent = 'Waiting for wallet approval…'; try { const r = await signAttempt({ provider, message, protocol }); out.className = `attempt-result ${r.activity.txs ? 'hit' : ''}`; out.innerHTML = `<div><code>${esc(r.address)}</code><b>${r.activity.sats.toLocaleString()} sats · ${r.activity.txs ? 'Activity found' : 'No activity found'}</b></div>${r.activity.txs ? '<button class="reveal">Reveal recovery key</button>' : ''}`; out.querySelector('.reveal')?.addEventListener('click', () => revealSignatureKey(out, r)); } catch (x) { out.className = 'attempt-result err'; out.textContent = x.message; } finally { button.disabled = false; } };
+          button.onclick = async () => { const out = row.querySelector('.attempt-result'); button.disabled = true; out.textContent = 'Waiting for wallet approval…'; try { const r = await signAttempt({ provider, message, protocol }); showAttempt(out, r); } catch (x) { out.className = 'attempt-result err'; out.textContent = x.message; } finally { button.disabled = false; } };
         }
       }
     }

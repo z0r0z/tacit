@@ -140,9 +140,9 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
         const page = await leader.notes(treeLeaves.length, 500);
         if (!page?.leaves?.length) break;
         for (const l of page.leaves) treeLeaves.push(BigInt(l));
+        built = null;
       }
-      if (treeLeaves.length > total) treeLeaves.length = total;
-      built = null;
+      if (treeLeaves.length > total) { treeLeaves.length = total; built = null; }
     };
     const tree = () => (built && built.n === treeLeaves.length ? built.tree : (built = { n: treeLeaves.length, tree: Z.tree(treeLeaves) }).tree);
     if (treeLeaves.length > total) { treeLeaves.length = 0; built = null; }
@@ -255,7 +255,7 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
     let next = from;
     for (;;) {
       const page = await leader.notes(next, 200);
-      if (record && treeLeaves.length === next) { for (const leaf of page.leaves) treeLeaves.push(BigInt(leaf)); built = null; }
+      if (record && treeLeaves.length === next && page.leaves.length) { for (const leaf of page.leaves) treeLeaves.push(BigInt(leaf)); built = null; }
       const memos = page.leaves.map((_, i) => bytes(page.memos[i], MEMO_LEN, 'memo'));
       let said = null;
       if (openMany && memos.length) { try { said = await openMany(memos, k.memo.secret); } catch { said = null; } }

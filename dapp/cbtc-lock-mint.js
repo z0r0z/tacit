@@ -76,6 +76,25 @@ function makeEsplora(bases = [
   };
 }
 
+// The outpoints a raw transaction spends ({ txid, vout } each, txid in display order).
+export function txInputs(hex) {
+  const b = String(hex).replace(/^0x/i, '');
+  let p = 8;
+  const byte = () => { const v = parseInt(b.substr(p, 2), 16); p += 2; return v; };
+  const le = (n) => { let v = 0; for (let i = 0; i < n; i++) v += byte() * 2 ** (8 * i); return v; };
+  const varint = () => { const f = byte(); return f < 0xfd ? f : le(f === 0xfd ? 2 : f === 0xfe ? 4 : 8); };
+  if (b.substr(p, 4) === '0001') p += 4;
+  const n = varint(), out = [];
+  for (let i = 0; i < n; i++) {
+    const txid = b.substr(p, 64).match(/../g).reverse().join(''); p += 64;
+    const vout = le(4);
+    p += varint() * 2 + 8;
+    out.push({ txid, vout });
+  }
+  if (!out.length || p > b.length) throw new Error('cbtc-lock-mint: could not read the commit transaction');
+  return out;
+}
+
 // Bitcoin's P2PKH dust threshold, and the same floor tacit.js's own sats picker uses. Tacit asset notes,
 // pending T_PMINT outputs and stealth receipts all live at or below it, at the SAME P2WPKH address this
 // wallet funds from — they are ordinary-looking UTXOs distinguished only by the commitment they carry.
@@ -144,14 +163,28 @@ export function makeCbtcLockMint({ priv, pool, cbtcAsset, esploraBases, postHint
     selectLockFunding, ownLockScriptPubKey, broadcastCbtcLockTx, postHint, lockVout,
   });
 
+  // Whether a coin the commit spends is now spent by another transaction, so the commit can never be mined.
+  async function commitInputsTaken(commitHex, commitTxid) {
+    for (const { txid, vout } of txInputs(commitHex)) {
+      const by = await esplora.spentBy(txid, vout);
+      if (by && by !== 'spent' && String(by).toLowerCase() !== String(commitTxid).toLowerCase()) return true;
+    }
+    return false;
+  }
+
   // A lock signed earlier and kept (`onSigned`), sent again where Bitcoin does not have it yet.
-  //   → 'locked' once its reveal is out, 'gone' when its commit can no longer be sent (its coins were spent another way, or the
-  //     network refuses it), so nothing of it is on Bitcoin. It throws when the network cannot be asked or the reveal does not go out.
+  //   → 'locked' once its reveal is out, 'gone' when its commit can no longer be sent because a coin it spends was spent by another
+  //     transaction, so nothing of it is on Bitcoin. It throws when the network cannot be asked, refuses the commit for any other reason
+  //     (a fee floor, a mirror that does not take transactions), or the reveal does not go out: the caller keeps the lock and tries again.
   async function finishLock({ commitTxid, commitHex, revealHex, lockTxid }) {
     if (await esplora.txKnown(lockTxid)) return 'locked';
     if (!(await esplora.txKnown(commitTxid))) {
       try { await prims.broadcastWithRetry(commitHex); }
-      catch (e) { const m = String(e?.message || ''); if (/^4\d\d\b/.test(m) && !/^429\b/.test(m)) return 'gone'; throw e; }
+      catch (e) {
+        const m = String(e?.message || '');
+        if (/^4\d\d\b/.test(m) && !/^429\b/.test(m) && await commitInputsTaken(commitHex, commitTxid)) return 'gone';
+        throw e;
+      }
     }
     await prims.broadcastWithRetry(revealHex);
     return 'locked';

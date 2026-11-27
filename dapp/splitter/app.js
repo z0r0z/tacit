@@ -444,7 +444,7 @@ if (provider()?.on) {
   let missed = false;
   loadRelay(); setInterval(() => { if (document.hidden) missed = true; else loadRelay(); }, 120000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && missed) { missed = false; loadRelay(); } });
-  rpc('eth_gasPrice', []).then((g) => { S.gas = BigInt(g); paintDeploy(); }).catch(() => {});
+  rpc('eth_gasPrice', []).then((g) => { S.gas = BigInt(g); if (!typing($('#p-deploy'))) paintDeploy(); }).catch(() => {});   // not under someone typing: the fee shows on the next redraw
   paintChip();
   if (provider()) provider().request({ method: 'eth_accounts' }).then((a) => { if (a[0]) { S.account = lc(a[0]); paint(); } }).catch(() => {});
   const fromHash = location.hash.replace(/^#/, '');

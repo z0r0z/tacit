@@ -96,6 +96,8 @@ export function makeNostrBoard({ pool, chainId = 1, relays = NOSTR_RELAYS, WS = 
     return { id: ev.id, relays: took.filter(Boolean) };
   }
 
+  // Posts already verified, by event id, so a post that comes back from several relays or on the next read is checked once (only its expiry again).
+  const verified = new Map();
   async function read({ sinceSec = Math.floor(now() / 1000) - BOARD_TTL_SEC, limit = 200 } = {}) {
     const sub = 'tb' + Math.random().toString(36).slice(2, 10);
     const filter = { kinds: [BOARD_KIND], '#t': [BOARD_TAG], since: sinceSec, limit };
@@ -104,10 +106,20 @@ export function makeNostrBoard({ pool, chainId = 1, relays = NOSTR_RELAYS, WS = 
       return talk(u, ['REQ', sub, filter], (x) => { if (x[0] === 'EVENT' && x[1] === sub) got.push(x[2]); else if (x[0] === 'EOSE' && x[1] === sub) return got; return undefined; })
         .then((r) => r || got);
     }));
-    const by = new Map();
+    const by = new Map(), nowMs = now(), took = new Set();
+    for (const [id, v] of verified) if ((v.exp && v.exp * 1000 <= nowMs) || (v.j.expiresAt && v.j.expiresAt <= nowMs)) verified.delete(id);
+    if (verified.size > 5000) verified.clear();
     for (const ev of lists.flat()) {
-      const j = readPost(ev, { pool, chainId, nowMs: now(), minBits });
-      if (!j) continue;
+      const id = typeof ev?.id === 'string' ? ev.id : null;
+      if (!id || took.has(id)) continue;
+      let j = verified.get(id)?.j;
+      if (!j) {
+        j = readPost(ev, { pool, chainId, nowMs, minBits });
+        if (!j) continue;
+        verified.set(id, { j, exp: Number(ev.tags.find((t) => t[0] === 'expiration')?.[1]) || 0 });
+      }
+      took.add(id);
+      j = { ...j };
       const k = j.publicValues.toLowerCase(), had = by.get(k);
       if (!had || had.openSince > j.openSince) by.set(k, j);
     }

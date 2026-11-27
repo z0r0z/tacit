@@ -222,6 +222,12 @@ export async function waitMined({ read, hash, timeoutMs = 10 * 60e3, every = 300
 export function makeFollow({ journal, jobStatus, receipt, receiptOnce, trace = null, btcConfirmed, live = () => false, own = () => false, onOwn = () => {}, onSlow = () => {}, finished = () => {} }) {
   const going = new Map(), sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const hidden = () => typeof document !== 'undefined' && document.hidden;
+  // A hidden tab's wait, cut short when the tab is shown again.
+  const nap = (ms) => new Promise((r) => {
+    const done = () => { clearTimeout(t); document.removeEventListener('visibilitychange', done); r(); };
+    const t = setTimeout(done, ms);
+    document.addEventListener('visibilitychange', done);
+  });
   function job(id) {
     if (own(id)) return onOwn(id);
     if (going.has(id)) return;
@@ -236,7 +242,7 @@ export function makeFollow({ journal, jobStatus, receipt, receiptOnce, trace = n
           const st = await jobStatus(id.slice(4)).catch(() => null);
           if (st?.status && (st.status !== 'unknown' || age > 120e3)) journal.put(id, { status: st.status, hash: st.txHash || undefined, err: st.error || undefined, ahead: st.ahead ?? undefined, board: st.stage ?? undefined });
         }
-        await sleep(age < 180e3 ? 5000 : age < 1800e3 ? 15000 : 60000);
+        await (hidden() ? nap(60000) : sleep(age < 180e3 ? 5000 : age < 1800e3 ? 15000 : 60000));
       }
     })().finally(() => going.delete(id));
     going.set(id, run);

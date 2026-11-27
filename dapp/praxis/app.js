@@ -362,6 +362,7 @@ async function startWeb() {
 $('web-go').addEventListener('click', startWeb);
 $('web-stop').addEventListener('click', () => webRun?.abort());
 
+let cmdAltSet = false;   // the terminal panel is folded once, on the first answer; after that it stays as the visitor left it
 async function drawQueue() {
   try {
     const r = await fetch('https://tacit-praxis-ceremony.onrender.com/api/coordinator', { cache: 'no-store', signal: AbortSignal.timeout(6000) });
@@ -370,7 +371,7 @@ async function drawQueue() {
     $('queue').textContent = v.open === false ? 'Closed.' : waitText(v.queue);
     if (Number.isInteger(v.queue)) setNum($('n-queue'), v.queue);
     $('community').hidden = !(v.browser === true && v.community === true && v.open !== false);
-    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=a50d161a'); const can = web.capable(); $('web').hidden = !can; if (can && !webRun) $('cmd-alt').open = false; }
+    if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=a50d161a'); const can = web.capable(); $('web').hidden = !can; if (can && !webRun && !cmdAltSet) { cmdAltSet = true; $('cmd-alt').open = false; } }
   } catch { $('queue').textContent = ''; }
 }
 
@@ -401,7 +402,10 @@ async function drawRewards() {
 await refresh();
 drawQueue();
 drawRewards();
-setInterval(refresh, 20_000);
-setInterval(drawQueue, 30_000);
-setInterval(drawRewards, 120_000);
+// polls pause in a hidden tab (unless a browser contribution is running) and catch up when it is shown again
+const inView = (fn) => () => { if (webRun || document.visibilityState === 'visible') fn(); };
+setInterval(inView(refresh), 20_000);
+setInterval(inView(drawQueue), 30_000);
+setInterval(inView(drawRewards), 120_000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !webRun) { refresh(); drawQueue(); drawRewards(); } });
 setInterval(() => { for (const t of document.querySelectorAll('.tile time')) t.textContent = ago(t.dateTime); }, 30_000);   // "3 min ago" stays true

@@ -1,5 +1,5 @@
 import { secp, keccak_256 } from '/vendor/tacit-deps.min.js';
-import { makeConfidentialNames, makeMainnetCall, MAINNET_RPCS, NameError } from '/confidential-names.js?cb=c7e1989f';
+import { makeConfidentialNames, makeMainnetCall, MAINNET_RPCS, NameError } from '/confidential-names.js?cb=b0ce51f3';
 import { bodyType } from '/rpc-body.js';
 import { makeTacAirdrop } from '/tac-airdrop.js';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=514272b7';
@@ -391,7 +391,7 @@ const a0 = (s) => (s && s.claimed && s.amountWei ? BigInt(s.amountWei) : 0n);
 const p0 = (v) => (v && !v.error && v.claimed > 0n ? v.claimed : 0n);
 const rpcOf = (method, params) => (method === 'eth_call' ? call(params[0]) : Promise.reject(new Error(`${method} is not read here`)));
 function quoteFor(wei) {
-  return keepFor(bwQuotes, String(wei), () => (bwMod ||= import('/vault/quote.js?cb=eb6b31c6').catch((e) => { bwMod = null; throw e; })).then((m) => m.quoteBorrow({ tac: wei, rpc: rpcOf })));
+  return keepFor(bwQuotes, String(wei), () => (bwMod ||= import('/vault/quote.js?cb=62144198').catch((e) => { bwMod = null; throw e; })).then((m) => m.quoteBorrow({ tac: wei, rpc: rpcOf })));
 }
 function keepFor(map, key, make) {
   const hit = map.get(key);

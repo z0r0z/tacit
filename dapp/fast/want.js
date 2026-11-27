@@ -11,7 +11,7 @@
 //   w.waiting()             what is waiting on the boards: { count, total, items: [{ pub, amount, maxFeeBps }] smallest first } (maxFeeBps null when none)
 
 import { signWant, checkWant, checkAd, adLabel } from '/fastbridge-board.js';
-import { meetsPrice } from '/fastbridge-price.js?cb=ab195d5c';
+import { meetsPrice } from '/fastbridge-price.js';   // the same URL every other importer uses: one instance
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 

@@ -21,4 +21,8 @@ assert.deepEqual(C.HISTORICAL_MESSAGES.map((x) => x.text('mainnet')), expected);
 for (const msg of C.HISTORICAL_MESSAGES) for (const protocol of ['ecdsa','bip322']) {
   assert.equal(C.signatureResult(new Uint8Array(64).fill(7), 'mainnet').address, 'bc1qeza8f67ttpq935du8w3wtpujuvz3wkerqrsme5', `${msg.id}/${protocol}`);
 }
+const seen = [], stats = { chain_stats: { funded_txo_sum: 5, spent_txo_sum: 2, tx_count: 1 } };
+const act = await C.addressActivity('bc1qx', 'mainnet', async (u) => { seen.push(u); return u.includes('mempool') ? { ok: false, status: 429 } : { ok: true, json: async () => stats }; });
+assert.deepEqual(act, { sats: 3, txs: 1 }); assert.match(seen[1], /blockstream\.info/);
+await assert.rejects(C.addressActivity('bc1qx', 'mainnet', async () => ({ ok: false, status: 503 })), /Explorer returned 503/);
 console.log('recover core: ok');

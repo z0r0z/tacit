@@ -56,15 +56,20 @@ async function cardOf(id) {
   return JSON.parse(atob(uri.split(',')[1])).image;
 }
 
+const SETTLE = 12;          // blocks under the head a log scan keeps as read
+let winFrom = FROM_BLOCK;
 // Once the race is finished: the finishing transaction, when it landed, and the winner's own card.
 async function readWin() {
   if (!SALE || S.win || !S.st?.fin) return;
   try {
     const head = Number(await rpc('eth_blockNumber', []));
     let fin = null;
-    for (let from = FROM_BLOCK; from <= head && !fin; from += 10_000) {
-      const logs = await rpc('eth_getLogs', [{ address: SALE, topics: [FINALIZED], fromBlock: '0x' + from.toString(16), toBlock: '0x' + Math.min(head, from + 9_999).toString(16) }]);
+    // a retry starts where the last scan stopped, a few blocks under the head
+    for (let from = winFrom; from <= head && !fin; from += 10_000) {
+      const to = Math.min(head, from + 9_999);
+      const logs = await rpc('eth_getLogs', [{ address: SALE, topics: [FINALIZED], fromBlock: '0x' + from.toString(16), toBlock: '0x' + to.toString(16) }]);
       if (logs.length) fin = logs[0];
+      else winFrom = Math.max(winFrom, Math.min(to, head - SETTLE) + 1);
     }
     const at = fin ? Number((await rpc('eth_getBlockByNumber', [fin.blockNumber, false])).timestamp) : null;
     const winner = S.st.leader;
@@ -88,24 +93,32 @@ async function readMe() {
 
 // The leaderboard: every Bought event since the deploy block, summed per buyer. Ranked by ETH spent; ties go to whoever
 // got there first, as the contract decides.
-async function readBoard() {
+// What was read up to a few blocks under the head is kept, so each refresh reads only the blocks after it.
+const kept = { to: FROM_BLOCK - 1, by: new Map(), buys: 0 };
+let boardP = null;
+const addBuy = (by, l) => {
+  const who = '0x' + l.topics[1].slice(26), d = strip(l.data);
+  const r = by.get(who) || { who, eth: 0n, tac: 0n, first: Number(l.blockNumber) * 1e4 + Number(l.logIndex) };
+  r.eth += BigInt('0x' + d.slice(0, 64)); r.tac += BigInt('0x' + d.slice(64, 128));
+  by.set(who, r);
+};
+function readBoard() { return (boardP ||= scanBoard().finally(() => { boardP = null; })); }
+async function scanBoard() {
   if (!SALE) return;
   try {
-    const head = Number(await rpc('eth_blockNumber', []));
-    const by = new Map();
-    let buys = 0;
-    for (let from = FROM_BLOCK; from <= head; from += 10_000) {
-      const logs = await rpc('eth_getLogs', [{ address: SALE, topics: [BOUGHT], fromBlock: '0x' + from.toString(16), toBlock: '0x' + Math.min(head, from + 9_999).toString(16) }]);
-      buys += logs.length;
+    const head = Number(await rpc('eth_blockNumber', [])), settled = head - SETTLE, recent = [];
+    for (let from = kept.to + 1; from <= head; from += 10_000) {
+      const to = Math.min(head, from + 9_999);
+      const logs = await rpc('eth_getLogs', [{ address: SALE, topics: [BOUGHT], fromBlock: '0x' + from.toString(16), toBlock: '0x' + to.toString(16) }]);
       for (const l of logs) {
-        const who = '0x' + l.topics[1].slice(26), d = strip(l.data);
-        const r = by.get(who) || { who, eth: 0n, tac: 0n, first: Number(l.blockNumber) * 1e4 + Number(l.logIndex) };
-        r.eth += BigInt('0x' + d.slice(0, 64)); r.tac += BigInt('0x' + d.slice(64, 128));
-        by.set(who, r);
+        if (Number(l.blockNumber) <= settled) { addBuy(kept.by, l); kept.buys++; } else recent.push(l);
       }
+      kept.to = Math.max(kept.to, Math.min(to, settled));
     }
+    const by = new Map([...kept.by].map(([k, r]) => [k, { ...r }]));
+    for (const l of recent) addBuy(by, l);
     S.board = [...by.values()].sort((x, y) => (y.eth > x.eth ? 1 : y.eth < x.eth ? -1 : x.first - y.first));
-    S.buys = buys;
+    S.buys = kept.buys + recent.length;
     render();
   } catch { /* the board waits for the next refresh */ }
 }
@@ -288,7 +301,12 @@ if (location.hash === '#demo') {
   render();
   readState().then(readWin); readBoard();
 }
-if (location.hash !== '#demo') { setInterval(() => { readState(); readMe(); readWin(); }, 20_000); setInterval(readBoard, 60_000); }
+// the refreshes skip a hidden tab and catch up when it is shown again
+if (location.hash !== '#demo') {
+  setInterval(() => { if (!document.hidden) { readState(); readMe(); readWin(); } }, 20_000);
+  setInterval(() => { if (!document.hidden) readBoard(); }, 60_000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { readState().then(readWin); readMe(); readBoard(); } });
+}
 // Each second only the countdown moves; the page is drawn again when the phase turns, so a button is not replaced under a press.
 let tickKey = '';
 setInterval(() => {

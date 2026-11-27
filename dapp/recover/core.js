@@ -82,10 +82,18 @@ export function signatureResult(signature, network) {
   return { priv, pubkey, address: addressFromPub(pubkey, network) };
 }
 
+// mempool.space first; on mainnet blockstream.info answers the same API if it fails.
 export async function addressActivity(address, network = 'mainnet', fetcher = fetch) {
-  const base = network === 'mainnet' ? 'https://mempool.space/api' : 'https://mempool.space/signet/api';
-  const r = await fetcher(`${base}/address/${address}`);
-  if (!r.ok) throw new Error(`Explorer returned ${r.status}.`);
-  const j = await r.json(), c = j.chain_stats || {}, m = j.mempool_stats || {};
+  const bases = network === 'mainnet' ? ['https://mempool.space/api', 'https://blockstream.info/api'] : ['https://mempool.space/signet/api'];
+  let j, err;
+  for (const base of bases) {
+    try {
+      const r = await fetcher(`${base}/address/${address}`);
+      if (!r.ok) throw new Error(`Explorer returned ${r.status}.`);
+      j = await r.json(); break;
+    } catch (x) { err = x; }
+  }
+  if (!j) throw err;
+  const c = j.chain_stats || {}, m = j.mempool_stats || {};
   return { sats: Number(c.funded_txo_sum || 0) - Number(c.spent_txo_sum || 0) + Number(m.funded_txo_sum || 0) - Number(m.spent_txo_sum || 0), txs: Number(c.tx_count || 0) + Number(m.tx_count || 0) };
 }

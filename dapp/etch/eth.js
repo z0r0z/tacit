@@ -182,9 +182,17 @@ export async function listEtches(read, hosts, { span = LOG_SPAN, at = 4 } = {}) 
     const symbol = new TextDecoder().decode(Uint8Array.from(d.slice(4 * 64, 4 * 64 + len * 2).match(/../g) || [], (b) => parseInt(b, 16)));
     out.push({ id: token, chain: 'eth', ticker: symbol, decimals: parseInt(d.slice(64, 128), 16), cid: /^0x0+$/.test(cid) ? null : cidString(cid), height: parseInt(l.blockNumber, 16), etchTxid: l.transactionHash, minter, name: '', logo: null, verified: false, mintable: false, holders: 0, later: false, same: 0, supply: null, at: 0 });
   }
+  // one block-time read per block that holds an etch, `at` at a time
+  const heights = [...new Set(out.map((a) => a.height))];
+  let nh = 0;
   await Promise.all([
     multi(read, out.map((a) => ({ to: a.id, data: SEL.totalSupply }))).then((got) => out.forEach((a, i) => { try { if (got[i]) a.supply = BigInt(got[i]); } catch { /* a supply that cannot be read is not shown */ } })),
-    ...[...new Set(out.map((a) => a.height))].map(async (h) => { try { const ts = Number((await read('eth_getBlockByNumber', ['0x' + h.toString(16), false]))?.timestamp); for (const a of out) if (a.height === h) a.at = ts || 0; } catch { /* the date is a convenience */ } }),
+    ...Array.from({ length: Math.min(at, heights.length) }, async () => {
+      while (nh < heights.length) {
+        const h = heights[nh++];
+        try { const ts = Number((await read('eth_getBlockByNumber', ['0x' + h.toString(16), false]))?.timestamp); for (const a of out) if (a.height === h) a.at = ts || 0; } catch { /* the date is a convenience */ }
+      }
+    }),
   ]);
   const by = new Map();
   for (const a of out.sort((x, y) => x.height - y.height)) { const k = a.ticker.toLowerCase(); (by.get(k) || by.set(k, []).get(k)).push(a); }

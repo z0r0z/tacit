@@ -62,11 +62,14 @@ async function read() {
   return null;
 }
 
+// paints the strip once it is parsed; a page without one stops looking when its document has been read
 const whenParsed = (f) => {
   const get = () => document.getElementById('pxs');
   if (get()) return f(get());
+  if (document.readyState !== 'loading') return;
   const mo = new MutationObserver(() => { if (get()) { mo.disconnect(); f(get()); } });
   mo.observe(document, { childList: true, subtree: true });
+  document.addEventListener('DOMContentLoaded', () => { mo.disconnect(); const el = get(); if (el) f(el); }, { once: true });
 };
 
 if (!window.__tacitAway) {

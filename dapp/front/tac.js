@@ -685,7 +685,7 @@ document.addEventListener('click', (e) => {
   tacMoveGo(b.dataset.tacMove, b);
 });
 function tacPool() {
-  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=65bf75e9').then((m) => {
+  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=adc016b4').then((m) => {
     const api = m.makeTacPool({
       key: () => (S.key ? { pubHex: S.key.pubHex } : null),
       priv: () => walletPriv(),

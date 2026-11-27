@@ -1,5 +1,5 @@
-import { HISTORICAL_MESSAGES, inspectStorage, decryptPrivkey, signatureResult, addressActivity } from '/recover/core.js?cb=46e72e78';
-import { createRecoveryUI } from '/recover/ui.js?cb=23cbe1ca';
+import { HISTORICAL_MESSAGES, inspectStorage, decryptPrivkey, signatureResult, addressActivity } from '/recover/core.js?cb=9e17ec3c';
+import { createRecoveryUI } from '/recover/ui.js?cb=8693e33f';
 
 const decode = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 async function signAttempt({ provider, message, protocol }) {
@@ -17,6 +17,9 @@ async function signAttempt({ provider, message, protocol }) {
     const signed = await S.request('signMessage', { address, message: text, protocol: protocol === 'ecdsa' ? 'ECDSA' : 'BIP322' });
     if (signed?.status !== 'success') throw new Error('Xverse signing was cancelled.'); sig = decode(signed.result.signature);
   }
-  const result = signatureResult(sig, 'mainnet'); sig.fill(0); result.activity = await addressActivity(result.address); return result;
+  const result = signatureResult(sig, 'mainnet'); sig.fill(0);
+  // Keep the derived key when the explorer is down; the page offers a retry and still lets the key be revealed.
+  try { result.activity = await addressActivity(result.address); } catch (x) { result.activity = null; result.activityError = x.message; }
+  return result;
 }
 createRecoveryUI({ root: document.querySelector('#recover'), storage: localStorage, inspect: inspectStorage, decrypt: decryptPrivkey, activity: addressActivity, signAttempt });

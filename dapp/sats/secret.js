@@ -71,7 +71,7 @@ async function esplora(tacit, p) {
   for (const base of [tacit.NET.api, tacit.NET.api2]) {
     if (!base) continue;
     try {
-      const r = await fetch(base + p);
+      const r = await fetch(base + p, { signal: AbortSignal.timeout?.(10_000) });   // a stalled explorer falls through to the next
       if (r.status === 404) return null;
       if (r.ok) return await r.json();
       last = new Error(`${p}: HTTP ${r.status}`);

@@ -10,4 +10,11 @@ createRecoveryUI({root,storage,inspect:()=>({slots:[{key:'slot',network:'mainnet
 assert.match(root.textContent,/A saved wallet was found/); assert.equal(root.querySelector('.advanced').open,false); assert.equal(root.querySelectorAll('.provider').length,2);
 root.querySelector('input').value='passphrase';root.querySelector('form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await new Promise(r=>setTimeout(r));
 assert.equal(root.querySelector('.secret code').textContent,'00'.repeat(31)+'01');root.querySelectorAll('.secret button')[1].click();assert.equal(root.querySelector('.secret'),null);
+const priv2=new Uint8Array(32);priv2[31]=2;
+createRecoveryUI({root,storage,inspect:()=>({slots:[],identities:[]}),decrypt:async()=>{},activity:async()=>({sats:0,txs:1}),signAttempt:async()=>({priv:priv2,address:'bc1qsig',activity:null,activityError:'Explorer returned 429.'})});
+root.querySelector('.attempt-actions button').click();await new Promise(r=>setTimeout(r));
+assert.match(root.textContent,/Activity could not be checked/);
+root.querySelector('.reveal').click();assert.equal(root.querySelector('.secret code').textContent,'00'.repeat(31)+'02');
+root.querySelectorAll('.secret button')[1].click();root.querySelector('.reveal').click();assert.equal(root.querySelector('.secret code').textContent,'00'.repeat(31)+'02');
+root.querySelector('.retry').click();await new Promise(r=>setTimeout(r));assert.match(root.textContent,/Activity found/);
 console.log('recover ui: ok');

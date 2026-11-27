@@ -66,7 +66,7 @@
   paint();
   addEventListener('storage', (e) => { if (!e.key || e.key.startsWith(OUT) || e.key.startsWith(IN) || e.key === PLANS) paint(); });
   addEventListener('focus', paint);
-  setInterval(paint, 30e3);
+  setInterval(() => { if (!document.hidden) paint(); }, 30e3);
 })();
 
 (() => {
@@ -86,7 +86,7 @@
     paint();
     onActivity(paint);
     addEventListener('focus', paint);
-    setInterval(paint, 30e3);
+    setInterval(() => { if (!document.hidden) paint(); }, 30e3);
   }).catch(() => {});
 })();
 

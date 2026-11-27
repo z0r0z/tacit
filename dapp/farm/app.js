@@ -223,7 +223,9 @@ function chefsPick(list) {
 let FARMS = farms(), readTimer = 0;
 async function readAll() {
   clearTimeout(readTimer);
-  readTimer = setTimeout(() => { if (!document.hidden && !Z.busy) readAll(); else readTimer = setTimeout(readAll, 30e3); }, 120e3);
+  // a hidden or busy tab re-checks every 30 s without reading; coming back to the tab reads at once
+  const tick = () => { if (!document.hidden && !Z.busy) readAll(); else readTimer = setTimeout(tick, 30e3); };
+  readTimer = setTimeout(tick, 120e3);
   const facts = readPrecision(call).catch(() => null);
   const spot = readSpot((calls) => Promise.all(calls.map((c) => call(c).catch(() => null))));
   const prog = api('/farm/program?network=mainnet');
