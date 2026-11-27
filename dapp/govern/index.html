@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /govern/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/govern/app.js?cb=64a1196e">
+<link rel="modulepreload" href="/govern/app.js?cb=0c348385">
 <link rel="modulepreload" href="/trade/connect.js?cb=514272b7">
 <link rel="modulepreload" href="/walletconnect.js?cb=4740866f">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -148,29 +148,63 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .gate .kv b .linkbtn { margin-left: 8px; font-size: 11.5px; color: var(--mute); }
 .gate .done h2 { margin-bottom: 8px; }
 /* governance */
-.gate { max-width: 720px; }
-.bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.gov { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; margin-top: 22px; }
+@media (max-width: 860px) { .gov { grid-template-columns: 1fr; } .side { position: static; } }
+.gate { max-width: none; margin: 0; padding: 26px 28px; }
+@media (max-width: 480px) { .gate { padding: 20px 16px; } }
+.side { position: sticky; top: 16px; }
+.side .btn { margin-top: 14px; }
+.side-rule { border-top: 1px solid var(--hair); margin: 14px 0 2px; }
+.side .note { margin-top: 10px; }
+.eyebrow a { text-decoration: none; }
+@media (hover: hover) { .eyebrow a:hover { color: var(--ink); } }
+.bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip-f { padding: 6px 13px; border: 1px solid var(--hair-2); border-radius: 999px; background: transparent; cursor: pointer; font-size: 12px; color: var(--mute); }
 .chip-f.on { background: var(--ink); color: var(--card); border-color: var(--ink); }
 .btn.sm { width: auto; min-height: 36px; padding: 6px 14px; margin: 0; font-size: 12.5px; border-radius: 10px; }
 .props { display: grid; gap: 10px; }
-.prop { display: grid; gap: 4px; padding: 14px 16px; border: 1px solid var(--hair); border-radius: 12px; text-decoration: none; background: var(--field); }
+.prop { display: grid; gap: 4px; padding: 14px 16px; border: 1px solid var(--hair); border-radius: 12px; text-decoration: none; background: var(--field); transition: border-color .15s; }
 .prop b { font-weight: 500; }
 @media (hover: hover) { .prop:hover { border-color: var(--ink); } }
-.ptitle { font: 400 clamp(26px, 4vw, 34px)/1.1 var(--serif); letter-spacing: -.015em; margin: 0 0 12px; }
+.ptitle { font: 400 clamp(28px, 4vw, 38px)/1.08 var(--serif); letter-spacing: -.015em; margin: 0 0 10px; }
+.lede { margin: 0 0 22px; font-size: 13px; color: var(--mute); max-width: 60ch; }
 .body { white-space: pre-wrap; margin: 16px 0; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
 .res { margin-bottom: 10px; }
 .track { height: 8px; border-radius: 4px; background: var(--hair); overflow: hidden; }
 .track i { display: block; height: 100%; background: var(--ink); }
 .ballot { margin-top: 18px; padding: 16px; border: 1px solid var(--hair-2); border-radius: 14px; }
 .opt { display: flex; gap: 10px; align-items: center; padding: 7px 0; cursor: pointer; }
-.form { display: grid; gap: 14px; }
-.form label, .lbl { display: grid; gap: 5px; font-size: 12px; color: var(--mute); }
-.fld { width: 100%; padding: 10px 12px; border: 1px solid var(--hair-2); border-radius: 10px; background: var(--field); color: var(--ink); font-size: 13px; }
-.crow { display: flex; gap: 8px; margin-bottom: 8px; }
-.two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-@media (max-width: 480px) { .two { grid-template-columns: 1fr; } }
+/* the form */
+.form { display: grid; gap: 20px; }
+.f { display: grid; gap: 8px; min-width: 0; }
+.lbl { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.cnt { font-style: normal; letter-spacing: 0; text-transform: none; font-size: 11px; opacity: .8; }
+.fld { width: 100%; min-height: 48px; padding: 12px 14px; border: 1px solid var(--hair-2); border-radius: 12px; background: var(--field); color: var(--ink); font-size: 13.5px; transition: border-color .15s, box-shadow .15s; }
+.fld::placeholder { color: var(--mute); opacity: .7; }
+.fld:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 12%, transparent); }
+textarea.fld { resize: vertical; min-height: 140px; line-height: 1.6; }
+select.fld { appearance: none; -webkit-appearance: none; padding-right: 44px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23999' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 18px center; background-size: 12px 8px; }
+.choices { display: grid; gap: 8px; }
+.crow { position: relative; display: flex; align-items: center; }
+.crow .cn { position: absolute; left: 12px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: var(--hair); font-size: 11px; color: var(--mute); pointer-events: none; }
+.crow .fld { padding-left: 46px; padding-right: 44px; }
+.cx { position: absolute; right: 6px; width: 36px; height: 36px; border: 0; border-radius: 9px; background: transparent; color: var(--mute); font-size: 18px; line-height: 1; cursor: pointer; }
+@media (hover: hover) { .cx:hover { background: var(--hair); color: var(--ink); } }
+.add { justify-self: start; padding: 8px 2px; border: 0; background: none; color: var(--ink); font-size: 12.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.two { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; }
+@media (max-width: 560px) { .two { grid-template-columns: 1fr; } }
+.seg { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; padding: 3px; min-height: 48px; border: 1px solid var(--hair-2); border-radius: 12px; background: var(--field); }
+.seg button { border: 0; border-radius: 9px; background: transparent; color: var(--mute); font-size: 12.5px; cursor: pointer; transition: background .15s, color .15s; }
+.seg button.on { background: var(--ink); color: var(--card); }
+@media (hover: hover) { .seg button:not(.on):hover { color: var(--ink); background: var(--hair); } }
+.unit { position: relative; display: block; }
+.unit .fld { padding-right: 52px; }
+.unit i { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); font-style: normal; font-size: 12px; color: var(--mute); pointer-events: none; }
+.form .btn { margin-top: 4px; }
+.form .status:empty { display: none; }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -479,11 +513,11 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <main>
     <section class="hero" aria-labelledby="h">
       <h1 id="h"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span>tacit <em>governance</em></span></h1>
-      <p class="sub">TAC holders signal what they want. Results advise; they move nothing by themselves.</p>
+      <p class="sub">Signal proposals for TAC holders: ask a question, and holders on Ethereum and Bitcoin vote with their TAC.</p>
       <noscript><p class="note">This page needs JavaScript.</p></noscript>
     </section>
 
-    <section class="panel gate" id="app" aria-live="polite"></section>
+    <div class="gov"><section class="panel gate" id="app" aria-live="polite"></section><aside class="panel side" id="side" aria-label="Your TAC"></aside></div>
   </main>
 
   <!-- chrome:foot:begin -->
@@ -512,6 +546,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/govern/app.js?cb=64a1196e"></script>
+<script type="module" src="/govern/app.js?cb=0c348385"></script>
 </body>
 </html>

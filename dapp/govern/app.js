@@ -73,8 +73,22 @@ function render() {
   const r = S.route;
   root.innerHTML = r.name === 'new' ? newView() : r.name === 'detail' ? detailView() : listView();
   wire(root);
+  renderSide();
 }
-const holdingNote = () => `<p class="note">TAC on Bitcoin? <a href="${CLASSIC}">Vote or propose privately in the Classic app</a>; those votes land in the same tally. Weight is the TAC held when the proposal opened.</p>`;
+// the holder's own line, beside every view: who is connected, their TAC, and the other way in
+function renderSide() {
+  const side = $('#side'); if (!side) return;
+  const on = !!W.account;
+  side.innerHTML = `<p class="eyebrow">Your TAC</p>
+    <div class="kv"><span>Account</span><b>${on ? addrView(W.account, 5) : 'Not connected'}</b></div>
+    <div class="kv"><span>On Ethereum</span><b class="num">${on ? (S.bal == null ? '…' : `${esc(fmtUnits(S.bal, 18, 2))} TAC`) : '—'}</b></div>
+    <div class="kv"><span>To open a proposal</span><b class="num">${PROPOSE_FLOOR_TAC} TAC</b></div>
+    ${on ? '' : '<button class="btn ghost" type="button" id="side-connect">Connect wallet</button>'}
+    <div class="side-rule"></div>
+    <p class="note">Your vote weighs the TAC you held when the proposal opened.</p>
+    <p class="note">Holding TAC on Bitcoin? <a href="${CLASSIC}">Vote and propose privately in the Classic app</a>. Both count in one tally.</p>`;
+  $('#side-connect', side)?.addEventListener('click', () => conn.connect());
+}
 
 function listView() {
   const chips = [['active', 'Open'], ['ended', 'To tally'], ['closed', 'Closed'], ['', 'All']]
@@ -93,7 +107,7 @@ function listView() {
     }).join('') : '<p class="empty">No proposals here yet.</p>';
   }
   return `<div class="bar"><div class="chips">${chips}</div><a class="btn ghost sm" href="#new">New proposal</a></div>
-    <div class="props">${body}</div>${holdingNote()}`;
+    <div class="props">${body}</div>`;
 }
 
 function detailView() {
@@ -122,7 +136,7 @@ function detailView() {
     act = `<div class="ballot"><p class="note" style="margin:0">Voting closed. The result is recorded when someone finalizes it.</p>
       <button class="btn ghost" type="button" id="fin" ${S.busy ? 'disabled' : ''}>Finalize result</button><p class="status" id="note" aria-live="polite"></p></div>`;
   } else {
-    act = `<div class="ballot"><p class="note" style="margin:0">${p.result?.passed ? `Passed: “${esc(p.result.winner_choice)}” with ${esc(fmtTac(p.result.winner_weight))} TAC.` : 'Did not pass.'} Advisory result${p.result_cid ? ', pinned to IPFS' : ''}.</p></div>`;
+    act = `<div class="ballot"><p class="note" style="margin:0">${p.result?.passed ? `Passed: “${esc(p.result.winner_choice)}” with ${esc(fmtTac(p.result.winner_weight))} TAC.` : 'Did not pass.'} Final tally${p.result_cid ? ', pinned to IPFS' : ''}.</p></div>`;
   }
   return `${back}<h2 class="ptitle">${esc(p.title)}</h2>
     <div class="kv"><span>Status</span><b>${esc(statusWord(p))}</b></div>
@@ -133,26 +147,30 @@ function detailView() {
     ${quorum > 0n ? `<p class="note">Quorum ${esc(fmtTac(sum.toString()))} / ${esc(fmtTac(quorum.toString()))} TAC${sum >= quorum ? ' · met' : ''}</p>` : ''}
     ${act}
     ${p.cid ? `<p class="note"><a href="https://ipfs.filebase.io/ipfs/${esc(p.cid)}" target="_blank" rel="noopener">Proposal on IPFS</a>${p.result_cid ? ` · <a href="https://ipfs.filebase.io/ipfs/${esc(p.result_cid)}" target="_blank" rel="noopener">Result</a>` : ''}</p>` : ''}
-    ${p.status === 'active' ? holdingNote() : ''}`;
+`;
 }
 
+const DURATIONS = [['86400', '1 day'], ['259200', '3 days'], ['604800', '7 days'], ['1209600', '14 days'], ['2592000', '30 days']];
 function newView() {
   const on = !!W.account, enough = (S.bal ?? 0n) >= BigInt(PROPOSE_FLOOR_TAC) * 10n ** 18n;
   const d = S.draft || (S.draft = { title: '', body: '', category: 'general', dur: '604800', quorum: '', choices: ['Yes', 'No'] });
+  const label = S.busy ? 'Waiting for your wallet…' : !on ? 'Connect wallet' : S.bal != null && !enough ? `Needs ${PROPOSE_FLOOR_TAC} TAC to open` : 'Sign and open';
   return `<p class="eyebrow"><a href="#">← All proposals</a></p><h2 class="ptitle">New proposal</h2>
-    <p class="note" style="margin:0 0 14px">A signal among TAC holders: it records what holders want and moves nothing by itself. You need ${PROPOSE_FLOOR_TAC} TAC${on && S.bal != null ? ` (you hold ${esc(fmtUnits(S.bal, 18, 2))})` : ''} when it opens.</p>
+    <p class="lede">Put a question to TAC holders. They vote with the TAC they hold, on Ethereum or Bitcoin, for as long as you choose.</p>
     <form class="form" id="newform">
-      <label>Title<input class="fld" id="f-title" maxlength="140" value="${esc(d.title)}" required></label>
-      <label>Details<textarea class="fld" id="f-body" rows="7" maxlength="12000" placeholder="What you propose, why, and any links">${esc(d.body)}</textarea></label>
-      <label>Topic<select class="fld" id="f-cat">${CATEGORIES.map(([k, l]) => `<option value="${k}"${d.category === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
-      <div><div class="lbl">Choices</div><div id="f-choices">${d.choices.map((c, i) => `<div class="crow"><input class="fld f-ch" data-i="${i}" maxlength="80" value="${esc(c)}">${d.choices.length > 2 ? `<button class="btn ghost sm" type="button" data-del="${i}" aria-label="Remove choice">✕</button>` : ''}</div>`).join('')}</div>
-        ${d.choices.length < 8 ? '<button class="linkbtn" type="button" id="f-add">Add a choice</button>' : ''}</div>
-      <div class="two"><label>Voting open for<select class="fld" id="f-dur">${[['86400', '1 day'], ['259200', '3 days'], ['604800', '7 days'], ['1209600', '14 days'], ['2592000', '30 days']].map(([v, l]) => `<option value="${v}"${d.dur === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
-        <label>Quorum, TAC (optional)<input class="fld" id="f-quorum" inputmode="numeric" placeholder="none" value="${esc(d.quorum)}"></label></div>
-      <button class="btn" type="submit" ${S.busy || (on && S.bal != null && !enough) ? 'disabled' : ''}>${S.busy ? 'Waiting for your wallet…' : !on ? 'Connect wallet' : S.bal != null && !enough ? `Needs ${PROPOSE_FLOOR_TAC} TAC` : 'Sign and open'}</button>
+      <label class="f"><span class="lbl">Title <i class="cnt" id="f-cnt">${d.title.length}/140</i></span><input class="fld" id="f-title" maxlength="140" value="${esc(d.title)}" placeholder="A short question holders can answer" required></label>
+      <label class="f"><span class="lbl">Details</span><textarea class="fld" id="f-body" rows="7" maxlength="12000" placeholder="What you propose, why, and any links">${esc(d.body)}</textarea></label>
+      <label class="f"><span class="lbl">Topic</span><select class="fld" id="f-cat">${CATEGORIES.map(([k, l]) => `<option value="${k}"${d.category === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+      <div class="f"><span class="lbl">Choices</span>
+        <div class="choices">${d.choices.map((c, i) => `<div class="crow"><span class="cn">${i + 1}</span><input class="fld f-ch" data-i="${i}" maxlength="80" value="${esc(c)}" placeholder="Choice ${i + 1}" aria-label="Choice ${i + 1}">${d.choices.length > 2 ? `<button class="cx" type="button" data-del="${i}" aria-label="Remove choice ${i + 1}">×</button>` : ''}</div>`).join('')}</div>
+        ${d.choices.length < 8 ? '<button class="add" type="button" id="f-add">+ Add a choice</button>' : ''}</div>
+      <div class="two">
+        <div class="f"><span class="lbl">Voting open for</span><div class="seg" role="radiogroup" aria-label="Voting open for">${DURATIONS.map(([v, l]) => `<button type="button" role="radio" aria-checked="${d.dur === v}" class="${d.dur === v ? 'on' : ''}" data-dur="${v}">${l.replace(' days', 'd').replace(' day', 'd')}</button>`).join('')}</div></div>
+        <label class="f"><span class="lbl">Quorum <i class="cnt">optional</i></span><span class="unit"><input class="fld" id="f-quorum" inputmode="numeric" placeholder="None" value="${esc(d.quorum)}"><i>TAC</i></span></label>
+      </div>
+      <button class="btn" type="submit" ${S.busy || (on && S.bal != null && !enough) ? 'disabled' : ''}>${esc(label)}</button>
       <p class="status" id="note" aria-live="polite"></p>
-    </form>
-    <p class="note">TAC on Bitcoin? <a href="${CLASSIC}">Open it privately in the Classic app</a>.</p>`;
+    </form>`;
 }
 
 // ── actions ──
@@ -168,12 +186,14 @@ function wire(root) {
   const form = $('#newform', root);
   if (form) {
     const d = S.draft, keep = () => {
-      d.title = $('#f-title').value; d.body = $('#f-body').value; d.category = $('#f-cat').value; d.dur = $('#f-dur').value; d.quorum = $('#f-quorum').value;
+      d.title = $('#f-title').value; d.body = $('#f-body').value; d.category = $('#f-cat').value; d.quorum = $('#f-quorum').value;
+      const cnt = $('#f-cnt'); if (cnt) cnt.textContent = `${d.title.length}/140`;
       root.querySelectorAll('.f-ch').forEach((i) => { d.choices[+i.dataset.i] = i.value; });
     };
     form.oninput = keep;
     $('#f-add')?.addEventListener('click', () => { keep(); d.choices.push(''); render(); });
     root.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => { keep(); d.choices.splice(+b.dataset.del, 1); render(); }; });
+    root.querySelectorAll('[data-dur]').forEach((b) => { b.onclick = () => { keep(); d.dur = b.dataset.dur; render(); }; });
     form.onsubmit = (e) => { e.preventDefault(); keep(); openProposal(); };
   }
 }
@@ -230,6 +250,7 @@ function route() {
   if (/^[0-9a-f]{64}$/.test(h)) { S.route = { name: 'detail', id: h }; loadProposal(h); }
   else if (h === 'new') { S.route = { name: 'new' }; render(); readBalance(); }
   else { S.route = { name: 'list' }; loadList(); }
+  if (S.bal == null) readBalance();
   window.scrollTo(0, 0);
 }
 addEventListener('hashchange', route);
