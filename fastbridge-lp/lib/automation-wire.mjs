@@ -137,7 +137,11 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
         return t;
       };
       const ownEthNotes = ethNotes;
-      const publicWei = async () => BigInt(await rpc('eth_getBalance', [address, 'latest']));
+      const publicWei = async (a) => BigInt(await rpc('eth_getBalance', [a || address, 'latest']));
+      // a fresh address for each swap: the key is the provider's own key hashed with a counter, so it is always found again from the key and the count (nothing else is kept to lose)
+      const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+      const freshPriv = (i) => { for (let c = 0; c < 8; c++) { const h = keccak256(Uint8Array.from([...key, ...Buffer.from('tacit-rebalance-eth-v1'), (i >>> 24) & 255, (i >>> 16) & 255, (i >>> 8) & 255, i & 255, c])); const k = BigInt('0x' + hex(h)); if (k > 0n && k < SECP_N) return h; } throw new Error('no key'); };
+      const freshAcct = (i) => ux.account(freshPriv(i));
       const ethPerBtc = () => { const c = rateFeed && rateFeed.current(); return c && Number(c.ethPerBtc) > 0 ? Number(c.ethPerBtc) : null; };   // (feed.rate() is a { num, den } ratio, not a price)
       // the Bitcoin leg: sats spent from the reverse address (its confirmed plain coins that no swap names), one output to the venue's vault, one OP_RETURN with the memo, change back to the
       // reverse address; never below `keepSats` left there for the ETH-for-BTC side. Built and signed here, kept by the rebalancer, then sent: the same bytes if it is sent again.
@@ -184,27 +188,29 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
           const priv = BigInt(await service.free()) * UNITW, spare = pub > sc.reserveWei ? pub - sc.reserveWei : 0n;
           return { ethWei: priv + spare, sats: Number(await satsAll()) };
         },
-        unshield: async ({ units }) => {
+        unshield: async ({ units, to }) => {
           const want = BigInt(units), note = (await ownEthNotes()).filter((n) => BigInt(n.value) >= want).sort((a, b) => (BigInt(a.value) < BigInt(b.value) ? -1 : 1))[0];
           if (!note) throw new Error(`no single private note covers ${want} pool units`);
-          const r = await ux.sendUnwrap({ note, walletPriv: key, recipient: address, amount: want });
+          const r = await ux.sendUnwrap({ note, walletPriv: key, recipient: to || address, amount: want });
           notesLast = null;
           return r;
         },
-        ethBalance: publicWei,
-        ethNonce: () => rpc('eth_getTransactionCount', [address, 'pending']),
+        ethBalance: (a) => publicWei(a),
+        ethNonce: (a) => rpc('eth_getTransactionCount', [a || address, 'pending']),
+        freshAddress: (i) => freshAcct(i).address,
         ethReceipt: (tx) => rpc('eth_getTransactionReceipt', [tx]).catch(() => null),
-        sendEth: async ({ to, value, memo }) => {
+        sendEth: async ({ to, value, memo, fi = null }) => {
+          const me = fi != null ? freshAcct(fi) : acct;
           // the send is a plain transfer from this address to the venue's vault with the memo as its data; the amount can never exceed the swap limit, nor the vault be this address
-          if (!/^0x[0-9a-fA-F]{40}$/.test(to) || lc(to) === lc(address)) throw new Error('the vault address is not usable: nothing sent');
+          if (!/^0x[0-9a-fA-F]{40}$/.test(to) || lc(to) === lc(address) || lc(to) === lc(me.address)) throw new Error('the vault address is not usable: nothing sent');
           if (BigInt(value) > rc.maxSwapWei) throw new Error('the amount is over the swap limit: nothing sent');
           if (!/^[\x20-\x7e]{1,120}$/.test(memo)) throw new Error('the memo is not plain text: nothing sent');
           const data = '0x' + Buffer.from(memo, 'utf8').toString('hex');
-          const nonce = BigInt(await rpc('eth_getTransactionCount', [address, 'pending'])), base = BigInt(await rpc('eth_gasPrice', [])), tip = 1_500_000_000n;
-          const est = BigInt(await rpc('eth_estimateGas', [{ from: address, to, value: '0x' + BigInt(value).toString(16), data }]));
+          const nonce = BigInt(await rpc('eth_getTransactionCount', [me.address, 'pending'])), base = BigInt(await rpc('eth_gasPrice', [])), tip = 1_500_000_000n;
+          const est = BigInt(await rpc('eth_estimateGas', [{ from: me.address, to, value: '0x' + BigInt(value).toString(16), data }]));
           const gasLimit = est * 13n / 10n;
           if (gasLimit > 120000n) throw new Error('the transfer needs more gas than a plain transfer with a memo should: nothing sent');
-          const signed = evmTx.signEip1559({ chainId: 1n, nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip, gasLimit, to, value: BigInt(value), data }, acct.priv);
+          const signed = evmTx.signEip1559({ chainId: 1n, nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip, gasLimit, to, value: BigInt(value), data }, me.priv);
           return rpc('eth_sendRawTransaction', [signed.raw]);
         },
         // how many times the venue's router has paid out of the vault in about the last 30 hours (TransferOut with the vault as its first topic): read from the Ethereum nodes

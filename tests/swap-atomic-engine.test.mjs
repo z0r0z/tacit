@@ -58,14 +58,15 @@ test('Bitcoin for ETH on the page, from the real engine: the balance, the quote 
   assert.equal(go(m).textContent, 'Swap BTC → ETH');
   assert.equal(m.text('a-out'), '0.0353152', '3,531,520 pool units, as the provider priced it');
   const r = rows(m);
-  assert.equal(r.Price, '1 BTC = 35.315 ETH');
-  assert.equal(r.Market, '1 BTC = 35.6 ETH');
-  assert.equal(r['You get'], '0.80% less than the market price');
+  assert.equal(r['Market rate'], '1 BTC = 35.6 ETH');
+  assert.match(r.Fee, /^0\.000284 ETH · 0\.80%$/);
+  assert.equal(r['You receive'], '0.0353152 ETH');
+  assert.equal(r['Effective rate'], '1 BTC = 35.097 ETH');
   assert.equal(r.Provider, 'Test provider', 'the provider, and no fee it did not name');
-  assert.match(r['Bitcoin fee'], /^about \d+ sats$/);
+  assert.match(r['Bitcoin network fee'], /^≈ \d+ sats$/);
   // (a Bitcoin block is ahead: the time is a range, as the lane says it from swap/atomic.js etaSpan)
-  assert.match(r.Time, /^about \d+(\u2060–\u2060\d+)? minutes$/);
-  assert.equal(r['If it stops'], 'your BTC returns to you within about a day');
+  assert.match(r.Time, /^\d+(\u2060–\u2060\d+)? min$/);
+  assert.equal(r['If it stops'], 'BTC returns after about a day');
   go(m).click();
   const sent = await until(() => !m.$('a-sent').hidden && m.text('a-sent'), 'the swap under way');
   assert.match(sent, /0\.001 BTC → about 0\.0353152 ETH/);
@@ -94,15 +95,16 @@ test('ETH for Bitcoin on the page, from the real engine: a flip, the provider lo
   m.lane.set({ amt: '0.036' });
   await until(() => go(m).dataset.act === 'swap', 'a quote the lane will start');
   assert.equal(go(m).textContent, 'Swap ETH → BTC');
-  // the provider locks 100,539 sats; the user takes them with a transaction that pays its own fee out of the lock (550 sats in this world), so 99,989 arrive and that is what is shown
-  assert.equal(m.text('a-out'), '0.00099989');
+  // the provider locks 100,539 sats; the user takes them with a transaction whose 500-sat fee comes out of the lock, so 100,039 arrive and that is what is shown
+  assert.equal(m.text('a-out'), '0.00100039');
   const r = rows(m);
-  assert.match(r['Bitcoin fee'], /^about 550 sats, from the lock when you take it$/);
-  assert.equal(r.Price, '1 ETH = 0.027928 BTC');
-  assert.equal(r.Market, '1 ETH = 0.02809 BTC');
-  assert.equal(r['You get'], '0.58% less than the market price');
+  assert.equal(r['Bitcoin network fee'], '≈ 500 sats, taken from your BTC');
+  assert.equal(r['Market rate'], '1 ETH = 0.02809 BTC');
+  assert.equal(r.Fee, '≈ 587 sats · 0.58%');
+  assert.equal(r['You receive'], '0.00100039 BTC');
+  assert.equal(r['Effective rate'], '1 ETH = 0.027789 BTC');
   // (the provider pays for its own lock; the user's take comes out of it, and its fee is the row above)
-  assert.equal(r['If it stops'], 'your ETH returns to your private balance after about 4 hours');
+  assert.equal(r['If it stops'], 'ETH returns after about 4 hours');
   go(m).click();
   await until(() => !m.$('a-sent').hidden, 'the swap under way');
   await w.run(async () => (await w.pair.records()).some((r) => r.dir === 'e2b' && r.state === 'done'));
@@ -142,8 +144,8 @@ test('a Bitcoin address that cannot pay the amount and the fee sends the user to
   await m.lane.show();
   m.lane.set({ amt: '0.001' });
   await until(() => go(m).dataset.act === 'fund', 'the lane offers to add sats');
-  assert.equal(go(m).textContent, 'Add sats for the Bitcoin fee');
-  assert.match(rows(m)['Bitcoin fee'], /^about \d+ sats$/, 'it says what the fee is');
+  assert.equal(go(m).textContent, 'Add BTC for the fee');
+  assert.match(rows(m)['Bitcoin network fee'], /^≈ \d+ sats$/, 'it says what the fee is');
   assert.doesNotMatch(m.text('a-q'), /market/, 'and does not call it a price');
   go(m).click();
   assert.equal(m.calls.fund, 1, 'pressing it opens the way to add sats');
@@ -164,7 +166,7 @@ test('the lane\'s limits are the providers\': under the least a provider takes i
   // (a quote that small pays a Bitcoin fee over 2% of it, which is accepted before the swap: either way the quote is there)
   await until(() => go(m).dataset.act === 'swap' || go(m).dataset.act === 'acceptFee', 'a quote at 0.0003 BTC');
   m.lane.set({ amt: '0.002' });
-  await until(() => /^Most a provider takes is 0\.001 BTC$/.test(go(m).textContent), 'the most a provider can take now (what its pool ETH backs: 100,000 sats here)');
+  await until(() => /^Maximum 0\.001 BTC$/.test(go(m).textContent), 'the most a provider can take now (what its pool ETH backs: 100,000 sats here)');
   m.done();
 });
 
