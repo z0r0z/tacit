@@ -13,7 +13,7 @@ import { precisionPool, tacitPool, poolBook, perLevel, roundDown, CHART_STEPS } 
 import { readBook, planBuy as planBoardBuy, planSell as planBoardSell, refine as refineBoards, buildFill as buildBoardFill, BOARD_NAMES } from '/zboards.js?cb=e8d21aec';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=514272b7';
 import { takeEarly, hedgedRpc, nodeHealth, shareReads } from '/trade/rpc.js';
-import { mountFarm } from '/trade/farm.js?cb=431619ca';
+import { mountFarm } from '/trade/farm.js?cb=6111c81f';
 import { grp, sig, group, satsFmt, day as dayFmt, warm as warmFormatters } from '/trade/fmt.js?cb=172824e5';
 import { makePointsNote } from '/points-note.js?cb=40738db7';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
@@ -46,7 +46,7 @@ const batch = async (calls) => _internal.decAggregate3(await ethCall(MULTICALL3,
 const venues = makeEvmTradeVenues({ ethCall, keccak256: keccak_256 });
 const api = (path) => fetch(`${API}${path}`, { signal: AbortSignal.timeout(15e3) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 const PN = makePointsNote({ read: () => api('/leaderboard?day=today&limit=1') });
-PN.load().then(() => { if (S.quote && !S.quote.busy) renderQuote(S.quote); });
+setTimeout(() => PN.load().then(() => { if (S.quote && !S.quote.busy) renderQuote(S.quote); }), 1500);
 
 function privatePoolId(fee) {
   const hexBytes = (h) => Uint8Array.from(strip(h).match(/../g).map((x) => parseInt(x, 16)));
@@ -1296,8 +1296,19 @@ function wireWalletSheet(root, close) {
 
 const farm = mountFarm($('#farm'), {
   ethCall, batch, rpc, api, wallet, W, connect: () => connectWallet(), fmtUnits, parseUnits, esc, usd, ethUsd: () => D.ethUsd, txLink, gasPrice: () => D.gasPrice,
-  onDone: () => { readBalances().then(() => { renderBalance(); renderGo(); }); loadChain().then(paintAll).catch(() => {}); },
+  eager: false,
+  onDone: () => { readBalances().then(() => { renderBalance(); renderGo(); }); loadChain().then(paintSoon).catch(() => {}); },
 });
+
+// Price, chart, route and order-book reads own the first network turn. The farm
+// starts as it approaches the viewport, with a short fallback for tall screens.
+let farmStarted = false;
+const startFarm = () => { if (farmStarted) return; farmStarted = true; farm.refresh(); };
+if ('IntersectionObserver' in window) {
+  const farmIo = new IntersectionObserver(([e]) => { if (e.isIntersecting) { farmIo.disconnect(); startFarm(); } }, { rootMargin: '600px 0px' });
+  farmIo.observe($('#farm'));
+}
+setTimeout(startFarm, 2500);
 
 connect.restore();
 
@@ -1500,7 +1511,7 @@ $('#in-bal').addEventListener('click', () => {
 S.slip = (() => { try { const v = Number(localStorage.getItem('tacit-trade-slip')); return [50, 100, 300].includes(v) ? v : 50; } catch { return 50; } })();
 
 let amtTimer = 0;
-$('#amt').addEventListener('input', (e) => { S.amt = e.target.value; fitAmt(); clearTimeout(amtTimer); amtTimer = setTimeout(requote, 250); $('.p-ticket').classList.add('stale'); });
+$('#amt').addEventListener('input', (e) => { S.amt = e.target.value; fitAmt(); clearTimeout(amtTimer); amtTimer = setTimeout(requote, 180); $('.p-ticket').classList.add('stale'); });
 $('#amt').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('#go').disabled && !$('#go').hidden) $('#go').click(); });
 $('#flip').addEventListener('click', () => {
   if (S.busy) return;
@@ -1533,6 +1544,8 @@ $('#ladders').addEventListener('mouseleave', () => setPeek('')); $('#ladders').a
 const warm = () => getBitcoin().then((b) => b.session.load()).catch(() => {});
 $('#ladders').addEventListener('mouseover', (e) => { if (e.target.closest?.('[data-mine="open"],[data-mine="signin"]')) warm(); });
 $('#ladders').addEventListener('focusin', (e) => { if (e.target.closest?.('[data-mine="open"],[data-mine="signin"]')) warm(); });
+const warmBitcoinUi = (e) => { if (e.target.closest?.('[data-btc-alt], [data-btc-row], [data-btc], [data-venue="btc"]')) getBitcoin().catch(() => {}); };
+for (const type of ['pointerover', 'pointerdown', 'focusin']) document.addEventListener(type, warmBitcoinUi, { passive: true });
 $('#pin').addEventListener('click', (e) => { if (e.target.closest('#unpin') && !S.busy) { S.pin = null; renderPin(); requote(); renderBook(); } });
 $('#lane-seg').addEventListener('click', (e) => { const b = e.target.closest('[data-lane]'); if (b) setLane(b.dataset.lane); });
 $('.p-chart').addEventListener('click', (e) => {
@@ -1544,11 +1557,13 @@ $('.p-chart').addEventListener('click', (e) => {
   keepChart(); renderChart();
 });
 function paintAll() { renderHead(); renderLanes(); renderChart(); renderBook(); renderPin(); renderAbout(); farm.paint(); renderBtcAlt(); renderBtcTicket(); if (S.quote) renderVenues(S.quote); }
+let paintFrame = 0;
+function paintSoon() { if (!paintFrame) paintFrame = requestAnimationFrame(() => { paintFrame = 0; paintAll(); }); }
 metric('trade_view', { once: true });
 if (FROM_LINK.src) metric(`trade_via_${FROM_LINK.src}`, { once: true });
 if (FROM_LINK.lane === 'btc') metric('lane_btc_link', { once: true });
 renderQuote(null); renderVenues(null); renderControls(); renderAbout(); renderLanes();
-const loads = [loadChain().then(paintAll), loadTapes().then(paintAll), loadBitcoin().then(paintAll), loadBoards().then(paintAll)];
+const loads = [loadChain().then(paintSoon), loadTapes().then(paintSoon), loadBitcoin().then(paintSoon), loadBoards().then(paintSoon)];
 loads[0].then(() => loadRange().then(renderBook, renderBook), () => { D.rangeDone = true; });
 setTimeout(warmFormatters, 0);
 Promise.allSettled(loads).then((rs) => {
@@ -1606,4 +1621,3 @@ function retrySoon() {
   setTimeout(() => { sooner++; poll(true); retrySoon(); }, 5000 * (sooner + 1));
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && now() - polledAt >= 60) poll(true); });
-
