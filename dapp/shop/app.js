@@ -1,5 +1,5 @@
-import { makeConnect } from '/trade/connect.js?cb=514272b7';
-import { esc } from '/trade/sheet.js?cb=d857446c';
+import { makeConnect } from '/trade/connect.js?cb=3f39e74c';
+import { esc } from '/trade/sheet.js?cb=4814776a';
 import { $, rpc } from '/trade/util.js?cb=9c8b4133';
 import { MULTICALL3, encodeBatch, decodeBatch } from '/trade/batch.js';
 import { readSpot, readPrecision } from '/trade/farm-read.js?cb=fb6ec72f';

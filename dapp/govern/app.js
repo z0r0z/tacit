@@ -1,10 +1,10 @@
-import { makeConnect } from '/trade/connect.js?cb=514272b7';
+import { makeConnect } from '/trade/connect.js?cb=3f39e74c';
 import { declinedWords } from '/wallet-prompts.js';
 import { addrView } from '/address-view.js?cb=58dd4914';
-import { esc } from '/trade/sheet.js?cb=d857446c';
+import { esc } from '/trade/sheet.js?cb=4814776a';
 import { API, $, fmtUnits, rpc } from '/trade/util.js?cb=9c8b4133';
 import { TAC as TAC_ERC20 } from '/trade/farm-read.js?cb=fb6ec72f';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=e9a3a06d';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=0394612e';
 import { openBtcWallet } from '/trade/btc-session.js?cb=26eb770f';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { isPasskeyAvailable } from '/prf-wallet.js';

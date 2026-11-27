@@ -9,24 +9,26 @@
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const CSS = `
-.bsheet { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: minmax(0, 1fr); place-items: start center; padding: 16px; overflow: auto; overflow-x: hidden; overscroll-behavior: contain; background: var(--scrim); backdrop-filter: blur(2px); }
+.bsheet { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: minmax(0, 1fr); place-items: start center; padding: 16px; overflow: auto; overflow-x: hidden; overscroll-behavior: contain; background: var(--scrim); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
 .bsheet.top { z-index: 1100; place-items: center; }
 .bsheet [hidden] { display: none !important; }
-.bsheet-in { --sx: 24px; --st: 24px; min-width: 0; width: min(560px, 100%); padding: var(--st) var(--sx) 28px; color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 18px; box-shadow: var(--float, var(--sheet-shadow)); text-align: left; animation: bsheet-rise .22s cubic-bezier(.2, .8, .2, 1); }
+.bsheet-in { --sx: 24px; --st: 24px; min-width: 0; width: min(560px, 100%); padding: var(--st) var(--sx) 28px; color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 22px; box-shadow: var(--sheet-shadow, var(--float)); text-align: left; animation: bsheet-rise .22s cubic-bezier(.2, .8, .2, 1); }
 @keyframes bsheet-rise { from { opacity: 0; transform: translateY(14px); } }
-.bsheet-head { display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 4; margin: calc(-1 * var(--st)) calc(-1 * var(--sx)) 8px; padding: var(--st) var(--sx) 14px; border-radius: 17px 17px 0 0; background: var(--card); }
+.bsheet-head { display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 4; margin: calc(-1 * var(--st)) calc(-1 * var(--sx)) 8px; padding: var(--st) var(--sx) 14px; border-radius: 21px 21px 0 0; background: var(--card); }
 @supports (animation-timeline: scroll()) {
   .bsheet-head { animation: bsheet-line linear both; animation-timeline: scroll(nearest); animation-range: 0 16px; }
   @keyframes bsheet-line { to { box-shadow: 0 1px 0 var(--hair); } }
 }
-.bsheet-head h2 { font: 400 32px/1 var(--serif); letter-spacing: -.01em; margin: 0; text-transform: none; color: var(--ink); }
+.bsheet-head h2 { font: 400 30px/1.05 var(--serif); letter-spacing: -.02em; margin: 0; text-transform: none; color: var(--ink); }
 .bsheet-head h2:focus { outline: none; }
-.bsheet .x { margin-left: auto; width: var(--tap, 44px); height: var(--tap, 44px); display: grid; place-items: center; padding: 0; font: inherit; font-size: 22px; line-height: 1; background: none; border: 0; border-radius: 12px; cursor: pointer; color: var(--mute); transition: color .15s, background-color .15s; }
-@media (hover: hover) { .bsheet .x:hover { color: var(--ink); background: var(--hair); } }
+.bsheet .x { margin-left: auto; width: var(--tap, 44px); height: var(--tap, 44px); display: grid; place-items: center; padding: 0; font: inherit; font-size: 22px; line-height: 1; background: none; border: 1px solid transparent; border-radius: 999px; cursor: pointer; color: var(--mute); transition: color .15s, background-color .15s, border-color .15s; }
+@media (hover: hover) { .bsheet .x:hover { color: var(--ink); background: var(--field); border-color: var(--hair); } }
+.bsheet .x:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
 .bsheet.wide .bsheet-head h2 { font-size: 28px; }
 @media (max-width: 640px) {
   .bsheet { padding: 0; place-items: end center; }
-  .bsheet-in { --sx: 16px; --st: 20px; width: 100%; padding-bottom: calc(24px + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: 18px 18px 0 0; }
+  .bsheet-in { --sx: 16px; --st: 24px; width: 100%; padding-bottom: calc(24px + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: 22px 22px 0 0; }
+  .bsheet-head::before { content: ''; position: absolute; top: 8px; left: 50%; width: 38px; height: 4px; margin-left: -19px; border-radius: 999px; background: var(--hair-2); }
 }
 @media (prefers-reduced-motion: reduce) { .bsheet-in { animation: none; } .bsheet-head { animation: none; } }
 
@@ -46,8 +48,9 @@ const CSS = `
 
 /* Which wallet signs: the front page's list, an icon and a name on each row */
 .bsheet .picker { display: grid; gap: 8px; }
-.bsheet .picker .way { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 14px; font: inherit; color: var(--ink); text-align: left; background: var(--field); border: 1px solid var(--hair-2); border-radius: 14px; cursor: pointer; transition: border-color .15s; }
-@media (hover: hover) { .bsheet .picker .way:hover { border-color: var(--ink); } }
+.bsheet .picker .way { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 14px; font: inherit; color: var(--ink); text-align: left; background: var(--field); border: 1px solid var(--hair-2); border-radius: 16px; cursor: pointer; transition: border-color .16s, transform .18s var(--spring, ease), box-shadow .16s; }
+@media (hover: hover) { .bsheet .picker .way:hover { border-color: var(--ink); transform: translateY(-1px); box-shadow: 0 8px 20px -14px rgba(14,17,22,.32); } }
+.bsheet .picker .way:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 .bsheet .picker .way-t { display: flex; align-items: center; gap: 12px; }
 .bsheet .picker img { width: 28px; height: 28px; }
 
@@ -62,10 +65,11 @@ const CSS = `
 .bsheet .opts > .lbl:first-child { margin-top: 0; }
 .bsheet .opts .note { font-size: 13px; margin: 12px 0 0; }
 .bsheet .opts .lbl + .note { margin: 0 0 10px; }
-.bsheet .opt { display: grid; gap: 3px; width: 100%; padding: 12px 14px; font: inherit; color: var(--ink); text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); border-radius: 16px; transition: border-color .15s, opacity .2s; }
-@media (hover: hover) { .bsheet .opt:hover:not(:disabled) { border-color: var(--ink); } }
+.bsheet .opt { display: grid; gap: 3px; width: 100%; padding: 12px 14px; font: inherit; color: var(--ink); text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); border-radius: 16px; transition: border-color .16s, transform .18s var(--spring, ease), box-shadow .16s, opacity .2s; }
+@media (hover: hover) { .bsheet .opt:hover:not(:disabled) { border-color: var(--ink); transform: translateY(-1px); box-shadow: 0 8px 20px -14px rgba(14,17,22,.32); } }
+.bsheet .opt:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 .bsheet .opt:disabled { opacity: .5; cursor: progress; }
-.bsheet .opt.main { border-color: var(--ink); background: var(--card); }
+.bsheet .opt.main { border-color: var(--ink); background: var(--raise, var(--card)); box-shadow: 0 2px 10px -6px rgba(14,17,22,.18); }
 .bsheet .opt-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
 .bsheet .opt-t b { font-weight: 500; }
 .bsheet .opt-m { font-size: 12px; color: var(--mute); padding-left: 32px; }

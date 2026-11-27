@@ -5,9 +5,9 @@
 // transactions, and it is done on tacit.finance's Borrow sheet, which each button here opens; this page sizes the bond for an amount before it does.
 import { sha256 } from '/vendor/tacit-deps.min.js';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
-import { makeConnect } from '/trade/connect.js?cb=514272b7';
+import { makeConnect } from '/trade/connect.js?cb=3f39e74c';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
-import { makeKeySession, signInSheet, pickWalletSheet } from '/trade/key.js?cb=e9a3a06d';
+import { makeKeySession, signInSheet, pickWalletSheet } from '/trade/key.js?cb=0394612e';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=6941241c';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=3784b81d';
