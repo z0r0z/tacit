@@ -82,7 +82,8 @@ export function makeAutomation({ cfg, kv, rate, fwd, rev = null, fwdQuote, revQu
         if (c && ends.includes(rec.phase)) {
           const quote = rec.quoteId ? await (tag === 'f:' ? fwdQuote(rec.quoteId) : revQuote(rec.quoteId)).catch(() => null) : null;
           const eth = quote && quote.evmAmount != null ? quote.evmAmount : tag === 'f:' && rec.offer && rec.offer.evm ? rec.offer.evm.amount : null;
-          if (addVolume(st, { id: tag + rec.id, sats: quote && quote.btcValue != null ? quote.btcValue : rec.amount, eth, secs: Number(rec.updated) - Number(rec.created) })) vol++;
+          if (addVolume(st, { id: tag + rec.id, dir: tag === 'f:' ? 'fwd' : 'rev', sats: quote && quote.btcValue != null ? quote.btcValue : rec.amount, eth,
+            quotedBtc: !!(quote && quote.btcValue != null), quotedEth: !!(quote && quote.evmAmount != null), at: Number(rec.created), secs: Number(rec.updated) - Number(rec.created) })) vol++;
         }
       }
     }

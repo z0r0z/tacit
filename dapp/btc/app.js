@@ -124,10 +124,10 @@ function paintFund(i) {
   let ok = false, rec = '', tiles = '';
   try {
     // the track record: swaps the house provider has finished, by direction, and how many ended in a refund (what the provider counts, nothing the page adds up from elsewhere)
-    const ended = s ? Number(s.swaps) : NaN, refunded = s && s.refunds != null ? Number(s.refunds) : null;
+    const ended = s ? Number(s.volumeSwaps ?? s.swaps) : NaN, refunded = s && s.refunds != null ? Number(s.refunds) : null;
     if (Number.isInteger(ended) && ended > 0) {
-      const done = ended - (Number.isInteger(refunded) ? refunded : 0), fw = Number(s.swapsForward), rv = Number(s.swapsReverse);
-      const since0 = new Date(Number(s.since) * 1000), sinceTxt = Number.isFinite(since0.getTime()) ? since0.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+      const done = ended, fw = Number(s.volumeForward ?? s.swapsForward), rv = Number(s.volumeReverse ?? s.swapsReverse);
+      const since0 = new Date(Number(s.volumeSince ?? s.since) * 1000), sinceTxt = Number.isFinite(since0.getTime()) ? since0.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
       // (the Bitcoin side of every swap finished, and the middle of the last fifty times: only when the provider says them)
       let volBtc = '';
       try { const v = BigInt(s.volumeSats ?? 0); if (v > 0n) { const n = Number(v) / 1e8; volBtc = (n < 0.01 ? n.toFixed(5) : n.toFixed(4)).replace(/0+$/, '').replace(/\.$/, ''); } } catch { volBtc = ''; }

@@ -8,11 +8,13 @@ const { emptyStats, addVolume, statsView } = await import(`${S}/fastbridge-lp/li
 test('volume adds each swap once, and a typical time shows only once there are three', () => {
   const st = emptyStats(1000);
   assert.equal(statsView(st).volumeSats, '0'); assert.equal(statsView(st).volumeEth, '0'); assert.equal(statsView(st).medianSecs, null);
-  assert.equal(addVolume(st, { id: 'f:a', sats: '26000', eth: '800000', secs: 600 }), true);
-  assert.equal(addVolume(st, { id: 'f:a', sats: '26000', eth: '800000', secs: 600 }), false, 'the same swap is not counted twice');
-  addVolume(st, { id: 'r:b', sats: 1_000_000n, eth: '30000000', secs: 1500 });
+  assert.equal(addVolume(st, { id: 'f:a', dir: 'fwd', sats: '26000', eth: '800000', quotedBtc: true, quotedEth: true, at: 900, secs: 600 }), true);
+  assert.equal(addVolume(st, { id: 'f:a', dir: 'fwd', sats: '26000', eth: '800000', quotedBtc: true, quotedEth: true, at: 900, secs: 600 }), false, 'the same swap is not counted twice');
+  addVolume(st, { id: 'r:b', dir: 'rev', sats: 1_000_000n, eth: '30000000', quotedBtc: true, quotedEth: true, at: 950, secs: 1500 });
   assert.equal(statsView(st).volumeSats, '1026000');
   assert.equal(statsView(st).volumeEth, '30800000');
+  assert.deepEqual({ swaps: statsView(st).volumeSwaps, fwd: statsView(st).volumeForward, rev: statsView(st).volumeReverse, since: statsView(st).volumeSince }, { swaps: 2, fwd: 1, rev: 1, since: 900 });
+  assert.deepEqual(statsView(st).volumeCoverage, { btcQuoted: 2, ethQuoted: 2, ethKnown: 2, swaps: 2 });
   assert.equal(statsView(st).medianSecs, null, 'two swaps are not a typical time');
   addVolume(st, { id: 'f:c', sats: '50000', secs: 900 });
   assert.equal(statsView(st).medianSecs, 900);

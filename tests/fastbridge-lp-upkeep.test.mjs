@@ -311,6 +311,8 @@ test('a look: swaps that ended before it began are not counted; then each new on
   const i = a.info();
   assert.equal(i.stats.swaps, 1); assert.equal(i.stats.feesEarnedSats, String(1000000n - 966667n)); assert.equal(i.stats.networkCostSats, '700');
   assert.equal(i.stats.volumeSats, '2000000'); assert.equal(i.stats.volumeEth, '58000');
+  assert.equal(i.stats.volumeSwaps, 2); assert.equal(i.stats.volumeForward, 2); assert.equal(i.stats.volumeReverse, 0);
+  assert.deepEqual(i.stats.volumeCoverage, { btcQuoted: 2, ethQuoted: 2, ethKnown: 2, swaps: 2 });
   assert.equal(i.target.reached, false); assert.equal(i.buyback.on, false); assert.equal(i.buyback.routedEth, '0'); assert.equal(i.skewBps, 15);
   assert.ok(i.stats.capacity && i.stats.capacity.eth === String(eth));
   eth = 1000n; sats = 10n ** 9n; await a.tick(); assert.equal(a.skew(), -15, 'BTC heavy: the rate falls');

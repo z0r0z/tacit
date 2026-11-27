@@ -21,7 +21,7 @@ export function emptyStats(now) {
   return {
     v: 1, since: now, swaps: 0, swapsForward: 0, swapsReverse: 0, refunds: 0,
     feesEarnedSats: '0', feesEarnedEth: '0', networkCostSats: '0', networkCostEth: '0', lossesSats: '0', lossesEth: '0',
-    netEth: '0', reinvestedEth: '0', owedEth: '0', counted: {}, vol: { schema: 2, ids: {}, ethIds: {}, sats: '0', eth: '0', durs: [] }, capacity: { first: null, last: null, daily: [] },
+    netEth: '0', reinvestedEth: '0', owedEth: '0', counted: {}, vol: { schema: 3, ids: {}, ethIds: {}, fwdIds: {}, revIds: {}, quotedBtcIds: {}, quotedEthIds: {}, sats: '0', eth: '0', since: null, durs: [] }, capacity: { first: null, last: null, daily: [] },
     buyback: { routedEth: '0', feesEth: '0', sends: 0, tacBought: '0', lastTx: null, lastAt: null, day: null, dayRouted: '0', pending: null, attributed: '0', fromBlock: null, log: [] },
   };
 }
@@ -59,16 +59,21 @@ export function addSwap(st, e, { rate, owe = false }) {
 
 // What a finished swap moved (the Bitcoin side of it, in sats) and how long it took (seconds from when it was accepted to its last step): kept for the swaps counted above only, each once.
 // The last fifty durations are kept for a typical time (the median).
-export function addVolume(st, { id, sats, eth, secs }) {
-  // v2 rebuilds legacy totals because v1 used rec.amount, whose asset differs by direction.
-  if (!st.vol || st.vol.schema !== 2) st.vol = { schema: 2, ids: {}, ethIds: {}, sats: '0', eth: '0', durs: [] };
+export function addVolume(st, { id, dir, sats, eth, secs, at, quotedBtc = false, quotedEth = false }) {
+  // v3 rebuilds legacy totals and indexes every retained completed swap by direction and source coverage.
+  if (!st.vol || st.vol.schema !== 3) st.vol = { schema: 3, ids: {}, ethIds: {}, fwdIds: {}, revIds: {}, quotedBtcIds: {}, quotedEthIds: {}, sats: '0', eth: '0', since: null, durs: [] };
   st.vol.ids ||= {}; st.vol.ethIds ||= {};
+  st.vol.fwdIds ||= {}; st.vol.revIds ||= {}; st.vol.quotedBtcIds ||= {}; st.vol.quotedEthIds ||= {};
   let added = false;
   if (!st.vol.ids[id]) {
     st.vol.ids[id] = 1; st.vol.sats = s(big(st.vol.sats) + big(sats)); added = true;
+    if (dir === 'fwd') st.vol.fwdIds[id] = 1; else if (dir === 'rev') st.vol.revIds[id] = 1;
+    if (Number.isFinite(at) && at > 0 && (!st.vol.since || at < st.vol.since)) st.vol.since = Math.floor(at);
     if (Number.isFinite(secs) && secs > 0 && secs < 2 * DAY) { st.vol.durs ||= []; st.vol.durs.push(Math.round(secs)); if (st.vol.durs.length > 50) st.vol.durs.splice(0, st.vol.durs.length - 50); }
   }
   if (eth != null && !st.vol.ethIds[id]) { st.vol.ethIds[id] = 1; st.vol.eth = s(big(st.vol.eth) + big(eth)); added = true; }
+  if (quotedBtc) st.vol.quotedBtcIds[id] = 1;
+  if (quotedEth) st.vol.quotedEthIds[id] = 1;
   return added;
 }
 const medianOf = (xs) => { if (xs.length < 3) return null; const a = xs.slice().sort((x, y) => x - y), m = a.length >> 1; return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2); };
@@ -121,12 +126,15 @@ export async function reverseEntry(rec, q, { txFee }) {
 // The part of /info: totals, and the capacity against the target
 export function statsView(st, extra = {}) {
   const first = st.capacity.first, last = st.capacity.last;
+  const vol = st.vol || {}, volumeSwaps = Object.keys(vol.ids || {}).length;
   return {
     since: st.since, swaps: st.swaps, swapsForward: st.swapsForward, swapsReverse: st.swapsReverse, refunds: st.refunds,
     feesEarnedSats: st.feesEarnedSats, feesEarnedEth: st.feesEarnedEth, networkCostSats: st.networkCostSats, networkCostEth: st.networkCostEth,
     lossesSats: st.lossesSats, lossesEth: st.lossesEth, netEth: st.netEth, reinvestedEth: st.reinvestedEth, owedEth: st.owedEth,
     capacity: last ? { eth: last.eth, sats: last.sats, valueEth: last.valueEth, at: last.at, firstValueEth: first.valueEth, firstAt: first.at } : null,
-    volumeSats: st.vol ? st.vol.sats : '0', volumeEth: st.vol ? (st.vol.eth || '0') : '0', medianSecs: st.vol ? medianOf(st.vol.durs || []) : null,
+    volumeSats: vol.sats || '0', volumeEth: vol.eth || '0', volumeSwaps, volumeForward: Object.keys(vol.fwdIds || {}).length, volumeReverse: Object.keys(vol.revIds || {}).length,
+    volumeSince: vol.since || null, volumeCoverage: { btcQuoted: Object.keys(vol.quotedBtcIds || {}).length, ethQuoted: Object.keys(vol.quotedEthIds || {}).length, ethKnown: Object.keys(vol.ethIds || {}).length, swaps: volumeSwaps },
+    medianSecs: medianOf(vol.durs || []),
     units: { eth: '1e-8 ETH', sats: 'sats' },
     ...extra,
   };

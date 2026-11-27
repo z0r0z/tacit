@@ -268,7 +268,7 @@ const RPCV = { balance: 10n ** 18n, receipt: { status: '0x1' } };
 const hex = (v) => '0x' + BigInt(v).toString(16);
 // the house provider's /info, with what its upkeep adds (fastbridge-lp/lib/automation.mjs): null answers 404, as a provider without it does
 const HOUSE = 'https://tacit-fastbridge-pair-lp.onrender.com';
-let houseInfo = { v: 1, stats: { since: 1795608000, swaps: 4, swapsForward: 3, swapsReverse: 1, refunds: 0, volumeSats: '1500000', volumeEth: '6500000', medianSecs: 1320, reinvestedEth: '1234567', netEth: '1234567', capacity: { eth: '320000000', sats: '1500000', valueEth: '365000000' } }, target: { eth: '1000000000', btcAsEth: '1000000000', reached: false }, skewBps: 0, buyback: { on: false, startedAt: null, routedEth: '0', tacBought: '0', sends: 0 } };
+let houseInfo = { v: 1, stats: { since: 1795608000, swaps: 4, swapsForward: 3, swapsReverse: 1, refunds: 0, volumeSwaps: 4, volumeForward: 3, volumeReverse: 1, volumeSince: 1795608000, volumeSats: '1500000', volumeEth: '6500000', medianSecs: 1320, reinvestedEth: '1234567', netEth: '1234567', capacity: { eth: '320000000', sats: '1500000', valueEth: '365000000' } }, target: { eth: '1000000000', btcAsEth: '1000000000', reached: false }, skewBps: 0, buyback: { on: false, startedAt: null, routedEth: '0', tacBought: '0', sends: 0 } };
 const BAD = [], FLAKY = { on: false, asked: [] };
 // the network: the board and the public nodes are answered here, everything else off the machine is refused
 async function wire(page, { ads, boardDelayMs = 0 }) {
