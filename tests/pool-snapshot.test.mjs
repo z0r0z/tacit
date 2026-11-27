@@ -13,7 +13,7 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { hmac } from '../node_modules/@noble/hashes/hmac.js';
 import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
 import { ETH_NODES, ETH_LOG_NODES } from '../dapp/eth-nodes.js';
-import { SNAPSHOT, rawCid, cidSha, packPiece, unpackPiece, cutPieces, encodePiece, packInputs, unpackInputs, cutInputs, encodeInputs, gunzip, treesOf, poolTrees, sameTrees, loadSnapshot, pointerCall, readPointer, selectLogs, TREE_SLOTS } from '../dapp/pool-snapshot.js';
+import { SNAPSHOT, rawCid, cidSha, packPiece, unpackPiece, cutPieces, encodePiece, packInputs, unpackInputs, cutInputs, encodeInputs, gunzip, treesOf, poolTrees, sameTrees, loadSnapshot, fetchBlock, pointerCall, readPointer, selectLogs, TREE_SLOTS } from '../dapp/pool-snapshot.js';
 
 const mem = new Map();
 globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
@@ -136,6 +136,22 @@ test('a snapshot loads from the gateways, a gateway\'s other bytes passed over; 
   const all = new Set(SNAPSHOT.gateways.map((g) => new URL(g).host));
   await assert.rejects(() => loadSnapshot(cid, { fetchImpl: gatewayFetch(files, { lie: all }), sha256, expect }), /bytes that are not/);
   await assert.rejects(() => loadSnapshot(cid, { fetchImpl: gatewayFetch(files), sha256, expect: { ...expect, pool: '0x' + '11'.repeat(20) } }), /another pool/);
+});
+
+test('a burst of 5xx from every gateway is ridden out by a second pass; a gateway that served other bytes is not asked again', async () => {
+  const logs = history(12);
+  const { cid, files } = await snapshotOf(logs, 30_000_000);
+  const expect = { chainId: 1, pool: cfg.pool, addresses: [cfg.pool, cfg.farm.manager], topics: [T.LeavesInserted, T.NullifiersSpent] };
+  const good = gatewayFetch(files);
+  const seen = new Map();
+  const flaky = async (url, o) => { const k = String(url); seen.set(k, (seen.get(k) || 0) + 1); return seen.get(k) === 1 ? new Response('busy', { status: 500 }) : good(url, o); };
+  const got = await loadSnapshot(cid, { fetchImpl: flaky, sha256, expect });
+  assert.equal(got.logs.length, logs.length);
+  const asked = new Map();
+  const liar = gatewayFetch(files, { lie: new Set(SNAPSHOT.gateways.map((g) => new URL(g).host)) });
+  const counting = async (url, o) => { const h = new URL(url).host; asked.set(h, (asked.get(h) || 0) + 1); return liar(url, o); };
+  await assert.rejects(() => fetchBlock(cid, { fetchImpl: counting, sha256 }), /bytes that are not/);
+  assert.deepEqual([...asked.values()], SNAPSHOT.gateways.map(() => 1));
 });
 
 test('the record is read from the WNS text record', () => {
