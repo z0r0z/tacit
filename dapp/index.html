@@ -988,7 +988,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 .x.share svg { width: 18px; height: 18px; }
 
 /* A sheet's switch is the card's: a soft track with the choice a raised pill on it, so a sheet and the card it opens over are drawn by one hand. */
-.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; margin: 0 0 18px; padding: 3px; border-radius: 15px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; margin: 0 0 18px; padding: 3px; border-radius: 15px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 /* The Prove sheet: who proves (one choice), then only what that way needs */
 .spw { display: grid; gap: 6px; margin: 6px 0 16px; }
 .spw-o { display: flex; align-items: flex-start; gap: 10px; padding: 11px 14px; border: 1px solid var(--hair-2); border-radius: 12px; cursor: pointer; transition: border-color .15s; }
@@ -1010,6 +1010,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 .seg.sub button { min-height: 32px; border-radius: 10px; font-size: 13px; }
 .seg.sub:has(button[data-chain]) { overflow-x: auto; scrollbar-width: none; }
 .seg.sub .cmk { display: flex; justify-content: center; margin: 0 0 2px; }
+@media (max-width: 420px) { .seg button { min-width: 0; padding-inline: 5px; font-size: 12px; } }
 @media (max-width: 560px) { .seg.sub button[data-chain]:not([aria-selected="true"]) .cn { display: none; } .seg.sub button[data-chain]:not([aria-selected="true"]) .cmk { margin: 0; } }
 
 .bal { display: flex; align-items: center; gap: 14px; padding: 14px 0; margin-bottom: 16px; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
