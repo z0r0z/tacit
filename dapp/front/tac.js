@@ -760,6 +760,23 @@ function renderTacBal(el) {
   $$('[data-th]', el).forEach((b) => b.onclick = () => tacPlaceGo(b.dataset.th));
 }
 const tacWho = () => [...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))].join();
+// Public TAC (wei) split by account: what the paying account holds (what a shield can spend) and what sits at the other one (the connected wallet or
+// this key's own address); null while the read is not in
+function tacPubSplit() {
+  if (TACB.who !== tacWho() || TACB.erc == null || (S.acct && TACB.acct == null)) return null;
+  const acct = TACB.acct ?? 0n, wal = TACB.erc - acct, onKey = payer() === 'tacit';
+  return { mine: onKey ? acct : S.wallet ? wal : 0n, other: onKey ? wal : acct, otherAs: onKey ? 'wallet' : 'tacit' };
+}
+const tacPubMine = () => tacPubSplit()?.mine ?? null;
+// Pay from the account that holds the TAC, then open Shield on it
+async function tacPayFromGo(as) {
+  if (!S.key) return openSheet('wallet');
+  if (as === 'wallet' && !S.wallet) { await connect().catch((e) => toast(e?.message || 'The wallet did not connect.')); if (!S.wallet) return; }
+  if (payer() !== as) setPayer(as);
+  await hxWalletBals(true).catch(() => {});
+  rerender('tac');
+  return tpgPrivGo('wallet');
+}
 function tpgTile(spec, amt = '', title = '') { ctx.TACP.title = title; hxPreset(spec, amt); }
 function tpgTab(tab) { return tcardGo(chainOn() ? 'chain' : 'btc', { priv: 'shield', pay: 'send', out: 'withdraw' }[tab] || tab); }
 
@@ -809,7 +826,7 @@ async function tpgPrivGo(from) {
   if (from === 'btc') return tacPoolOpen('shield');
   if (!chainOn()) return tpgTile('shield:wtac:defi', '', 'Make it private');
   if (!tcardGo('chain', 'shield')) return;
-  const held = hxWalletBal('wtac') ?? TACB.erc ?? 0n, fee = tcardWay() === 'permit' ? await chainSweepFee(true).catch(() => 0n) : 0n, room = fee + fee / 10n, cap = CHAIN_SWEEP.cap ?? await chainCap().catch(() => null);
+  const held = hxWalletBal('wtac') ?? tacPubMine() ?? 0n, fee = tcardWay() === 'permit' ? await chainSweepFee(true).catch(() => 0n) : 0n, room = fee + fee / 10n, cap = CHAIN_SWEEP.cap ?? await chainCap().catch(() => null);
   let wei = held > room ? held - room : 0n; wei -= wei % E10;
   if (cap != null && wei > cap * E10) wei = cap * E10;
   const a = $('#tcd-amt');
@@ -884,7 +901,7 @@ function tcardSteps() {
   }
   const sz = sk && ctx.TCARD.size?.key === sk && ctx.TCARD.size.v?.ok ? ctx.TCARD.size.v : null;
   const need = units != null ? units + TCL_FEE : 1n, enough = sz ? sz.x === 0n : held != null && held >= need, gap = held != null && units != null && !enough ? (sz ? sz.x : need - held) : null;
-  const wal = k ? (hxWalletBal('wtac') ?? (TACB.who === tacWho() ? TACB.erc : null)) : null;
+  const wal = k ? (hxWalletBal('wtac') ?? tacPubMine()) : null;
   ctx.TCARD.linkGap = gap != null ? plain(gap, 8) : '';
   const step = (n, done, title, act = null) => html`<li class="${done ? 'done' : ''}"><span class="n">${done ? '✓' : n}</span><span>${title}</span>${!done && act ? html`<span class="act">${act}</span>` : ''}</li>`;
   const two = !k ? 'TAC on the Tacit chain to pay with' : held == null ? 'TAC on the Tacit chain: reading yours…' : html`TAC on the Tacit chain: you hold <span class="num">${fmt(held, 8, 4)}</span>`;
@@ -1327,12 +1344,15 @@ function tcardHead(side) {
   const shares = chain && k && ctx.TACP.sh?.pub === k ? ctx.TACP.sh.v : null;
   const cs = TPGW.cs, up = cs ? (tpgPrice(cs.pool, cs.shares) - 1) * 100 : null;
   const joining = !k || chain ? 0n : tacJoining(k);
-  const pubU = !k ? null : chain ? h.wallet : h.btc, capU = chain && CHAIN_SWEEP.cap != null ? CHAIN_SWEEP.cap : null, over = pubU != null && capU != null && pubU > capU;
+  const split = k && chain ? tacPubSplit() : null, onKey = payer() === 'tacit';
+  const pubU = !k ? null : chain ? (split ? split.mine / E10 : h.wallet) : h.btc, capU = chain && CHAIN_SWEEP.cap != null ? CHAIN_SWEEP.cap : null, over = pubU != null && capU != null && pubU > capU;
+  const elseU = split && split.other / E10 > 0n ? split.other / E10 : null;
   return html`<h2 class="tcd-k" id="tcd-name"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Private TAC</b><span>${chain ? 'on the Tacit chain' : 'on Bitcoin, in the shielded pool'}</span></h2>
     ${!k ? '' : html`<p class="tcd-v num">${v == null ? (chain && ctx.CH.err ? '—' : sk) : fmt(v, 8, 4)}<small>TAC</small></p>
     <p class="tcd-sub">${[usd && `≈ ${usd}`, shares != null && shares > 0n && `${fmt(shares, 8, 4)} shares`, shares != null && shares > 0n && up != null && up > 0 && html`<span class="tcd-up">each +${up.toFixed(2)}% since the chain began</span>`, chain && ctx.CH.pub === k && (ctx.CH.incoming ?? 0n) > 0n && `+${fmt(ctx.CH.incoming, 8, 4)} TAC incoming`, joining > 0n && `+${fmt(joining, 8, 4)} TAC joining after one confirmation`].filter(Boolean).flatMap((x, i) => (i ? [' · ', x] : [x]))}</p>`}
     ${tcardAll(k, side)}
-    ${pubU != null && pubU > 0n ? html`<p class="tcd-nudge">${fmt(pubU, 8, 2)} TAC is public ${chain ? (payer() === 'tacit' && !S.wallet ? 'at this key’s address' : 'in your wallet') : 'at your Bitcoin address'}. <button class="link" type="button" id="tpg-priv">${over ? `Shield ${fmt(capU, 8, 0)} of it` : 'Shield it'}</button></p>` : ''}`;
+    ${pubU != null && pubU > 0n ? html`<p class="tcd-nudge">${fmt(pubU, 8, 2)} TAC is public ${chain ? (split ? (onKey ? 'at this key’s address' : 'in your wallet') : onKey && !S.wallet ? 'at this key’s address' : 'in your wallet') : 'at your Bitcoin address'}. <button class="link" type="button" id="tpg-priv">${over ? `Shield ${fmt(capU, 8, 0)} of it` : 'Shield it'}</button></p>` : ''}
+    ${elseU ? html`<p class="tcd-nudge">${fmt(elseU, 8, 2)} TAC is public ${split.otherAs === 'tacit' ? 'at this key’s address' : 'in your wallet'}, which is not paying now. <button class="link" type="button" id="tpg-payfrom" data-as="${split.otherAs}">Pay from it and shield</button></p>` : ''}`;
 }
 function tcardPrivate(k) {
   if (!k) return null;
@@ -1583,7 +1603,7 @@ function tcard() {
   const side = tcardSide(), chain = side === 'chain';
   tpgMount($('#tcd-seg'), chainOn() ? html`<div class="tcd-seg" role="group" aria-label="Where the private TAC is">${[['chain', 'Tacit chain'], ['btc', 'Bitcoin']].map(([k, t]) => html`<button type="button" aria-pressed="${String(side === k)}" data-tcd-side="${k}">${t}</button>`)}</div>` : html``);
   tcardNet(side);
-  tpgMount($('#tcd-head'), tcardHead(side), (el) => { const go = $('#tpg-priv', el); if (go) go.onclick = () => tpgPrivGo(chain ? 'wallet' : 'btc'); });
+  tpgMount($('#tcd-head'), tcardHead(side), (el) => { const go = $('#tpg-priv', el); if (go) go.onclick = () => tpgPrivGo(chain ? 'wallet' : 'btc'); const pf = $('#tpg-payfrom', el); if (pf) pf.onclick = () => tacPayFromGo(pf.dataset.as); });
   const tabs = $('#tcd-tabs'), p = $('#tpg-p'), pool = $('#tcd-pool');
   tabs.hidden = p.hidden = !chain; pool.hidden = chain;
   if (chain) {
@@ -1640,7 +1660,7 @@ async function tcardQuote() {
 }
 async function tcardShieldSay(units) {
   gasNow();
-  const key = !!S.key, held = key ? hxWalletBal('wtac') ?? (TACB.who === tacWho() ? TACB.erc : null) : null, way = key ? tcardWay() : 'permit', t4 = (v) => fmt(v, 18, 4);
+  const key = !!S.key, held = key ? hxWalletBal('wtac') ?? tacPubMine() : null, way = key ? tcardWay() : 'permit', t4 = (v) => fmt(v, 18, 4);
   const sf = way === 'permit' ? await chainSweepFee().catch(() => 0n) : 0n, cap = CHAIN_SWEEP.cap ?? ctx.CH.cap ?? null;
   tcdHave(held != null ? `${fmt(held, 18, 2)} in ${payer() === 'tacit' ? 'this key’s address' : 'your wallet'}` : '');
   if (TCD_FILL.at && held != null) { const fresh = Date.now() - TCD_FILL.at < 20e3; TCD_FILL.at = 0; if (fresh) tcardStakeFill().then(tcardStakeFocus, () => {}); }
@@ -1729,7 +1749,7 @@ async function tcardOutSay(units) {
 // and room for it moving, up to the cap; what the chain holds, less its fees, for the other tabs.
 async function tcardMaxOf() {
   if (ctx.TCARD.tab === 'shield') {
-    const held = hxWalletBal('wtac') ?? (TACB.who === tacWho() ? TACB.erc : null);
+    const held = hxWalletBal('wtac') ?? tacPubMine();
     if (held == null) return null;
     const fee = tcardWay() === 'permit' ? await chainSweepFee(true).catch(() => 0n) : 0n, room = fee + fee / 10n, cap = CHAIN_SWEEP.cap ?? ctx.CH.cap ?? null;
     const v = held > room ? (held - room) / E10 : 0n;
@@ -1751,7 +1771,7 @@ async function tcardMax() {
 async function tcardStakeFill() {
   const a = $('#tcd-amt');
   if (!S.key || !a || a.value.trim() || ctx.TCARD.tab !== 'shield') return false;
-  const held = hxWalletBal('wtac') ?? (TACB.who === tacWho() ? TACB.erc : null);
+  const held = hxWalletBal('wtac') ?? tacPubMine();
   if (held == null) { TCD_FILL.at = Date.now(); return false; }
   if (!(held > 0n)) return false;
   const v = await tcardMaxOf(), now = $('#tcd-amt');
