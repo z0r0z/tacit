@@ -3,7 +3,6 @@
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
 import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=19cd0850';
-import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=c42a3f60';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
@@ -51,10 +50,16 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) docu
 
 // ── the market: one read shared by the lane and the providers' list, again each minute while the page is seen ──
 let mkP = null, mkAt = 0;
+let marketModuleP = null;
+let marketWarmed = false;
+const marketModule = () => {
+  if (!marketWarmed) { marketWarmed = true; const t = $('warm'); if (t) document.head.append(t.content.cloneNode(true)); }
+  return (marketModuleP ||= import('/swap/atomic-market.js?cb=c42a3f60').catch((e) => { marketModuleP = null; throw e; }));
+};
 function market() {
   if (!mkP || Date.now() - mkAt > MARKET_MS - 5000) {
     mkAt = Date.now();
-    const p = readMarket().then((m) => { const x = { ...m, estimate: (d, a) => estimate(m, d, a) }; paintProviders(x); return x; });
+    const p = marketModule().then((M) => M.readMarket().then((m) => { const x = { ...m, estimate: (d, a) => M.estimate(m, d, a) }; paintProviders(x); return x; }));
     fund();
     p.catch(() => { if (mkP === p) mkP = null; paintProviders(null); });
     mkP = p;
@@ -68,7 +73,7 @@ const pctTxt = (x) => `${x < 1 ? x.toFixed(2) : x.toFixed(1)}%`;
 const feeTxt = (s, dir) => {
   const share = s.feeBps ? `${(s.feeBps / 100).toFixed(s.feeBps % 10 ? 2 : 1).replace(/\.0$/, '')}%` : '';
   const flat = s.flatFee > 0n ? (dir === 'b2e' ? sats(s.flatFee) : `${fmt(s.flatFee)} ETH`) : '';
-  const at = feeAtMin(s);
+  const at = s && s.min > 0n ? (Number((s.min * BigInt(s.feeBps)) / 10000n + s.flatFee) / Number(s.min)) * 100 : null;
   return `${[share, flat].filter(Boolean).join(' + ') || 'no fee'}${flat && at != null ? ` (${pctTxt(at)} at the minimum)` : ''}`;
 };
 // an amount of 8 places to its first two figures, rounded down, so it never says more than there is: 0.00753023 -> 0.0075, 0.07043193 -> 0.070, 1.53 -> 1.5
@@ -81,7 +86,7 @@ const SYM = { b2e: 'BTC', e2b: 'ETH' };
 function side(s, dir) {
   const head = dir === 'b2e' ? '<b><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>BTC → ETH</b>' : '<b><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>ETH → BTC</b>';
   if (!s) return `<div class="d">${head}<span>not offered</span></div>`;
-  const n = takeable(s), u = SYM[dir], f = feeTxt(s, dir), at = f.indexOf(' (');
+  const n = s.available != null && s.available < s.max ? s.available : s.max, u = SYM[dir], f = feeTxt(s, dir), at = f.indexOf(' (');
   // (what the fee is at the minimum stays whole: the line breaks before it)
   const fee = at < 0 ? esc(f) : `${esc(f.slice(0, at))} <span class="nw">${esc(f.slice(at + 1))}</span>`;
   return `<div class="d">${head}<span class="num">${esc(fmt(s.min))} to ${esc(fmt(s.max))} ${u}</span>`
@@ -89,7 +94,7 @@ function side(s, dir) {
 }
 function paintProviders(m) {
   const list = $('pv-list'), cap = $('cap'), live = $('live');
-  if (!m) { cap.textContent = 'The boards could not be read just now.'; setSum('pv-at', 'not read just now'); return; }
+  if (!m) { list.replaceChildren(); live.textContent = 'The boards could not be read just now.'; cap.textContent = 'The boards could not be read just now.'; setSum('pv-at', 'not read just now'); return; }
   const ps = m.providers || [], tb = m.totals?.b2e, te = m.totals?.e2b;
   const nowB = tb && tb.now > 0n ? `${fmt(tb.now)} BTC` : null, nowE = te && te.now > 0n ? `${fmt(te.now)} ETH` : null;
   cap.innerHTML = !ps.length ? 'No provider is online. Swaps wait for one. Run one below.'
@@ -246,7 +251,7 @@ function paintChip() {
   $('acct-id').textContent = a || '';
   // the chip names the key by its tacit1 address, as the front page does (its first 16 characters and last 6)
   if (!on) { $('acct-tacit').textContent = ''; tacitOf = null; tacitAsked = false; }
-  else if (!tacitAsked) { tacitAsked = true; Promise.resolve(lane.tacitAddress?.()).then((t) => { tacitOf = t; if (t) { $('acct-tacit').textContent = t; $('wallet-label').textContent = `${t.slice(0, 16)}…${t.slice(-6)}`; } }, () => {}); }
+  else if (!tacitAsked) { tacitAsked = true; Promise.resolve(lane.tacitAddress?.()).then((t) => { if (!lane.unlocked || lane.address !== a) return; tacitOf = t; if (t) { $('acct-tacit').textContent = t; $('wallet-label').textContent = `${t.slice(0, 16)}…${t.slice(-6)}`; } }, () => {}); }
   $('wallet-label').textContent = on ? (tacitOf ? `${tacitOf.slice(0, 16)}…${tacitOf.slice(-6)}` : a ? `${a.slice(0, 6)}…${a.slice(-4)}` : 'Signed in') : 'Sign in';
   if (!on) { $('acct-pop').hidden = true; $('wallet').setAttribute('aria-expanded', 'false'); }
 }
