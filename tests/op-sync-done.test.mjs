@@ -21,7 +21,7 @@ function world({ live = false } = {}) {
   const opSync = new Function('actGet', 'actPut', 'RUN_OF', 'failText', 'noRetry', 'ended', source)(actGet, actPut, RUN_OF, failText, noRetry, ended);
   const op = (steps, extra = {}) => {
     actPut('op:1', { kind: 'op', label: 'Move 21 TAC to the Tacit chain', status: 'pending', steps: steps.map((s) => ({ id: s.id, main: !!s.main, step: s.step || null })), ...extra });
-    for (const s of steps) actPut(s.id, { kind: 'job', status: s.status });
+    for (const s of steps) actPut(s.id, { kind: 'job', status: s.status, ...(s.left ? { left: true } : {}) });
     RUN_OF.set('op:1', { live });
     opSync('op:1');
     return actGet('op:1');
@@ -77,4 +77,34 @@ test('zapFinish marks the zap’s record done once its last step has landed, and
 test('while the run is live it is not called failed', () => {
   const r = world({ live: true }).op([combine()]);
   assert.notEqual(r.status, 'failed');
+});
+
+// a private swap the pool moved under is built again by the pool ux (route / submitWrapSwap) and each build is sent as a new main job of the same action
+const swapTry = (n, status, extra = {}) => ({ id: `job:try${n}`, main: true, status, ...extra });
+
+test('a swap refused once and settled on its rebuild reads as settled, not failed', () => {
+  const r = world().op([swapTry(1, 'failed'), swapTry(2, 'settled')]);
+  assert.equal(r.status, 'settled');
+  assert.equal(r.err, undefined);
+});
+
+test('a swap still proving its rebuild reads as proving, not as the refusal before it', () => {
+  const r = world({ live: true }).op([swapTry(1, 'failed'), swapTry(2, 'proving')]);
+  assert.equal(r.status, 'proving');
+});
+
+test('a job left in the queue when its swap was built again does not hold the row open or fail it', () => {
+  assert.equal(world().op([swapTry(1, 'pending', { left: true }), swapTry(2, 'settled')]).status, 'settled');
+  assert.equal(world({ live: true }).op([swapTry(1, 'failed', { left: true }), swapTry(2, 'pending')]).status, 'proving');
+});
+
+test('a swap whose last build failed too still reads as failed, with that build\'s words', () => {
+  const r = world().op([swapTry(1, 'failed'), swapTry(2, 'failed', {})]);
+  assert.equal(r.status, 'failed');
+});
+
+test('a failed step before the swap is still named while the swap waits', () => {
+  const r = world({ live: true }).op([combine('failed'), swapTry(1, 'pending')]);
+  assert.equal(r.status, 'failed');
+  assert.match(r.err, /Combine notes did not go through/);
 });
