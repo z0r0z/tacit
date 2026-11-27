@@ -213,6 +213,20 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
     }
     return stop(`an unknown stage "${p.stage}"`);
   }
+  // A dry run also asks, every six hours, what a swap of the least size would cost now in each direction, vault checks and all: so the live checks are seen working before anything is sent
+  let probeAt = -Infinity;
+  async function probe(mkt) {
+    if (now() - probeAt < 6 * 3600) return;
+    probeAt = now();
+    const out = {};
+    for (const dir of ['eth2btc', 'btc2eth']) {
+      const amountWei = cfg.minSwapWei, amountSats = BigInt(Math.floor(Number(amountWei) / 1e10 / mkt));
+      const { best, why } = await bestQuote({ cfg, fetchImpl, dir, amount1e8: dir === 'eth2btc' ? String(amountWei / UNIT) : String(amountSats), destination: dir === 'eth2btc' ? btcDestination : address, ethPerBtc: mkt, amountWei: dir === 'eth2btc' ? amountWei : undefined, amountSats: dir === 'btc2eth' ? amountSats : undefined, vaultHistory, log });
+      out[dir] = best ? { venue: best.venue, costBps: best.costBps, vault: best.vault, nodes: best.nodes } : { refused: why };
+    }
+    if (last) last.probe = out;
+    alert({ level: 'info', msg: 'rebalance (dry run): what a swap of the least size would cost now', eth: mk(cfg.minSwapWei), ...out });
+  }
   let rateAt = 0, rateV = null;
   const rateNow = async () => { if (rateV && now() - rateAt < 60) return rateV; const r = await rate(); rateV = typeof r === 'number' ? r : (r && (r.ethPerBtc ?? r.rate)) || null; rateAt = now(); return rateV; };
 
@@ -232,8 +246,7 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       const plan = planRebalance({ ethWei: inv.ethWei, sats: inv.sats, ethPerBtc: mkt, cfg, movedTodayWei: BigInt(st.moved) });
       last = { at: now(), ethBps: plan && plan.ethBps != null ? plan.ethBps : null, plan: plan && plan.dir ? plan.dir : plan && plan.skip ? `skip: ${plan.skip}` : 'in band' };
       nextAt = now() + cfg.everySecs;
-      if (!plan) { calls = { dir: null, n: 0 }; return { did: 'in band' }; }
-      if (plan.skip) { calls = { dir: null, n: 0 }; return { did: 'skip', why: plan.skip }; }
+      if (!plan || plan.skip) { calls = { dir: null, n: 0 }; if (cfg.mode === 'dry') await probe(mkt).catch(() => {}); return plan ? { did: 'skip', why: plan.skip } : { did: 'in band' }; }
       const dest = plan.dir === 'eth2btc' ? btcDestination : address;
       const amount1e8 = plan.dir === 'eth2btc' ? String(plan.amountWei / UNIT) : String(plan.amountSats);
       const { best, all, why } = await bestQuote({ cfg, fetchImpl, dir: plan.dir, amount1e8, destination: dest, ethPerBtc: mkt, amountWei: plan.amountWei, amountSats: plan.amountSats, vaultHistory, log });

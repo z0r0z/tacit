@@ -267,3 +267,19 @@ test('a swap is made only when two looks in a row call for it: one odd reading o
   w.clock += 1000;
   assert.equal((await r.step()).did, 'sent'); assert.equal(built, 1);
 });
+
+test('a dry run in band still shows what a least-size swap would cost in each direction, with the vault checks, and sends nothing', async () => {
+  const w = btcWorld({ mode: 'dry' });
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, router: '0xe3985E6b61b814F7Cdb188766562ba71b446B46d', halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const c = cfg({ FB_LP_REBALANCE: 'dry', FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  const isEth = (q) => q.get('from_asset') === 'ETH.ETH';
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: isEth(q) ? VAULT : BTC_VAULT, memo: isEth(q) ? `=:b:${q.get('destination')}` : `=:e:${q.get('destination')}`, expected_amount_out: isEth(q) ? '420000' : '4180000', expiry: w.clock + 600 }) });
+  const sent = [];
+  const r = makeRebalancer({ cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(1), sats: 2.8e6 }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9, btcBuild: async () => { sent.push('b'); return {}; }, btcBroadcast: async () => { sent.push('c'); }, btcStatus: async () => ({}),
+    ethBalance: async () => ETH(0.1), ethNonce: async () => 1, ethReceipt: async () => null, sendEth: async () => { sent.push('e'); }, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02), load: async () => null, save: async () => {}, log: () => {}, alert: (a) => w.alerts.push(a) });
+  assert.equal((await r.step()).did, 'in band');
+  const probe = w.alerts.find((a) => /least size/.test(a.msg));
+  assert.ok(probe && probe.eth2btc.vault === VAULT && probe.btc2eth.vault === BTC_VAULT, 'both directions quoted, each with its own vault');
+  assert.ok(Number.isFinite(probe.eth2btc.costBps) && Number.isFinite(probe.btc2eth.costBps));
+  assert.deepEqual(sent, [], 'nothing was sent');
+});
