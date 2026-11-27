@@ -298,3 +298,30 @@ test('nothing is swapped while a swap is open, in either direction, and it goes 
   quiet = true;
   assert.equal((await r.step()).did, 'sent'); assert.equal(built, 1);
 });
+
+test('with fresh addresses on, the ETH is unshielded to an address for this swap only and sent from it, the next swap uses the next one, and the shield is not held', async () => {
+  const bal = { }, sent = [], unshielded = [], nonces = {};
+  const fa = (i) => `0xf${String(i).padStart(39, '0')}`;
+  const w = { clock: 2_000_000_000, store: null, alerts: [] };
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, router: '0xe3985E6b61b814F7Cdb188766562ba71b446B46d', halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const c = cfg({ FB_LP_REBALANCE_FRESH: 'on', FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  assert.equal(c.fresh, true);
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: VAULT, memo: `=:b:${q.get('destination')}`, expected_amount_out: '828000', expiry: w.clock + 600 }) });
+  const r = makeRebalancer({ cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(8), sats: Math.round(2 / MARKET * 1e8) }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9,
+    unshield: async ({ units, to }) => { unshielded.push({ units, to }); bal[to] = (bal[to] || 0n) + BigInt(units) * 10n ** 10n; },
+    ethBalance: async (a) => bal[a || ETH_DEST] ?? (a ? 0n : ETH(0.1)), ethNonce: async (a) => nonces[a] ?? 0, ethReceipt: async () => ({ status: '0x1' }),
+    sendEth: async ({ to, value, memo, fi }) => { sent.push({ to, value, memo, fi }); nonces[fa(fi)] = (nonces[fa(fi)] || 0) + 1; return '0x' + 'f1'.repeat(32); },
+    freshAddress: fa, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02), load: async () => w.store, save: async (x) => { w.store = JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? String(v) : v))); }, log: () => {}, alert: (a) => w.alerts.push(a) });
+  assert.equal((await r.step()).did, 'unshielding');
+  assert.equal(unshielded[0].to, fa(0), 'unshielded to the first fresh address, not the pool account');
+  assert.equal(r.holding(), false, 'the pool account\'s ETH is not held: the shield has nothing to leave alone');
+  assert.equal((await r.step()).did, 'sent');
+  assert.equal(sent[0].fi, 0); assert.equal(sent[0].to, VAULT);
+  const want = ETH(0.3) + c.freshGasWei;
+  assert.ok(bal[fa(0)] >= want && bal[fa(0)] < want + ETH(0.0006), 'the address got the swap and its gas, and not more than the relay\'s fee over');
+  assert.equal((await r.step()).did, 'swapped');
+  assert.equal(w.store.fresh.next, 1);
+  w.clock += 5000;
+  assert.equal((await r.step()).did, 'unshielding');
+  assert.equal(unshielded[1].to, fa(1), 'the next swap, the next address');
+});
