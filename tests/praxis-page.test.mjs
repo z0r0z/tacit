@@ -312,7 +312,7 @@ console.log('the rewards, in TAC');
 
 console.log('take part: the big button, the command for this computer, the queue and the coordinator from the window');
 {
-  const { ctx, page, errs } = await fresh({ coordinator: { open: true, coordinator: 'http://198.51.100.7:9999', queue: 3, index: 18 } });
+  const { ctx, page, errs } = await fresh({ coordinator: { open: true, coordinator: 'http://198.51.100.7:9999', queue: 3, index: 18, browser: true, community: true } });
   await page.waitForFunction(() => /queue/.test(document.querySelector('#queue').textContent), null, { timeout: 10000 });
   ok(/3 in the queue · about 60 min/.test(await text(page, '#queue')) && (await text(page, '#n-queue')) === '3', `the queue and the wait, and the stat (${await text(page, '#queue')})`);
   await page.selectOption('#plat', 'linux-amd64');
@@ -334,6 +334,11 @@ console.log('take part: the big button, the command for this computer, the queue
   await page.click('#cta-go');
   await page.waitForFunction(() => document.activeElement && document.activeElement.id === 'addr', null, { timeout: 4000 });
   ok(true, 'the Contribute button takes you to the form and into the address field');
+  ok(/one in three turns is reserved/i.test(await text(page, '#community')) && /No transaction or spending permission/i.test(await text(page, '#community')), 'the community lane explains its bounded share and harmless proof');
+  await page.evaluate(() => { globalThis.ethereum = { request: async ({ method }) => method === 'eth_requestAccounts' ? ['0x' + '12'.repeat(20)] : null }; });
+  await page.click('#community-connect');
+  await page.waitForFunction(() => /ready/i.test(document.querySelector('#community-status').textContent));
+  ok(/0x1212…1212 ready/.test(await text(page, '#community-connect')) && /harmless signature/i.test(await text(page, '#community-status')), 'an external supporter wallet is armed without a transaction');
   ok(/tacit-prover/.test(await text(page, '.alt')) && /v0\.7\.0/.test(await text(page, '.alt')), 'a line for people who run tacit-prover');
   ok(!errs.length, 'no script errors');
   await ctx.close();

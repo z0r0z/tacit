@@ -149,6 +149,27 @@ func (c *Coordinator) Handler() http.Handler {
 		}
 		writeJSON(w, 200, st)
 	})
+	mux.HandleFunc("POST /api/community", func(w http.ResponseWriter, r *http.Request) {
+		if c.PrioritySecret == "" || r.Header.Get("X-Ceremony-Priority-Key") != c.PrioritySecret {
+			writeJSON(w, 404, map[string]string{"error": "not found"})
+			return
+		}
+		var body struct {
+			Supporter string   `json:"supporter"`
+			Level     int      `json:"level"`
+			Signals   []string `json:"signals"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&body); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "invalid community proof"})
+			return
+		}
+		st, err := c.UpgradeCommunity(token(r), body.Supporter, body.Level, body.Signals)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, st)
+	})
 	mux.HandleFunc("POST /api/claim", func(w http.ResponseWriter, r *http.Request) {
 		s, err := c.Claim(token(r))
 		if err != nil {
