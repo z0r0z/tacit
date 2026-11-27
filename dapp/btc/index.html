@@ -22,8 +22,8 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js | | /swap/atomic-market.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=b4159740">
-<link rel="modulepreload" href="/swap/atomic.js?cb=19cd0850">
+<link rel="modulepreload" href="/btc/app.js?cb=36ee110c">
+<link rel="modulepreload" href="/swap/atomic.js?cb=169714df">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -133,7 +133,7 @@ html[data-sec="chains/btc"] .hero { padding-top: clamp(8px, 2vh, 20px); }      /
 .rt.btc b { color: color-mix(in srgb, var(--orange) 72%, var(--ink)); }
 .rt.eth { border-top-color: var(--blue); background: color-mix(in srgb, var(--blue) 9%, var(--card)); }
 .rt.eth b { color: color-mix(in srgb, var(--blue) 72%, var(--ink)); }
-@media (max-width: 480px) { .rec { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; } }      /* each part of the line whole: it breaks between them */
+@media (max-width: 480px) { .rec { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; } .rec .rt:first-child, .rec .rt:last-child:nth-child(even) { grid-column: 1 / -1; } } /* the total across, so BTC → ETH and ETH → BTC sit side by side; a last tile alone spans too */      /* each part of the line whole: it breaks between them */
 
 /* the lane, drawn by swap/atomic.js in the card's own styles */
 .lane { margin: 24px 0 0; padding: 16px; background: linear-gradient(var(--card), var(--card)) padding-box, linear-gradient(115deg, color-mix(in srgb, var(--orange) 55%, var(--hair-2)), var(--hair) 45%, color-mix(in srgb, var(--blue) 55%, var(--hair-2))) border-box; border: 1px solid transparent; border-radius: 20px; box-shadow: 0 28px 64px -42px rgba(0,0,0,.58); }
@@ -804,7 +804,7 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
 </div>
 <!-- warm:begin -->
 <template id="warm">
-<link rel="modulepreload" href="/swap/atomic-market.js?cb=c42a3f60">
+<link rel="modulepreload" href="/swap/atomic-market.js?cb=93b896a7">
 <link rel="modulepreload" href="/fast/discover.js?cb=9b85f002">
 <link rel="modulepreload" href="/fastbridge-http.js">
 <link rel="modulepreload" href="/fastbridge-client.js?cb=09a13249">
@@ -823,6 +823,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
 <link rel="modulepreload" href="/swap/atomic-probe.js?cb=99f7488b">
 </template>
 <!-- warm:end -->
-<script type="module" src="/btc/app.js?cb=b4159740"></script>
+<script type="module" src="/btc/app.js?cb=36ee110c"></script>
 </body>
 </html>

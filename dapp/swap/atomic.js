@@ -32,11 +32,11 @@ const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_M
 // A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
 // one too near its end asks for a new one first
 const RENEW_SECS = 150, START_SECS = 125;
-const MARKET_MODULE = '/swap/atomic-market.js?cb=c42a3f60';
+const MARKET_MODULE = '/swap/atomic-market.js?cb=93b896a7';
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
 // the most providers one BTC-for-ETH swap is split among (fastbridge-pair.js splitLegs)
-const SPLIT_LEGS = 4;
+const SPLIT_LEGS = 4; // = atomic-market.js SPLIT_LEGS (the page's header totals)
 const DISMISS_KEY = 'tacit-atomic-dismissed-v1';
 const LOCK_GUESS_SATS = 3000;                                     // what Max keeps back for the Bitcoin fee until a quote has said what it is
 const SHIELD_NOTE = 'The deposit is public. Nothing on chain links it to the swap or your Bitcoin address.';
