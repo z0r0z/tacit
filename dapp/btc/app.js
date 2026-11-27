@@ -148,7 +148,7 @@ function paintFund(i) {
       const goal = BigInt(t.eth) + BigInt(t.btcAsEth), have = BigInt(s.capacity.valueEth), re = BigInt(s.reinvestedEth || 0);
       const pct = goal > 0n ? Math.min(100, Number((have * 1000n) / goal) / 10) : 0;
       const since = new Date(Number(s.since) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      const figs = [t.reached ? `<b class="num">${esc(eth2(have))}</b> ETH, at its target` : `<b class="num">${esc(eth2(have))}</b> of ${esc(eth2(goal))} ETH`, re > 0n ? `${esc(fmt(re))} ETH of fees reinvested since ${esc(since)}` : `fees counted since ${esc(since)}`];
+      const figs = [t.reached ? `<b class="num">${esc(eth2(have))}</b> ETH, at its target` : `<b class="num">${esc(eth2(have))}</b> of ${esc(eth2(goal))} ETH, both sides valued in ETH`, re > 0n ? `${esc(fmt(re))} ETH of fees reinvested since ${esc(since)}` : `fees counted since ${esc(since)}`];
       if (b.startedAt || BigInt(b.routedEth || 0) > 0n) figs.push(`${esc(tacTxt(b.tacBought))} TAC bought`);
       el.innerHTML = rec + `<p>Tacit’s provider puts its fees, after network costs, back into its capacity until it holds ${esc(eth2(t.eth))} ETH and as much in BTC. Past that, they go to TAC buybacks.</p>`
         + `<div class="bar" role="progressbar" aria-label="Capacity against that target" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}"><i></i></div>`
