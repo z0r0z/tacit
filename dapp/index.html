@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ThQVxfxVXPSBqSk2Xy4oyJfrkDTb4Vx8QF80wcVdJ70=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yFMozkUqa4M3ytNGXMTozh//fkakgcrN2cGdXfgBLYE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -8767,13 +8767,55 @@ function payBals(ids) {
   }
   return Promise.all(ids.map((id) => PB.p[id]).filter(Boolean)).then(() => {});
 }
+// The relays anyone has listed in the relay registry for a chain (dapp/evm-pool-open-relays.js), taken as the Pay page takes them: read once a visit, from a
+// public node and never through a service Tacit runs, a few drawn at random next to the relay this page ships with, and listed on the private route, the only
+// way this page reaches them. A registry that does not answer in time, or a page without the route, leaves a wallet with the page's own relay. A spend asks
+// each of them for a quote and goes through one of the cheapest within the fee it was shown; a sync, a deposit and a receive box stay with the page's own.
+const OPEN_RELAYS = new Map();
+const routeLib = lazy(() => import('/private-route.js?cb=b5c16019'));
+const openRelaysLib = lazy(() => import('/evm-pool-open-relays.js?cb=2ecb4ba9'));
+function openRelaysFor(c) {
+  if (!OPEN_RELAYS.has(c.chainId)) OPEN_RELAYS.set(c.chainId, (async () => {
+    try {
+      const [r, o, { jsonRpc }] = await Promise.all([routeLib(), openRelaysLib(), import('/json-rpc.js')]);
+      if (!r.enabled()) return [];
+      const rpc = jsonRpc([...DEVICE_CHAINS[0].rpc].reverse()), real = !!location.hostname && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+      const list = await Promise.race([
+        o.openRelays({ call: (to, data) => rpc('eth_call', [{ to, data }, 'latest']), chainId: c.chainId, own: c.keeper, pinned: real }),
+        new Promise((resolve) => setTimeout(() => resolve([]), 4000)),
+      ]);
+      r.listRelays(c.chainId, list);
+      return list;
+    } catch { return []; }
+  })());
+  return OPEN_RELAYS.get(c.chainId);
+}
+// A token pool's relays: the chain's registry entries pointed at the pool's own route (/1-tac/evm-pool/keeper), each pinned to the address it was listed under.
+// One that does not serve the pool does not quote, and is left out. A pool with no relay of its own is moved by the user's wallet, and takes none.
+async function tokenRelays(p) {
+  const c = DEVICE_CHAINS.find((x) => x.chainId === p.chainId);
+  if (!p.keeper || !c) return [];
+  try {
+    const [o, list] = await Promise.all([openRelaysLib(), openRelaysFor(c)]);
+    const keepers = o.keepersForPool(list, p.chainId, new URL(p.keeper).pathname.split('/')[1]);
+    (await routeLib()).listRelays(p.chainId, keepers);
+    return keepers;
+  } catch { return []; }
+}
+// A wallet's fetch for its relays: the relay this page ships with as it always was, and any other only through the private route, which seals each request to
+// that relay's own key and refuses one it does not reach, so a registry relay never sees the address of the person asking. The route does not carry a
+// reservation: a registry relay answers one with a 403, and its spend is sent without a slot, as every spend on the Pay page is.
+const relayFetch = (url, init) => (String(url).startsWith(`${POOL_KEEPERS}/`) ? fetch(url, init) : routeLib().then((r) => r.keeperFetch(url, init)));
 async function deviceWallet() {
   if (DEV.W && DEV.key === S.key.pubHex + DEV.chain.chainId) return DEV.W;
-  const m = await getDeviceMods(), c = DEV.chain;
+  openRelaysFor(DEV.chain);      // read beside the modules, not after them
+  const m = await getDeviceMods(), c = DEV.chain, keepers = await openRelaysFor(c);
+  if (c !== DEV.chain) return deviceWallet();
+  if (DEV.W && DEV.key === S.key.pubHex + c.chainId) return DEV.W;
   const keys = m.evmPoolKeys(m.zk, walletPriv());
   DEV.W = m.makeEvmPoolWallet({
-    zk: m.zk, keys, keeper: c.keeper, store: lsKv, partial: true,
-    chain: { chainId: c.chainId, pool: EVM_POOL, router: EVM_ROUTER, rpc: m.jsonRpc(c.rpc), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk },
+    zk: m.zk, keys, keeper: c.keeper, store: lsKv, partial: true, fetchImpl: relayFetch,
+    chain: { chainId: c.chainId, pool: EVM_POOL, router: EVM_ROUTER, rpc: m.jsonRpc(c.rpc), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk, keepers },
     prove: async (input) => (await prover(provingNote))(input),
   });
   DEV.key = S.key.pubHex + c.chainId; DEV.bal = null; DEV.behind = null;
@@ -9044,10 +9086,11 @@ const TK = { for: null, W: null, key: null, bal: null, at: 0, err: null, syncing
 const tokCfg = (p) => ({ chainId: p.chainId, keeper: p.keeper || null, relayer: p.relayer, maxRelayFee: p.maxRelayFee, rpc: p.rpc, deployBlock: p.deployBlock, confirmations: p.confirmations, token: p.token, pool: p.pool, router: p.router });
 async function tokenWallet(p = DEV.tok) {
   if (TK.W && TK.key === S.key.pubHex + p.slug) return TK.W;
-  const m = await getDeviceMods();
+  const [m, keepers] = await Promise.all([getDeviceMods(), tokenRelays(p)]);
+  if (TK.W && TK.key === S.key.pubHex + p.slug) return TK.W;
   TK.W = m.makeEvmPoolWallet({
-    zk: m.zk, keys: m.evmPoolKeys(m.zk, walletPriv()), keeper: p.keeper || null, store: lsKv,
-    chain: { ...tokCfg(p), rpc: m.jsonRpc(p.rpc) },
+    zk: m.zk, keys: m.evmPoolKeys(m.zk, walletPriv()), keeper: p.keeper || null, store: lsKv, fetchImpl: relayFetch,
+    chain: { ...tokCfg(p), rpc: m.jsonRpc(p.rpc), keepers },
     prove: async (input) => (await prover(provingNote))(input),
   });
   TK.key = S.key.pubHex + p.slug; TK.bal = null; TK.quote = null; TK.qFail = 0;
