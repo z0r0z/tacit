@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 import http from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || 'playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
@@ -179,11 +180,11 @@ console.log('what a shared link looks like');
 
 console.log('the banner on the landing page');
 {
-  const land = readFileSync(join(DAPP, 'index.html'), 'utf8');
+  const land = frontPage(join(DAPP, 'index.html'));
   const m = land.match(/<a class="pxb" href="([^"]+)"[^>]*>(.*?)<\/a>/s);
   const txt = m ? m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '';
   ok(m && m[1] === '/praxis/' && /smart contracts on Bitcoin/.test(txt) && /up to 5 TAC/.test(txt) && !/not reviewed|not built/i.test(txt), `the landing page has a quiet line to the ceremony that says what it is (${txt.slice(0, 90)})`);
-  ok(/class="pxb"/.test(readFileSync(join(DAPP, 'tac/index.html'), 'utf8')) && /class="pxb"/.test(readFileSync(join(DAPP, 'spx/index.html'), 'utf8')), 'and the pages built from it carry it too');
+  ok(/class="pxb"/.test(frontPage(join(DAPP, 'tac/index.html'))) && /class="pxb"/.test(frontPage(join(DAPP, 'spx/index.html'))), 'and the pages built from it carry it too');
 }
 
 console.log('a receipt that was changed, and a chain that does not link');

@@ -8,8 +8,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { frontPage } from './lib/front-page.mjs';
 
-const html = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+const html = frontPage(new URL('../dapp/index.html', import.meta.url));
 const ux = readFileSync(new URL('../dapp/confidential-pool-ux.js', import.meta.url), 'utf8');
 const ops = readFileSync(new URL('../dapp/farm-ops.js', import.meta.url), 'utf8');
 const cut = (text, a, b) => { const s = text.indexOf(a), e = text.indexOf(b, s + a.length); assert.ok(s >= 0 && e > s, `has ${a}`); return text.slice(s, e); };

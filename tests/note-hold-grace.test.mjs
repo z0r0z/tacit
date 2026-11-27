@@ -4,7 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-const html = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+import { frontPage } from './lib/front-page.mjs';
+const html = frontPage(new URL('../dapp/index.html', import.meta.url));
 const cut = (a, b) => { const s = html.indexOf(a), e = html.indexOf(b, s + a.length); assert.ok(s >= 0 && e > s, `the page has ${a}`); return html.slice(s, e); };
 function holder(jobs, { scanSince = 0 } = {}) {
   const stubs = { actGet: (id) => jobs[id], P: { scan: { since: scanSince } }, LK: { since: 0 }, ended: (j) => j.status === 'settled' || j.status === 'failed', okStatus: (s) => s === 'settled' || s === 'confirmed' };

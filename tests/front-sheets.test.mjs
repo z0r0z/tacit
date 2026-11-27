@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { frontPage } from './lib/front-page.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..'), DAPP = join(ROOT, 'dapp');
 let ts;
@@ -18,12 +19,12 @@ try { ts = createRequire(import.meta.url)('typescript'); } catch { console.log('
 let fails = 0;
 const ok = (c, msg) => { if (c) console.log(`ok   ${msg}`); else { fails++; console.log(`FAIL ${msg}`); } };
 
-const html = readFileSync(process.argv[2] || join(DAPP, 'index.html'), 'utf8');
+const html = frontPage(process.argv[2] || join(DAPP, 'index.html'));
 const MODULES = [
   { file: 'front/sheets.js', text: readFileSync(process.argv[3] || join(DAPP, 'front', 'sheets.js'), 'utf8'), ctx: 'sheetsCtx', code: 'SHEET_CODE', ready: 'sheetsReady', what: 'sheets' },
   { file: 'front/tac.js', text: readFileSync(process.argv[4] || join(DAPP, 'front', 'tac.js'), 'utf8'), ctx: 'tacCtx', code: 'TAC_CODE', ready: 'tacReady', what: 'TAC\'s page' },
 ];
-const tacPage = readFileSync(process.argv[5] || join(DAPP, 'tac', 'index.html'), 'utf8');
+const tacPage = frontPage(process.argv[5] || join(DAPP, 'tac', 'index.html'));
 const mains = [...html.matchAll(/<script type="module">\n([\s\S]*?)<\/script>/g)].map((m) => m[1]).filter((t) => t.includes('\nconst render = {}, load = {};'));
 if (mains.length !== 1) { console.log(`FAIL expected one inline module declaring render, found ${mains.length}`); process.exit(1); }
 const main = mains[0];

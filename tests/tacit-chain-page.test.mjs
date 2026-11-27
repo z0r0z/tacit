@@ -5,8 +5,9 @@
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { TACIT_CHAIN } from '../dapp/tacit-chain-config.js';
+import { frontPage } from './lib/front-page.mjs';
 
-const read = (rel) => readFileSync(new URL(`../dapp/${rel}`, import.meta.url), 'utf8');
+const read = (rel) => frontPage(new URL(`../dapp/${rel}`, import.meta.url));
 const page = read('index.html');
 const m = /var TACIT_CHAIN_PAGE = (\{[^}]*\});/.exec(page);
 assert.ok(m, 'the page names TACIT_CHAIN_PAGE');

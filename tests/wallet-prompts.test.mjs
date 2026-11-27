@@ -24,6 +24,7 @@ import { UserStopped } from '../dapp/trade/wallet.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { frontPage } from './lib/front-page.mjs';
 
 let pass = 0, fail = 0;
 const ok = (label, cond) => { if (cond === true) { console.log(`  PASS  ${label}`); pass++; } else { console.log(`  FAIL  ${label}`); fail++; } };
@@ -255,7 +256,7 @@ console.log('\n— no page decides that a person cancelled from the words alone'
   ok(`no comparison with the cancel text stands without the code or the flag (${files.length} files)${byWords.length ? ': ' + byWords.join(', ') : ''}`, byWords.length === 0);
   ok(`no refusal is printed as a fixed cancel text${unrouted.length ? ': ' + unrouted.join(', ') : ''}`, unrouted.length === 0);
   // the front page's transaction prompt says it is still waiting (its code runs in the page's own module, so it is read here, not run)
-  const page = readFileSync(join(root, 'index.html'), 'utf8');
+  const page = frontPage(join(root, 'index.html'));
   const send = page.slice(page.indexOf('async function sendTx('), page.indexOf('async function payingAccount('));
   ok('sendTx asks to be told when the wallet has not answered, and ends that when it does',
     /const waiting = stillWaiting\(/.test(send) && /eth_sendTransaction/.test(send) && /finally \{ waiting\(\); \}/.test(send));

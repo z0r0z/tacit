@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as M from '../dapp/vault/math.js';
+import { frontPage } from './lib/front-page.mjs';
 
 let n = 0;
 const ok = (s) => { console.log('  ok -', s); n++; };
@@ -236,7 +237,7 @@ function vault() {
     ['', 8, null], ['.', 8, null], ['abc', 8, null], ['-1', 8, null], ['0.123456789', 8, null],
   ];
   const trade = eval(`(${/function parseUnits\(text, dec = 18\) \{[\s\S]*?\n\}/.exec(readFileSync(new URL('../dapp/trade/app.js', import.meta.url), 'utf8'))[0]})`);
-  const front = eval(`(${/function parseUnits\(s, dec = 18\) \{[\s\S]*?\n\}/.exec(readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8'))[0]})`);
+  const front = eval(`(${/function parseUnits\(s, dec = 18\) \{[\s\S]*?\n\}/.exec(frontPage(new URL('../dapp/index.html', import.meta.url)))[0]})`);
   for (const [text, dec, want] of CASES) {
     assert.equal(M.parseUnits(text, dec), want, `vault ${JSON.stringify(text)}`);
     assert.equal(trade(text, dec), want, `trade ${JSON.stringify(text)}`);

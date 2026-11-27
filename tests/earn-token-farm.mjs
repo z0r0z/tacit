@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import http from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 let n = 0, fails = 0;
@@ -72,7 +73,7 @@ ok(!started || (/no pool yet/.test(card) && /Pool new: it holds only your deposi
 }
 // a payer who holds the token starts the pool from both sides, with no swap (the contracts' composition is proved on a fork: tests/pool-start-both-fork.mjs)
 {
-  const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), body = fn.slice(fn.indexOf('async function xtBothUse('), fn.indexOf("// Liquidity added to a token's tETH pool"));
+  const fn = frontPage(join(DAPP, 'index.html')), body = fn.slice(fn.indexOf('async function xtBothUse('), fn.indexOf("// Liquidity added to a token's tETH pool"));
   ok(/foundingPlan\(\{ swapIn: x, amountOut: q\.amountOut, amountLimit: q\.amountOut/.test(body) && /held >= plan\.bLeg/.test(body), 'the both-sides plan is the market rate of the ETH entered, and only offered when the payer holds the token leg');
   ok(/addLiquidityPublicETHWithPermit2Calldata/.test(body) && /shieldSharesCalldata\(\{ poolId, shares: plan\.shares, commit: built\.commit \}\)/.test(body) && /to: plan\.owner/.test(body), 'it founds the pool with the payer as the share holder, then shields exactly the planned shares');
   ok(/sendBatch\(\[\.\.\.\(r\.registered !== true \? \[t\.registerTokenCall\(r\.addr\)\] : \[\]\), \{ to: router, data, value: plan\.ethLeg \}, \{ to: t\.cfg\.pool, data: shield, value: 0n \}\]/.test(body), 'a wallet that batches sends the registration, the add and the shield as one confirmation');
@@ -80,21 +81,21 @@ ok(!started || (/no pool yet/.test(card) && /Pool new: it holds only your deposi
 }
 // a key that holds the private tETH and the private token starts the pool from those notes: nothing public about the amounts
 {
-  const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), body = fn.slice(fn.indexOf('async function xtPrivBothUse('), fn.indexOf("// Liquidity added to a token's tETH pool"));
+  const fn = frontPage(join(DAPP, 'index.html')), body = fn.slice(fn.indexOf('async function xtPrivBothUse('), fn.indexOf("// Liquidity added to a token's tETH pool"));
   ok(/spendable\('eth'\) >= ethUnits && spendable\(`xp\$\{r\.addr\}`\) >= tokUnits/.test(body), 'the private start is only offered when both private balances cover their leg');
   ok(/noteFor\(run, t, priv, plan\.ethUnits/.test(body) && /noteFor\(run, t, priv, plan\.tokUnits/.test(body) && /t\.lpAdd\(\{ walletPriv: priv, aNote: nE, bNote: nT, feeBps: POOL_START_FEE, selfSettle/.test(body), 'it cuts a note of each size and adds them as the first liquidity (the module creates the pool)');
   ok(/if \(HX\.from === 'eth'\) \{ const pb = await xtPrivBothUse\(r, wei\)/.test(fn) && /src === 'eth' && !lpOnly\) out\.push\(\.\.\.xtEarnRows\(\)\.filter\(\(x\) => x\.k\.startsWith\('xs:'\)/.test(fn), 'private tETH, as the Earn source, lists the starts its private coins can fund, and the press uses the private start');
 }
 // a share proof slow to come back says so after 90 seconds and offers the own-device choice, as the farm zap does; the wait itself is unchanged
 {
-  const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), body = fn.slice(fn.indexOf('async function xtShareProof('), fn.indexOf('// One transaction from the wallet: the ETH\'s swap half'));
+  const fn = frontPage(join(DAPP, 'index.html')), body = fn.slice(fn.indexOf('async function xtShareProof('), fn.indexOf('// One transaction from the wallet: the ETH\'s swap half'));
   ok(/sleep\(90e3\)\.then\(async \(\) => \{\s+if \(over\) return null;/.test(body) && /inflight: proving, down: false/.test(body) && /const proven = await proving;/.test(body), 'a share proof slow past 90 seconds offers to keep waiting or prove on this device, and is still awaited the same way');
   ok(/if \(way === 'own'\) \{ try \{ t\.releaseShareIndex/.test(body), 'choosing to prove on the device frees the share index and sends nothing');
   ok(/\/confidential\/relay`\)/.test(body) && /tacit-proof-slow-v1/.test(body) && /opts\.onUpdate = \(u\) =>/.test(body), 'the notice carries the relay\'s own queue gauge and the job\'s status trail, and keeps them for tracing');
 }
 // the Privacy row's count is read again while the page is open (it said "0 deposits" for a token just deposited, until the page was reloaded)
 {
-  const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), body = fn.slice(fn.indexOf('const ANON = {'), fn.indexOf('var TACP = {'));
+  const fn = frontPage(join(DAPP, 'index.html')), body = fn.slice(fn.indexOf('const ANON = {'), fn.indexOf('var TACP = {'));
   ok(/Date\.now\(\) - ANON\.at > 60e3/.test(body) && /\.finally\(\(\) => \{ ANON\.p = null; ANON\.at = Date\.now\(\); \}\)/.test(body), 'the deposit count is asked again once a minute, and a failed read waits the minute');
   ok(/const changed = JSON\.stringify\(j\.assets\) !== JSON\.stringify\(ANON\.v\?\.assets\)/.test(body) && /if \(changed\)/.test(body), 'the card and tile are painted again only when a count has changed');
 }

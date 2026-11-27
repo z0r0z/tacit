@@ -36,7 +36,8 @@ const PREBOOT    = join(DAPP_DIR, 'preboot.js');             // head-loaded, SW-
 const PRF_WALLET = join(DAPP_DIR, 'prf-wallet.js');          // passkey/PRF key derivation, SW-cached like tacit.js
 const SW_JS      = join(DAPP_DIR, 'sw.js');
 const VERIFY_HTML = join(DAPP_DIR, 'verify.html');   // self-contained verifier; its inline module is CSP-hash-pinned
-const WELD_HTML  = join(DAPP_DIR, 'index.html');             // the front page (tacit weld, formerly /weld/): one file, its inline module CSP-hash-pinned
+const WELD_HTML  = join(DAPP_DIR, 'index.html');             // the front page (tacit weld, formerly /weld/): its code is one module, front/main.js
+const MAIN_JS = join(DAPP_DIR, 'front', 'main.js');          // the front page's module, which tac/index.html and spx/index.html load too
 const WELD_STATS_HTML = join(DAPP_DIR, 'weld', 'stats', 'index.html');   // weld stats: public reads only, its inline module CSP-hash-pinned
 const WELD_KEEPER_HTML = join(DAPP_DIR, 'weld', 'keeper', 'index.html'); // community ops moved to /prove/: this page only forwards to its tabs, its inline module CSP-hash-pinned
 const PAY_HTML = join(DAPP_DIR, 'pay', 'index.html');         // tacit pay: BTC and TAC payments, one file, its inline module CSP-hash-pinned
@@ -170,10 +171,10 @@ function updateCacheBust(htmlBytes, appJsBytes, prebootBytes) {
 // then app.js, then the page that loads app.js) so each token covers bytes already final. Returns the drift it found; writes only
 // when asked, so --verify-only reuses the same walk.
 const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', 'sats/eth.js', 'sats/app.js', 'sats/index.html'];
-// The front page (dapp/index.html) and weld's stats and keeper pages each keep their imports in their inline module, so their tokens are rewritten before
-// those modules' CSP hashes are taken (updatePinnedCsp below).
+// Weld's stats and keeper pages keep their imports in their inline module, so their tokens are rewritten before those modules' CSP hashes are
+// taken (updatePinnedCsp below). The front page's module is front/main.js, hashed before dapp/index.html (and /tac/ and /spx/) that load it.
 // (TAC's Bitcoin pool, tac/pool.js and what it loads, the sheets, front/sheets.js, and TAC's page, front/tac.js, are hashed before the front page that loads them)
-const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'front/sheets.js', 'front/tac.js', 'front-route.js', 'index.html', 'weld/stats/index.html'];
+const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'front/sheets.js', 'front/tac.js', 'front-route.js', 'front/main.js', 'index.html', 'weld/stats/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
 const PAY_CB_FILES = ['private-route.js', 'relay-route.js', 'sign-wait.js', 'pay/index.html', 'pay/eth/index.html'];
 // dapp/tac/ holds TAC's Bitcoin pool, which TAC's page draws: pool.js lazy-imports sats.js and claim.js, so those are hashed first, then pool.js
@@ -258,7 +259,7 @@ const TAC_PAGE_SWAPS = [
 const TAC_PAGE_UNPRELOAD = /<link rel="modulepreload" href="\/(?:swap\/(?:card|route|aggregate|solvers|link|route-name)|trade\/(?:wallet|util|fmt)|points-note)\.js\?cb=[0-9a-f]{8}">\n/g;
 const TAC_PAGE_PRELOAD = /\bimport\('(\/front\/tac\.js\?cb=[0-9a-f]{8})'\)/g;
 const TAC_PAGE_LIVE_PRELOAD = /\bimport\('(\/chain\/live\.js\?cb=[0-9a-f]{8})'\)/g;
-function tacPageOf(text) {
+function tacPageOf(text, code = readFileSync(MAIN_JS, 'utf8')) {
   for (const [a, b] of TAC_PAGE_SWAPS) {
     if (text.split(a).length !== 2) throw new Error(`index.html has no single ${a}: update TAC_PAGE_SWAPS in build/build.mjs`);
     text = text.replace(a, b);
@@ -266,10 +267,10 @@ function tacPageOf(text) {
   const card = (text.match(TAC_PAGE_UNPRELOAD) || []).length;
   if (card !== 10) throw new Error(`index.html preloads ${card} of the swap card's 10 modules: update TAC_PAGE_UNPRELOAD in build/build.mjs`);
   text = text.replace(TAC_PAGE_UNPRELOAD, '');
-  const tacJs = [...text.matchAll(TAC_PAGE_PRELOAD)].map((m) => m[1]);
-  const liveJs = [...text.matchAll(TAC_PAGE_LIVE_PRELOAD)].map((m) => m[1]);
-  if (tacJs.length !== (existsSync(TAC_JS) ? 1 : 0)) throw new Error(`index.html imports /front/tac.js ${tacJs.length} times: update tacPageOf in build/build.mjs`);
-  if (liveJs.length !== 1) throw new Error(`index.html imports /chain/live.js ${liveJs.length} times: update tacPageOf in build/build.mjs`);
+  const tacJs = [...code.matchAll(TAC_PAGE_PRELOAD)].map((m) => m[1]);
+  const liveJs = [...code.matchAll(TAC_PAGE_LIVE_PRELOAD)].map((m) => m[1]);
+  if (tacJs.length !== (existsSync(TAC_JS) ? 1 : 0)) throw new Error(`front/main.js imports /front/tac.js ${tacJs.length} times: update tacPageOf in build/build.mjs`);
+  if (liveJs.length !== 1) throw new Error(`front/main.js imports /chain/live.js ${liveJs.length} times: update tacPageOf in build/build.mjs`);
   if (tacJs.length) {
     const preloads = [...tacJs, ...liveJs];
     if (text.split('<!-- preload:end -->').length !== 2 || preloads.some((u) => text.includes(`href="${u}"`))) throw new Error('index.html should have one <!-- preload:end --> and no TAC-page-only preload: update tacPageOf in build/build.mjs');
@@ -282,7 +283,7 @@ function tacPageOf(text) {
 }
 // The front page's sheets are front/sheets.js, which the page's module imports when one first opens, and TAC's page is front/tac.js, which it
 // imports when TAC's page opens (build/split-front.mjs made both). Each one's install(ctx) takes the page's names it reads from ctx: by value
-// on its first line, and as ctx.X for the page's let and var bindings, so it sees them change. The page's sheetsCtx, between
+// on its first line, and as ctx.X for the page's let and var bindings, so it sees them change. The page's sheetsCtx (in front/main.js), between
 // `// front-sheets:begin` and `// front-sheets:end`, and its tacCtx, between `// front-tac:begin` and `// front-tac:end`, are made here
 // from those two lists. A name the module reads from the page without ctx, a name ctx carries that the page does not declare, and a
 // let or var taken by value fail the build, so a sheet or TAC's page cannot open into a ReferenceError or a stale value.
@@ -290,11 +291,11 @@ const FRONT_MODULES = [['front/sheets.js', 'front-sheets', 'sheetsCtx'], ['front
 const TAC_JS = join(DAPP_DIR, 'front', 'tac.js');
 const NOT_NAMES = new Set('await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield arguments eval undefined NaN Infinity __proto__'.split(' '));
 function frontModule(write, rel, mark, ctxName) {
-  const file = join(DAPP_DIR, rel), BLOCK = new RegExp(`// ${mark}:begin\\n[\\s\\S]*?// ${mark}:end`), page = readFileSync(WELD_HTML, 'utf8');
-  if (!existsSync(file)) { if (BLOCK.test(page)) throw new Error(`index.html has the ${mark} block, but there is no dapp/${rel}`); return []; }
+  const file = join(DAPP_DIR, rel), BLOCK = new RegExp(`// ${mark}:begin\\n[\\s\\S]*?// ${mark}:end`), page = readFileSync(MAIN_JS, 'utf8');
+  if (!existsSync(file)) { if (BLOCK.test(page)) throw new Error(`front/main.js has the ${mark} block, but there is no dapp/${rel}`); return []; }
   const js = readFileSync(file, 'utf8');
-  const main = [...page.matchAll(/<script type="module">\n([\s\S]*?)<\/script>/g)].map((m) => m[1]).filter((t) => BLOCK.test(t));
-  if (main.length !== 1) throw new Error(`index.html: expected one inline module with the ${mark} block, found ${main.length}`);
+  if (!BLOCK.test(page)) throw new Error(`front/main.js has no ${mark} block`);
+  const main = [page];
   const head = /^const \{ ([^}]*) \} = ctx;$/m.exec(js);
   if (!head) throw new Error(`${rel}: install() does not start with \`const { … } = ctx;\``);
   // esbuild's define replaces only the names the module reads and does not declare; its copy also has no comments
@@ -324,8 +325,8 @@ function frontModule(write, rel, mark, ctxName) {
   ];
   if (problems.length) throw new Error(problems.join('\n    '));
   if (BLOCK.exec(page)[0] === want) return [];
-  if (write) writeFileSync(WELD_HTML, page.replace(BLOCK, () => want));
-  return [`index.html ${ctxName} does not carry what ${rel} takes from ctx`];
+  if (write) writeFileSync(MAIN_JS, page.replace(BLOCK, () => want));
+  return [`front/main.js ${ctxName} does not carry what ${rel} takes from ctx`];
 }
 const frontSheets = (write) => FRONT_MODULES.flatMap(([rel, mark, ctxName]) => frontModule(write, rel, mark, ctxName));
 function tacPage(write) {
@@ -453,6 +454,8 @@ function pageCacheBust(files, write) {
 // A page whose script is a file (a CSP without inline script) has a `<!-- warm:begin --><!-- warm:end -->` block instead: the same links inside an inert
 // <template>, which the script clones into the head. The root of this group may be named by the page's own modules rather than by the page.
 // Generated here so it cannot go stale; --verify-only reports a block that no longer matches.
+// The front page's module is a file (front/main.js), so its preload-later and preload-intent blocks are written there.
+const PRELOAD_CODE = { 'index.html': 'front/main.js' };
 const PRELOAD_PAGES = ['recover/index.html', 'face/index.html', 'index.html', 'pay/index.html', 'pay/eth/index.html', 'trade/index.html', 'teth/index.html', 'cbtc/index.html', 'vault/index.html', 'tasks/index.html', 'splitter/index.html', 'relay/index.html', 'etch/index.html', 'assets/index.html', 'rewards/index.html', 'bridge/index.html', 'discord/index.html', 'govern/index.html', 'shop/index.html', 'fast/index.html', 'prove/index.html', 'help/index.html', 'nodes/index.html', 'farm/index.html', 'btc/index.html', 'praxis/index.html'];
 const STATIC_IMPORT = /(?:^|[\n;}])\s*(?:import|export)\s*(?:[^'"();]*?\sfrom\s*)?(['"])([^'"]+)\1/g;
 const WARM_BLOCK = /<!-- warm:begin -->[\s\S]*?<!-- warm:end -->/;
@@ -503,7 +506,7 @@ function preloadBlocks(page) {
   const urlOf = (path, seen = []) => {
     const re = new RegExp(`(["'])(${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\?cb=[A-Za-z0-9_-]+)?)\\1`);
     let m = re.exec(code);
-    for (const u of seen) { if (m) break; m = re.exec(readFileSync(join(DAPP_DIR, u.split('?')[0]), 'utf8')); }
+    for (const u of seen) { if (m) break; m = re.exec(readFileSync(join(DAPP_DIR, u.split('?')[0]), 'utf8').replace(LATER_BLOCK, '').replace(INTENT_BLOCK, '')); }
     if (!m) throw new Error(`preload root ${path} is not imported by the page`);
     return m[2];
   };
@@ -544,10 +547,13 @@ function pagePreloads(write) {
     const before = readFileSync(file, 'utf8');
     const blocks = preloadBlocks(before);
     if (!blocks) continue;
-    if (!LATER_BLOCK.test(before) && blocks.later.includes('for (')) throw new Error(`${rel} has no preload-later block`);   // a page with nothing after the bar needs none (the trade page runs no inline script)
-    if (blocks.wantsIntent && !INTENT_BLOCK.test(before) && !WARM_BLOCK.test(before)) throw new Error(`${rel} has no preload-intent or warm block`);
-    const after = before.replace(HEAD_BLOCK, () => blocks.head).replace(LATER_BLOCK, () => blocks.later).replace(INTENT_BLOCK, () => blocks.intent).replace(WARM_BLOCK, () => blocks.warm);
+    const codeRel = PRELOAD_CODE[rel], codeFile = codeRel && join(DAPP_DIR, codeRel), code = codeFile ? readFileSync(codeFile, 'utf8') : before;
+    if (!LATER_BLOCK.test(code) && blocks.later.includes('for (')) throw new Error(`${codeRel || rel} has no preload-later block`);   // a page with nothing after the bar needs none (the trade page runs no inline script)
+    if (blocks.wantsIntent && !INTENT_BLOCK.test(code) && !WARM_BLOCK.test(code)) throw new Error(`${codeRel || rel} has no preload-intent or warm block`);
+    const inCode = (t) => t.replace(LATER_BLOCK, () => blocks.later).replace(INTENT_BLOCK, () => blocks.intent).replace(WARM_BLOCK, () => blocks.warm);
+    const after = codeFile ? before.replace(HEAD_BLOCK, () => blocks.head) : inCode(before.replace(HEAD_BLOCK, () => blocks.head));
     if (after !== before) { drift.push(`${rel} modulepreload links do not match the page's imports`); if (write) writeFileSync(file, after); }
+    if (codeFile && inCode(code) !== code) { drift.push(`${codeRel} preload blocks do not match the page's imports`); if (write) writeFileSync(codeFile, inCode(code)); }
   }
   return drift;
 }
@@ -615,7 +621,6 @@ const INLINE_CLASSIC = /<script>([\s\S]*?)<\/script>/;
 const HASH_ONLY = { re: /script-src '(unsafe-inline|sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src '${d}'` };
 const PINNED_PAGES = [
   { name: 'verify.html', file: VERIFY_HTML, re: /script-src '(unsafe-inline|sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src '${d}'` },
-  { name: 'index.html', file: WELD_HTML, re: /script-src 'self' '(sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src 'self' '${d}'` },
   { name: 'weld/stats/index.html', file: WELD_STATS_HTML, re: /script-src 'self' '(sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src 'self' '${d}'` },
   { name: 'weld/keeper/index.html', file: WELD_KEEPER_HTML, re: /script-src 'self' '(sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src 'self' '${d}'` },
   { name: 'pay/index.html', file: PAY_HTML, re: /script-src 'self' '(sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src 'self' '${d}'` },
@@ -800,6 +805,7 @@ async function main() {
     console.log(`• page preloads: ${preDrift.length ? 'updated' : 'unchanged'}`);
     if (preDrift.length) tradeAssetPages(true);                 // the trade page's copy for each asset carries its preloads too
     if (preDrift.length) pageCacheBust(TRADE_CB_FILES, true);   // and the preloads sit in the head the page's own tokens are read from
+    if (preDrift.length) pageCacheBust(WELD_CB_FILES, true);    // the front page's preload blocks are in front/main.js, whose token the page carries
     const harnessDrift = pageCacheBust(HARNESS_CB_FILES, true);
     console.log(`• swap test page cache-bust: ${harnessDrift.length ? `${harnessDrift.length} token(s) updated` : 'unchanged'}`);
 

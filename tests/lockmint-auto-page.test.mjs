@@ -6,8 +6,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { newIntent, autoNext, afterStep, stageOf, autoLine } from '../dapp/lockmint-auto.js';
+import { frontPage } from './lib/front-page.mjs';
 
-const page = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+const page = frontPage(new URL('../dapp/index.html', import.meta.url));
 const cut = (a, b) => { const s = page.indexOf(a), e = page.indexOf(b, s + a.length); assert.ok(s >= 0 && e > s, `the page has ${a}`); return page.slice(s, e); };
 const SRC = `${cut('// ── one press from BTC to cUSD', 'function hxBwUpdate() {')}\n${cut('async function hxBwStart() {', '\nfunction hxKeepAmt')}`;
 const NAMES = ['store', 'S', 'HX', 'LOCK', 'lockId', 'newIntent', 'autoNext', 'afterStep', 'stageOf', 'autoLine', 'HXP', 'hxBwInflight', 'busy', 'FLASH', 'say', '$', 'BWX', 'bwCanWst', 'loadBorrow', 'hxPad', 'rerender', 'hxBwUpdate',

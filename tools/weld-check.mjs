@@ -1683,19 +1683,12 @@ await step('devtokpool', async () => {
 
 // The card hands the device sheet an amount as a draft (hxDraft) and opens it by link. A draft for the TAC pool ({ tac: true }) fills the TAC
 // pool's Deposit and no ETH pool's; an ETH pool's ({ chain }) fills that chain's Deposit and not the TAC pool's. The draft lives inside the
-// page's module, so the document is served with one line more that hands the test hxDraft and openLink (and its CSP hash moved with it).
+// page's module, so /front/main.js is served with one line more that hands the test hxDraft and openLink.
 await step('devtacdraft', async () => {
   const r = await openPage({ account: A0, key: K0 }), p = r.page;
-  const { createHash } = await import('node:crypto');
-  await r.ctx.route(r.url, async (route) => {
-    let html = readFileSync(join(DAPP, 'index.html'), 'utf8');
-    const open = html.lastIndexOf('<script type="module">'), start = open + '<script type="module">'.length, end = html.indexOf('</script>', start);
-    const body = html.slice(start, end), patched = body + '\nwindow.__draft = { hxDraft, openLink };\n';
-    const old = "'sha256-" + createHash('sha256').update(body).digest('base64') + "'";
-    if (!html.includes(old)) throw new Error('the page\'s inline script hash is not in its CSP');
-    html = html.slice(0, start) + patched + html.slice(end);
-    html = html.replace(old, "'sha256-" + createHash('sha256').update(patched).digest('base64') + "'");
-    await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
+  await r.ctx.route(/\/front\/main\.js(\?.*)?$/, async (route) => {
+    const body = readFileSync(join(DAPP, 'front/main.js'), 'utf8') + '\nwindow.__draft = { hxDraft, openLink };\n';
+    await route.fulfill({ status: 200, contentType: 'text/javascript; charset=utf-8', body });
   });
   try {
     await p.goto(r.url + '#device/ethereum');

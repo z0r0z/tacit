@@ -9,8 +9,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { frontPage } from './lib/front-page.mjs';
 
-const html = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+const html = frontPage(new URL('../dapp/index.html', import.meta.url));
 const cut = (a, b) => { const s = html.indexOf(a), e = html.indexOf(b, s + a.length); assert.ok(s >= 0 && e > s, `the page has ${a}`); return html.slice(s, e); };
 const make = (src, names, stubs, returns) => new Function(...names, `${src}\nreturn { ${returns} };`)(...names.map((k) => stubs[k]));
 

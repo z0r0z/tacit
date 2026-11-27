@@ -6,9 +6,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { autoClaimPick, autoClaimOff, autoClaimSet, autoClaimHint, autoClaimHeldByFee, autoClaimFeeShare, AUTO_CLAIM_SHARE, AUTO_CLAIM_MAX, AUTO_CLAIM_KEY, AUTO_CLAIM_TOLD } from '../dapp/auto-claim.js';
+import { frontPage } from './lib/front-page.mjs';
 const HINT = ' Claiming is automatic: you can stop it in your wallet.';
 
-const page = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8'), sheets = readFileSync(new URL('../dapp/front/sheets.js', import.meta.url), 'utf8');
+const page = frontPage(new URL('../dapp/index.html', import.meta.url)), sheets = readFileSync(new URL('../dapp/front/sheets.js', import.meta.url), 'utf8');
 const cut = (src, a, b) => { const s = src.indexOf(a), e = src.indexOf(b, s + a.length); assert.ok(s >= 0 && e > s, `the source has ${a}`); return src.slice(s, e); };
 
 const lock = (n, amount = 200000n, deadline = 4102444800n + BigInt(n)) => ({ leaf: '0x' + String(n).padStart(2, '0').repeat(32), asset: '0xc0', amount: String(amount), deadline: String(deadline) });

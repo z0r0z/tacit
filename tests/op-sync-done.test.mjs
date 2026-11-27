@@ -5,8 +5,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ended } from '../dapp/activity.js';
+import { frontPage } from './lib/front-page.mjs';
 
-const html = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+const html = frontPage(new URL('../dapp/index.html', import.meta.url));
 const okStatusLine = html.match(/^const okStatus = .*$/m)?.[0];
 const start = html.indexOf('function opSync(id) {'), end = html.indexOf('\nfunction actWrite()', start);
 assert.ok(okStatusLine && start > 0 && end > start, 'opSync is where this test expects it');

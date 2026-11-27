@@ -4,8 +4,9 @@
 //   node tests/points-estimate.test.mjs
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { frontPage } from './lib/front-page.mjs';
 
-const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
+const read = (p) => frontPage(new URL(`../${p}`, import.meta.url));
 const cfg = read('worker-relay/src/lib/config.js'), pay = read('dapp/pay/eth/index.html'), weld = read('dapp/index.html');
 let n = 0;
 const test = async (name, fn) => { await fn(); n++; console.log(`ok - ${name}`); };

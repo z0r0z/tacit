@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { frontPage } from './lib/front-page.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..'), DAPP = join(ROOT, 'dapp');
 const PAGES = ['index.html', 'pay/index.html', 'pay/eth/index.html'];
@@ -16,7 +17,7 @@ const dir = mkdtempSync(join(tmpdir(), 'inline-names-'));
 let fails = 0;
 try {
   const files = PAGES.map((rel) => {
-    const m = readFileSync(join(DAPP, rel), 'utf8').match(/<script type="module">([\s\S]*?)<\/script>/);
+    const m = frontPage(join(DAPP, rel)).match(/<script type="module">([\s\S]*?)<\/script>/);
     if (!m) throw new Error(`${rel}: no inline module`);
     const f = join(dir, rel.replace(/\//g, '_').replace(/\.html$/, '.js'));
     writeFileSync(f, m[1]);

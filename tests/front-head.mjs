@@ -12,11 +12,12 @@
 //   node tests/front-head.mjs
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
 const DAPP = join(new URL('../', import.meta.url).pathname, 'dapp');
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
-const page = readFileSync(join(DAPP, 'index.html'), 'utf8');
+const page = frontPage(join(DAPP, 'index.html'));
 const head = /<head>([\s\S]*?)<\/head>/.exec(page)[1], mod = /<script type="module">([\s\S]*?)<\/script>/.exec(page)[1];
 const STATIC_IMPORT = /(?:^|[\n;}])\s*(?:import|export)\s*(?:[^'"();]*?\sfrom\s*)?(['"])([^'"]+)\1/g;
 

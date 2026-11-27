@@ -6,6 +6,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { EVENTS, SOURCES, enabled, makeCount } from '../dapp/metrics.js';
 import { CLIENT_EVENTS } from '../worker/src/metrics.js';
+import { frontPage } from './lib/front-page.mjs';
 
 const live = (over = {}) => ({
   location: { protocol: 'https:', hostname: 'tacit.finance' },
@@ -93,7 +94,7 @@ test('every event name the pages count is on the list', () => {
   const files = ['dapp/trade/app.js', 'dapp/trade/btc.js', 'dapp/index.html'].map((f) => join(new URL('..', import.meta.url).pathname, f));
   const names = new Set();
   for (const f of files) {
-    const src = readFileSync(f, 'utf8');
+    const src = frontPage(f);
     for (const m of src.matchAll(/\b(?:metric|tally)\(\s*'([a-z_]+)'/g)) names.add(m[1]);
     for (const m of src.matchAll(/\b(?:metric|tally)\(\s*`([a-z_]*)\$\{/g)) names.add(`${m[1]}…`);
   }
@@ -109,7 +110,7 @@ test('every event name the pages count is on the list', () => {
 
 test('the pages that link to the trade page name where the link is', () => {
   const root = new URL('..', import.meta.url).pathname;
-  const read = (f) => readFileSync(join(root, f), 'utf8');
+  const read = (f) => frontPage(join(root, f));
   assert.match(read('build/chrome.mjs'), /'\/trade\/tac\/\?src=menu', 'Trade'/);
   assert.match(read('dapp/chrome.js'), /'\/trade\/tac\/\?src=menu':/, 'the More page has a line for it');
   const lander = read('dapp/index.html');
