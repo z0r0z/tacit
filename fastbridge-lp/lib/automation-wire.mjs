@@ -232,7 +232,12 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
           if (!ins.length || ins.some((i) => !Number.isInteger(i.value) || i.spk !== own)) throw new Error('an input is not a coin of the reverse address');
           return ins.map(({ txid: a, vout, value }) => ({ txid: a, vout, value }));
         },
-        btcFeeRate: () => agreedFeeRate({ bases: C.btcBases, fetchImpl: (u, o) => fetch(u, o), target: '2', minAnswers: 2, cap: 100 }),
+        // for a bump the explorers need not agree within a factor (a first send waits for that): the lower middle of two or more answers, which the rebalancing then caps (FB_LP_REBALANCE_MAX_FEE_RATE) and the send's fee limit bounds
+        btcFeeRate: async () => {
+          const vals = (await Promise.all((C.btcBases || []).map(async (b) => { try { const r = await fetch(`${String(b).replace(/\/$/, '')}/fee-estimates`, { signal: AbortSignal.timeout(15000) }); if (!r.ok) return null; const f = await r.json(), v = Number(f['2'] ?? f['3'] ?? f['6']); return Number.isFinite(v) && v > 0 && v < 5000 ? Math.max(1, v) : null; } catch { return null; } }))).filter((v) => v != null).sort((a, b) => a - b);
+          if (vals.length < 2) throw new Error('fewer than two explorers gave a fee estimate');
+          return vals[Math.floor((vals.length - 1) / 2)];
+        },
         vaultHistory: async ({ chain, router, vault }) => {
           if (chain === 'BTC') return btcVaultHistory(vault);
           const topic0 = '0x' + Buffer.from(keccak256(new TextEncoder().encode('TransferOut(address,address,address,uint256,string)'))).toString('hex');
