@@ -21,6 +21,18 @@ test('the settings: off unless set, a bad value stops the start, the swap limits
   assert.throws(() => rebalanceConfig({ FB_LP_REBALANCE_NODES_THORCHAIN: 'http://insecure.example' }), /https/);
 });
 
+test('status says it is loading before the persisted daily limit is read, rather than reporting false zeroes', async () => {
+  const r = makeRebalancer({
+    cfg: cfg(), rate: async () => null, inventory: async () => ({ ethWei: 0n, sats: 0 }),
+    load: async () => ({ v: 1, moved: String(ETH(0.4662)), day: Math.floor(NOW() / 86400), pending: null, done: 2 }), save: async () => {}, now: NOW,
+  });
+  assert.deepEqual(r.info(), { mode: 'on', loading: true, halted: null, pending: null, movedTodayEth: null, swaps: null, last: null });
+  await r.step();
+  assert.equal(r.info().loading, false);
+  assert.equal(r.info().movedTodayEth, '0.4662');
+  assert.equal(r.info().swaps, 2);
+});
+
 test('the plan: in band nothing, a surplus is cut to the least, the most and the day\'s room; a small one waits', () => {
   const c = cfg();
   const sats = (eth) => Math.round(eth / MARKET * 1e8);

@@ -355,6 +355,7 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       return { did: 'failed' };
     } finally { busy = false; }
   }
-  const info = () => ({ mode: cfg.mode, halted, pending: st && st.pending ? { dir: st.pending.dir, stage: st.pending.stage, ...(st.pending.amountWei ? { eth: mk(st.pending.amountWei) } : { sats: st.pending.amountSats }) } : null, movedTodayEth: st ? mk(BigInt(st.moved)) : '0.0000', swaps: st ? st.done : 0, last });
+  const info = () => st ? ({ mode: cfg.mode, loading: false, halted, pending: st.pending ? { dir: st.pending.dir, stage: st.pending.stage, ...(st.pending.amountWei ? { eth: mk(st.pending.amountWei) } : { sats: st.pending.amountSats }) } : null, movedTodayEth: mk(BigInt(st.moved)), swaps: st.done, last })
+    : ({ mode: cfg.mode, loading: true, halted, pending: null, movedTodayEth: null, swaps: null, last: null });
   return { step, info, holding: () => !!(st && st.pending && st.pending.dir === 'eth2btc' && st.pending.fi == null), halted: () => halted };
 }
