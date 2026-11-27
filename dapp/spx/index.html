@@ -462,11 +462,11 @@ main:focus { outline: none; }
 @media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
 @media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
 @media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
-:where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 580px; }
-@media (max-width: 640px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 370px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 356px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 338px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 602px; } }
+:where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty, #hx-body > .hx-sk) {
+  min-height: calc(var(--held-height, 579px) + var(--touch-height, 0px));
+  @media (max-width: 335px) { --held-height: 604px; } /* the steps take a second line */
+  @media (pointer: coarse) { --touch-height: 3px; }
+}
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -2187,45 +2187,85 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .sk { background: var(--skel); }
 }
-/* ───────────────────────────── Graphite, the default skin: the hero and the card's frame ─────────────────────────────
-   Built around privacy. One light thing on a screen: the button. What is chosen is a raised grey plate, not a
-   highlight. Words are in the grotesk, figures in the mono, the headline in the serif with its second word in quiet italics.
-   The rules here restyle the ones above (the tab strip's sliding line is put away, not removed: the strip is a plate now). */
+/* The transaction form uses the same ink and paper as the shared navigation.
+   The solid action, outlined selectors and underlined tabs keep distinct roles. */
 html:not([data-page="spx"]) {
-  & .hero h1 { font: 400 clamp(44px, 12vw, 68px)/1.02 var(--serif); letter-spacing: -.025em; }
-  & .hero h1 .hero-w2 { font-style: italic; color: var(--mute); }
-  & .hero .sub { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
-  & .hero .sub b { font: 400 .88em var(--mono); color: var(--ink); }
-  & .hero-t { margin-bottom: 26px; }
-  & .hx { border-radius: 20px; border-color: var(--hair); background: linear-gradient(180deg, color-mix(in srgb, var(--card) 93%, #fff) 0, var(--card) 140px); }
-  /* the tabs: one plate, the chosen tab raised on it */
-  & .hx-h { margin: 12px 12px 4px; padding: 3px; border: 0; border-radius: 12px; background: var(--field); }
+  & .hero h1 {
+    color: var(--ink);
+    font: 600 clamp(36px, 7vw, 58px)/1.02 var(--sans);
+    letter-spacing: -.065em;
+  }
+  & .hero h1 .hero-w2 { color: var(--accent); font: italic 400 1.06em/1 var(--serif); letter-spacing: -.045em; }
+  & .hero .hero-pair { gap: .08em; margin-left: .18em; vertical-align: .05em; }
+  & .hero .hero-pair .tk { width: .45em; height: .45em; }
+  & .hero .sub { font: 400 16px/1.45 var(--sans); letter-spacing: 0; color: var(--mute); }
+  & .hero .sub b { color: var(--ink); font: 500 .87em var(--mono); }
+  & .hx {
+    max-width: 528px; border: 1px solid var(--hair-2); border-radius: 14px;
+    background: var(--card); box-shadow: 0 3px 0 var(--hair), 0 18px 45px -36px var(--ink);
+  }
+  & .hx-h {
+    margin: 0; padding: 4px 12px 0; border-bottom: 1px solid var(--hair);
+    border-radius: 13px 13px 0 0; background: var(--card);
+  }
   & .hx-h::after { display: none; }
-  & .hx-h button { padding: 10px 0; border-radius: 9px; font: 500 14px/1 var(--sans); letter-spacing: 0; transition: background-color .2s, color .2s; }
-  & .hx-h button[aria-selected="true"] { background: var(--raise); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
-  & .hx-sk .t { height: 40px; margin: 0 -4px 6px; }
-  & .hx-path { font-family: var(--sans); font-size: 12.5px; }
-  /* a choice of two in the card (Send or Request, Farm or LP only, from the wallet or from Bitcoin): the tab strip's plate, smaller */
-  & .hx-mode { background: var(--field); border-radius: 10px; }
-  & .hx-mode button { border-radius: 8px; font: 500 13px var(--sans); }
-  & .hx-mode button[aria-checked="true"] { background: var(--raise); }
-  /* Bridge and Borrow: two words with a rule under the chosen one, not a second row of plates */
-  & .hx-more { display: flex; gap: 18px; margin: 6px 4px 12px; padding: 0; background: none; border-bottom: 1px solid var(--hair); border-radius: 0; }
-  & .hx-more button { flex: none; margin-bottom: -1px; padding: 8px 2px 10px; border-bottom: 2px solid transparent; border-radius: 0; font: 500 14px var(--sans); }
-  & .hx-more button[aria-selected="true"] { background: none; box-shadow: none; border-bottom-color: var(--ink); }
-  /* a bridge's steps: a rail that runs from one chain's colour to the other's, a ring at each step between its ends */
-  & .hx-brs { margin: 18px 4px 4px; font: 400 12px/1.35 var(--sans); }
-  & .hx-brs li { padding-top: 22px; }
-  & .hx-brs li::before, & .hx-brs li::after { left: 14px; top: 6px; height: 2px; border-radius: 2px; }
-  & .hx-brs li::before { background: linear-gradient(90deg, color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)), color-mix(in srgb, var(--from) calc(67% - var(--i, 0) * 33%), var(--to))); opacity: .55; }
-  & .hx-brs .dot { box-sizing: border-box; width: 14px; height: 14px; background: var(--card); border: 2px solid color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)); }
+  & .hx-h button {
+    align-content: center; min-height: 47px; padding: 8px 2px;
+    font: 500 14px/1 var(--sans); letter-spacing: 0;
+    transition: background-color .15s ease, color .15s ease;
+  }
+  & .hx-h button[aria-selected="true"] { color: var(--accent); box-shadow: inset 0 -3px currentColor; }
+  & .hx-b { padding: 14px clamp(12px, 3vw, 20px) 16px; }
+  & .hx-lead { color: var(--mute); font: 400 14px/1.4 var(--sans); }
+  & .hx-mode { gap: 3px; padding: 3px; border: 1px solid var(--hair); border-radius: 8px; background: var(--field); }
+  & .hx-mode button { min-height: 32px; border-radius: 5px; font: 500 13px/1.25 var(--sans); }
+  & .hx-mode button[aria-checked="true"] { color: var(--accent); background: var(--card); box-shadow: 0 1px 3px var(--hair-2); }
+  & .hx-more { gap: 7px; margin: 0 0 14px; padding: 0; border: 0; background: none; }
+  & .hx-more button { flex: none; padding: 6px 14px; border: 1px solid var(--hair-2); }
+  & .hx-more button[aria-selected="true"] { color: var(--accent); border-color: currentColor; background: var(--wash); }
+
+  & #hx .f {
+    padding: 12px 14px; color: var(--ink); background: var(--field);
+    border: 1px solid var(--hair); border-radius: 9px;
+  }
+  & #hx .f::before { background: none; }
+  & #hx .f:is(.priv, :has(.where.priv)) { border-style: dashed; border-color: var(--hair-2); outline: 0; background: var(--wash); }
+  & #hx .f:focus-within { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  & #hx .fh > span:first-child, & #hx .rows-h > span:first-child {
+    font: 500 11px/1.4 var(--mono); letter-spacing: .065em; text-transform: uppercase;
+  }
+  & #hx .fm :is(.amt, .big) {
+    font: 500 clamp(35px, 5vw, 46px)/1.08 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -.055em;
+  }
+  & #hx .fm .long { font-size: clamp(27px, 4vw, 34px); }
+  & #hx .fm .longer { font-size: clamp(21px, 3vw, 27px); }
+  & #hx .fm .big:is(.word, .est) { font-size: clamp(24px, 3vw, 30px); }
+  & #hx .coin { height: 42px; border-radius: 8px; background: var(--card); box-shadow: none; }
+  & #hx .coin .tk { width: 26px; height: 26px; }
+  & #hx .quick button { min-height: 28px; border-radius: 5px; background: var(--card); }
+  & #hx .mid .flip { width: 34px; height: 34px; margin: -17px 0 0 -17px; color: var(--accent); box-shadow: 0 0 0 3px var(--card); }
+  & #hx .act .go { min-height: 48px; border-radius: 8px; font: 600 16px/1.25 var(--sans); }
+  & #hx .act .go:enabled { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  & #hx .act .go:enabled:hover { background: color-mix(in srgb, var(--accent) 87%, var(--ink)); }
+  & #hx .act .go:disabled { color: var(--faint); background: var(--field); border-color: var(--hair); }
+  & .hx .hx-path { font: 400 12px/1.4 var(--sans); }
+  & .hx .hx-path li.on { color: var(--accent); }
+  & #hx :is(.q, .hx-rc):is(.err, .warn):not(:empty) { border-inline-start: 3px solid currentColor; padding-inline-start: 9px; text-align: left; }
+  & #hx :is(button, a, input, select, summary, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  & #hx .hx-h button:focus-visible { outline-offset: -3px; }
+  & .hx-brs { margin: 16px 3px 4px; font: 400 12px/1.4 var(--sans); }
+  & .hx-brs li::before { background: var(--hair-2); }
+  & .hx-brs .dot { box-sizing: border-box; border: 2px solid var(--ink); background: var(--card); }
   & .hx-brs li:first-child .dot { background: var(--from); }
-  & .hx-brs li:last-child .dot { background: var(--to); border-color: var(--to); }
-  /* the two ways on from a bridge, as chips */
-  & #hx-brl { gap: 8px; margin-top: 14px; }
-  & .hx #hx-brl a { padding: 7px 13px; border: 1px solid var(--hair); border-radius: 999px; font: 400 12.5px var(--sans); text-decoration: none; }
-  @media (hover: hover) { & .hx #hx-brl a:hover { border-color: var(--hair-2); } }
-  & .hx .lede-s, & .hx .hx-hv, & .hx-lead { font-family: var(--sans); }
+  & .hx-brs li:last-child .dot { background: var(--to); }
+  & #hx-brl { gap: 8px; margin-top: 12px; }
+  & .hx #hx-brl a { color: var(--accent); font: 500 13px var(--sans); }
+  & .hx .lede-s, & .hx .hx-hv { font-family: var(--sans); }
+  & .hx-sk i { border-radius: 8px; }
+  & .hx-sk .t { height: 44px; margin: 0 0 6px; }
+  @media (prefers-reduced-motion: reduce) {
+    & .hx-h button, & #hx .go, & #hx .flip { transition: none; }
+  }
   /* the page under the card: every section it had, quieter, so the card stays the page's subject. Less air between sections, smaller headings, the
      line under a heading in the grotesk, the asset tabs and figures in the card's own hands (grotesk for names, mono for numbers), the coin smaller */
   & .sx { padding-top: 88px; }
@@ -2248,20 +2288,64 @@ html:not([data-page="spx"]) {
   & body { background: transparent; }
   & .hx canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .15; pointer-events: none; }
   @media (max-width: 520px) { & .hx canvas.gx-stamp { opacity: .12; } }      /* (a narrow card puts it behind the label and the coin) */
-  /* the wallet sheet's ways to sign in: Tacit's mark struck across them in glyphs (glyphs.js), seen through the rows, and behind each way's mark a breath of its colour */
+  /* Keep the existing glyph stamps behind the sign-in choices. */
   & #sheet-wallet .sheet-in { position: relative; isolation: isolate; }
-  & #sheet-wallet canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: .34; pointer-events: none; transition: opacity .15s ease; }
+  & #sheet-wallet canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: .12; pointer-events: none; }
   & #sheet-wallet .sheet-in:not(:has(#ws-in)) canvas.gx-stamp { display: none; }
-  & #ws-in .opt { --tone: transparent; background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), color-mix(in srgb, var(--field) 58%, transparent); }
-  & #ws-in .opt:has(use[href="#tk-eth"]) { --tone: #627EEA; }
-  & #ws-in .opt:has(use[href="#tk-btc"]), & #ws-in .opt:has(use[href="#i-key"]) { --tone: #F7931A; }
-  /* a way pointed at or focused carries its own mark, struck across its row alone (glyphs.js), as the card's "To" side carries its asset's; the
-     row is solid while it does, so the sheet's own mark does not show through it */
   & #ws-in .opt { position: relative; isolation: isolate; }
-  & #ws-in .opt canvas.gx-way { border-radius: inherit; opacity: .4; }
-  & #ws-in .opt:has(> canvas.gx-way) { background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), var(--field); }
-  @media (prefers-reduced-motion: reduce) { & #sheet-wallet canvas.gx-stamp { transition: none; } }
+  & #ws-in .opt canvas.gx-way { border-radius: inherit; opacity: .15; }
+  & #wallet-body > .note:last-child { border-top: 1px solid var(--hair); padding-top: 12px; }
+  & #wallet-body .wb-tl { color: var(--ink); font: 600 19px/1.3 var(--sans); }
+  & #wallet-body .wb-tot b { font: 500 36px/1.15 var(--mono); letter-spacing: -.06em; }
+  & #w-tacit { padding: 12px 14px; border: 1px dashed var(--hair-2); border-radius: 8px; background: var(--wash); }
+  & #wallet-body .w-acc summary { min-height: 44px; align-items: center; color: var(--ink); font: 500 14px/1.4 var(--sans); }
+  & #acct-pop { border-radius: 9px; border-top: 3px solid var(--accent); }
+  & #acct-pop button { border-radius: 6px; }
+  & #acct-pop button:focus-visible { outline-color: var(--accent); }
 }
+/* The illustration shares the desktop spread with the form. A small crop sits beside
+   the heading on wider phones. Narrow screens give the whole line to the title. */
+html:not([data-page], [data-sec], [data-view="portfolio"]) {
+  & .hero { padding: 24px 0 28px; }
+  & .hero-t { max-width: 528px; margin: 0 auto 17px; text-align: left; }
+  & .hero-t h1 { margin: 0 0 4px; }
+  & .hero-t .sub { margin: 0; text-align: left; text-wrap: pretty; }
+  & .pxb {
+    width: 100%; margin: 20px auto 0; padding: 12px 0;
+    border: 0; border-block: 1px solid var(--hair); border-radius: 0;
+  }
+  & .pxb i { margin-left: auto; }
+  & .starts { margin-top: 18px; }
+  & .hint, & .fms a { border-radius: 6px; }
+  & .proof-row { margin-top: 35px; }
+  @media (min-width: 380px) and (max-width: 919px) {
+    & .hero-t { display: grid; grid-template-columns: minmax(0, 1fr) 72px; column-gap: 12px; align-items: center; }
+    & .hero-t :is(h1, .sub) { grid-column: 1; }
+    & .hero-t::after {
+      content: ""; grid-column: 2; grid-row: 1 / 3; aspect-ratio: 1; border-radius: 7px;
+      background: #bbc5eb url('/front/privacy-envelope-small.webp') center / cover no-repeat;
+    }
+  }
+  @media (min-width: 920px) {
+    & .hero {
+      display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr);
+      column-gap: clamp(40px, 6vw, 88px); align-items: start; padding-top: clamp(32px, 4vw, 58px);
+    }
+    & .hero > * { grid-column: 1 / -1; }
+    & .hero-t { grid-column: 1; grid-row: 1; width: 100%; margin: 0; }
+    & .hero-t h1 { font-size: clamp(73px, 7vw, 94px); line-height: .89; }
+    & .hero-w2::before { content: ""; display: block; }
+    & .hero-t .sub { max-width: 31ch; margin-top: 14px; font-size: 19px; }
+    & .hero-t::after {
+      content: ""; display: block; max-width: 460px; margin-top: 24px; aspect-ratio: 3 / 2;
+      border-radius: 7px; background: #bbc5eb url('/front/privacy-envelope.webp') center / cover no-repeat;
+    }
+    & #hx { grid-column: 2; grid-row: 1; max-width: none; }
+    & #hx-fback { grid-column: 2; }
+    & .starts { justify-content: start; margin-top: 26px; }
+  }
+}
+
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
 <link rel="stylesheet" href="/swap/card.css?cb=7716fe3d" media="print">
@@ -2274,7 +2358,8 @@ html:not([data-page="spx"]) {
 header.top { position: relative; z-index: 30; container: top / inline-size; }
 /* one header on every page, so moving between a section's views (some are the front page, some pages of their own) moves nothing: the same height,
    and, where the sections are named, the same place for them whatever the page's label beside the mark */
-header.top { padding-top: 22px; padding-bottom: 8px; }
+header.top { padding-top: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--hair-2); }
+header.top .brand b { font-size: 30px; letter-spacing: -.055em; }
 @container top (min-width: 900px) { header.top .brand { min-width: 160px; } }
 header.top .top-r { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
 
@@ -2290,7 +2375,7 @@ header.top .sn > .sm { margin-left: auto; }
   transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 /* the look's own rules each sit under the rule they restyle, at the same weight */
-.sn > a, .sn summary { font: 400 14px/1 var(--sans, var(--mono)); }
+.sn > a, .sn summary { border-radius: 7px; font: 500 14px/1 var(--sans, var(--mono)); }
 .sn summary::-webkit-details-marker { display: none; }
 /* the menu is a <details>: a page's own rules for details and summary (a border, a "+", a margin) are not for it */
 header.top .sm { margin: 0; padding: 0; border: 0; font: inherit; }
@@ -2300,10 +2385,13 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 .sn svg.fill, .sf svg.fill { fill: currentColor; stroke: none; }
 .sn > a { display: none; }
 .sn > a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { color: var(--ink); background: var(--hair); }
+.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary {
+  color: var(--accent, var(--ink)); background: var(--wash, var(--hair));
+  box-shadow: inset 0 -2px currentColor;
+}
 @media (hover: hover) { .sn > a:hover, .sn summary:hover { color: var(--ink); background: var(--hair); } }
 .sn > a:active, .sn summary:active { transform: scale(.93); }
-.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--accent, var(--ink)); outline-offset: 2px; }
 @container top (min-width: 540px) { .sn > a { display: inline-flex; } }
 .sn > a[href="/rewards/"], .sn .sm > summary { position: relative; }
 .sn[data-owed] > a[href="/rewards/"]::after, .sn[data-owed] .sm > summary::after { content: ''; position: absolute; top: 8px; left: 26px; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--paper, transparent); }
@@ -2335,7 +2423,10 @@ header.top .chip {
   font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
-header.top .chip { background: var(--card, transparent); border-radius: 10px; font: 500 14px/1 var(--sans, var(--mono)); }
+header.top .chip { background: var(--card, transparent); border-radius: 7px; font: 500 14px/1 var(--sans, var(--mono)); }
+header.top #wallet, header.top #wallet-chip {
+  color: var(--ink); border-color: var(--ink); box-shadow: 0 2px var(--ink);
+}
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
 header.top .chip .dot.on { background: var(--ok); }
@@ -2345,7 +2436,7 @@ header.top .chip.act { background: transparent; }
 header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
 @media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
 header.top .chip:active { transform: scale(.97); }
-header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+header.top .chip:focus-visible { outline: 2px solid var(--accent, var(--ink)); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
 /* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
@@ -2366,8 +2457,8 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
     background: color-mix(in srgb, var(--paper, var(--bg, #fff)) 92%, transparent); border-top: 1px solid var(--hair); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
   .bn a { display: grid; justify-items: center; gap: 3px; min-height: 44px; padding: 5px 2px 3px; border-radius: 12px; color: var(--mute); font: 500 10.5px/1.1 var(--mono); text-decoration: none; -webkit-tap-highlight-color: transparent; }
   .bn a svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-  .bn a[aria-current="page"] { color: var(--ink); background: var(--hair); }
-  .bn a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+  .bn a[aria-current="page"] { color: var(--accent, var(--ink)); background: var(--wash, var(--hair)); box-shadow: inset 0 2px currentColor; }
+  .bn a:focus-visible { outline: 2px solid var(--accent, var(--ink)); outline-offset: -2px; }
   footer.sf { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
   #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
   /* what a page pins to the foot of the window stands on the bar (57 px: its padding and a 44 px row), not under it: the buy bar of cBTC, tETH and
@@ -2432,17 +2523,18 @@ html[data-sec="rewards/"] #find-h { display: none !important; }
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
   position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
-  width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
-  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px;
+  width: max-content; min-width: 230px; max-width: calc(100vw - 32px); padding: 8px;
+  max-height: 72vh; max-height: 72dvh; overflow-y: auto; overscroll-behavior: contain;
+  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-top: 3px solid var(--accent, var(--ink)); border-radius: 9px;
   box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 .sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
-.sm-p a { font: 400 14px/1 var(--sans, var(--mono)); }
+.sm-p a { border-radius: 5px; font: 500 14px/1 var(--sans, var(--mono)); }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
-.sm-p a[aria-current="page"] { background: var(--hair); }
-.sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+.sm-p a[aria-current="page"] { color: var(--accent, var(--ink)); background: var(--wash, var(--hair)); }
+.sm-p a:focus-visible { outline: 2px solid var(--accent, var(--ink)); outline-offset: -2px; }
 .sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
@@ -2463,7 +2555,8 @@ canvas.gx-field { position: fixed; top: 0; left: 0; z-index: -1; max-width: 100%
    places that have a mark of their own are that mark; in a narrow one every place is an icon that says its name on hover and to a screen reader (they narrow a little on a small
    phone before they would run off the page) */
 footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
-footer.sf { font: 400 13px/1.4 var(--sans, var(--mono)); }
+footer.sf { padding-top: 16px; border-top: 2px solid var(--ink); font: 400 13px/1.4 var(--sans, var(--mono)); }
+footer.sf > span { font: 500 11px/1.5 var(--mono); letter-spacing: .025em; }
 footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
 footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); text-decoration: none; transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
 footer.sf nav a:active { transform: scale(.92); }
@@ -2487,18 +2580,71 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 .sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
 @media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
 
-/* Graphite's palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
-   its head, so the one block recolours them all and a page's own styles are untouched. The values are the front page's (index.html keeps them with the rest of its
-   tokens). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and are left out: the SPX page, by
-   its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the build gives it. */
+/* Shared paper, ink and interaction colours. SPX and FACE supply their own palette. */
 :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-  --paper: #E6E6E4; --bg: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --ink: #17181B; --mute: #5C5D62;
-  --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24); --hair-strong: rgba(23,24,27,.24); --skel: rgba(23,24,27,.08);
+  --paper: #f6f5f0; --bg: var(--paper); --card: #fffefa; --field: #f1f1ed; --raise: #fff;
+  --ink: #181e2b; --mute: #515b6b; --faint: #606a79; --hair: #d9dcd9; --hair-2: #aeb6c0;
+  --hair-strong: var(--hair-2); --skel: #e3e5e3;
+  --accent: #2746c7; --on-accent: #fff; --wash: #edf0ff;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-    --paper: #131417; --bg: #131417; --card: #1A1B1F; --field: #15161A; --ink: #E4E4E1; --mute: #9A9BA1;
-    --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22); --hair-strong: rgba(228,228,225,.22); --skel: rgba(228,228,225,.07);
+    --paper: #111722; --card: #1a2232; --field: #202b3b; --raise: #2a3549;
+    --ink: #f0f2f8; --mute: #b9c4d3; --faint: #a5b1c2; --hair: #354157; --hair-2: #586780; --skel: #2e394d;
+    --accent: #a8baff; --on-accent: #111b39; --wash: #283451;
+  }
+}
+
+/* The front page uses native dialogs. The trade pages open the same controls in an overlay. */
+:is(#sheet-wallet, #sheet-pick, #sheet-wc, #pass-dialog, .bsheet.top) {
+  --sheet-accent: var(--accent, var(--ink));
+  --sheet-wash: var(--wash, var(--field));
+  &.bsheet { align-items: safe center; }
+  & .bsheet-in, &:is(dialog) { border-radius: 14px; }
+  & :is(.sheet-head, .bsheet-head) {
+    gap: 8px; margin-bottom: 18px; padding-block: 13px; border-top: 3px solid var(--sheet-accent);
+    border-bottom: 1px solid var(--hair); border-radius: 13px 13px 0 0; background: var(--card);
+  }
+  & :is(.sheet-head, .bsheet-head) h2 {
+    font: 600 clamp(28px, 4vw, 35px)/1.08 var(--sans, sans-serif); letter-spacing: -.055em;
+  }
+  & .x { color: var(--ink); border: 1px solid var(--hair); border-radius: 7px; }
+  & .lede-s { margin-bottom: 18px; color: var(--mute); font: 400 15px/1.5 var(--sans, sans-serif); }
+  & .opt { min-height: 60px; padding: 10px 14px; background: var(--card); border-color: var(--hair); border-radius: 8px; }
+  & .opt-t { gap: 10px; font: 600 15px/1.35 var(--sans, sans-serif); }
+  & .opt-t > .tk { width: 24px; height: 24px; }
+  & .opt-m { padding-left: 34px; font: 400 13px/1.4 var(--sans, sans-serif); }
+  & .opt.main, & .opts > .opt:first-of-type, & .opt[aria-busy="true"] {
+    border-color: var(--sheet-accent); background: var(--sheet-wash);
+  }
+  & .opt:not(.mine, [aria-busy="true"]) .opt-t::after {
+    content: ""; width: 7px; height: 7px; margin-left: auto; margin-right: 3px; flex: none;
+    border: solid var(--sheet-accent); border-width: 1.5px 1.5px 0 0; transform: rotate(45deg);
+  }
+  & :is(.ways .way, .picker button, .amt.text, form.amt, .btn) { border-radius: 8px; }
+  & .picker button { color: var(--ink); background: var(--card); }
+  & .more-in { margin: 0; }
+  & .more-in > summary {
+    display: list-item; margin: 0; padding: 12px 2px; text-align: left; cursor: pointer;
+    color: var(--sheet-accent); font: 500 14px/1.4 var(--sans, sans-serif);
+  }
+  & .more-in .opt + .opt { margin-top: 6px; }
+  & .more { justify-content: start; gap: 4px 18px; }
+  & .more .link { min-height: 40px; color: var(--sheet-accent); }
+  & :is(.status.wait, .note.wait, .note.err, .status.err):not(:empty, [hidden]) {
+    margin-block: 10px; padding: 9px 12px; text-align: left; border-inline-start: 3px solid currentColor;
+  }
+  & :is(.status.wait, .note.wait) { color: var(--sheet-accent); background: var(--sheet-wash); }
+  & :is(button, a, summary, input, select):focus-visible { outline: 2px solid var(--sheet-accent); outline-offset: 2px; }
+  @media (hover: hover) {
+    & :is(.opt, .way, .picker button, .x):hover:enabled { border-color: var(--sheet-accent); background: var(--sheet-wash); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    &, & :is(.bsheet-in, .sheet-head, .bsheet-head), & .opt[aria-busy="true"] .opt-t::after { animation: none; }
+  }
+  @media (max-width: 640px) {
+    &.bsheet { align-items: safe end; }
+    & .bsheet-in, &:is(dialog) { border-radius: 14px 14px 0 0; }
   }
 }
 
@@ -2714,7 +2860,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <p class="cpg-note"><span>Already have TAC notes on Bitcoin? Merge or split them, or follow notes that are still moving.</span><a href="/tac/?v=notes#bridge">Manage Bitcoin notes →</a></p>
   </section>
   <section class="hero" aria-labelledby="hero-h">
-    <a class="pxb" href="/praxis/" id="pxb"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>Tacit Praxis ceremony.</b> The cryptography for smart contracts on Bitcoin: help build its key, earn up to 5 TAC.</span><i aria-hidden="true">→</i></a>
     <div class="spx-top">
       <p class="spx-tick" aria-hidden="true"><span>PROXY.TERMINAL // V.6900</span><span>BLOCK.SYNC//OK</span><span>LUMINA.SIG&gt;&gt;STABLE</span><span>AEON.NET::ONLINE</span><span>TRADFI&gt;&gt;FLIPPING</span></p>
       <div class="spx-copy">
@@ -2745,6 +2890,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <div class="hints" id="hints" role="group" aria-label="Quick starts: each fills the card above"></div>
       <div class="fms" id="fms" role="group" aria-label="Farms and their APR now; each opens its ETH zap"></div>
     </div>
+    <a class="pxb" href="/praxis/" id="pxb"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>Tacit Praxis ceremony.</b> The cryptography for smart contracts on Bitcoin: help build its key, earn up to 5 TAC.</span><i aria-hidden="true">→</i></a>
     <div class="proof-row">
       <a class="proof" href="/weld/stats/" title="All stats">
         <span data-nums><b class="num"><span data-num="tx"><span class="sk" style="--w:4ch"></span></span></b>private transactions</span>

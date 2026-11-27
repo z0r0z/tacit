@@ -11113,14 +11113,14 @@ await step('tradelinks', async () => {
       const SECTIONS = 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains Borrow:/vault/ Rewards:/rewards/';
       if (name === 'desktop') ok(seen.sections && seen.order === SECTIONS, `tradelinks (${name}): and the six sections beside it (${seen.order})`);
       else ok(!seen.sections && seen.bar === 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains More:/#/menu' && seen.all.startsWith('Borrow:/vault/ Rewards:/rewards/ Assets:/assets/ '), `tradelinks (${name}): four sections and More are the bar at the foot, the other two first in the menu (${seen.bar} | ${seen.all})`);
-      ok(seen.more === 'Assets:/assets/ TAC:/tac/ Trade:/trade/tac/?src=menu Pay pool:/pay/ Bridges:/bridge/ Etch:/etch/ Shop:/shop/ Prove:/prove/ Tasks:/tasks/ FACE:/face/', `tradelinks (${name}): and, under the menu, the pages no section is (${seen.more})`);
+      ok(seen.more === 'Assets:/assets/ TAC:/tac/ Trade:/trade/tac/?src=menu Pay pool:/pay/ Bridges:/bridge/ BTC ⇄ ETH:/btc/ Etch:/etch/ Shop:/shop/ Prove:/prove/ Tasks:/tasks/ FACE:/face/', `tradelinks (${name}): and, under the menu, the pages no section is (${seen.more})`);
       await p.click('.sn .sm > summary');
       ok(await p.evaluate(() => [...document.querySelectorAll('.sm-p a.pr')].some((a) => a.getBoundingClientRect().width > 0)) === (name === 'phone'), `tradelinks (${name}): the menu lists Borrow and Rewards only where the header has not`);
       await p.keyboard.press('Escape');
       ok(!(await p.$eval('.sm', (d) => d.open)), `tradelinks (${name}): and Escape shuts it`);
       ok(seen.chip, `tradelinks (${name}): and the account chip still shows its whole label`);
       ok(seen.tile, `tradelinks (${name}): the TAC section links to TAC's own trade page`);
-      ok(seen.foot === 'Whitepaper, Build, Security, Source, Pool contract, Stats, DefiLlama, Listed on ETHBeat, @tacitfi on X, Tacit Discord community', `tradelinks (${name}): and the footer is icons for the places outside the app (${seen.foot})`);
+      ok(seen.foot === 'Whitepaper, Build, Security, Source, Pool contract, Stats, Nodes, DefiLlama, Listed on ETHBeat, @tacitfi on X, Tacit Discord community', `tradelinks (${name}): and the footer is icons for the places outside the app (${seen.foot})`);
       ok(!seen.scroll, `tradelinks (${name}): and the page does not scroll sideways`);
       if (r.errors.length) { fails++; console.log('FAIL tradelinks page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     } finally { await r.browser.close(); }
