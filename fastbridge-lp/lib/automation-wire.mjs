@@ -193,6 +193,8 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
       };
       rebalancer = makeRebalancer({
         cfg: rc, rate: async () => ethPerBtc(), quiet, gate: poolTurn, turn,
+        // nothing is planned while the auto-shield has a deposit on its way into the pool: that ETH is in neither the public balance nor the notes yet
+        settled: async () => !(shield && shield.info().pending),
         inventory: async () => {
           const pub = await publicWei();
           const priv = BigInt(await service.free()) * UNITW, spare = pub > sc.reserveWei ? pub - sc.reserveWei : 0n;

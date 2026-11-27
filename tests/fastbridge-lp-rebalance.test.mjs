@@ -38,7 +38,7 @@ test('the plan: in band nothing, a surplus is cut to the least, the most and the
 });
 
 // a venue's nodes, stood in for: `books` is each node's inbound addresses; the quote is the same for all
-function venueFetch({ books, quote, calls = [] }) {
+function venueFetch({ books, quote, calls = [], status = null }) {
   return async (url) => {
     calls.push(url);
     const u = new URL(url);
@@ -49,6 +49,7 @@ function venueFetch({ books, quote, calls = [] }) {
     const json = (j, status = 200) => ({ ok: status < 400, status, json: async () => j });
     if (u.pathname.endsWith('/inbound_addresses')) return json(b);
     if (u.pathname.endsWith('/quote/swap')) return json(typeof quote === 'function' ? quote(u.searchParams) : quote);
+    if (u.pathname.includes('/tx/status/')) return json((typeof status === 'function' ? status() : status) ?? { stages: { outbound_signed: { completed: true }, swap_finalised: { completed: true } }, planned_out_txs: [{ refund: false }] });
     return json({}, 404);
   };
 }
@@ -154,8 +155,9 @@ test('with the public ETH there, one swap goes to the venue\'s vault with the me
   assert.equal(w.sent.length, 1);
   assert.equal(w.sent[0].to, VAULT); assert.equal(w.sent[0].value, ETH(0.3)); assert.equal(w.sent[0].memo, `=:b:${BTC_DEST}`);
   assert.equal(w.store.moved, String(ETH(0.3)));
-  assert.equal((await w.r.step()).did, 'swapped', 'mined: the swap is closed');
-  w.clock += 5000;
+  assert.equal((await w.r.step()).did, 'mined');
+  assert.equal((await w.r.step()).did, 'swapped', 'the venue has paid out: the swap is closed');
+  w.clock += 8000;
   const again = await w.r.step();
   assert.ok(w.sent.length === 1 || again.did === 'sent', 'a second swap only if the sides are still out of band and the day has room');
   assert.ok(BigInt(w.store.moved) <= ETH(0.6), 'never past the day\'s limit');
@@ -228,6 +230,7 @@ test('BTC-heavy: the sats are built, kept, sent to the vault with a memo naming 
   assert.equal((await w.r.step()).did, 'pending', 'not confirmed yet');
   assert.equal(w.broadcast.length, 1, 'never sent twice');
   w.confs = 1;
+  assert.equal((await w.r.step()).did, 'confirmed');
   assert.equal((await w.r.step()).did, 'swapped');
   assert.equal(w.store.pending, null);
   assert.equal(w.r.holding(), false, 'the ETH shield is not held for this direction');
@@ -319,9 +322,10 @@ test('with fresh addresses on, the ETH is unshielded to an address for this swap
   assert.equal(sent[0].fi, 0); assert.equal(sent[0].to, VAULT);
   const want = ETH(0.3) + c.freshGasWei;
   assert.ok(bal[fa(0)] >= want && bal[fa(0)] < want + ETH(0.0006), 'the address got the swap and its gas, and not more than the relay\'s fee over');
+  assert.equal((await r.step()).did, 'mined');
   assert.equal((await r.step()).did, 'swapped');
   assert.equal(w.store.fresh.next, 1);
-  w.clock += 5000;
+  w.clock += 8000;
   assert.equal((await r.step()).did, 'unshielding');
   assert.equal(unshielded[1].to, fa(1), 'the next swap, the next address');
 });
@@ -342,13 +346,14 @@ test('BTC sold with fresh addresses on: the memo names a fresh address, the ETH 
   assert.equal(w.store.fresh.next, 1, 'counted at once, so the next swap does not reuse it');
   assert.equal((await r.step()).did, 'pending');
   w.confs = 1;
+  assert.equal((await r.step()).did, 'confirmed');
   assert.equal((await r.step()).did, 'arriving');
   assert.equal((await r.step()).did, 'waiting for the ETH'); assert.equal(w.shielded.length, 0);
   w.bal[fa(0)] = ETH(0.297);
   assert.equal((await r.step()).did, 'arrived');
   assert.equal((await r.step()).did, 'swapped'); assert.deepEqual(w.shielded, [{ fi: 0, address: fa(0) }]);
   assert.equal(w.store.pending, null);
-  w.clock += 5000; w.confs = 0;
+  w.clock += 8000; w.confs = 0;
   assert.equal((await r.step()).did, 'sent'); assert.equal(w.memos[1], `=:e:${fa(1)}`, 'the next swap, the next address');
 });
 
@@ -376,5 +381,32 @@ test('a Bitcoin send that waits is replaced by the same inputs at a higher fee, 
   await r.step(); assert.equal(w.builds[2].feeRate, 20, 'never above the cap'); w.clock += 700;
   await r.step(); assert.equal(w.builds.length, 3, 'two bumps at most');
   w.confirmed.add(first);                                                  // the first one is the one that was mined after all
+  assert.equal((await r.step()).did, 'confirmed');
   assert.equal((await r.step()).did, 'swapped'); assert.equal(w.store.pending, null);
+});
+
+test('a swap is closed only when the venue has paid out; a refund is said; the next swap waits the cooldown and for a deposit still being shielded', async () => {
+  let paid = false, refund = false, settled = true;
+  const w = { clock: 2_000_000_000, store: null, alerts: [], built: 0 };
+  const books = new Map([['https://a.example', [{ chain: 'ETH', address: VAULT, halted: false }, { chain: 'BTC', address: BTC_VAULT, halted: false }]], ['https://b.example', null]]);
+  const c = cfg({ FB_LP_REBALANCE_VENUES: 'mayachain', FB_LP_REBALANCE_NODES_MAYACHAIN: 'https://a.example,https://b.example' });
+  const fetchImpl = venueFetch({ books, quote: (q) => ({ inbound_address: BTC_VAULT, memo: `=:e:${q.get('destination')}`, expected_amount_out: '29800000', expiry: w.clock + 600 }),
+    status: () => (paid ? { stages: { outbound_signed: { completed: true }, swap_finalised: { completed: true } }, planned_out_txs: [{ refund }] } : { stages: { inbound_observed: { completed: true }, outbound_signed: { completed: false } } }) });
+  const r = makeRebalancer({ cfg: c, rate: async () => MARKET, inventory: async () => ({ ethWei: ETH(1), sats: 4e7 }), fetchImpl, now: () => w.clock, vaultHistory: async () => 9, settled: async () => settled,
+    btcBuild: async () => { w.built++; return { txid: String(w.built).repeat(64).slice(0, 64), hex: '02dd', fee: 300 }; }, btcBroadcast: async () => {}, btcStatus: async () => ({ confirmations: 1 }),
+    ethBalance: async () => ETH(0.1), ethNonce: async () => 0, ethReceipt: async () => null, sendEth: async () => { throw new Error('no'); }, address: ETH_DEST, btcDestination: BTC_DEST, gasReserveWei: ETH(0.02),
+    load: async () => w.store, save: async (x) => { w.store = JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? String(v) : v))); }, log: () => {}, alert: (a) => w.alerts.push(a) });
+  assert.equal((await r.step()).did, 'sent');
+  assert.equal((await r.step()).did, 'confirmed');
+  for (let i = 0; i < 3; i++) { assert.equal((await r.step()).did, 'waiting for the venue'); w.clock += 600; }
+  assert.ok(w.store.pending, 'still open: what it bought has not arrived');
+  paid = true; refund = true;
+  assert.equal((await r.step()).did, 'swapped');
+  assert.ok(w.alerts.some((a) => /refunded the swap/.test(a.msg)), 'a refund is said');
+  w.clock += 1000;
+  assert.equal((await r.step()).did, 'wait', 'the next look waits out the cooldown');
+  w.clock += 7500; settled = false;
+  assert.equal((await r.step()).did, 'settling'); assert.equal(w.built, 1, 'nothing while a deposit is on its way into the pool');
+  settled = true; w.clock += 200;
+  assert.equal((await r.step()).did, 'sent'); assert.equal(w.built, 2);
 });

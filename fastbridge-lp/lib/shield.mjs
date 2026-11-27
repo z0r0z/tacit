@@ -163,6 +163,6 @@ export function makeShield({ cfg, ux, key, address, quiet = async () => true, tu
     } finally { busy = false; }
   }
 
-  const info = () => ({ on: !!cfg.enabled, halted, reserveEth: eth(cfg.reserveWei), minEth: eth(cfg.minWei), pending: st && st.pending ? { index: st.pending.index, tx: st.pending.tx } : null, shielded: st ? { eth: eth(st.shielded), count: st.count, lastTx: st.lastTx, lastAt: st.lastAt } : null });
+  const info = () => ({ on: !!cfg.enabled, halted, reserveEth: eth(cfg.reserveWei), minEth: eth(cfg.minWei), pending: st && st.pending ? { index: st.pending.index, tx: st.pending.tx, amountWei: st.pending.amountWei } : null, shielded: st ? { eth: eth(st.shielded), count: st.count, lastTx: st.lastTx, lastAt: st.lastAt } : null });
   return { step, shieldFrom, info, halted: () => halted };
 }

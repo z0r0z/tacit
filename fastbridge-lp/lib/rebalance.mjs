@@ -9,6 +9,7 @@
 //   FB_LP_REBALANCE_MAX_COST_BPS  the worst all-in cost against the market it accepts (120): a quote above it is not taken
 //   FB_LP_REBALANCE_CONFIRM_LOOKS  how many looks in a row must call for the same swap before it is made (2): one odd reading of a balance is not acted on
 //   FB_LP_REBALANCE_FRESH=on  ETH sold goes out of a fresh address of its own for each swap (unshielded to it, sent from it), so the venue never sees the pool account; FB_LP_REBALANCE_FRESH_GAS_ETH (0.0015) is what each keeps for gas
+//   FB_LP_REBALANCE_COOLDOWN_SECS  the least time from a swap's end to the next (7200): what it bought has then arrived, been shielded and counted
 //   FB_LP_REBALANCE_VENUES    thorchain,mayachain (the quotes are compared; the best is taken)
 //   FB_LP_REBALANCE_NODES_THORCHAIN / _MAYACHAIN   comma lists of the venue's public API bases; the vault address a swap pays is taken only when two or more of them agree on it
 //
@@ -53,7 +54,7 @@ export function rebalanceConfig(env = process.env) {
     mode: sw || 'off', bandBps: int('FB_LP_REBALANCE_BAND_BPS', 1500, 200, 4000), targetBps: 5000,
     minSwapWei: eth('FB_LP_REBALANCE_MIN_ETH', '0.15'), maxSwapWei: eth('FB_LP_REBALANCE_MAX_ETH', '0.3'), maxPerDayWei: eth('FB_LP_REBALANCE_MAX_DAY_ETH', '0.6'),
     maxCostBps: int('FB_LP_REBALANCE_MAX_COST_BPS', 120, 10, 1000), slipBps: int('FB_LP_REBALANCE_SLIP_BPS', 100, 10, 1000), everySecs: int('FB_LP_REBALANCE_EVERY_SECS', 900, 60, 86400),
-    confirmLooks: int('FB_LP_REBALANCE_CONFIRM_LOOKS', 2, 1, 5), bumpSecs: int('FB_LP_REBALANCE_BUMP_SECS', 1800, 300, 86400), maxBumps: int('FB_LP_REBALANCE_MAX_BUMPS', 4, 0, 10), maxFeeRate: int('FB_LP_REBALANCE_MAX_FEE_RATE', 25, 2, 200), fresh: freshOn, freshGasWei: eth('FB_LP_REBALANCE_FRESH_GAS_ETH', '0.0015'), venues, nodes,
+    confirmLooks: int('FB_LP_REBALANCE_CONFIRM_LOOKS', 2, 1, 5), bumpSecs: int('FB_LP_REBALANCE_BUMP_SECS', 1800, 300, 86400), cooldownSecs: int('FB_LP_REBALANCE_COOLDOWN_SECS', 7200, 600, 604800), maxBumps: int('FB_LP_REBALANCE_MAX_BUMPS', 4, 0, 10), maxFeeRate: int('FB_LP_REBALANCE_MAX_FEE_RATE', 25, 2, 200), fresh: freshOn, freshGasWei: eth('FB_LP_REBALANCE_FRESH_GAS_ETH', '0.0015'), venues, nodes,
   };
   if (c.minSwapWei > c.maxSwapWei) throw new Error('FB_LP_REBALANCE_MIN_ETH must not be over FB_LP_REBALANCE_MAX_ETH');
   if (c.maxSwapWei > c.maxPerDayWei) throw new Error('FB_LP_REBALANCE_MAX_ETH must not be over FB_LP_REBALANCE_MAX_DAY_ETH');
@@ -145,7 +146,20 @@ export async function bestQuote({ cfg, fetchImpl, dir, amount1e8, destination, e
   return { best: got[0] || null, all: got, why };
 }
 
-export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true, gate = (fn) => fn(), turn = (fn) => fn(), unshield, ethBalance, ethNonce, ethReceipt, sendEth, freshAddress = null, shieldFresh = null, vaultHistory = null, btcBuild = null, btcBroadcast = null, btcStatus = null, btcFeeRate = null, btcInputsOf = null, address, btcDestination, gasReserveWei, fetchImpl = (...a) => fetch(...a), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
+// What a venue says of a swap it was paid for: { done, refund } once its outbound is signed (a refund is an outbound too, so it is told apart), null while no node says
+export async function venueStatus({ venue, nodes, fetchImpl, txid }) {
+  const id = String(txid).replace(/^0x/, '');
+  for (const n of nodes) {
+    try {
+      const j = await getJson(fetchImpl, `${n}/${VENUES[venue].prefix}/tx/status/${id}`);
+      const st = j.stages || {};
+      return { done: !!(st.outbound_signed && st.outbound_signed.completed) && (!st.swap_finalised || !!st.swap_finalised.completed), refund: (j.planned_out_txs || []).some((o) => o.refund) };
+    } catch { /* the next node */ }
+  }
+  return null;
+}
+
+export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true, gate = (fn) => fn(), turn = (fn) => fn(), unshield, ethBalance, ethNonce, ethReceipt, sendEth, freshAddress = null, shieldFresh = null, vaultHistory = null, btcBuild = null, btcBroadcast = null, btcStatus = null, btcFeeRate = null, btcInputsOf = null, settled = async () => true, address, btcDestination, gasReserveWei, fetchImpl = (...a) => fetch(...a), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   let st = null, busy = false, nextAt = -Infinity, halted = null, last = null, calls = { dir: null, n: 0 };
   const said = new Map();
   const sayOnce = (k, a, secs = 6 * 3600) => { if (now() - (said.get(k) ?? -Infinity) >= secs) { said.set(k, now()); alert(a); } };
@@ -198,8 +212,15 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
           }
           if (now() - p.sentAt > 6 * 3600) sayOnce('btc-unconf', { level: 'warn', msg: 'rebalance: the Bitcoin send has not confirmed for six hours', txid: p.txid }); return { did: 'pending' };
         }
-        if (p.fi != null) { p.stage = 'arrive'; p.arriveAt = now(); await keep(); return { did: 'arriving' }; }
-        st.pending = null; st.done += 1; st.lastTx = p.txid; st.lastAt = now(); nextAt = now() + cfg.everySecs * 2; await keep();
+        p.stage = 'venue'; p.venueAt = now(); await keep(); return { did: 'confirmed' };
+      }
+      if (p.stage === 'venue') {
+        // closed when the venue says the swap is paid out, not when the Bitcoin confirms: until then what it bought is not in the balances, and the sides read lopsided
+        const v = await venueStatus({ venue: p.venue, nodes: cfg.nodes[p.venue], fetchImpl, txid: p.txid });
+        if (!v || !v.done) { if (now() - p.venueAt > 12 * 3600) sayOnce('venue', { level: 'warn', msg: 'rebalance: the venue has not paid out twelve hours after the send confirmed', txid: p.txid, venue: p.venue }); return { did: 'waiting for the venue' }; }
+        if (v.refund) alert({ level: 'warn', msg: 'rebalance: the venue refunded the swap (the BTC comes back to the reverse address)', txid: p.txid, venue: p.venue });
+        if (p.fi != null && !v.refund) { p.stage = 'arrive'; p.arriveAt = now(); await keep(); return { did: 'arriving' }; }
+        st.pending = null; st.done += 1; st.lastTx = p.txid; st.lastAt = now(); nextAt = now() + Math.max(cfg.everySecs * 2, cfg.cooldownSecs * 1); await keep();
         return { did: 'swapped', tx: p.txid };
       }
       if (p.stage === 'arrive') {
@@ -211,7 +232,7 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       }
       if (p.stage === 'shield') {
         const r = await shieldFresh({ fi: p.fi, address: p.from });
-        if (r && r.did === 'shielded') { st.pending = null; st.done += 1; st.lastTx = p.txid; st.lastAt = now(); nextAt = now() + cfg.everySecs * 2; await keep(); alert({ level: 'info', msg: 'rebalance: the ETH from the fresh address is shielded', address: p.from }); return { did: 'swapped', tx: p.txid }; }
+        if (r && r.did === 'shielded') { st.pending = null; st.done += 1; st.lastTx = p.txid; st.lastAt = now(); nextAt = now() + Math.max(cfg.everySecs * 2, cfg.cooldownSecs); await keep(); alert({ level: 'info', msg: 'rebalance: the ETH from the fresh address is shielded', address: p.from }); return { did: 'swapped', tx: p.txid }; }
         if (now() - p.shieldAt > 2 * 3600) sayOnce('shield', { level: 'warn', msg: 'rebalance: the ETH at the fresh address has not been shielded for two hours', address: p.from, did: r && r.did }, 3600);
         return { did: `shielding (${(r && r.did) || 'unknown'})` };
       }
@@ -243,8 +264,13 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       const r = await ethReceipt(p.tx);
       if (!r) { if (now() - p.sentAt > 3600) sayOnce('unmined', { level: 'warn', msg: 'rebalance: the swap transaction has not been mined for over an hour', tx: p.tx }); return { did: 'pending' }; }
       if (r.status !== '0x1') { st.moved = String(BigInt(st.moved) - BigInt(p.amountWei)); st.pending = null; await keep(); return stop('the swap transaction reverted', { tx: p.tx }); }
-      // mined: the venue pays the other side to the provider's own address; one swap per look, and the next waits for the balances to show it
-      st.pending = null; st.done += 1; st.lastTx = p.tx; st.lastAt = now(); nextAt = now() + cfg.everySecs * 2; await keep();
+      p.stage = 'venue'; p.venueAt = now(); await keep(); return { did: 'mined' };
+    }
+    if (p.stage === 'venue') {
+      const v = await venueStatus({ venue: p.venue, nodes: cfg.nodes[p.venue], fetchImpl, txid: p.tx });
+      if (!v || !v.done) { if (now() - p.venueAt > 12 * 3600) sayOnce('venue', { level: 'warn', msg: 'rebalance: the venue has not paid out twelve hours after the send was mined', tx: p.tx, venue: p.venue }); return { did: 'waiting for the venue' }; }
+      if (v.refund) alert({ level: 'warn', msg: 'rebalance: the venue refunded the swap (the ETH comes back to the address it was sent from)', tx: p.tx, venue: p.venue });
+      st.pending = null; st.done += 1; st.lastTx = p.tx; st.lastAt = now(); nextAt = now() + Math.max(cfg.everySecs * 2, cfg.cooldownSecs); await keep();
       return { did: 'swapped', tx: p.tx };
     }
     return stop(`an unknown stage "${p.stage}"`);
@@ -277,6 +303,7 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       if (st.pending) return await advance();
       if (now() < nextAt) return { did: 'wait' };
       const mkt = await rateNow();
+      if (!(await settled())) { last = { at: now(), plan: 'waiting: a deposit is still being shielded' }; nextAt = now() + 120; return { did: 'settling' }; }
       const inv = await inventory();
       if (!inv || inv.sats == null || inv.ethWei == null || !(mkt > 0)) { nextAt = now() + cfg.everySecs; last = { at: now(), plan: `unread: ${!(mkt > 0) ? 'no market price' : 'holdings not read'}` }; return { did: 'unread' }; }
       const plan = planRebalance({ ethWei: inv.ethWei, sats: inv.sats, ethPerBtc: mkt, cfg, movedTodayWei: BigInt(st.moved) });
