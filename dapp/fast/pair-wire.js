@@ -25,7 +25,7 @@ import * as EN from '/eth-nodes.js';   // (a namespace: eth-nodes.js has no cach
 import { guardedStorage } from '/safe-storage.js';
 import { bodyType } from '/rpc-body.js';
 import { discoverProviders } from '/fast/discover.js?cb=a3e99ef5';
-import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
+import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=a8287ce3';
 import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=ce9bb5a3';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
