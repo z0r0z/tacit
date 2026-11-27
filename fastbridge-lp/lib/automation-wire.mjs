@@ -98,7 +98,8 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
   let shield = null, watch = null, rebalancer = null;
   if (typeof ux.account === 'function' && typeof ux.rpc === 'function') {
     const address = ux.account(key).address, sc = shieldConfig(env);
-    shield = makeShield({ cfg: sc, ux, key, address, quiet: async () => !(rebalancer && rebalancer.holding()) && (await quiet()), turn, load: () => kv.get('shield'), save: (r) => kv.put(r), log, alert });
+    let sendFromImpl = null;
+    shield = makeShield({ cfg: sc, ux, key, address, quiet: async () => !(rebalancer && rebalancer.holding()) && (await quiet()), turn, load: () => kv.get('shield'), save: (r) => kv.put(r), log, alert, sendFrom: (x) => { if (!sendFromImpl) throw new Error('not ready'); return sendFromImpl(x); } });
     const sats = async () => {
       const a = [btc, rside && rside.btc].filter((b) => b && typeof b.satsUtxos === 'function');
       if (!a.length) return null;
@@ -142,6 +143,14 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
       const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
       const freshPriv = (i) => { for (let c = 0; c < 8; c++) { const h = keccak256(Uint8Array.from([...key, ...Buffer.from('tacit-rebalance-eth-v1'), (i >>> 24) & 255, (i >>> 16) & 255, (i >>> 8) & 255, i & 255, c])); const k = BigInt('0x' + hex(h)); if (k > 0n && k < SECP_N) return h; } throw new Error('no key'); };
       const freshAcct = (i) => ux.account(freshPriv(i));
+      // the deposit of the ETH a fresh address received: built for the key's own note (the pool does not tie a native-ETH deposit to who sends it) and sent from that address
+      sendFromImpl = async ({ amountWei, index, ticker, priv }) => {
+        const built = await ux.buildRouterWrap({ walletPriv: key, amountWei, ticker, index }), a = ux.account(priv);
+        const nonce = BigInt(await rpc('eth_getTransactionCount', [a.address, 'pending'])), base = BigInt(await rpc('eth_gasPrice', [])), tip = 1_500_000_000n;
+        const signed = evmTx.signEip1559({ chainId: 1n, nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip, gasLimit: 300000n, to: built.to, value: BigInt(built.value), data: built.calldata }, a.priv);
+        return { ...built, txHash: await rpc('eth_sendRawTransaction', [signed.raw]), from: a.address };
+      };
+      const shieldReserve = async () => 350000n * (BigInt(await rpc('eth_gasPrice', [])) * 2n + 1_500_000_000n);
       const ethPerBtc = () => { const c = rateFeed && rateFeed.current(); return c && Number(c.ethPerBtc) > 0 ? Number(c.ethPerBtc) : null; };   // (feed.rate() is a { num, den } ratio, not a price)
       // the Bitcoin leg: sats spent from the reverse address (its confirmed plain coins that no swap names), one output to the venue's vault, one OP_RETURN with the memo, change back to the
       // reverse address; never below `keepSats` left there for the ETH-for-BTC side. Built and signed here, kept by the rebalancer, then sent: the same bytes if it is sent again.
@@ -198,6 +207,7 @@ export async function wireAutomation({ C, key, prims, btc, tacit, ux, evm, servi
         ethBalance: (a) => publicWei(a),
         ethNonce: (a) => rpc('eth_getTransactionCount', [a || address, 'pending']),
         freshAddress: (i) => freshAcct(i).address,
+        shieldFresh: !sc.enabled ? null : async ({ fi }) => { const a = freshAcct(fi); return shield.shieldFrom({ address: a.address, priv: a.priv, reserveWei: await shieldReserve(), minWei: 10n ** 16n }); },
         ethReceipt: (tx) => rpc('eth_getTransactionReceipt', [tx]).catch(() => null),
         sendEth: async ({ to, value, memo, fi = null }) => {
           const me = fi != null ? freshAcct(fi) : acct;

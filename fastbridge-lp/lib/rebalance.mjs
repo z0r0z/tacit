@@ -145,7 +145,7 @@ export async function bestQuote({ cfg, fetchImpl, dir, amount1e8, destination, e
   return { best: got[0] || null, all: got, why };
 }
 
-export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true, gate = (fn) => fn(), turn = (fn) => fn(), unshield, ethBalance, ethNonce, ethReceipt, sendEth, freshAddress = null, vaultHistory = null, btcBuild = null, btcBroadcast = null, btcStatus = null, address, btcDestination, gasReserveWei, fetchImpl = (...a) => fetch(...a), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
+export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true, gate = (fn) => fn(), turn = (fn) => fn(), unshield, ethBalance, ethNonce, ethReceipt, sendEth, freshAddress = null, shieldFresh = null, vaultHistory = null, btcBuild = null, btcBroadcast = null, btcStatus = null, address, btcDestination, gasReserveWei, fetchImpl = (...a) => fetch(...a), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   let st = null, busy = false, nextAt = -Infinity, halted = null, last = null, calls = { dir: null, n: 0 };
   const said = new Map();
   const sayOnce = (k, a, secs = 6 * 3600) => { if (now() - (said.get(k) ?? -Infinity) >= secs) { said.set(k, now()); alert(a); } };
@@ -174,15 +174,29 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       if (p.stage === 'sending') {
         // sent again with the same bytes after a restart: the same transaction, so never a second payment
         try { await btcBroadcast(p.hex); } catch (e) { if (!/already|known|exists|duplicate|conflict/i.test(err(e))) { sayOnce('btc-send', { level: 'warn', msg: 'rebalance: the Bitcoin send could not be broadcast yet; tried again next look', error: err(e), txid: p.txid }, 3600); return { did: 'failed' }; } }
-        p.stage = 'sent'; p.sentAt = now(); st.moved = String(BigInt(st.moved) + BigInt(p.valueWei)); await keep();
+        p.stage = 'sent'; p.sentAt = now(); st.moved = String(BigInt(st.moved) + BigInt(p.valueWei)); if (p.fi != null) st.fresh.next = Math.max(st.fresh.next, p.fi + 1); await keep();
         alert({ level: 'info', msg: 'rebalance: BTC sold for ETH', venue: p.venue, sats: p.amountSats, expectEth: mk(BigInt(p.expectOut) * UNIT), costBps: p.costBps, txid: p.txid });
         return { did: 'sent', tx: p.txid };
       }
       if (p.stage === 'sent') {
         const s2 = await btcStatus(p.txid).catch(() => null);
         if (!s2 || !(s2.confirmations > 0)) { if (now() - p.sentAt > 6 * 3600) sayOnce('btc-unconf', { level: 'warn', msg: 'rebalance: the Bitcoin send has not confirmed for six hours', txid: p.txid }); return { did: 'pending' }; }
+        if (p.fi != null) { p.stage = 'arrive'; p.arriveAt = now(); await keep(); return { did: 'arriving' }; }
         st.pending = null; st.done += 1; st.lastTx = p.txid; st.lastAt = now(); nextAt = now() + cfg.everySecs * 2; await keep();
         return { did: 'swapped', tx: p.txid };
+      }
+      if (p.stage === 'arrive') {
+        // the venue pays the fresh address a few minutes after the Bitcoin confirms
+        const got = await ethBalance(p.from);
+        if (got < (BigInt(p.expectOut) * UNIT * 9n) / 10n) { if (now() - p.arriveAt > 12 * 3600) sayOnce('arrive', { level: 'warn', msg: 'rebalance: the ETH has not reached the fresh address twelve hours after the Bitcoin confirmed', address: p.from, txid: p.txid }); return { did: 'waiting for the ETH' }; }
+        p.stage = 'shield'; p.shieldAt = now(); await keep();
+        return { did: 'arrived' };
+      }
+      if (p.stage === 'shield') {
+        const r = await shieldFresh({ fi: p.fi, address: p.from });
+        if (r && r.did === 'shielded') { st.pending = null; st.done += 1; st.lastTx = p.txid; st.lastAt = now(); nextAt = now() + cfg.everySecs * 2; await keep(); alert({ level: 'info', msg: 'rebalance: the ETH from the fresh address is shielded', address: p.from }); return { did: 'swapped', tx: p.txid }; }
+        if (now() - p.shieldAt > 2 * 3600) sayOnce('shield', { level: 'warn', msg: 'rebalance: the ETH at the fresh address has not been shielded for two hours', address: p.from, did: r && r.did }, 3600);
+        return { did: `shielding (${(r && r.did) || 'unknown'})` };
       }
       return stop(`an unknown stage "${p.stage}"`);
     }
@@ -252,7 +266,9 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
       last = { at: now(), ethBps: plan && plan.ethBps != null ? plan.ethBps : null, plan: plan && plan.dir ? plan.dir : plan && plan.skip ? `skip: ${plan.skip}` : 'in band' };
       nextAt = now() + cfg.everySecs;
       if (!plan || plan.skip) { calls = { dir: null, n: 0 }; if (cfg.mode === 'dry') await probe(mkt).catch(() => {}); return plan ? { did: 'skip', why: plan.skip } : { did: 'in band' }; }
-      const dest = plan.dir === 'eth2btc' ? btcDestination : address;
+      // BTC sold: with fresh addresses on, the ETH comes to an address for this swap only and is shielded from there (the shield takes it through its own counter)
+      const freshB = plan.dir === 'btc2eth' && cfg.fresh && freshAddress && shieldFresh, fiB = freshB ? st.fresh.next : null, faddrB = freshB ? freshAddress(fiB) : null;
+      const dest = plan.dir === 'eth2btc' ? btcDestination : (faddrB || address);
       const amount1e8 = plan.dir === 'eth2btc' ? String(plan.amountWei / UNIT) : String(plan.amountSats);
       const { best, all, why } = await bestQuote({ cfg, fetchImpl, dir: plan.dir, amount1e8, destination: dest, ethPerBtc: mkt, amountWei: plan.amountWei, amountSats: plan.amountSats, vaultHistory, log });
       last.quotes = all.map((x) => ({ venue: x.venue, costBps: x.costBps, out: String(x.out) }));
@@ -269,7 +285,7 @@ export function makeRebalancer({ cfg, rate, inventory, quiet = async () => true,
         // the Bitcoin is spent from the reverse address only, so the ETH-for-BTC side keeps what it needs (btcBuild says no when it would not); the signed transaction is kept before it is sent
         let built;
         try { built = await btcBuild({ to: best.vault, sats: plan.amountSats, memo: best.memo }); } catch (e) { sayOnce('btc-build', { level: 'warn', msg: 'rebalance: the Bitcoin send could not be built; nothing sent', error: err(e) }, 3 * 3600); return { did: 'failed' }; }
-        st.pending = { id: `${now()}`, dir: 'btc2eth', stage: 'sending', amountSats: String(plan.amountSats), valueWei: String(plan.valueWei), txid: built.txid, hex: built.hex, fee: built.fee, venue: best.venue, vault: best.vault, memo: best.memo, expectOut: String(best.out), costBps: best.costBps, at: now() };
+        st.pending = { id: `${now()}`, dir: 'btc2eth', stage: 'sending', amountSats: String(plan.amountSats), valueWei: String(plan.valueWei), txid: built.txid, hex: built.hex, fee: built.fee, venue: best.venue, vault: best.vault, memo: best.memo, expectOut: String(best.out), costBps: best.costBps, fi: fiB, from: faddrB, at: now() };
         await keep();
         return await advance();
       }
