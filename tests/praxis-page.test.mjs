@@ -156,6 +156,14 @@ console.log('a name left as the command\'s placeholder');
   ok(mod.nameOf({ name: 'Ada', handle: A }) === 'Ada', 'a real name is kept');
 }
 
+console.log('the wait for a place');
+{
+  const mod = await import(new URL('../dapp/praxis/receipt.js', import.meta.url));
+  ok(mod.waitText(331, 34) === '331 in the queue · about 10 days to your turn at the last day\'s pace (34 contributions a day)', 'the wait is measured from the last day\'s contributions, not a fixed guess');
+  ok(mod.waitText(3) === '3 in the queue · about 60 min to your turn' && mod.waitText(0) === 'Nobody waiting: your turn comes at once', 'with nothing measured, the default slot length stands and says so');
+  ok(/about 6 h to your turn/.test(mod.waitText(12, 48)), 'a short wait is in hours');
+}
+
 console.log('earned, not yet paid');
 {
   const mod = await import(new URL('../dapp/praxis/receipt.js', import.meta.url));
@@ -316,6 +324,7 @@ console.log('take part: the big button, the command for this computer, the queue
   const { ctx, page, errs } = await fresh({ coordinator: { open: true, coordinator: 'http://198.51.100.7:9999', queue: 3, index: 18, browser: true, community: true } });
   await page.waitForFunction(() => /queue/.test(document.querySelector('#queue').textContent), null, { timeout: 10000 });
   ok(/3 in the queue · about 60 min/.test(await text(page, '#queue')) && (await text(page, '#n-queue')) === '3', `the queue and the wait, and the stat (${await text(page, '#queue')})`);
+  await page.evaluate(() => { document.getElementById('cmd-alt').open = true; }); // the terminal command is folded while the browser path is offered: open it to read it
   await page.selectOption('#plat', 'linux-amd64');
   await page.fill('#addr', '0x' + 'ab'.repeat(20));
   await page.fill('#name', "Ada O'Neil");

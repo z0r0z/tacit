@@ -1,6 +1,6 @@
 // The Tacit Praxis ceremony page: the wall of contributors (each receipt's signature checked in the browser against the coordinator's key,
 // each face the zOrgz invader its address picks, as on the prover pool page), the stats, the rewards, and the command to take part.
-import { cleanName, hasName, addressOf, rewardProgress, COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl, SUCCINCT_LINKS } from '/praxis/receipt.js?cb=0122766d';
+import { cleanName, hasName, addressOf, rewardProgress, COORDINATOR, COORDINATOR_KEY, SUCCINCT_CONTRIBUTORS, verifyReceipt, brokenLink, when, shareUrl, runCommand, waitText, platformGuess, rewardView, tac, POINTS_VIEW, faceKey, nameOf, label, isProver, isHouse, isAddress, ago, findReceipt, pageShareUrl, SUCCINCT_LINKS } from '/praxis/receipt.js?cb=95ecee78';
 import { invaderSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { chime } from '/reward-pop.js?cb=88973dac';
 
@@ -368,7 +368,9 @@ async function drawQueue() {
     const r = await fetch('https://tacit-praxis-ceremony.onrender.com/api/coordinator', { cache: 'no-store', signal: AbortSignal.timeout(6000) });
     const v = await r.json();
     if (/^https?:\/\/[A-Za-z0-9.\-]+(:\d{1,5})?$/.test(v.coordinator || '') || /^https?:\/\/\[[0-9A-Fa-f:]+\](:\d{1,5})?$/.test(v.coordinator || '')) { coordinator = v.coordinator; drawCommand(); }
-    $('queue').textContent = v.open === false ? 'Closed.' : waitText(v.queue);
+    const dayAgo = Date.now() - 86400000;
+    const perDay = receipts.filter((r) => Date.parse(r.at) > dayAgo).length;
+    $('queue').textContent = v.open === false ? 'Closed.' : waitText(v.queue, perDay);
     if (Number.isInteger(v.queue)) setNum($('n-queue'), v.queue);
     $('community').hidden = !(v.browser === true && v.community === true && v.open !== false);
     if (v.browser === true && v.open !== false) { const web = await import('/praxis/web.js?cb=a50d161a'); const can = web.capable(); $('web').hidden = !can; if (can && !webRun && !cmdAltSet) { cmdAltSet = true; $('cmd-alt').open = false; } }

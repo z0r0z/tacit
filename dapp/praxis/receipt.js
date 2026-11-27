@@ -101,12 +101,19 @@ export function runCommand({ plat = 'darwin-arm64', addr = '', name = '', coordi
   ].join('\n');
 }
 
-export function waitText(queue) {
+// The wait for a place at the back of the line, from the pace of the last day's accepted contributions (perDay, from the chain). With no
+// recent contributions to measure, the default slot length stands, and the text says so.
+export function waitText(queue, perDay = 0) {
   const q = Number(queue);
   if (!Number.isFinite(q) || q < 0) return '';
   if (q === 0) return 'Nobody waiting: your turn comes at once';
-  const mins = q * MINUTES_PER_SLOT;
-  return `${q} in the queue · about ${mins < 90 ? `${mins} min` : `${Math.round(mins / 60)} h`} to your turn`;
+  const measured = Number.isFinite(perDay) && perDay > 0;
+  const mins = q * (measured ? 1440 / perDay : MINUTES_PER_SLOT);
+  const when = mins < 90 ? `${Math.round(mins)} min`
+    : mins < 48 * 60 ? `${Math.round(mins / 60)} h`
+    : `${Math.round(mins / 1440)} days`;
+  const pace = measured ? ` at the last day's pace (${Math.round(perDay)} contributions a day)` : '';
+  return `${q} in the queue · about ${when} to your turn${pace}`;
 }
 
 export function platformGuess(ua = '', platform = '') {
