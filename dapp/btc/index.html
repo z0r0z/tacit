@@ -761,7 +761,7 @@ export FB_LP_KEY=$(openssl rand -hex 32)</pre></div></li>
           <div class="cmd"><pre>docker build -f worker-relay/Dockerfile.fastbridge-lp -t tacit-lp .
 docker run -it -v tacit-lp:/var/lib/tacit-fastbridge-lp tacit-lp setup
 docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp tacit-lp run</pre></div>
-          <p class="row" style="margin:10px 0 0;font-size:12.5px;color:var(--mute)">The first command sets up and stops, the second runs it. fastbridge-lp has a docker-compose example and a Render template with the disk and variables (FB_LP_NAME, FB_LP_FEE_BPS, FB_LP_FLAT_FEE, FB_LP_SIZE, FB_LP_KEY). One instance per key.</p>
+          <p class="row" style="margin:10px 0 0;font-size:12.5px;color:var(--mute)">The first command builds the image, the second sets up and stops, the third runs it. fastbridge-lp has a docker-compose example and a Render template with the disk and variables (FB_LP_NAME, FB_LP_FEE_BPS, FB_LP_FLAT_FEE, FB_LP_SIZE, FB_LP_KEY). One instance per key.</p>
         </div>
         <div>
           <h3>Is it healthy</h3>
