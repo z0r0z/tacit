@@ -29,6 +29,22 @@ const call = batchReads(({ to, data, from }) => readRpc('eth_call', [{ to: to.to
 const air = makeTacAirdrop({ call, keccak256: keccak_256 });
 const within = (s) => (s && AbortSignal.any ? AbortSignal.any([s, AbortSignal.timeout(20e3)]) : AbortSignal.timeout(20e3));
 const get = (path, signal) => fetch(`${API}/${path}`, { signal: within(signal) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+// A points read tries twice (a cold service answers the second time) and says why the last try failed.
+async function readJson(path, signal, why) {
+  for (let i = 0; i < 2; i++) {
+    try {
+      const r = await fetch(`${API}/${path}`, { signal: within(signal) });
+      if (r.ok) return await r.json();
+      why.v = `HTTP ${r.status}`;
+      if (r.status < 500 && r.status !== 429) return null;
+    } catch (e) {
+      if (signal?.aborted) return null;
+      why.v = e?.name === 'TimeoutError' ? 'timed out' : 'network error';
+    }
+    if (i === 0) await new Promise((res) => setTimeout(res, 800));
+  }
+  return null;
+}
 const connect = makeConnect({
   describe: 'Farm TAC, and look up and claim the airdrop and points.',
   rewards: false,
@@ -97,8 +113,9 @@ const capNow = () => keep('cap', () => get('leaderboard?day=today&limit=1').then
 }));
 function readPoints(address, signal) {
   return keep(`points:${address}`, async () => {
-    const [p, c, paid, prog] = await Promise.all([get(`points/${address}`, signal), get(`claim/${address}`, signal), claimedOn(address).catch(() => null), capNow().catch(() => null)]);
-    if (!p || !c) return { error: true };                                            // /claim answers 0 for an account with nothing: no answer is a read that failed, not nothing owed
+    const why = {};
+    const [p, c, paid, prog] = await Promise.all([readJson(`points/${address}`, signal, why), readJson(`claim/${address}`, signal, why), claimedOn(address).catch(() => null), capNow().catch(() => null)]);
+    if (!p || !c) return { error: true, why: why.v };                                            // /claim answers 0 for an account with nothing: no answer is a read that failed, not nothing owed
     const earned = BigInt(c?.cumulativeAmount || 0), claimed = paid ?? BigInt(c?.claimedWei || 0);
     const t = p.today, pts = Number(t?.points) || 0, all = Number(t?.totalPoints) || 0;
     let today = null;
@@ -165,7 +182,7 @@ function clockLine(c) {
   return `Day ${c.day} of ${c.days}${left > 0 ? ` · today’s points are claimable in ${inTime(left)} (${at} UTC)` : ''}`;
 }
 function pointsRow(p, address) {
-  if (p.error) return lone('Points', 'Could not read points. Try again in a moment.', 'warn');
+  if (p.error) return lone('Points', `Could not read points${p.why ? ` (${p.why})` : ''}. Try again in a moment.`, 'warn');
   const t = p.today, pct = t ? (t.pct < 0.01 ? t.pct.toFixed(4) : t.pct < 1 ? t.pct.toFixed(3) : t.pct.toFixed(2)) : '', pts = Math.round(p.points).toLocaleString('en-US');
   const fig = p.owed > 0n ? figure(Number(p.owed) / 1e18, tac(p.owed), 'TAC') : figure(Math.round(p.points), pts, 'points');
   const kv = p.earned > 0n ? `<dl class="kv"><div><dt>Earned from finished days</dt><dd class="num">${tac(p.earned)} TAC</dd></div><div><dt>Claimed</dt><dd class="num">${tac(p.claimed)} TAC</dd></div><div><dt>To claim</dt><dd class="num">${p.unread ? 'unavailable' : `${tac(p.owed)} TAC`}</dd></div></dl>` : '';

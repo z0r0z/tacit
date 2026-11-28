@@ -4704,7 +4704,9 @@ async function handleConfidentialSubmit(req, env, cors) {
     const ip = req.headers.get('CF-Connecting-IP') || 'anon';
     const rl = paying
       ? await proveRateLimit(env, ip, 'paid', Number(env.PAID_RL_BURST || 30), Number(env.PAID_RL_REFILL_MS || 10000))
-      : await proveRateLimit(env, ip);
+      // Farm bonds, harvests and unbonds carry no fee leg, so a wallet trying them out lands here: a burst of 15, one more every
+      // 15 s (about 240 an hour). The daily free budget below still bounds the subsidy for everyone.
+      : await proveRateLimit(env, ip, 'submit', Number(env.SUBMIT_RL_BURST || 15), Number(env.SUBMIT_RL_REFILL_MS || 15000));
     if (!rl.ok) return jsonResponse({ ok: false, error: `too many submit requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
   }
   // A proof made elsewhere goes on the open board for any sender; its shape is checked here and its settle simulated

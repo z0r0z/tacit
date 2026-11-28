@@ -16,7 +16,7 @@
 <script async src="/front-guard.js?cb=51f5d28b"></script>
 <script src="/front-route.js?cb=834112f6"></script>
 <script type="module" src="/px-strip.js?cb=10c6841d" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=7716fe3d" as="style">
+<link rel="preload" href="/swap/card.css?cb=34767d63" as="style">
 <link rel="preload" href="/fonts/newsreader-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/newsreader-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -37,7 +37,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /front/main.js /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /auto-claim.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js /rescan-gate.js /pub-address.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/front/main.js?cb=6e6f46f0">
+<link rel="modulepreload" href="/front/main.js?cb=739ff324">
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/own-node.js?cb=ed1de110">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -428,8 +428,8 @@ main:focus { outline: none; }
 .hero h1 .hero-pair { display: inline-flex; gap: .09em; vertical-align: -.02em; margin-left: .19em; }
 .hero h1 .hero-pair .tk { width: .73em; height: .73em; }
 /* the line under a headline is a statement, so it is set in the headline's serif; a name that is code (tacit1) keeps the mono */
-.hero .sub { font: 400 clamp(19px, 2.4vw, 22px)/1.3 var(--serif); letter-spacing: -.005em; max-width: 34em; margin: 0 auto; color: color-mix(in srgb, var(--ink) 72%, var(--mute)); text-wrap: balance; }
-.hero .sub b { font: 400 .72em var(--mono); letter-spacing: -.03em; color: var(--ink); }
+.hero-t > .sub { font: 400 clamp(19px, 2.4vw, 22px)/1.3 var(--serif); letter-spacing: -.005em; max-width: 34em; margin: 0 auto; color: color-mix(in srgb, var(--ink) 72%, var(--mute)); text-wrap: balance; }
+.hero-t > .sub b { font: 400 .72em var(--mono); letter-spacing: -.03em; color: var(--ink); }
 /* wide screens: the card's button should come up the page, not sit under the fold of a laptop */
 @media (min-width: 641px) { .hero { padding-top: 20px; } .hero-t { margin-bottom: 18px; } .hero h1 { font-size: clamp(54px, 6.2vw, 76px); margin-bottom: 12px; } }
 /* A plain text link, as the quiet kind of call to action. */
@@ -2188,8 +2188,8 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 html:not([data-page="spx"]) {
   & .hero h1 { font: 400 clamp(44px, 12vw, 68px)/1.02 var(--serif); letter-spacing: -.025em; }
   & .hero h1 .hero-w2 { font-style: italic; color: var(--mute); }
-  & .hero .sub { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
-  & .hero .sub b { font: 400 .88em var(--mono); color: var(--ink); }
+  & .hero-t > .sub { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
+  & .hero-t > .sub b { font: 400 .88em var(--mono); color: var(--ink); }
   & .hero-t { margin-bottom: 26px; }
   & .hx { border-radius: 20px; border-color: var(--hair); background: linear-gradient(180deg, color-mix(in srgb, var(--card) 93%, #fff) 0, var(--card) 140px); }
   /* the tabs: one plate, the chosen tab raised on it */
@@ -2258,7 +2258,7 @@ html:not([data-page="spx"]) {
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=7716fe3d" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=34767d63" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -3054,6 +3054,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
 <div class="toasts" id="toast-container" popover="manual"></div>
 
-<script type="module" src="/front/main.js?cb=6e6f46f0"></script>
+<script type="module" src="/front/main.js?cb=739ff324"></script>
 </body>
 </html>
