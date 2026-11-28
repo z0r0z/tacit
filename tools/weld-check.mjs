@@ -836,7 +836,9 @@ await step('hints', async () => {
   const r = await openPage({ account: A0, key: K0 }), p = r.page;
   try {
     await p.goto(r.url);
-    await p.waitForSelector('#hints .hint', { timeout: 60000 });
+    await p.waitForSelector('#hints .hint', { state: 'attached', timeout: 60000 });
+    ok(await p.$eval('#hints', (e) => getComputedStyle(e).display === 'none'), 'hints: the quick starts are not shown on the front page with nothing held (the farms are)');
+    await p.addStyleTag({ content: '#hints { display: flex !important; }' });      // what follows checks what each one fills in, should the row be shown
     const names = await p.$$eval('#hints .hint', (bs) => bs.map((b) => b.dataset.hint));
     ok(names.includes('pswap') && names.includes('shield'), `hints: quick starts show above the card (${names.join(' ')})`);
     ok(await p.$$eval('#hints .hint', (bs) => bs.every((b) => b.querySelectorAll('svg.tk').length >= 2 && b.textContent.trim().length > 10)), 'hints: each carries its token marks and says what it does');
