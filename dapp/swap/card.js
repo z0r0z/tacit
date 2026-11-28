@@ -1748,22 +1748,24 @@ const amountWord = (amt, dec) => (/^\s*\d*[.,]\d+\s*$/.test(String(amt || '')) &
 const eth2 = (wei) => { const n = Number(wei) / 1e18; return tidy(n >= 1 || !(n > 0) ? n.toFixed(2) : n.toFixed(Math.min(18, 1 - Math.floor(Math.log10(n))))); };
 const LATER_TIP = 'Deposit now into a private pool and swap out later, so nothing onchain links your wallet to where the tokens go.';
 function paintLater(q, r, kind) {
-  const el = $('#later'), fits = laterFits(kind) && (!!r || !!q?.busy || (LATER.on && !!q?.lt));
+  // before an amount the switch alone shows, so whether the swap is private is a choice seen up front (and the address it asks for, explained)
+  const pre = laterFits(kind) && !(Number(S.amt) > 0) && !q;
+  const el = $('#later'), fits = laterFits(kind) && (!!r || !!q?.busy || (LATER.on && !!q?.lt) || pre);
   el.hidden = !fits;
   if (fits && LATER.on && Number(S.amt) > 0) proverSoon();
   if (!fits) return;
   if (LATER.on) readHop();
   const th = tokHop(), viaRow = LATER.on && !isEth(S.pay) && viaShown(th), hopOn = viaToken(), dw = depWays(), gasRow = LATER.on && !isEth(S.pay) && (dw.token || dw.tac);
-  const k = `${LATER.on}:${laterPool() && laterDest().kind !== 'address'}:${viaRow ? `${S.pay}:${hopOpen(th)}` : ''}:${gasRow ? `${S.pay}:${dw.tac}` : ''}`;
+  const k = `${pre}:${LATER.on}:${laterPool() && laterDest().kind !== 'address'}:${viaRow ? `${S.pay}:${hopOpen(th)}` : ''}:${gasRow ? `${S.pay}:${dw.tac}` : ''}`;
   if (el.dataset.k !== k) {
     el.dataset.k = k;
     el.classList.toggle('on', LATER.on);
     el.innerHTML = `<button type="button" class="tgl" id="later-on" role="switch" aria-checked="${LATER.on}" title="${esc(LATER_TIP)}"><svg class="tk sm" aria-hidden="true"><use href="#tk-peth"/></svg><span class="tg-t"><b>Swap privately</b><small>${LATER.on ? 'your wallet and the address are not linked' : 'hides where it goes'}</small></span><span class="pill" aria-hidden="true"></span></button>`
-      + (LATER.on ? (viaRow ? viaHtml(th) : '') + (gasRow ? gasHtml(dw) : '')
+      + (LATER.on && !pre ? (viaRow ? viaHtml(th) : '') + (gasRow ? gasHtml(dw) : '')
         + `<div class="buf" title="Deposit more than you swap, so the deposit and the swap do not match. What is not swapped stays yours, private in the pool."><span>Blur the amount<small> · the extra stays yours</small></span><input type="range" id="later-x" min="5" max="100" step="5" value="${LATER.pct}" aria-label="How much more to deposit than you swap, so the two do not match; the extra stays yours, private"><b id="later-xv"></b></div>`
         + `<ol class="st pre" aria-label="How it goes"><li><i class="mk" aria-hidden="true">1</i><span>Deposit <b id="later-dep"></b></span></li><li><i class="mk" aria-hidden="true">2</i><span>Wait</span></li><li><i class="mk" aria-hidden="true">3</i><span>Swap</span></li>${laterPool() && laterDest().kind !== 'address' ? '<li><i class="mk" aria-hidden="true">4</i><span>Private</span></li>' : ''}</ol><p class="later-note" id="later-note"></p>` : '');
   }
-  if (!LATER.on) return;
+  if (!LATER.on || pre) return;
   if (viaRow) viaPaint(th, hopOn);
   if (gasRow) gasPaint(dw);
   const shape = laterOn(kind) && !isEth(S.pay) ? (hopOn ? 'hop' : 'zap') : false;

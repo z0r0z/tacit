@@ -155,7 +155,7 @@
       ["request", "Request", "/#/payments/request", "Ask to be paid in any asset: a link and a QR that open the payment, filled in."],
       ["links", "Claim links", "/tac/?v=links#pool/send", "Leave TAC for someone with no wallet yet, with a PIN if you like; take it back if they never claim."]]],
     "defi": ["DeFi", "Swap, farm and stake, privately when you want.", [
-      ["swap", "Swap", "/#/defi/swap", "Public or private swaps at the best route."],
+      ["swap", "Swap", "/#/defi/swap", ""],
       ["farm", "Farm", "/farm/", "Pick a farm, put ETH in, earn TAC."],
       ["stake", "Stake", "/tac/?v=stake#private", "Stake TAC on the Tacit chain: it earns a share of every payment, with no lock."]]],
     "chains": ["Bridge", "Move money between Bitcoin and Ethereum.", [

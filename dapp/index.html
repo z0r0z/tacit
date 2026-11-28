@@ -36,7 +36,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /front/main.js /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /auto-claim.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js /rescan-gate.js /pub-address.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/front/main.js?cb=71956335">
+<link rel="modulepreload" href="/front/main.js?cb=a9668615">
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/own-node.js?cb=ed1de110">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -89,7 +89,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=8f677598">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=7766c464">
-<link rel="modulepreload" href="/swap/card.js?cb=0a925e76">
+<link rel="modulepreload" href="/swap/card.js?cb=0e23ce22">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
@@ -398,6 +398,10 @@ main:focus { outline: none; }
    the card's pool line waits for an amount, and its Bitcoin and Ethereum switch is the Swap tab's (Shield's From lists Bitcoin's coins) */
 :root:not([data-page]) #hx .swc:has(#amt:placeholder-shown) #homes:has(> .one) { display: none; }
 :root:not([data-page]) #hx:has([data-hxm="shield"][aria-selected="true"]) .swc:not(.atom):not(.btc) .mode { display: none; }
+/* the DeFi section's Swap: Bitcoin and ETH are swapped under Bridge (its BTC ⇄ ETH swap tab), so the card's chain switch is not shown here */
+html[data-sec="defi/swap"] #hx .swc:not(.atom):not(.btc) .mode { display: none; }
+/* Stake on a wide window has its card beside what it earns: the Stake TAC button over there would be a second way to the same card */
+@media (min-width: 1000px) { html[data-sec="defi/stake"] .tpg-cta { display: none; } }
 /* The farms, the second row of the table under the card: a pair and its APR a chip, best first, each opening the card's Earn tab on that pool's ETH zap. The row's height is
    kept while empty, so nothing moves when the farms are read. */
 .fms { display: flex; align-items: center; gap: 4px; height: 30px; margin: 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; opacity: 0; transition: opacity .35s; }
@@ -2395,6 +2399,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh-t.pill a[aria-current="page"] { background: none; box-shadow: none; }
 @media (prefers-reduced-motion: reduce) { .sh-t .sh-i { transition: none; } }
 .sh p.sh-n { margin-top: 14px; max-width: 52em; font-size: 12.5px; color: var(--faint, var(--mute)); min-height: 1.5em; }
+.sh p.sh-n:empty { display: none; }      /* a view that has no line of its own (DeFi's Swap: the card says it) */
 .sh.sh-l { max-width: 560px; text-align: left; } .sh.sh-l .sh-more { margin-top: 18px; }
 @media (hover: hover) { .sh-t a:hover { color: var(--ink); } }
 @media (max-width: 520px) { .sh { margin-top: 18px; } .sh-t { display: grid; grid-auto-columns: 1fr; } .sh-t a { padding: 6px 6px; font-size: 12px; } }
@@ -2526,7 +2531,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=91337339" defer></script>
+<script src="/chrome.js?cb=8cf3fc44" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -3057,6 +3062,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
 <div class="toasts" id="toast-container" popover="manual"></div>
 
-<script type="module" src="/front/main.js?cb=71956335"></script>
+<script type="module" src="/front/main.js?cb=a9668615"></script>
 </body>
 </html>

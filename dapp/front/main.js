@@ -7241,7 +7241,7 @@ function tacPageSet(on) {
 const CLV = { p: null };
 function chainLive(on) {
   if (!on) { CLV.p?.then((l) => l.stop(), () => {}); return; }
-  CLV.p ||= import('/chain/live.js?cb=e54acdeb').then((m) => m.mountChainLive({ top: $('#tpg-live'), mid: $('#tpg-mid'), rest: $('#tpg-chain'), earn: $('#tpg-earn-live'), plot: $('#tpg-earn-plot'), hero: $('#tpg-yield'), onYield: (y) => { TACP.yld = y; if (TACP.on) { rerender('tac'); tcardQuoteSoon(); } } }));
+  CLV.p ||= import('/chain/live.js?cb=a3a0ff7f').then((m) => m.mountChainLive({ top: $('#tpg-live'), mid: $('#tpg-mid'), rest: $('#tpg-chain'), earn: $('#tpg-earn-live'), plot: $('#tpg-earn-plot'), hero: $('#tpg-yield'), onYield: (y) => { TACP.yld = y; if (TACP.on) { rerender('tac'); tcardQuoteSoon(); } } }));
   CLV.p.then((l) => { if (TACP.on) l.start(); }, () => { CLV.p = null; });
 }
 const chainMine = (landing) => {
@@ -14184,7 +14184,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=0a925e76').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=0e23ce22').catch((e) => { SWC.p = null; throw e; }));
 // Intent on Shield or Swap is a useful head start: fetch both the card and the
 // private action engine, and warm the fee/log reads they need before submit.
 const hxActionWarm = () => { swcLoad().catch(() => {}); hxWarm(); hxWarmWrap(); };
@@ -14253,7 +14253,7 @@ function hxLeadPaint() {
   else if (hk === 'shield' && /^w?tac>/.test(mk || '')) t = 'TAC: the DeFi pool to trade and farm, or the Tacit chain to stake and pay.';
   else if (hk === 'shield') t = br ? 'From Bitcoin into the private pool.' : 'Into the pool. Then swap, send, earn.';
   else if (hk === 'withdraw') t = br ? 'Out of the pool to Bitcoin.' : 'Out of the pool to any address.';
-  else if (hk === 'swap') t = SWC.card?.params?.()?.get('private') ? 'Private: nothing links the two sides.' : 'Best onchain price. Pick Private to hide it.';
+  else if (hk === 'swap') t = SWC.card?.params?.()?.get('private') ? 'Private: nothing links the two sides.' : 'Best onchain price. Turn on Swap privately to hide where it goes.';
   else if (hk === 'send') t = HX.ask ? 'A link anyone can pay you with.' : hxBtcX(HX.send) ? `${hxSendOf()[1]} on Bitcoin, to any tacit1 address or name.` : hxSendBtc() ? 'Sats to any Bitcoin or tacit1 address.' : hxIsLp() ? 'A share of a farm, sent privately.' : hxSendWallet() ? 'tacit1 is paid privately, 0x in the open.' : 'tacit1 stays private. An 0x address leaves the pool.';
   else if (hk === 'earn') t = SPXP ? 'Farm with SPX, ETH or TAC, privately. This supports the Tacit privacy protocol.' : HX.from === 'ether' ? 'ETH into a farm, privately. TAC every day.' : 'Private tETH into a farm. TAC every day.';
   else t = HX.tab === 'borrow' ? 'Lock BTC or deposit TAC, then borrow.' : 'Between Bitcoin and Ethereum, both ways.';

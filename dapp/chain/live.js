@@ -216,7 +216,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     const dots = pts.slice(from).map((q, k) => { const i = from + k; return `<i class="pt${i === pts.length - 1 ? ' last' : ''}" data-i="${i}" style="--i:${few ? i : 0};left:${(CH.xs[i] * 100).toFixed(2)}%;top:${(CH.ys[i] * 100).toFixed(2)}%"></i>`; }).join('');
     return `<figure><div class="cl-plot${intro()}"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="A share's worth from block ${x0} to block ${x1}, ${pts[0][1].toFixed(5)} to ${pts.at(-1)[1].toFixed(5)} TAC">
       <line class="gd" x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}"/><path class="ar" d="${d} L${W} ${H} L0 ${H} Z"/><path class="ln" d="${d}"/></svg>${dots}
-      <span class="yl num">${lo.toFixed(5)}</span><i class="xh" hidden></i><span class="tip num" hidden></span></div>
+      <i class="xh" hidden></i><span class="tip num" hidden></span></div>
       <figcaption><span>block ${int(x0)} · ${pts[0][1].toFixed(5)}</span><span>block ${int(x1)} · ${pts.at(-1)[1].toFixed(5)} TAC</span></figcaption></figure>`;
   }
   // The pool's yield from fees over the past `days` days: what the fees paid holders, against the pool as it stands (what a share bought now is
