@@ -15,13 +15,17 @@
 // Phases:  accepted -> locking -> locked -> offered -> taking -> done          or  ... offered -> refunding -> refunded
 //          aborted (nothing was locked)        lost (a lock was spent and t could not be read)
 //
-// ctx = { seed, now(), policy, store, quotes, btc, inventory, tracking, log, alert }
+// ctx = { seed, now(), policy, store, quotes, btc, inventory, tracking, log, alert, pledges, trace }
 //   policy     { asset, minAmount, maxAmount, feeBps, flatFee, validSecs, csvHolder, csvDesk, minConfsFor(v), maxSessions (4),
-//                lockDelayBlocks, takeMarginBlocks, signStopBlocks, acceptWaitSecs }
+//                lockDelayBlocks, takeMarginBlocks, signStopBlocks, acceptWaitSecs,
+//                discountBps { clean, long-history, pool-exit }, discountMaxBps }
 //   quotes     a store of the quotes given: { get(id), put(q), list() }
 //   btc        the fast bridge's Bitcoin seam (dapp/fastbridge-btc.js), crossLaneBlocked included
-//   inventory  { notes() -> the desk's TAC notes [{ txid, vout, value, amount, blinding, height }] }
+//   inventory  { notes() -> the desk's TAC notes [{ txid, vout, value, amount, blinding, height }], add(note)? }
 //   tracking(notes) -> Map 'txid:vout' -> 'tracked' | 'bound' | 'new' | 'untracked' (burndep-ux noteTracking's answer)
+//   pledges    a makePledges (btcswap-desk/pledges.mjs), or nothing: without one the desk locks only what it owns
+//   trace(note { txid, vout }) -> { bundle, hops } | { pending: true } | null, the reflection API's trace of a note's
+//              history (dapp/burndep-ux.js traceNote's answer). Without one the desk quotes the clean rate, as before.
 
 import * as S from './btcswap.js';
 import * as M from './musig2.js';
@@ -37,7 +41,8 @@ const OPEN = new Set(['locking', 'locked', 'offered', 'refunding']);
 
 export function makeBtcSwapDesk(ctx) {
   const { seed, store, quotes, btc, inventory } = ctx;
-  const P = { ...S.DEFAULTS, maxSessions: 4, acceptWaitSecs: 6 * 3600, validSecs: 600, feeBps: 30, flatFee: 0n, minConfsFor: () => 1, ...ctx.policy };
+  const P = { ...S.DEFAULTS, maxSessions: 4, acceptWaitSecs: 6 * 3600, validSecs: 600, feeBps: 30, flatFee: 0n, minConfsFor: () => 1,
+    discountBps: { clean: 0, 'long-history': 150, 'pool-exit': 300 }, discountMaxBps: 500, ...ctx.policy };
   const log = ctx.log || (() => {}), alert = ctx.alert || (() => {});
   const deskPub = hx(btc.wallet.pub);
   const sid = (rec) => hexToBytes(rec.id);
@@ -63,6 +68,17 @@ export function makeBtcSwapDesk(ctx) {
 
   const feeOf = (amount) => (BigInt(amount) * BigInt(P.feeBps)) / 10000n + BigInt(P.flatFee);
 
+  // A note's class from its history, through the reflection API's trace. Without a trace the desk cannot tell a stuck note
+  // from a clean one, so it quotes the clean rate, as it did before discounts existed.
+  async function classOfNote(note) {
+    if (!ctx.trace) return { class: 'clean', traced: false };
+    const t = await ctx.trace(note);
+    if (!t) return { class: null, traced: false };
+    if (t.pending) return { pending: true };
+    const cls = S.classOfTrace(t);
+    return cls ? { class: cls, traced: true } : { class: null, traced: false };
+  }
+
   // The notes the desk can lock: the proof follows them, and no open swap holds them.
   async function lockable() {
     const held = new Set();
@@ -71,15 +87,26 @@ export function makeBtcSwapDesk(ctx) {
     const tr = await ctx.tracking(notes);
     return notes.filter((n) => tr.get(`${n.txid}:${n.vout}`) === 'tracked').sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : -1));
   }
-  async function available() { return (await lockable()).reduce((s, n) => s + BigInt(n.amount), 0n); }
+  // What the desk can lock right now: what it owns, plus what pledgers have put up and not yet committed.
+  async function available() { return (await lockable()).reduce((s, n) => s + BigInt(n.amount), 0n) + (ctx.pledges ? await ctx.pledges.available() : 0n); }
 
-  async function quote({ amount }) {
+  async function quote({ amount, note }) {
     const a = BigInt(amount);
     if (a < BigInt(P.minAmount) || a > BigInt(P.maxAmount)) return { ok: false, why: 'amount outside this desk\'s limits' };
-    const out = a - feeOf(a);
-    if (out <= 0n) return { ok: false, why: 'the amount does not cover the fee' };
+    let cls = 'clean', traced = false;
+    if (note) {
+      const c = await classOfNote(note);
+      if (c.pending) return { ok: false, why: 'the note\'s history is not traced yet', retry: true };
+      if (!c.class) return { ok: false, why: 'the note could not be classified' };
+      cls = c.class; traced = c.traced;
+    }
+    const bps = S.discountBps(cls, P);
+    if (bps == null) return { ok: false, why: `the discount for a ${cls} note is over this desk's cap` };
+    const fee = feeOf(a), discount = (a * BigInt(bps)) / 10000n, out = a - fee - discount;
+    if (out <= 0n) return { ok: false, why: 'the amount does not cover the fee and the discount' };
     if ((await available()) < out) return { ok: false, why: 'this desk does not hold that much just now' };
-    const q = { id: hx(sha256(new TextEncoder().encode(`${deskPub}|${a}|${ctx.now()}|${Math.random()}`))).slice(0, 32), asset: strip(P.asset), value: String(a), out: String(out), deskPub, csvHolder: P.csvHolder, validUntil: ctx.now() + P.validSecs };
+    const floor = note && ctx.pledges ? await ctx.pledges.matchFloor(note, bps) : null;
+    const q = { id: hx(sha256(new TextEncoder().encode(`${deskPub}|${a}|${ctx.now()}|${Math.random()}`))).slice(0, 32), asset: strip(P.asset), value: String(a), out: String(out), fee: String(fee), discount: String(discount), discountBps: bps, class: cls, traced, floor: floor ? floor.floorId : null, deskPub, csvHolder: P.csvHolder, validUntil: ctx.now() + P.validSecs };
     await quotes.put(q);
     return { ok: true, quote: q };
   }
@@ -112,7 +139,20 @@ export function makeBtcSwapDesk(ctx) {
       if (await btc.outspend(strip(l.txid), l.vout)) return no('the lock is spent');
       const consumed = await btc.crossLaneBlocked(tx);
       if (consumed) return no('a spent note is already consumed on Ethereum: ' + consumed);
-      const rec = { v: 1, role: 'desk', id, phase: 'accepted', created: ctx.now(), updated: ctx.now(), quoteId: q.id, offer, csvDesk: P.csvDesk, sessions: [] };
+      // The class of the notes the holder is swapping, from their history: the discount the quote was built on. A quote
+      // taken without the note assumed clean; a note that turns out stuck does not fit it, and the holder re-quotes.
+      const classes = [];
+      for (const ni of chain.noteInputs) {
+        const c = await classOfNote(ni);
+        if (c.pending) return no('the note\'s history is not traced yet', true);
+        if (!c.class) return no('the note could not be classified');
+        classes.push(c.class);
+      }
+      const worst = classes.sort((a, b) => ((S.discountBps(b, P) ?? -1) - (S.discountBps(a, P) ?? -1)))[0] || 'clean';
+      const bps = S.discountBps(worst, P);
+      if (bps == null) return no(`the discount for a ${worst} note is over this desk's cap`);
+      if (BigInt(q.value) - feeOf(BigInt(q.value)) - (BigInt(q.value) * BigInt(bps)) / 10000n !== BigInt(q.out)) return no(`the note is a ${worst} note, so this quote's discount does not fit it; ask for a fresh quote with the note`);
+      const rec = { v: 1, role: 'desk', id, phase: 'accepted', created: ctx.now(), updated: ctx.now(), quoteId: q.id, offer, csvDesk: P.csvDesk, sessions: [], class: worst, discountBps: bps };
       await store.put(rec);
       return { ok: true, rec };
     });
@@ -134,6 +174,82 @@ export function makeBtcSwapDesk(ctx) {
     return save(rec, { phase: 'lost', claimedBy: spender });
   }
 
+  // Draw the shortfall from pledges, one tick at a time: allocate, then build and sign each draw, then wait for it to
+  // confirm. Returns true once every draw has confirmed, false while any is still in flight, 'short' when no pledge covers
+  // the shortfall. A draw whose pledge has run out before it is built is given back and re-allocated from the rest.
+  async function drawFor(rec, shortfall) {
+    const tip = await btc.tip();
+    let draws = rec.draws || [];
+    let need = 0n;
+    const kept = [];
+    for (const d of draws) {
+      const p = await ctx.pledges.get(d.pledgeId);
+      if (d.phase === 'requested' && p && BigInt(p.expiryHeight) <= BigInt(tip) + 6n) {
+        await ctx.pledges.release(rec.id, d.pledgeId);
+        need += BigInt(d.amount);
+        continue;
+      }
+      kept.push(d);
+    }
+    draws = kept;
+    if (!draws.length) need = shortfall;
+    if (need > 0n) {
+      const alloc = await ctx.pledges.allocate({ swapId: rec.id, want: need, discountBps: rec.discountBps ?? 0, tip, exclude: rec.refusedDraws || [] });
+      if (!alloc) return 'short';
+      for (const { pledge, take, index } of alloc) draws.push({ pledgeId: pledge.id, amount: String(take), phase: 'requested', index, swapId: rec.id });
+      await save(rec, { draws });
+      return false;
+    }
+    for (const d of draws) {
+      if (d.phase !== 'requested') continue;
+      const pledge = await ctx.pledges.get(d.pledgeId);
+      const built = await ctx.pledges.buildDraw({ pledge, swapId: rec.id, amount: BigInt(d.amount), index: d.index });
+      const signed = await ctx.pledges.signDraw({ pledge, swapId: rec.id, amount: BigInt(d.amount), discountBps: rec.discountBps ?? 0, built });
+      if (!signed) { // the pledger would not sign this draw: give it back, never ask it again for this swap, fund the share elsewhere
+        await ctx.pledges.release(rec.id, d.pledgeId);
+        draws = draws.filter((x) => x !== d);
+        const refused = [...(rec.refusedDraws || []), d.pledgeId];
+        await save(rec, { draws, refusedDraws: refused });
+        const alloc = await ctx.pledges.allocate({ swapId: rec.id, want: BigInt(d.amount), discountBps: rec.discountBps ?? 0, tip, exclude: refused });
+        if (!alloc) return 'short';
+        for (const { pledge: p2, take, index } of alloc) draws.push({ pledgeId: p2.id, amount: String(take), phase: 'requested', index, swapId: rec.id });
+        await save(rec, { draws });
+        return false;
+      }
+      Object.assign(d, { phase: 'broadcast', txid: built.pair.revealTxid, revealHex: signed.revealHex, revealJson: signed.revealJson, sighash: built.sighash, value: built.value, rLock: built.rLock, changeRLock: built.changeRLock, changeAmount: built.changeAmount });
+      await save(rec, { draws });
+      await btc.broadcast({ ...signed, revealTxid: built.pair.revealTxid });
+      return false;
+    }
+    for (const d of draws) {
+      if (d.phase !== 'broadcast') continue;
+      const st = await btc.status(d.txid);
+      if (!st.confirmations) { await btc.broadcast({ revealTxid: d.txid, revealHex: d.revealHex, revealJson: d.revealJson }); return false; }
+      const pledge = await ctx.pledges.get(d.pledgeId);
+      await ctx.pledges.confirmDraw({ pledge, draw: d, height: st.height });
+      d.phase = 'confirmed';
+      await save(rec, { draws });
+      return false;
+    }
+    return draws.every((d) => d.phase === 'confirmed');
+  }
+
+  // Repay the pledges a swap drew on, once it has settled or ended. The desk pays from what it owns, so a repayment waits
+  // when the desk holds too little owned TAC; the pledge is not drawn on again in the meantime.
+  async function repayPledges(rec) {
+    if (!ctx.pledges || !rec.draws) return;
+    for (const d of rec.draws) {
+      if (d.phase !== 'confirmed') continue;
+      const pledge = await ctx.pledges.get(d.pledgeId);
+      if (!pledge || BigInt(pledge.owed) <= 0n) continue;
+      const notes = [];
+      let sum = 0n;
+      for (const n of await lockable()) { if (sum >= BigInt(pledge.owed)) break; notes.push(n); sum += BigInt(n.amount); }
+      if (sum < BigInt(pledge.owed)) continue;
+      await ctx.pledges.repay({ pledge, notes, amount: BigInt(pledge.owed) });
+    }
+  }
+
   async function advance(rec) {
     const l = rec.offer.lock;
     switch (rec.phase) {
@@ -149,12 +265,18 @@ export function makeBtcSwapDesk(ctx) {
             const want = BigInt(rec.offer.out), notes = [];
             let sum = 0n;
             for (const n of await lockable()) { if (sum >= want) break; notes.push(n); sum += BigInt(n.amount); }
+            if (sum < want && ctx.pledges) {
+              const d = await drawFor(rec, want - sum);
+              if (!d) return null;
+              for (const n of await lockable()) { if (sum >= want) break; if (notes.some((x) => x.txid === n.txid && x.vout === n.vout)) continue; notes.push(n); sum += BigInt(n.amount); }
+            }
             if (sum < want) return null;
             const p = btc.tx.lockTransfer({ asset: hexToBytes(strip(P.asset)), notes, lock: jointOf(rec), lockAmount: want, rLock: mine(rec).rLock, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate() });
             await save(rec, { lockPair: { txid: p.revealTxid, vout: 0, value: p.revealTx.outputs[0].value, commitTxid: p.commitTxid, commitHex: p.commitHex, revealHex: p.revealHex }, noteInputs: notes.map((n) => ({ txid: n.txid, vout: n.vout })) });
             return p;
           });
           if (!pair) {
+            if (rec.draws && rec.draws.some((d) => d.phase !== 'confirmed')) return rec;
             if (!rec.short) { alert({ level: 'warn', msg: 'the desk holds too little tracked TAC for a swap', id: rec.id, want: rec.offer.out }); await save(rec, { short: true }); }
             return ctx.now() - rec.created > P.acceptWaitSecs ? save(rec, { phase: 'aborted', why: 'the desk could not lock in time' }) : rec;
           }
@@ -272,12 +394,14 @@ export function makeBtcSwapDesk(ctx) {
   };
 
   async function tick() {
+    if (ctx.pledges) await ctx.pledges.expire().catch((e) => log({ level: 'warn', msg: 'pledge expiry failed', error: String((e && e.message) || e).slice(0, 200) }));
     for (const rec of await store.list()) {
-      if (TERMINAL.has(rec.phase)) continue;
+      if (TERMINAL.has(rec.phase)) { await repayPledges(rec).catch(() => {}); continue; }
       const before = rec.phase;
       const next = await step(rec);
       if (next.phase !== before) log({ level: 'info', msg: 'swap', id: next.id, from: before, to: next.phase, why: next.why || null });
       if (next.lastError && next.lastError !== rec.lastError) log({ level: 'warn', msg: 'swap step failed', id: next.id, phase: next.phase, error: next.lastError });
+      if (TERMINAL.has(next.phase)) await repayPledges(next).catch(() => {});
     }
   }
 
@@ -286,12 +410,38 @@ export function makeBtcSwapDesk(ctx) {
     try {
       if (method === 'GET' && path === '/info') {
         const a = await available().catch(() => null);
-        return reply({ v: 1, deskPub, asset: strip(P.asset), minAmount: String(P.minAmount), maxAmount: String(P.maxAmount), feeBps: P.feeBps, flatFee: String(P.flatFee), csvHolder: P.csvHolder, csvDesk: P.csvDesk, available: a == null ? null : String(a) });
+        const pl = ctx.pledges ? await ctx.pledges.info().catch(() => null) : null;
+        return reply({ v: 1, deskPub, asset: strip(P.asset), minAmount: String(P.minAmount), maxAmount: String(P.maxAmount), feeBps: P.feeBps, flatFee: String(P.flatFee), csvHolder: P.csvHolder, csvDesk: P.csvDesk, available: a == null ? null : String(a),
+          discountBps: P.discountBps, discountMaxBps: P.discountMaxBps, pledges: pl });
       }
       if (method === 'POST' && path === '/quote') {
         if (!body || !/^\d{1,30}$/.test(String(body.amount))) return reply({ error: 'amount must be a whole number' }, 400);
-        const r = await quote({ amount: body.amount });
-        return reply(r.ok ? r.quote : { ok: false, why: r.why });
+        const r = await quote({ amount: body.amount, note: body.note });
+        return reply(r.ok ? r.quote : { ok: false, why: r.why, retry: !!r.retry });
+      }
+      if (method === 'POST' && path === '/pledge') {
+        if (!ctx.pledges) return reply({ error: 'this desk takes no pledges' }, 404);
+        if (!body || typeof body.pledgerPub !== 'string' || typeof body.pledgerXonly !== 'string') return reply({ error: 'pledgerPub, pledgerXonly, amount and maxDiscountBps are required' }, 400);
+        try { return reply(await ctx.pledges.offer(body)); } catch (e) { return reply({ error: String((e && e.message) || e).slice(0, 200) }, 400); }
+      }
+      if (method === 'POST' && /^\/pledge\/(pl-[0-9a-f]+)\/lock$/.test(path)) {
+        if (!ctx.pledges) return reply({ error: 'this desk takes no pledges' }, 404);
+        const r = await ctx.pledges.fund({ id: path.split('/')[2], lock: (body && body.lock) || body });
+        return r.ok ? reply(r) : reply({ ok: false, why: r.why }, 400);
+      }
+      if (method === 'GET' && path === '/pledges') {
+        if (!ctx.pledges) return reply({ error: 'this desk takes no pledges' }, 404);
+        return reply({ pledges: (await ctx.pledges.list()).map((p) => ctx.pledges.publicPledge(p)), floors: await ctx.pledges.floors() });
+      }
+      if (method === 'GET' && /^\/pledges\/(pl-[0-9a-f]+)$/.test(path)) {
+        if (!ctx.pledges) return reply({ error: 'this desk takes no pledges' }, 404);
+        const p = await ctx.pledges.get(path.split('/')[2]);
+        return p ? reply(ctx.pledges.publicPledge(p)) : reply({ error: 'no such pledge' }, 404);
+      }
+      if (method === 'POST' && path === '/floor') {
+        if (!ctx.pledges) return reply({ error: 'this desk takes no pledges' }, 404);
+        if (!body || typeof body.holderPub !== 'string') return reply({ error: 'holderPub, amount, maxDiscountBps and note are required' }, 400);
+        try { return reply(await ctx.pledges.floor(body)); } catch (e) { return reply({ error: String((e && e.message) || e).slice(0, 200) }, 400); }
       }
       if (method === 'POST' && path === '/offer') {
         if (!body || typeof body.quoteId !== 'string' || !body.offer || typeof body.offer !== 'object') return reply({ error: 'quoteId and offer are required' }, 400);
@@ -323,10 +473,14 @@ export function deskClient({ base, fetchImpl = fetch, timeoutMs = 20000 }) {
   };
   return {
     info: () => call('GET', '/info'),
-    quote: (amount) => call('POST', '/quote', { amount: String(amount) }),
+    quote: (amount, note) => call('POST', '/quote', { amount: String(amount), ...(note ? { note } : {}) }),
     offer: (b) => call('POST', '/offer', b),
     status: (id) => call('GET', `/swap/${id}`),
     nonce: (id, b) => call('POST', `/swap/${id}/nonce`, b),
     sign: (id, b) => call('POST', `/swap/${id}/sign`, b),
+    pledge: (b) => call('POST', '/pledge', b),
+    pledgeLock: (id, lock) => call('POST', `/pledge/${id}/lock`, { lock }),
+    pledges: () => call('GET', '/pledges'),
+    floor: (b) => call('POST', '/floor', b),
   };
 }

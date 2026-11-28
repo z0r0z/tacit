@@ -194,6 +194,23 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return { ...pair, sighash, revealJson: txToJson(pair.revealTx) };
   }
 
+  // A draw on a pledge spends the whole lock note: the drawn amount goes to the wallet, the rest returns to the joint
+  // lock as change, so the pledge can be drawn on again. The change note's blinding is the caller's; the drawn note's
+  // is the wallet's own change blinding for this anchor, returned so the caller can track the drawn note.
+  function jointClaimSplit({ asset, lockOut, lock, amount, changeAmount, changeRLock, satsUtxos, feeRate }) {
+    let sighash = null;
+    const input = {
+      txid: lockOut.txid, vout: lockOut.vout, value: lockOut.value ?? DUST, amount: asBig(lockOut.amount), blinding: asBig(lockOut.blinding), spk: lock.spk, witnessSizes: [64],
+      sign: (tx, idx, prevouts) => { sighash = prims.tapSighashKeyPath(tx, idx, prevouts, 0x00); return [new Uint8Array(64)]; },
+    };
+    const anchor = anchorOf(input);
+    const pair = transfer({ asset, inputs: [input], outputs: [
+      selfOut(anchor, 0, amount),
+      { amount: asBig(changeAmount), blinding: asBig(changeRLock), script: lock.spk, keystream: kit.deriveAmountKeystreamSelf(wallet.priv, anchor, 1) },
+    ], satsUtxos, feeRate });
+    return { ...pair, sighash, revealJson: txToJson(pair.revealTx), drawnBlinding: bytesToHex(bigintToBytes32(kit.deriveChangeBlinding(wallet.priv, anchor, 0))) };
+  }
+
   // The stored claim with the parties' signature in the lock's witness (vin[1]); refused unless it verifies under the lock.
   function withKeyPathSig({ revealJson, sighash, sig, outputXonly }) {
     if (!verifySchnorr(sig, sighash, outputXonly)) throw new Error('adaptor-btc-tx: the joint signature does not verify under the lock output key');
@@ -347,7 +364,23 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return { commitTxid: pair.commitTxid, revealTxid: pair.revealTxid };
   }
 
-  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, withKeyPathSig, pickSats, lockSats, pickSatsMany, lockSatsMany, claimSats, refundSats, childSats, childVsize, broadcastPair, vsizeOf };
+  // A repayment: tracked notes to a third party's address, on the CXFER recipient channel (bound-swap.js buyerNoteEcdh):
+  // the blinding and the amount keystream come from one ECDH with the recipient's key, so the recipient finds and opens the
+  // note from the desk's public key alone. The desk uses it to return a pledge's drawn amount to the pledger once a swap it
+  // funded has settled; it carries no adaptor, no lock, and no refund leaf. The change stays with the desk.
+  const payTransfer = ({ asset, notes, amount, recipientPub, satsUtxos, feeRate }) => {
+    const inputs = notes.map((n) => ({ txid: n.txid, vout: n.vout, value: n.value, amount: n.amount, blinding: n.blinding, spk: own, witnessSizes: [72, 33],
+      sign: (tx, idx, prevouts) => prims.signP2wpkhInput(tx, idx, prevouts[idx].value) }));
+    const total = inputs.reduce((s, i) => s + asBig(i.amount), 0n);
+    if (asBig(amount) <= 0n || asBig(amount) > total) throw new Error('adaptor-btc-tx: the repayment must be positive and within the notes');
+    const anchor = anchorOf(inputs[0]);
+    const outputs = [
+      { amount: asBig(amount), blinding: kit.deriveBlinding(wallet.priv, recipientPub, anchor, 0), script: prims.p2wpkhScript(recipientPub), keystream: kit.deriveAmountKeystreamECDH(wallet.priv, recipientPub, anchor, 0) },
+      selfOut(anchor, 1, total - asBig(amount)),
+    ];
+    return transfer({ asset, inputs, outputs, satsUtxos, feeRate });
+  };
+  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, jointClaimSplit, payTransfer, withKeyPathSig, pickSats, lockSats, pickSatsMany, lockSatsMany, claimSats, refundSats, childSats, childVsize, broadcastPair, vsizeOf };
 }
 
 // A transaction as JSON a record can keep (bytes as hex), and back.

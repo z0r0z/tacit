@@ -33,6 +33,7 @@ const { makeAdaptorBtcTx, tacitKit } = await import('../dapp/adaptor-btc-tx.js')
 const { makeEsploraBtcChain } = await import('../dapp/fastbridge-btc.js');
 const { makeBtcSwapDesk } = await import('../dapp/btcswap-desk.js');
 const { makeOwnNotes, makeReflectionTracking } = await import('../dapp/btcswap-notes.js');
+const { makePledges } = await import('./pledges.mjs');
 
 const network = C.network || 'mainnet';
 setActiveNetwork(network);
@@ -57,15 +58,48 @@ const btc = makeEsploraBtcChain({
 const confs = (C.policy.confs || [['0', 1]]).map(([from, n]) => [BigInt(from), n]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
 const policy = {
   asset: C.asset, minAmount: BigInt(C.quote.minAmount), maxAmount: BigInt(C.quote.maxAmount), feeBps: C.quote.feeBps, flatFee: BigInt(C.quote.flatFee ?? 0), validSecs: C.quote.validSecs ?? 600,
+  discountBps: C.quote.discountBps, discountMaxBps: C.quote.discountMaxBps,
   csvHolder: C.policy.csvHolder ?? 288, csvDesk: C.policy.csvDesk ?? 144, acceptWaitSecs: C.policy.acceptWaitSecs ?? 6 * 3600,
   minConfsFor: (v) => confs.reduce((n, [from, c]) => (BigInt(v) >= from ? c : n), confs[0][1]),
 };
 const alert = (o) => { log(o); if (process.env.BTCSWAP_DESK_ALERT_WEBHOOK) fetch(process.env.BTCSWAP_DESK_ALERT_WEBHOOK, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(o) }).catch(() => {}); };
+
+// The trace of a note's history, for the discount's class: one call to the reflection API (the same POST burndep-ux's
+// traceNote makes). A `{ pending: true }` answer is passed back as-is; the desk asks the holder to try again.
+const apiBase = C.apiBase || 'https://tacit-api.onrender.com';
+const trace = async (note) => {
+  try {
+    const r = await fetch(apiBase + '/reflection/burndep/trace', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ note: { txid: String(note.txid).replace(/^0x/, '').toLowerCase(), vout: note.vout }, assetId: C.asset, maxDepth: 256 }),
+      signal: AbortSignal.timeout(30000) });
+    const j = await r.json().catch(() => null);
+    if (!j) return null;
+    if (j.pending) return { pending: true };
+    return j.ok ? { bundle: j.bundle, hops: j.hops } : null;
+  } catch { return null; }
+};
+
+// A pledger's half of a draw's signature: the desk POSTs the draw to the URL the pledger published with the pledge, and
+// the pledger's signer (tools/pledge-signer.mjs) checks the amount, the discount and the swap before it signs.
+const pledgeSigner = async (req) => {
+  if (!req.signerUrl) return null;
+  try {
+    const r = await fetch(req.signerUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req), signal: AbortSignal.timeout(20000) });
+    if (!r.ok) return null;
+    const j = await r.json().catch(() => null);
+    return j && j.pubnonce && j.psig ? { pubnonce: j.pubnonce, psig: j.psig } : null;
+  } catch { return null; }
+};
+const pledgeStore = DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'pledges'));
+const inventory = makeOwnNotes({ btc, tacit, asset: C.asset });
+const pledges = makePledges({ seed, store: pledgeStore, btc, inventory,
+  tracking: makeReflectionTracking({ base: apiBase, pool: ux.pool, network }), signer: pledgeSigner, log,
+  asset: C.asset, config: { csvPledge: C.pledge?.csvPledge ?? 144, minConfs: C.pledge?.minConfs ?? 2, pledgeReturnBps: C.pledge?.pledgeReturnBps ?? 50 } });
 const desk = makeBtcSwapDesk({
-  seed, now: () => Math.floor(Date.now() / 1000), policy, btc, log, alert,
+  seed, now: () => Math.floor(Date.now() / 1000), policy, btc, log, alert, pledges, trace,
   store: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'swaps')), quotes: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'quotes')),
-  inventory: makeOwnNotes({ btc, tacit, asset: C.asset }),
-  tracking: makeReflectionTracking({ base: C.apiBase || 'https://tacit-api.onrender.com', pool: ux.pool, network }),
+  inventory,
+  tracking: makeReflectionTracking({ base: apiBase, pool: ux.pool, network }),
 });
 
 log({ level: 'info', msg: 'btc swap desk', network, dryRun: DRY, bitcoinAddress: btc.address, deskPub: Buffer.from(prims.wallet.pub).toString('hex'), config: cfgPath, data });

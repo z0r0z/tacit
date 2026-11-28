@@ -14,7 +14,14 @@
     "maxAmount": "100000000000",
     "feeBps": 30,
     "flatFee": "100000000",
-    "validSecs": 600
+    "validSecs": 600,
+    "discountBps": { "clean": 0, "long-history": 150, "pool-exit": 300 },
+    "discountMaxBps": 500
+  },
+  "pledge": {
+    "csvPledge": 144,
+    "minConfs": 2,
+    "pledgeReturnBps": 50
   },
   "policy": {
     "csvHolder": 288,

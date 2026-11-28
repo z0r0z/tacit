@@ -14,8 +14,8 @@ import { makeBtcSwapHolder, holderDone } from '/btcswap-holder.js?cb=ec8dc7eb';
 import { deskClient } from '/btcswap-desk.js?cb=e511951b';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
 
-// The desk's URL. None is running yet, so the page offers no swap and asks nothing until this is set.
-export const DESK = null;
+// The desk's URL. The desk runs on Render (btcswap-desk/README.md); the page offers no swap until it answers there.
+export const DESK = 'https://tacit-btcswap-desk.onrender.com';
 const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.bitaroo.net/api', 'https://mempool.ninja/api', 'https://btcscan.org/api', 'https://mempool.emzy.de/api'];
 const enc = new TextEncoder();
 
@@ -39,7 +39,8 @@ export function openBtcSwap({ T, withKey, ux, priv, pubHex, desk = DESK || 'http
   return {
     address: prims.wallet.address(),
     info: () => api.info(),
-    quote: (amount) => api.quote(amount),
+    // The note being swapped, so the quote's discount is the one for that note's history, not the clean rate.
+    quote: (amount, note) => api.quote(amount, note),
     start: async (note, quote) => {
       const rec = await holder.start({ asset: hexToBytes(quote.asset), amount: BigInt(quote.value), notes: [note], quote });
       await holder.step(rec);

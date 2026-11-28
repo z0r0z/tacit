@@ -43,7 +43,10 @@ export function makeOwnNotes({ btc, tacit, asset, pages = 8, ttlMs = 60000, now 
     cache = { at: now(), notes: out };
     return out;
   }
-  return { notes, forget: () => { cache = null; } };
+  // A note the desk drew from a pledge, confirmed on the chain: seed the opened map with it so the next read sees it
+  // without waiting for the history cache to turn over. The note is still read from the chain the usual way after that.
+  const add = (note) => { opened.set(`${note.txid}:${note.vout}`, note); cache = null; };
+  return { notes, forget: () => { cache = null; }, add };
 }
 
 // The reflection's live set (GET /reflection/live on the Tacit API), read at most once a minute: a confirmed output in a
