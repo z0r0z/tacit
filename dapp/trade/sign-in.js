@@ -83,7 +83,7 @@ export function signInSheet(session, { pick = pickWalletSheet, why = WHY, first 
       <p class="note err" role="alert" hidden></p>
       <p class="note wait" role="status" hidden></p>
       ${links ? `<p class="more">${links}</p>` : ''}
-      ${canPaste ? '<form class="amt" hidden><input type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Tacit key"><button class="link" type="submit" data-in="key">Open</button></form>' : ''}
+      ${canPaste ? '<form class="amt" hidden><input type="password" placeholder="64-character Tacit key" autocomplete="new-password" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Tacit key"><button class="link" type="submit" data-in="key">Open</button></form>' : ''}
     </div>`;
     const paste = o.body.querySelector('form.amt'), err = o.body.querySelector('.note.err'), wait = o.body.querySelector('.note.wait'), more = o.body.querySelector('.more');
     let line = null;

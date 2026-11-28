@@ -7,7 +7,7 @@ import { sha256 } from '/vendor/tacit-deps.min.js';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
 import { makeConnect } from '/trade/connect.js?cb=514272b7';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
-import { makeKeySession, signInSheet, pickWalletSheet } from '/trade/key.js?cb=e9a3a06d';
+import { makeKeySession, signInSheet, pickWalletSheet } from '/trade/key.js?cb=4e4c3027';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=bedc2af5';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=3784b81d';

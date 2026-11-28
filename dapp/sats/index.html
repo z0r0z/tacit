@@ -645,7 +645,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
               <span class="opt-m" id="create-m">Works in every browser. A new key, locked with a passphrase you set next. Back it up.</span>
             </button>
             <p class="aside">Have a Tacit key? <button type="button" class="link-btn" id="btn-import">Restore from key</button></p>
-            <div class="row hidden" id="import-row"><input type="password" id="import-key" placeholder="64-character hex key" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Tacit private key"><button type="button" class="btn sm" id="btn-import-go">Restore</button></div>
+            <div class="row hidden" id="import-row"><input type="password" id="import-key" placeholder="64-character hex key" autocomplete="new-password" autocapitalize="off" spellcheck="false" aria-label="Tacit private key"><button type="button" class="btn sm" id="btn-import-go">Restore</button></div>
             <p class="divider">already have a wallet?</p>
             <button type="button" class="opt" id="btn-eth">
               <span class="opt-t">Connect Ethereum wallet</span>
@@ -919,8 +919,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <form id="pass-form" role="dialog" aria-modal="true" aria-labelledby="pass-title">
     <h3 id="pass-title">Set a passphrase</h3>
     <p class="muted" id="pass-reason"></p>
-    <div class="field"><label id="pass-label-1" for="pass-input-1">passphrase</label><input type="password" id="pass-input-1"><div class="pass-hint" id="pass-hint-1" aria-live="polite"></div></div>
-    <div class="field" id="pass-field-2"><label for="pass-input-2">repeat</label><input type="password" id="pass-input-2"><div class="pass-hint" id="pass-hint-2" aria-live="polite"></div></div>
+    <div class="field"><label id="pass-label-1" for="pass-input-1">passphrase</label><input type="password" id="pass-input-1" autocomplete="new-password"><div class="pass-hint" id="pass-hint-1" aria-live="polite"></div></div>
+    <div class="field" id="pass-field-2"><label for="pass-input-2">repeat</label><input type="password" id="pass-input-2" autocomplete="new-password"><div class="pass-hint" id="pass-hint-2" aria-live="polite"></div></div>
     <p class="note" id="pass-warn">There is no reset. Forget it and only your key backup gets you back in.</p>
     <div class="row"><button class="btn" id="pass-submit" type="submit">Continue</button><button class="btn quiet" id="pass-cancel" type="button">Cancel</button></div>
   </form>

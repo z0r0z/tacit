@@ -7,9 +7,9 @@ const MARKUP = `<dialog class="sheet layer" id="pass-dialog" aria-labelledby="pa
       <div class="sheet-head"><h2 id="pass-title">Unlock</h2></div>
       <p class="note" id="pass-reason"></p>
       <label class="lbl" id="pass-label-1" for="pass-input-1">passphrase</label>
-      <div class="amt text"><input type="password" id="pass-input-1"></div>
+      <div class="amt text"><input type="password" id="pass-input-1" autocomplete="new-password"></div>
       <div class="pass-hint" id="pass-hint-1" aria-live="polite"></div>
-      <div id="pass-field-2"><label class="lbl" for="pass-input-2">repeat</label><div class="amt text"><input type="password" id="pass-input-2"></div><div class="pass-hint" id="pass-hint-2" aria-live="polite"></div></div>
+      <div id="pass-field-2"><label class="lbl" for="pass-input-2">repeat</label><div class="amt text"><input type="password" id="pass-input-2" autocomplete="new-password"></div><div class="pass-hint" id="pass-hint-2" aria-live="polite"></div></div>
       <p class="note" id="pass-warn">There is no reset. Forget it and only your key backup gets you back in.</p>
       <div class="row2"><button class="btn ghost" id="pass-cancel" type="button">Cancel</button><button class="btn" id="pass-submit" type="submit">Continue</button></div>
     </form>

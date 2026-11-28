@@ -20,7 +20,7 @@ import { rpc, fmtUnits, short, esc, E10 } from '/trade/util.js?cb=9c8b4133';
 const KEY = 'tacit-btc-add-eth-v1:';
 const KEEP_MS = 3 * 86400e3;                                     // a deposit kept longer than this is not looked for again
 const GAS_GUESS = 150000n;                                       // a deposit's gas when the node cannot estimate it (about 110k measured)
-const WRAP_MODULE = '/teth/wrap.js?cb=ce5e16c2', READ_MODULE = '/teth/read.js?cb=3784b81d', WALLET_MODULE = '/trade/wallet.js?cb=ff74eb58', PICK_MODULE = '/trade/sign-in.js?cb=62608560';
+const WRAP_MODULE = '/teth/wrap.js?cb=ce5e16c2', READ_MODULE = '/teth/read.js?cb=3784b81d', WALLET_MODULE = '/trade/wallet.js?cb=ff74eb58', PICK_MODULE = '/trade/sign-in.js?cb=ce1ac266';
 const eth = (wei) => fmtUnits(wei, 18, 6);
 
 // A lock of `amount` (pool units) is made from one note of exactly that amount, or from notes that hold it and the relay's fee of cutting them (the lane's
