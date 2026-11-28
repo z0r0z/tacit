@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yc7u0gUe8983py1oORmUY+/S6kl2RY5zWVIZaFIggnA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-JftbKEGAoHXcJWflJbPDnkI+STTukfEB0v3zdZp63C0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin fetchpriority="low">
@@ -4742,7 +4742,7 @@ function renderRelays(c = S.chain) {
   const row = (e) => {
     const k = norm(e.url), host = (() => { try { return new URL(e.url).host; } catch { return e.url; } })(), mine = p.custom.some((x) => norm(customUrl(x, c)) === k);
     const off = p.avoid.includes(k), pref = p.prefer.includes(k);
-    const say = k === own ? 'Tacit’s relay · always asked' : off ? 'set aside: never asked' : pref ? 'preferred' : asked.has(k) ? 'asked this visit' : 'not drawn this visit';
+    const say = k === own ? 'Tacit’s relay · always asked' : off ? 'set aside: never asked' : pref ? 'preferred' : asked.has(k) ? 'asked this visit' : OPEN_RELAYS.has(c.chainId) ? 'not drawn this visit' : 'in the open registry';
     return html`<div class="kv"><span>${k === own ? 'Tacit' : host.split('.')[0]}<br><small class="mute" title="${host}">${host} · ${say}${mine ? ' · yours' : ''}</small></span>
       <b>${off ? html`<button class="link" type="button" data-rl-on="${k}">Ask again</button>` : html`<button class="link" type="button" data-rl-pref="${k}" aria-pressed="${String(pref)}">${pref ? 'Preferred' : 'Prefer'}</button>${k === own ? '' : html` · <button class="link" type="button" data-rl-off="${k}">Never ask</button>`}`}${mine ? html` · <button class="link" type="button" data-rl-del="${k}">Remove</button>` : ''}</b></div>`;
   };
@@ -4768,7 +4768,20 @@ function renderRelays(c = S.chain) {
   };
   $('#rl-reload').onclick = () => location.reload();
 }
-document.addEventListener('click', (e) => { if (e.target.closest?.('[data-relays]')) { e.preventDefault(); renderRelays(); if (!$('#sheet-relays').open) $('#sheet-relays').showModal(); } });
+// Every relay the open registry lists (not only those drawn for this visit), read once when the sheet first opens, so each one can be preferred or set aside.
+const RELAYS_ALL = new Map();
+const allRelays = (c) => { if (!RELAYS_ALL.has(c.chainId)) RELAYS_ALL.set(c.chainId, (async () => {
+  const o = await import('/evm-pool-open-relays.js?cb=7f300089'), rpc = await rpcRegistry(CHAINS[0]);
+  const real = !!location.hostname && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  const { reg, openOff } = await Promise.race([payRegistry(), new Promise((resolve) => setTimeout(() => resolve({ reg: null, openOff: false }), 2500))]);
+  const all = await o.openRelays({ call: (to, data) => rpc('eth_call', [{ to, data }, 'latest']), chainId: c.chainId, own: chainKeeper(c), pinned: real, extra: c.chainId === 1 ? reg?.relays || [] : [], openOff, max: 64 });
+  RELAYS_SEEN.set(c.chainId, [...(RELAYS_SEEN.get(c.chainId) || []), ...all]);
+})().catch(() => { RELAYS_ALL.delete(c.chainId); })); return RELAYS_ALL.get(c.chainId); };
+document.addEventListener('click', (e) => {
+  if (!e.target.closest?.('[data-relays]')) return;
+  e.preventDefault(); const c = S.chain; renderRelays(c); if (!$('#sheet-relays').open) $('#sheet-relays').showModal();
+  allRelays(c).then(() => { if ($('#sheet-relays').open && S.chain === c) renderRelays(c); });
+});
 $('#wallet').onclick = openWalletSheet;
 $$('[data-close]').forEach((b) => b.onclick = () => b.closest('dialog').close());
 $$('dialog.sheet').forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
