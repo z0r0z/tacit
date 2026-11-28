@@ -22,8 +22,8 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js | | /swap/atomic-market.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=2a0e8736">
-<link rel="modulepreload" href="/swap/atomic.js?cb=cd272d93">
+<link rel="modulepreload" href="/btc/app.js?cb=541ba027">
+<link rel="modulepreload" href="/swap/atomic.js?cb=d5613d20">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -41,7 +41,7 @@
 <link rel="modulepreload" href="/btc/payout.js?cb=3b028d52">
 <link rel="modulepreload" href="/evm-account.js">
 <!-- preload:end -->
-<link rel="stylesheet" href="/swap/card.css?cb=34767d63">
+<link rel="stylesheet" href="/swap/card.css?cb=29336e3f">
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2'); }
@@ -201,6 +201,7 @@ html .lane #atomic .q .safe { display: block; margin-top: 6px; color: var(--ink)
 html .lane #atomic .q code { overflow-wrap: anywhere; font: 12px var(--mono); }
 /* a swap of BTC: where its ETH goes (kept private, or sent on to an Ethereum address), and what became of it on the swap's card */
 html .lane #atomic .payto { margin: 12px 0 0; }
+html .lane #atomic .rcpt button.fill { padding: 0; font: inherit; color: inherit; background: none; border: 0; border-bottom: 1px dotted currentColor; cursor: pointer; } /* a limit tapped puts it in the field */
 html .lane #atomic .pt { display: grid; gap: 7px; min-width: 0; margin: 0; padding: 10px 12px 12px; background: var(--field); border: 1px solid var(--hair); border-radius: 12px; }
 html .lane #atomic .pt legend { padding: 0 4px; font-size: 12px; color: var(--mute); }
 html .lane #atomic .pt label { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--ink); cursor: pointer; }
@@ -827,6 +828,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
 <link rel="modulepreload" href="/swap/atomic-probe.js?cb=99f7488b">
 </template>
 <!-- warm:end -->
-<script type="module" src="/btc/app.js?cb=2a0e8736"></script>
+<script type="module" src="/btc/app.js?cb=541ba027"></script>
 </body>
 </html>

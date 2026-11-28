@@ -62,7 +62,8 @@ export function addUnits(amount, available) { const a = BigInt(amount), have = a
 const tidy = (s) => s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 export const fmt = (v) => tidy(fmtUnits(v, DEC, DEC));
 // A most to show: four significant figures, rounded down (so the figure shown can always be swapped; 0.18973122 reads 0.1897)
-export const fmtMost = (v) => { const n = BigInt(v), cut = BigInt(Math.max(0, n.toString().length - 4)); return fmt((n / 10n ** cut) * 10n ** cut); };
+const mostOf = (v) => { const n = BigInt(v), cut = BigInt(Math.max(0, n.toString().length - 4)); return (n / 10n ** cut) * 10n ** cut; };
+export const fmtMost = (v) => fmt(mostOf(v));
 // A small amount of a fee, readable: under 0.001 BTC in sats, under 0.001 ETH to six places (a 7-decimal figure cannot be read at a glance)
 export const smallAmt = (v, sym) => { const n = BigInt(v); return n > 0n && n < 100000n ? (sym === 'BTC' ? `\u2248 ${n.toLocaleString('en-US')} sats` : `${tidy(fmtUnits(n, DEC, 6))} ${sym}`) : `${fmt(n)} ${sym}`; };
 const nowSecs = () => Math.floor(Date.now() / 1000);
@@ -442,8 +443,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const t = termsFor(L.dir);
     // a provider that holds less than its own minimum cannot take any swap: say so, instead of a minimum nobody can meet and then a maximum under it
     if (t && t.max < t.min) return { label: 'No provider has enough right now', off: true };
-    if (t && amount < t.min) return { label: `Minimum ${fmt(t.min)} ${c.sym}`, off: true };
-    if (t && amount > t.max) return { label: `Maximum ${fmtMost(t.max)} ${c.sym}`, off: true };
+    // past the limits the press puts the nearest amount that fits in the field (it does not swap)
+    if (t && amount < t.min) return { label: `Use the minimum: ${fmt(t.min)} ${c.sym}`, act: 'quick', quick: tidy(plain(t.min, DEC)) };
+    if (t && amount > t.max) return { label: `Use the maximum: ${fmtMost(t.max)} ${c.sym}`, act: 'quick', quick: tidy(plain(mostOf(t.max), DEC)) };
     const held = heldOf(pk), exact = pk === 'eth' && L.fits && L.fits.amt === amount && L.fits.ok;
     if (bal != null && amount > bal && !exact) {
       if (pk === 'btc') {
@@ -493,7 +495,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (send <= 546n) return null;
     return { label: `Swap ${fmt(amount)} BTC → ETH`, act: 'bpress', fund: { sats: Number(send) } };
   }
-  const rows = (rs) => rs.map(([k, v, c, r]) => `<div${r ? ` class="${r}"` : ''}><dt>${esc(k)}</dt><dd${c ? ` class="${c}"` : ''}>${esc(v)}</dd></div>`).join('');
+  const rows = (rs) => rs.map(([k, v, c, r, html]) => `<div${r ? ` class="${r}"` : ''}><dt>${esc(k)}</dt><dd${c ? ` class="${c}"` : ''}>${html ? v : esc(v)}</dd></div>`).join('');
+  // an amount the press can put in the field: the least or the most the providers take, tapped (the same data-quick as the balance's 25% / 50% / Max)
+  const fillBtn = (v, txt) => `<button type="button" class="fill" data-quick="${esc(tidy(plain(v, DEC)))}">${esc(txt)}</button>`;
   // Before a quote: the market, what the providers take and hold, and who; the firm price comes once the wallet is open
   function preview() {
     const m = L.mk, t = termsFor(L.dir), [pk] = SIDES[L.dir], c = COINS[pk], amount = amountBase();
@@ -507,7 +511,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       // the limits the ads name (what a provider holds now is the next row)
       // what the plan can fill: from the smallest amount any provider takes up to the most the best providers together can take now
       const lo = t ? t.min : ts[0].min, hi = t ? t.max : now0, fills = hi >= lo && hi > 0n;
-      out.push(['Limits', fills ? `${fmt(lo)}\u2060–\u2060${fmtMost(hi)} ${c.sym}` : 'none until a provider refills', fills && !(amount && t && (amount < t.min || amount > t.max)) ? '' : 'warn']);
+      const most = mostOf(hi);
+      out.push(['Limits', fills ? `${fillBtn(lo, fmt(lo))}\u2060–\u2060${fillBtn(most, fmt(most))} ${esc(c.sym)}` : 'none until a provider refills', fills && !(amount && t && (amount < t.min || amount > t.max)) ? '' : 'warn', '', fills]);
       out.push([ts.length === 1 ? 'Provider' : 'Providers', ts.length === 1 ? (m.providers.find((p) => p[L.dir])?.name || 'Provider') : `${ts.length} online`, '']);
     }
     if (amount && !D.unlocked) out.push(['Price', 'after you sign in', '']);
@@ -641,7 +646,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     $('a-get-bal').textContent = !D.unlocked || !pair || hg == null ? '' : `Balance ${fmt(hg)} ${g.sym}${confirming(gk)}`;
     const wal = pk === 'eth' && shield && L.pub > WALLET_KEEP ? L.pub - WALLET_KEEP : 0n;
     const max = bp != null && (bp > 0n || wal > 0n) ? (pk === 'btc' ? bp - BigInt(L.q?.networkFeeSats ?? LOCK_GUESS_SATS) : bp + wal) : 0n;
-    $('a-quick').innerHTML = max > 0n ? [25, 50, 100].map((n) => `<button type="button" data-quick="${tidy(plain((max * BigInt(n)) / 100n, DEC))}">${n === 100 ? 'Max' : `${n}%`}</button>`).join('') : '';
+    // (never more than the providers take in one swap, nor a share under the least they take: each button is an amount that can be swapped)
+    const tq = termsFor(L.dir), cap = tq && tq.max >= tq.min ? mostOf(tq.max) : null, top = cap != null && max > cap ? cap : max;
+    $('a-quick').innerHTML = top > 0n ? [25, 50, 100].map((n) => [n, n === 100 ? top : (top * BigInt(n)) / 100n]).filter(([, v]) => !tq || v >= tq.min).map(([n, v]) => `<button type="button" data-quick="${tidy(plain(v, DEC))}">${n === 100 ? 'Max' : `${n}%`}</button>`).join('') : '';
     const out = $('a-out'), q = L.q;
     // what arrives is what the provider locks less the fee of the transaction that takes it (e2b), not the lock
     const arrives = q && L.dir === 'e2b' && Number(q.takeFeeSats) > 0 && q.get > BigInt(q.takeFeeSats) ? q.get - BigInt(q.takeFeeSats) : q && q.get;
@@ -652,7 +659,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     fit(out); fit($('a-amt'));
     paintRcpt(); paintRecs();
     const gt = gate(), go = $('a-go');
-    go.textContent = gt.label; go.disabled = !!gt.off; go.dataset.act = gt.act || ''; fundAsk = gt.fund || null; addAsk = gt.add || null;
+    go.textContent = gt.label; go.disabled = !!gt.off; go.dataset.act = gt.act || ''; if (gt.quick) go.dataset.quick = gt.quick; else delete go.dataset.quick; fundAsk = gt.fund || null; addAsk = gt.add || null;
     // what one press does, and what its deposit from the wallet shows on chain, said under the button
     if (gt.act === 'oneclick' && !L.busy && (!L.line || L.cls === 'hint')) say(`${L.pub != null && gt.add ? `Adds ${fmt(gt.add)} ETH from your wallet first, then swaps.` : ONE_PRESS}<small>${esc(SHIELD_NOTE)}</small>`, 'hint');
     else if (gt.act === 'bpress' && !L.busy && (!L.line || L.cls === 'hint')) say(`${ONE_PRESS_BTC}<small>${esc(BTC_NOTE)}</small>`, 'hint');
@@ -1163,7 +1170,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (t.closest('#a-flip')) { if (L.busy || L.chain) return; L.dir = L.dir === 'b2e' ? 'e2b' : 'b2e'; L.amt = ''; $('a-amt').value = ''; L.q = null; L.qErr = ''; seq++; L.sticky = false; say(''); onState(); paint(); return; }
     const dm = t.closest('[data-dismiss]');
     if (dm) { dismiss(dm.dataset.dismiss); return; }
-    const qk = t.closest('[data-quick]'); if (qk && !L.chain) { $('a-amt').value = qk.dataset.quick; setAmt(qk.dataset.quick); return; }
+    const qk = t.closest('[data-quick]'); if (qk && !L.chain && !qk.disabled) { $('a-amt').value = qk.dataset.quick; fit($('a-amt')); setAmt(qk.dataset.quick); return; }
     if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'oneclick') oneClick(addAsk); else if (a === 'bpress') oneClickBtc(fundAsk); else if (a === 'chainGo') acceptPress(); else if (a === 'swap') swap(); else if (a === 'retry') { L.qTry = 0; requote(true); } else if (a === 'reread') { L.unread = null; paint(); readMe(); } else if (a === 'accept' && L.q) { L.q = { ...L.q, renewed: null }; L.sticky = false; say(''); paint(); } else if (a === 'acceptFee' && L.q) { L.q = { ...L.q, feeAccepted: true }; say(''); paint(); } }
   });
   recsHost?.addEventListener('click', (e) => {
