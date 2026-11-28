@@ -5,7 +5,7 @@ import { esc } from '/trade/sheet.js?cb=d857446c';
 import { API, $, fmtUnits, rpc } from '/trade/util.js?cb=9c8b4133';
 import { TAC as TAC_ERC20 } from '/trade/farm-read.js?cb=fb6ec72f';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=e9a3a06d';
-import { openBtcWallet } from '/trade/btc-session.js?cb=26eb770f';
+import { openBtcWallet } from '/trade/btc-session.js?cb=0d7428fe';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { isPasskeyAvailable } from '/prf-wallet.js';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
@@ -17,7 +17,7 @@ import { invaderSvg } from '/prove/invader.js?cb=e8a5ec59';
 //   Bitcoin: the holder opens their Tacit wallet (an Ethereum wallet's signature, a passkey or a Bitcoin wallet, the site's usual sign-in) and tacit.js,
 //   loaded only then, proves the TAC they held clears a tier without showing the exact amount: the same proof the classic app makes.
 // Each chain's vote is its own, counted in one tally; this page shows the two sides apart.
-const TACIT_URL = '/tacit.js?cb=43ed18ad';
+const TACIT_URL = '/tacit.js?cb=082704c4';
 const TAC_BASE = 10n ** 8n;
 const q = (p) => `${API}/governance${p}${p.includes('?') ? '&' : '?'}network=${GOV_NETWORK}`;
 const S = {

@@ -62429,7 +62429,13 @@ async function init() {
   if ((location.hash || '').startsWith('#tab=')) {
     try { _consumeTabUrlHash(); } catch (e) { console.warn('[init] early tab deeplink failed:', e?.message || e); }
   }
-  await refreshWallet();
+  // Paint cached wallet state synchronously, then let the live chain refresh
+  // finish in the background. refreshWallet() renders its cache/status before
+  // its first await, so a slow indexer cannot hold up the remaining handlers
+  // and URL consumers. Its normal stale/offline UI and retries remain intact.
+  void refreshWallet().catch((e) => {
+    console.warn('[wallet] initial background refresh failed:', e?.message || e);
+  });
   renderExtWalletPanel();
   renderEthWalletPanel();
   renderBtcWalletPanel();
