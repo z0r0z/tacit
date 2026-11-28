@@ -2603,7 +2603,12 @@ function openPicker(side, again = false) {
   const groups = [['Wallet', top, 'wallet', 'wallet'], ['Private', [...POOL_COINS.map((k) => `@defi:${k}`), ...ownHeld().map((k) => `@defi:${k}`), ...(moving() ? placeCoins(side, 'pay').map((k) => `@pay:${k}`) : []), ...placeCoins(side, 'chain').map((k) => `@chain:${k}`)], 'private', 'defi'],
     ...(moving() ? [['Bitcoin', placeCoins(side, 'btc').map((k) => `@btc:${k}`), 'bitcoin', 'btc']] : []),
     ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return side === 'get' && toPick() ? !m && (isEth(key) || ownForm(key)) : !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).map((g) => (ONLY ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return (!m || m[1] === 'defi') && ONLY.has(m ? m[2] : key); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
-  const kinds = ['wallet', 'private', 'bitcoin'].filter((kd) => groups.some((g) => g[2] === kd));
+  // what the page can bring in from Bitcoin (or send out to it) by a bridge of its own: rows under Bitcoin that hand the move to the page (H.moves.bridges / bridge)
+  const XB = (H.moves?.bridges?.(FLOW, side) || []).filter((r) => r && r.k);
+  // a To that is not otherwise picked (Withdraw's: the coin follows the From) opens on its two places only: the wallet, as it is, or Bitcoin
+  const XONLY = !!(FLOW && side === 'get' && !toPick() && XB.length);
+  if (XONLY) groups.length = 0;
+  const kinds = ['wallet', 'private', 'bitcoin'].filter((kd) => groups.some((g) => g[2] === kd) || (kd === 'bitcoin' && XB.length));
   const first = KIND[PKAT || at];
   let kind = again && kinds.includes(PKKIND) ? PKKIND : kinds.includes(first) ? first : kinds[0];
   PKKIND = kind;
@@ -2629,7 +2634,11 @@ function openPicker(side, again = false) {
     const rows = split ? homes.map(([h, label]) => `<p class="pk-sub" data-kind="${kd}"${hide}>${label}</p>${ordered(rs.filter((r) => r.at === h))}`).join('') : ordered(rs);
     const note = kd === 'private' ? (moving() ? (split ? 'Held privately.' : 'Held privately. Swap, farm and borrow, or pay anyone.') : 'Held privately in Tacit’s pool, to swap, farm and borrow with.') : KIND_NOTE[kd];
     return `<p class="pk-g${id === 'more' ? '' : ' kh'}" data-g="${id}" data-kind="${kd}"${hide}>${esc(g)}</p>${noted.has(kd) ? '' : (noted.add(kd), `<p class="pk-d" data-kind="${kd}"${hide}>${esc(note)}</p>`)}${rows}`;
-  }).join('');
+  }).join('') + (XB.length ? (() => {
+    const hide = kind === 'bitcoin' ? '' : ' hidden', note = side === 'pay' ? 'At your Bitcoin address. Bridged in, private when it lands.' : 'Bridged out to your Bitcoin address.';
+    const stay = XONLY ? (() => { const t = shownAt(S.get, 'wallet'); return t ? `<p class="pk-g kh" data-g="xw" data-kind="bitcoin"${hide}>Wallet</p><button type="button" class="pk-r" data-k="@xw:${esc(S.get)}" data-xw="1" data-kind="bitcoin"${hide} aria-current="true">${coin(t, '')}<span><b>${esc(t.sym)}<i class="pk-t pk-t-wallet" data-t="Public"></i></b><small>to your wallet</small></span><em></em></button>` : ''; })() : '';
+    return `${stay}${groups.some((g) => g[2] === 'bitcoin') ? '' : `<p class="pk-g kh" data-g="xb" data-kind="bitcoin"${hide}>Bitcoin</p><p class="pk-d" data-kind="bitcoin"${hide}>${esc(note)}</p>`}${XB.map((r) => `<button type="button" class="pk-r" data-k="@xb:${esc(r.k)}" data-xb="${esc(r.k)}" data-kind="bitcoin"${hide}>${r.icon || ''}<span><b>${esc(r.sym)}<i class="pk-t pk-t-btc" data-t="Bitcoin"></i></b><small>${esc(r.name || '')}</small></span><em></em></button>`).join('')}`;
+  })() : '');
   const kindBtn = (kd) => `<button type="button" role="radio" data-kind="${kd}" aria-checked="${kd === kind}" tabindex="${kd === kind ? 0 : -1}" title="${esc(KIND_TIP[kd])}">${kd === 'wallet' ? WALLET_MARK : kd === 'bitcoin' ? placeMark('btc') : '<span class="lock" aria-hidden="true"></span>'}${KIND_NAME[kd]}</button>`;
   pk.innerHTML = `<div class="pk-s" role="dialog" aria-modal="true" aria-label="${title}"><div class="pk-h"><b>${title}</b><button type="button" class="pk-x" aria-label="Close">×</button></div>${FLOW !== 'withdraw' && !ONLY && keys.some((k) => !inPool(k) && !/^@/.test(k)) ? '<input class="pk-q" id="pk-q" placeholder="Search tokens, or paste an address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" aria-label="Search tokens or paste an address">' : ''}${kinds.length > 1 ? `<div class="pk-kind" id="pk-kind" role="radiogroup" aria-label="Where it is held">${kinds.map(kindBtn).join('')}</div>` : ''}<div class="pk-l" id="pk-l">${list}<p class="pk-n" id="pk-n"></p></div></div>`;
   pk.hidden = false;
@@ -2662,6 +2671,8 @@ function openPicker(side, again = false) {
     const b = e.target.closest('[data-k]');
     if (!b) return;
     const k = b.dataset.k;
+    if (b.dataset.xw) { close(); return; }
+    if (b.dataset.xb) { close(); H.moves?.bridge?.(FLOW, side, b.dataset.xb); return; }
     if (b.dataset.add) { const t = JSON.parse(b.dataset.add); S.custom = [t, ...S.custom.filter((x) => x.addr !== t.addr)].slice(0, 20); try { localStorage.setItem(CUSTOM_KEY, JSON.stringify(S.custom)); } catch { } readBalances().then(paintSides); }
     const m = ATK.exec(k);
     pickAt(side, m ? m[1] : 'wallet', m ? m[2] : k); close();
@@ -3028,7 +3039,7 @@ function wire() {
   for (const id of ['#pay-coin', '#get-coin', '#amt']) for (const ev of ['pointerenter', 'focus', 'touchstart']) $(id).addEventListener(ev, () => { loadList(); }, { once: true, passive: true });
   $('#get-coin').addEventListener('click', () => { if (FLOW && !toPick()) return; PKAT = null; openPicker('get'); });
   for (const s of ['pay', 'get']) {
-    const open = () => { if (!moving() || S.busy || (FLOW && s === 'get' && !toPick())) return; PKAT = atOf(s); openPicker(s); };
+    const open = () => { if (!moving() || S.busy || (FLOW && s === 'get' && !toPick() && !H.moves?.bridges?.(FLOW, 'get')?.length)) return; PKAT = atOf(s); openPicker(s); };
     $(`#${s}-at`).addEventListener('click', open);
     $(`#${s}-at`).addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
   }

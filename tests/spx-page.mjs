@@ -395,7 +395,7 @@ for (const w of [820, 390]) {
   const { ctx, p, bad } = await open('/');
   const t = await waitFor(p, /Shield ETH/i, 15000);
   ok(/Shield ETH/i.test(t) && !/SPX/.test(t), 'the front page still opens on Shield ETH');
-  ok(JSON.stringify(await p.evaluate(() => [...document.querySelectorAll('#hx .hx-where .w')].map((e) => e.textContent.trim()))) === JSON.stringify(['From wallet', 'From Bitcoin']), 'and its Shield ways in still read From wallet and From Bitcoin');
+  ok(await p.evaluate(() => !document.querySelector('#hx .hx-where')), 'and its Shield has no From wallet / From Bitcoin switch: the From coin list holds Bitcoin');
   ok(await p.evaluate(() => !document.querySelector('.spx-top, #spx-below') && !document.documentElement.dataset.page), 'and has none of this page’s parts');
   ok(await p.evaluate(() => { const a = document.querySelector('#spx-news'); return !a || !a.offsetParent; }), 'and its landing shows no strip of pills under the count');
   await p.click('#hx-tab-send'); await p.waitForTimeout(1500);

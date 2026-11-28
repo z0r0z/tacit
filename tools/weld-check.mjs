@@ -10970,6 +10970,7 @@ await step('hxfold', async () => {
     const homes = () => p.$$eval('#hx-swap [data-home]', (b) => b.map((x) => `${x.dataset.home}${x.getAttribute('aria-checked') === 'true' ? '*' : ''}`).join());
     // the card shows the chosen home alone, and opens both rows when it is pressed (its Change link)
     ok((await homes()) === 'defi*', `hxfold: the Swap card opens on making ETH private, its chosen private home alone (${await homes()})`);
+    await p.fill('#hx-swap #amt', '0.1'); await p.waitForTimeout(800);      // the line shows once there is an amount
     await p.click('#hx-swap #homes [data-home]');
     ok((await homes()) === 'defi*,pay', `hxfold: opened, its two private homes side by side (${await homes()})`);
     await p.fill(MV.amt, '0.1');
@@ -11105,17 +11106,17 @@ await step('tradelinks', async () => {
           scroll: document.documentElement.scrollWidth > window.innerWidth + 1 };
       });
       ok(seen.menu, `tradelinks (${name}): the header has its menu in view`);
-      const SECTIONS = 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains Borrow:/vault/ Rewards:/rewards/';
+      const SECTIONS = 'Portfolio:/#portfolio Pay:/#/payments DeFi:/#/defi Bridge:/#/chains Borrow:/vault/ Rewards:/rewards/';
       if (name === 'desktop') ok(seen.sections && seen.order === SECTIONS, `tradelinks (${name}): and the six sections beside it (${seen.order})`);
-      else ok(!seen.sections && seen.bar === 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains More:/#/menu' && seen.all.startsWith('Borrow:/vault/ Rewards:/rewards/ Assets:/assets/ '), `tradelinks (${name}): four sections and More are the bar at the foot, the other two first in the menu (${seen.bar} | ${seen.all})`);
-      ok(seen.more === 'Assets:/assets/ TAC:/tac/ Trade:/trade/tac/?src=menu Pay pool:/pay/ Bridges:/bridge/ Etch:/etch/ Shop:/shop/ Prove:/prove/ Tasks:/tasks/ FACE:/face/', `tradelinks (${name}): and, under the menu, the pages no section is (${seen.more})`);
+      else ok(!seen.sections && seen.bar === 'Portfolio:/#portfolio Pay:/#/payments DeFi:/#/defi Bridge:/#/chains More:/#/menu' && seen.all.startsWith('Borrow:/vault/ Rewards:/rewards/ Assets:/assets/ '), `tradelinks (${name}): four sections and More are the bar at the foot, the other two first in the menu (${seen.bar} | ${seen.all})`);
+      ok(seen.more === 'Assets:/assets/ TAC:/tac/ Trade:/trade/tac/?src=menu Pay pool:/pay/ Etch:/etch/ Shop:/shop/ FACE:/face/ Prove:/prove/ Tasks:/tasks/ Praxis:/praxis/', `tradelinks (${name}): and, under the menu, the pages no section is (${seen.more})`);
       await p.click('.sn .sm > summary');
       ok(await p.evaluate(() => [...document.querySelectorAll('.sm-p a.pr')].some((a) => a.getBoundingClientRect().width > 0)) === (name === 'phone'), `tradelinks (${name}): the menu lists Borrow and Rewards only where the header has not`);
       await p.keyboard.press('Escape');
       ok(!(await p.$eval('.sm', (d) => d.open)), `tradelinks (${name}): and Escape shuts it`);
       ok(seen.chip, `tradelinks (${name}): and the account chip still shows its whole label`);
       ok(seen.tile, `tradelinks (${name}): the TAC section links to TAC's own trade page`);
-      ok(seen.foot === 'Whitepaper, Build, Security, Source, Pool contract, Stats, DefiLlama, Listed on ETHBeat, @tacitfi on X, Tacit Discord community', `tradelinks (${name}): and the footer is icons for the places outside the app (${seen.foot})`);
+      ok(seen.foot === 'Whitepaper, Build, Security, Source, Pool contract, Stats, Nodes, DefiLlama, Listed on ETHBeat, @tacitfi on X, Tacit Discord community', `tradelinks (${name}): and the footer is icons for the places outside the app (${seen.foot})`);
       ok(!seen.scroll, `tradelinks (${name}): and the page does not scroll sideways`);
       if (r.errors.length) { fails++; console.log('FAIL tradelinks page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     } finally { await r.browser.close(); }

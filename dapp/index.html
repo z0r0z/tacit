@@ -36,7 +36,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /front/main.js /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /auto-claim.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js /rescan-gate.js /pub-address.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/front/main.js?cb=3dca911e">
+<link rel="modulepreload" href="/front/main.js?cb=3ab2d688">
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/own-node.js?cb=ed1de110">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -89,7 +89,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=8f677598">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=7766c464">
-<link rel="modulepreload" href="/swap/card.js?cb=8667930d">
+<link rel="modulepreload" href="/swap/card.js?cb=30e050d7">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
@@ -410,10 +410,10 @@ main:focus { outline: none; }
 .pxb-m { display: none; }
 @media (max-width: 560px) { .pxb-w { display: none; } .pxb-m { display: inline; } .pxb-p { flex-wrap: wrap; gap: 6px 10px; } .pxb-bar { flex: 1 0 100%; max-width: none; } }
 /* the front page under the card: the farms and their APR, the quick starts only when signed in (the two ways to what is held), and of the pills only the airdrop's;
-   the card's pool line waits for an amount, and its Bitcoin and Ethereum switch is the Swap tab's (Shield has From Bitcoin) */
+   the card's pool line waits for an amount, and its Bitcoin and Ethereum switch is the Swap tab's (Shield's From lists Bitcoin's coins) */
 :root:not([data-page]) .hints:not(:has(> .own)), :root:not([data-page]) .says > .newsl:not(.below), :root:not([data-page]) .says > .chl { display: none; }
 :root:not([data-page]) #hx .swc:has(#amt:placeholder-shown) #homes:has(> .one) { display: none; }
-:root:not([data-page]) #hx-panel:has(> .hx-where) .swc:not(.atom):not(.btc) .mode { display: none; }
+:root:not([data-page]) #hx:has([data-hxm="shield"][aria-selected="true"]) .swc:not(.atom):not(.btc) .mode { display: none; }
 /* The farms, the second row of the table under the card: a pair and its APR a chip, best first, each opening the card's Earn tab on that pool's ETH zap. The row's height is
    kept while empty, so nothing moves when the farms are read. */
 .fms { display: flex; align-items: center; gap: 4px; height: 30px; margin: 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; opacity: 0; transition: opacity .35s; }
@@ -3080,6 +3080,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
 <div class="toasts" id="toast-container" popover="manual"></div>
 
-<script type="module" src="/front/main.js?cb=3dca911e"></script>
+<script type="module" src="/front/main.js?cb=3ab2d688"></script>
 </body>
 </html>
