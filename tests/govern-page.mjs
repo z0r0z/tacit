@@ -50,12 +50,20 @@ const API = `http://127.0.0.1:${api.address().port}`;
 
 const TAC = 10n ** 18n, HEAD = 0x123456, TIP = 925000;
 const balances = new Map();
+// the .wei name service (WNS) answers resolveId(node) for the names this test knows: node -> address
+const WNS_ADDR = '0x0000000000696760e15f265e828db644a0c242eb';
+const nodeOf = (name) => { let node = new Uint8Array(32); for (const l of name.split('.').reverse()) { node = keccak_256(concatBytes(node, keccak_256(new TextEncoder().encode(l)))); } return bytesToHex(node); };
+const weiNames = new Map();
 const ethAnswer = (body) => {
   const one = (q) => {
     if (q.method === 'eth_blockNumber') return { jsonrpc: '2.0', id: q.id, result: '0x' + HEAD.toString(16) };
     if (q.method === 'eth_chainId') return { jsonrpc: '2.0', id: q.id, result: '0x1' };
     if (q.method !== 'eth_call') return { jsonrpc: '2.0', id: q.id, error: { code: -32601, message: 'not here' } };
     const { to, data } = q.params[0];
+    if (to.toLowerCase() === WNS_ADDR && data.toLowerCase().startsWith('0x4f896d4f')) {
+      const a = weiNames.get(data.slice(10).toLowerCase());
+      return { jsonrpc: '2.0', id: q.id, result: '0x' + (a ? a.slice(2) : '').padStart(64, '0') };
+    }
     const v = to.toLowerCase() === TAC_TOKEN.toLowerCase() && data.startsWith('0x70a08231') ? balances.get('0x' + data.slice(-40)) ?? 0n : 0n;
     return { jsonrpc: '2.0', id: q.id, result: '0x' + v.toString(16).padStart(64, '0') };
   };
@@ -90,6 +98,7 @@ const personalSign = async (priv, text) => {
 };
 const rich = holderOf('gov-page-250tac'), poor = holderOf('gov-page-99tac');
 balances.set(rich.addr, 250n * TAC); balances.set(poor.addr, 99n * TAC);
+weiNames.set(nodeOf('rich.wei'), rich.addr);
 
 // ── the browser ──
 let n = 0, fails = 0;
@@ -281,7 +290,8 @@ let id2;
   await shot(page, 'gov-delegate');
   await page.fill('#dg-to', 'not an address');
   await page.click('#dg-go');
-  ok(/starts with 0x/.test(await text(page, '#note')) && signed.length === 0, 'an address that is not one is refused before the wallet is asked');
+  ok(/0x address or a name/.test(await text(page, '#note')) && signed.length === 0, 'something that is neither an address nor a name is refused before the wallet is asked');
+  ok(await page.getAttribute('#dg-to', 'placeholder') === '0x… or name.wei', 'the field says a name works too');
   await page.fill('#dg-to', rich.addr);
   ok(await page.getAttribute('[data-rights="vote"]', 'aria-checked') === 'true' && await text(page, '#dg-go') === 'Sign and delegate', 'the vote right is the default, Sign and delegate is ready');
   await page.click('#dg-go');
@@ -332,6 +342,7 @@ let id2;
   await page.click('#vote');
   await page.waitForFunction(() => /Voted with/.test(document.querySelector('#step-eth')?.textContent || ''), null, { timeout: 30e3 });
   ok(/Voted with 99 TAC/.test(await text(page, '#step-eth')), 'the delegator’s own vote counts their 99');
+  await page.waitForFunction(() => /No\s*99 TAC/.test(document.querySelectorAll('.res-h')[1]?.textContent || ''), null, { timeout: 15e3 });
   const res = await page.$$eval('.res-h', (r) => r.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
   ok(/^Yes ?250 TAC/.test(res[0]) && /^No ?99 TAC/.test(res[1]), `the 99 moved from the delegate's vote to their own (${res.join(' | ')})`);
   const p2 = await env.REGISTRY_KV.get(`gov:p:mainnet:${id2}`, 'json');
@@ -353,6 +364,36 @@ let id2;
   const after = await env.REGISTRY_KV.get(key, 'json');
   ok(after.history.length === 2 && after.history[1].to === null, 'the worker recorded it');
   ok(/not delegated/.test(await text(page, '.sec .note')) && !(await page.$('#dg-off')), 'and the page says nothing is delegated');
+  ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
+  await page.context().close();
+}
+{
+  // delegating to a .wei name: it is looked up, shown as the address it points at, and that address is what gets signed
+  const key = `gov:d:mainnet:${poor.addr}`, rec = await env.REGISTRY_KV.get(key, 'json');
+  rec.history.forEach((h) => { h.at -= 900; h.issued -= 900; });
+  await env.REGISTRY_KV.put(key, JSON.stringify(rec));
+  const { page, errs, csp, signed } = await open(poor, '#delegate');
+  await connect(page);
+  await page.waitForSelector('#dgform');
+  await page.fill('#dg-to', 'nobody.wei');
+  await page.waitForFunction(() => /does not point at an address/.test(document.querySelector('#dg-res')?.textContent || ''), null, { timeout: 15e3 });
+  ok(true, 'a name that points nowhere says so as it is typed');
+  await page.click('#dg-go');
+  ok(signed.length === 0 && /does not point at an address/.test(await text(page, '#note')), 'and pressing the button does not ask the wallet');
+  await page.fill('#dg-to', 'rich.com');
+  await page.click('#dg-go');
+  ok(signed.length === 0 && /0x address or a name/.test(await text(page, '#note')), 'a name from another service is not looked up');
+  await page.fill('#dg-to', 'Rich.WEI');
+  await page.waitForFunction((a) => (document.querySelector('#dg-res')?.textContent || '').includes(a), rich.addr, { timeout: 15e3 });
+  ok(await text(page, '#dg-res') === `rich.wei is ${rich.addr}`, `the name shows the address it points at (${await text(page, '#dg-res')})`);
+  await shot(page, 'gov-delegate-name');
+  await page.click('#dg-go');
+  await page.waitForFunction(() => /Delegated to rich\.wei/.test(document.querySelector('#note')?.textContent || ''), null, { timeout: 30e3 });
+  const issued = +/Issued: (\d+)/.exec(signed[0]?.text || '')?.[1];
+  ok(signed.length === 1 && signed[0].text === delegateMessage({ network: 'mainnet', delegate: rich.addr, rights: 'vote', issued }), 'the wallet signed the address the name points at');
+  const after = await env.REGISTRY_KV.get(key, 'json');
+  ok(after.history.at(-1).to === rich.addr, 'the worker recorded that address');
+  ok(/rich\.wei · 0x/i.test(await text(page, '.sec .kv b')) && /To rich\.wei/.test(await text(page, '#dg-side')), 'and the page shows the name beside it, in the card as well');
   ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
   await page.context().close();
 }
