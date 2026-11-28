@@ -43,7 +43,7 @@ import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from 
 import { makeLoans, riskNote, bondGap, lockPad as lockPadOf, lockRate as lockRateOf, NEAR_FALL, fallToLiq, fallText, approaching, loanId, loanTag } from '/btc-borrow.js?cb=e193a72f';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=9be561ae';
 import { bridgeDp, bridgeRoute, bridgeLimitEntry, markColor, runtimeSymbol, saveRuntime, NO_LIMITS } from '/bridge/runtime.js?cb=643fbc26';
-import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, addBridgeAsset as brAddAsset, satsOut, satsBack, readBridges, nextOf as brNext, fmtAmount as brRowAmt } from '/bridge/track.js?cb=d2e81a08';
+import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, addBridgeAsset as brAddAsset, satsOut, satsBack, readBridges, nextOf as brNext, fmtAmount as brRowAmt } from '/bridge/track.js?cb=960a3b4b';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=16e0e196';
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll, proofWait as brProofWait, whyText as brWhy, splitTag as brSplitTag, waitFor as brWaitFor, splitFee as brSplitFeeOf } from '/bridge-in.js?cb=4cd75cac';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=8f677598';
@@ -6431,11 +6431,12 @@ const brRecoverable = (rec) => brTk(rec) === 'TAC' && !rec.source?.p2tr && rec.p
 const BR_MINER_WAIT = 12 * 3600e3;
 const brMinerStuck = (rec) => (rec.stage === 'burn-signed' && !!rec.lastError && (rec.errorCount || 0) >= 3)
   || (rec.stage === 'burn-submitted' && Date.now() - Number(rec.submittedAt || rec.updatedAt || Date.now()) > BR_MINER_WAIT);
+const brMoveStuck = (rec) => rec.stage === 'reclaim-sent' && !!rec.lastError && (rec.errorCount || 0) >= 3;
 const brStalled = (rec) => (rec.stage === 'migrate-confirmed' || rec.stage === 'traced') && !!rec.lastError && (rec.errorCount || 0) >= 3;
 const brHeld = (rec) => (rec.stage === 'folded' || rec.stage === 'rfolded') && Number(rec.lastError?.until) > Date.now();
 const brDue = (rec) => (rec.stage === 'traced' ? ((brPlanOf(rec)?.burn || rec.checkWait?.go) && !rec.lastError && !rec.feeWait ? '' : 'Burn it')
   : (rec.stage === 'folded' || rec.stage === 'rfolded') && rec.lastError && !waitRanOut(rec.lastError) ? (brHeld(rec) || rec.lastError.relay ? '' : 'Mint now')
-  : rec.stage === 'stopped' || brMinerStuck(rec) ? 'Move it back' : rec.stage === 'not-recorded' && brRecoverable(rec) ? 'Recover'
+  : brMoveStuck(rec) ? 'Move it back again' : rec.stage === 'stopped' || brMinerStuck(rec) ? 'Move it back' : rec.stage === 'not-recorded' && brRecoverable(rec) ? 'Recover'
   : BR_SIGNED.includes(rec.stage) && rec.lastError && (rec.errorCount || 0) >= 3 ? 'Try again or cancel' : '');
 const brWhere = (rec) => ({
   'rburn-signed': 'being sent to Bitcoin', 'migrate-signed': 'being sent to Bitcoin', 'rburn-sent': 'waiting for its Bitcoin confirmation',
@@ -6545,7 +6546,7 @@ function brNoteText(rec) {
     rfolded: brMinting(rec), folded: brMinting(rec),
     minted: brMintedText(rec),
     stopped: 'This bridge paused before its burn, and your TAC is untouched. Move it back to your wallet, then bridge it again: it goes in one step.',
-    'reclaim-sent': 'Moving back to your Bitcoin address…',
+    'reclaim-sent': brMoveStuck(rec) ? 'Bitcoin has not taken the move back, and your TAC has not moved. Move it back again signs a fresh one at today’s fee; it is only offered while Bitcoin has neither of its transactions.' : 'Moving back to your Bitcoin address…',
     'not-recorded': brRecoverable(rec) ? 'This bridge did not complete. Recover returns your TAC to your Bitcoin address so you can try again.'
       : 'Bitcoin’s proof on Ethereum passed the burn without recording it, so it cannot be minted. Keep this row and its transaction ids, and ask for help with them.',
     recovering: rec.recover?.status === 'held' ? 'Your claim is being checked by hand before its TAC goes back to your Bitcoin address. Nothing else to do: this row follows it.'
@@ -6566,7 +6567,7 @@ function brPrivateNote(rec) {
   return leaf ? freeNotes(P.scan?.tac?.notes).find((n) => String(n.leaf || '').toLowerCase() === leaf) || null : null;
 }
 function brRow(rec) {
-  const arrived = rec.stage === 'minted', at = arrived ? 4 : BR_AT[rec.stage], held = at == null, failing = !!rec.lastError && !held && !arrived;
+  const arrived = rec.stage === 'minted', at = arrived ? 4 : BR_AT[rec.stage], held = at == null, failing = !!rec.lastError && (!held || rec.stage === 'reclaim-sent') && !arrived;
   const steps = rec.stealth ? [...BR_STEPS.reflected.slice(0, 3), 'Paid'] : BR_STEPS[rec.path === 'reflected' ? 'reflected' : 'deposit'], due = brDue(rec);
   const tx = brBtcTx(rec), eth = rec.mintedTxHash ? '0x' + String(rec.mintedTxHash).replace(/^0x/, '') : null;
   const btn = (kind, label, ghost = true) => html`<button class="btn${ghost ? ' ghost' : ''}" type="button" data-bract="${kind}" data-brid="${rec.id}">${label}</button>`;
@@ -6577,7 +6578,7 @@ function brRow(rec) {
   const stuck = BR_SIGNED.includes(rec.stage) && failing && (rec.errorCount || 0) >= 3;
   const ready = rec.stage === 'folded' || rec.stage === 'rfolded', long = Date.now() - Number(rec.foldedAt || rec.createdAt || Date.now()) > 20 * 60e3;
   const self = ready && ((failing && (brRefused(rec.lastError?.message) || waitRanOut({ message: String(rec.lastError?.message || '') }))) || (long && relayWhy() === 'held'));
-  const back = brMinerStuck(rec) || brStalled(rec);
+  const back = brMinerStuck(rec) || brStalled(rec) || brMoveStuck(rec);
   const when = arrived ? `${rec.stealth ? 'Sent' : 'Arrived'} ${ago(rec.mintedAt || Date.now())}` : rec.createdAt ? `Started ${ago(rec.createdAt)}` : '';
   return html`<li class="actr brr">
     <div class="actr-h"><b class="num">${brAmt(rec)}</b><span>${due ? html`<b class="brdue">Your turn</b> · ` : ''}${when}</span></div>
@@ -6585,7 +6586,7 @@ function brRow(rec) {
     <div class="actr-f">${brNoteText(rec)}</div>
     ${tx || eth ? html`<div class="actr-f brl">${tx ? html`<a href="${MEMPOOL}/tx/${tx}" target="_blank" rel="noopener">${chainMark('btc')}${short(tx, 6)} ↗</a>` : ''}${eth ? html`<a href="${SCAN}/tx/${eth}" target="_blank" rel="noopener">${chainMark(1)}${short(eth, 6)} ↗</a>` : ''}</div>` : ''}
     ${failing ? html`<div class="actr-f err">${brErr(rec.lastError.message)}${rec.errorCount > 1 ? ` (${rec.errorCount} tries)` : ''}</div>` : ''}
-    ${act || stuck || back ? html`<div class="brr-a">${act}${back ? btn('reclaim', 'Move back to my wallet') : ''}${stuck ? btn('cancel', brArmed(rec.id) ? 'Yes, cancel it' : 'Cancel this bridge') : ''}</div>` : ''}
+    ${act || stuck || back ? html`<div class="brr-a">${act}${back ? btn('reclaim', brMoveStuck(rec) ? 'Move it back again' : 'Move back to my wallet') : ''}${stuck ? btn('cancel', brArmed(rec.id) ? 'Yes, cancel it' : 'Cancel this bridge') : ''}</div>` : ''}
     ${brStalled(rec) ? html`<div class="actr-f">Your TAC is at its burn address, untouched. Move back returns it to your wallet.</div>` : ''}
     ${stuck ? html`<div class="actr-f">Bitcoin has not taken this transaction. Cancelling asks Bitcoin once more, and frees the ${brTk(rec)} for another try when it has neither of the bridge’s transactions.</div>` : ''}
     ${self ? html`<div class="actr-f"><button class="link" type="button" data-bract="self" data-brid="${rec.id}">Send it from ${your()} instead</button>: no relay fee, and ${your()} pays the network fee.</div>` : ''}

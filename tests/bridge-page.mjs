@@ -376,6 +376,24 @@ try {
     await browser.close();
   }
 
+  // ── a move back Bitcoin will not take: the row says what Bitcoin said, and what to press ──
+  {
+    const rec = (extra) => ({ id: 'mb1', network: 'mainnet', walletPub: PUB, path: 'deposit', stage: 'reclaim-sent', reclaimFrom: 'traced', createdAt: NOW - 5 * 86400e3,
+      source: { txid: 'aa'.repeat(32), vout: 0, assetId: TAC_ID, ticker: 'TAC', amount: { __big: '24018000000' } }, reclaim: { txid: 'd1'.repeat(32), commitTxid: 'd2'.repeat(32), commitHex: '00', revealHex: '00' }, ...extra });
+    const text = async (extra) => {
+      const { browser, page, errors } = await openPage({ width: 1024, height: 800 }, { rows: { in: [rec(extra)], out: [] } });
+      await page.waitForSelector('#mine li', { timeout: 20000 });
+      const t = (await page.textContent('#mine')).replace(/\s+/g, ' ');
+      await browser.close();
+      return { t, errors };
+    };
+    const waiting = await text({});
+    ok(/Moving back to your Bitcoin address/.test(waiting.t) && !/Move it back again/.test(waiting.t) && waiting.errors.length === 0, 'a move back that is only waiting says it is moving back, and offers nothing');
+    const refused = await text({ lastError: { message: 'burndep-ux: Bitcoin has not taken the move back: mempool min fee not met, 120 < 250', at: NOW }, errorCount: 4 });
+    ok(/Moving back to your Bitcoin address/.test(refused.t) && /mempool min fee not met/.test(refused.t) && /4 tries/.test(refused.t) && /Your TAC has not moved\. Move it back again signs a fresh move/.test(refused.t) && refused.errors.length === 0,
+      `a move back Bitcoin keeps refusing shows Bitcoin's words and says Move it back again is the way on (${refused.t.slice(0, 160)})`);
+  }
+
   // ── a token the front page kept: its crossings read as it, not as TAC ──
   {
     const addr = '0x' + '5a'.repeat(20), KID = '5a'.repeat(32);

@@ -409,6 +409,24 @@ test('a burn the proof passed without recording goes nowhere by itself, and says
   assert.equal(inRow(inRec({ stage: 'burn-mined' }), NOW).moving, false);
 });
 
+test('a move back Bitcoin will not take shows why, and after three refusals offers a fresh one beside Try again', () => {
+  const sent = (extra = {}) => inRec({ stage: 'reclaim-sent', reclaim: { txid: 'd'.repeat(64) }, ...extra });
+  const none = inRow(sent(), NOW);
+  assert.equal(none.due, '', 'a move back that is simply waiting is nobody’s turn');
+  assert.deepEqual(none.acts.map((a) => a.kind), [], 'and has no press');
+  const once = inRow(sent({ lastError: { message: 'Bitcoin has not taken the move back: mempool min fee not met' }, errorCount: 1 }), NOW);
+  assert.deepEqual(once.acts.map((a) => a.kind), ['poll'], 'one refusal offers Try again');
+  assert.match(once.note, /mempool min fee not met/, 'and the row says what Bitcoin said');
+  const stuck = inRow(sent({ lastError: { message: 'Bitcoin has not taken the move back: mempool min fee not met' }, errorCount: 3 }), NOW);
+  assert.equal(stuck.due, 'Move it back again');
+  assert.deepEqual(stuck.acts.map((a) => a.kind + (a.main ? '*' : '') + ':' + a.label), ['reclaim*:Move it back again', 'poll:Try again']);
+  assert.match(stuck.note, /Your TAC has not moved\. Move it back again signs a fresh move/);
+  assert.equal(stuck.moving, true, 'it still reads as moving back');
+  assert.equal(nextOf(stuck).due, 'Move it back again');
+  const done = inRow(sent({ stage: 'reclaimed', lastError: { message: 'old' }, errorCount: 5 }), NOW);
+  assert.deepEqual(done.acts, [], 'a move back that was mined offers nothing');
+});
+
 test('the Bitcoin transaction a way in links to is the one the front page links: never a burn only signed, the move for a two-step bridge before its burn', () => {
   const tx = (c) => c.repeat(64), row = (stage, extra = {}) => inRow(inRec({ stage, ...extra }), NOW);
   assert.equal(row('rburn-signed', { burn: { txid: tx('b'), hex: '00' } }).btcTx, null, 'a burn that was only signed was never sent');

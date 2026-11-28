@@ -2480,6 +2480,116 @@ const startMoved = async (world, ux) => {
   const again = await (async () => { const q = await ux.reclaim({ rec: back, walletPriv: WALLET_PRIV }).catch(() => null); return q; })();
   ok(again === null || again.stage === 'traced' || again.stage === 'reclaim-sent', 'a transport failure alone is not read as a refusal');
 }
+// A move back Bitcoin will not take for any other reason stays under way and says what Bitcoin said; a move back Bitcoin has neither
+// transaction of is signed again on the coin the first one spent, and the first stays on record in case it is still mined.
+{
+  const world = makeWorld(), storage = makeMemStorage();
+  const free = { spent: false };
+  const outs = new Map();
+  const fetchImpl = async (url, opts) => {
+    const u = new URL(url), m = /^\/chain\/tx\/([0-9a-f]{64})\/outspend\/(\d+)$/.exec(u.pathname);
+    if (m && outs.has(`${m[1]}:${m[2]}`)) return { ok: true, status: 200, json: async () => outs.get(`${m[1]}:${m[2]}`) };
+    return world.fetchImpl(url, opts);
+  };
+  const ux = makeUx({ ...world, fetchImpl }, storage);
+  const r = await startMoved(world, ux);
+  const moved = await ux.reclaim({ rec: r, walletPriv: WALLET_PRIV });
+  const fund = moved.reclaim.fundingUtxo, key = `${fund.txid}:${fund.vout}`;
+  world.setMigrateConfirmed(false);
+  const pass = () => ux.advance(moved.walletPub, moved.id).then(() => null, (e) => e);
+  const row = () => ux.list(moved.walletPub).find((x) => x.id === moved.id);
+  world.chain.broadcastWithRetry = async () => { throw new Error('mempool min fee not met, 120 < 250'); };
+  const e1 = await pass();
+  ok(/Bitcoin has not taken the move back: mempool min fee not met/.test(e1?.message || ''), 'a move back Bitcoin refuses for its fee says so');
+  ok(row().stage === 'reclaim-sent' && /mempool min fee/.test(row().lastError?.message || '') && row().errorCount === 1, 'and stays under way, with Bitcoin’s words on its row');
+  await pass(); await pass();
+  ok(row().errorCount === 3 && row().stage === 'reclaim-sent', 'each pass that is refused is counted');
+  world.chain.broadcastWithRetry = async () => { throw new Error('Failed to fetch'); };
+  const c0 = row().errorCount;
+  await pass();
+  ok(row().errorCount === c0 && row().stage === 'reclaim-sent', 'a failed read is not counted as a refusal');
+
+  // signed again: the same coin, a new pair, the first kept on record
+  outs.set(key, free);
+  world.chain.getUtxos = async () => [{ txid: '5b'.repeat(32), vout: 1, value: 60_000 }];   // another coin is free too: the first one's is still the one spent
+  const sent = [];
+  world.chain.broadcastWithRetry = async (hex) => { sent.push(hex); return 'txid'; };
+  const again = await ux.reclaim({ rec: row(), walletPriv: WALLET_PRIV });
+  ok(again.stage === 'reclaim-sent' && again.reclaimFrom === 'traced' && again.reclaim.txid !== moved.reclaim.txid, 'a move back signed again is a new pair, and goes back to where the bridge was if it fails for good');
+  ok(again.reclaim.fundingUtxo.txid === fund.txid && again.reclaim.fundingUtxo.vout === fund.vout, 'it spends the coin the first one did, so the two cannot both be mined');
+  ok(again.reclaim.prior?.length === 1 && again.reclaim.prior[0].txid === moved.reclaim.txid && again.reclaim.prior[0].commitTxid === moved.reclaim.commitTxid, 'the first pair stays on record');
+  ok(sent.length === 2 && sent[0] === again.reclaim.commitHex && sent[1] === again.reclaim.revealHex && !again.lastError && again.errorCount === 0, 'the new pair is sent, and the row’s error is cleared');
+  ok(ux.isReserved(fund.txid, fund.vout), 'and its coin is still held');
+  world.chain.broadcastWithRetry = async () => 'txid';
+  const fine = await ux.advance(moved.walletPub, moved.id);
+  ok(fine.stage === 'reclaim-sent' && !fine.lastError, 'a pass Bitcoin takes keeps it under way with no error');
+
+  // an earlier pair that is mined after all ends the move back
+  world.setChainTx(moved.reclaim.txid, { confirmed: true });
+  const done = await ux.advance(moved.walletPub, moved.id);
+  ok(done.stage === 'reclaimed', 'if an earlier pair is mined, the bridge is moved back');
+}
+// Signing a move back again is refused over anything Bitcoin has, and when Bitcoin cannot be asked; its coin gone elsewhere takes another coin.
+{
+  const make = async () => {
+    const world = makeWorld(), outs = new Map(), z = { txid: '5a'.repeat(32), vout: 3, value: 40_000 };
+    const fetchImpl = async (url, opts) => {
+      const u = new URL(url), m = /^\/chain\/tx\/([0-9a-f]{64})\/outspend\/(\d+)$/.exec(u.pathname);
+      if (m && outs.has(`${m[1]}:${m[2]}`)) return { ok: true, status: 200, json: async () => outs.get(`${m[1]}:${m[2]}`) };
+      return world.fetchImpl(url, opts);
+    };
+    const chain = { ...world.chain }, ux = makeUx({ ...world, chain, fetchImpl }, makeMemStorage());
+    const r = await startMoved(world, ux), moved = await ux.reclaim({ rec: r, walletPriv: WALLET_PRIV });
+    world.setMigrateConfirmed(false);
+    return { world, chain, ux, outs, z, moved, fetchImpl };
+  };
+  {
+    const { world, chain, ux, moved } = await make();
+    const sent = []; chain.broadcastWithRetry = async (hex) => { sent.push(hex); return 'txid'; };
+    world.setChainTx(moved.reclaim.txid, { confirmed: false });
+    const same = await ux.reclaim({ rec: moved, walletPriv: WALLET_PRIV });
+    ok(same.reclaim.txid === moved.reclaim.txid && sent.length === 0, 'a move back Bitcoin has is not signed again');
+  }
+  {
+    const { world, chain, ux, moved } = await make();
+    const sent = []; chain.broadcastWithRetry = async (hex) => { sent.push(hex); return 'txid'; };
+    world.setChainTx(moved.reclaim.commitTxid, { confirmed: false });
+    await assert.rejects(() => ux.reclaim({ rec: moved, walletPriv: WALLET_PRIV }), /first of the move back’s two transactions/, 'with only its first transaction on Bitcoin, a second move back is refused');
+    ok(sent.length === 0 && ux.list(moved.walletPub)[0].reclaim.txid === moved.reclaim.txid, 'and nothing is sent or changed');
+  }
+  {
+    const { world, chain, ux, moved } = await make();
+    const sent = []; chain.broadcastWithRetry = async (hex) => { sent.push(hex); return 'txid'; };
+    const f = world.fetchImpl; world.fetchImpl = async (url, opts) => (new URL(url).pathname.startsWith('/chain/tx/') ? { ok: false, status: 503, json: async () => ({}) } : f(url, opts));
+    await assert.rejects(() => makeUx({ ...world, chain }, makeMemStorage()).reclaim({ rec: moved, walletPriv: WALLET_PRIV }), /moved on|could not be asked|no bridge|rec required/, 'a record this browser does not hold is not signed again');
+    await assert.rejects(() => ux.reclaim({ rec: moved, walletPriv: WALLET_PRIV }), /could not be asked/, 'when Bitcoin cannot be asked about the move back, it is not signed again');
+    ok(sent.length === 0, 'and nothing is sent');
+  }
+  {
+    const { chain, ux, outs, z, moved } = await make(), fund = moved.reclaim.fundingUtxo;
+    const sent = []; chain.broadcastWithRetry = async (hex) => { sent.push(hex); return 'txid'; };
+    chain.getUtxos = async () => [z];
+    outs.set(`${fund.txid}:${fund.vout}`, { spent: true, txid: 'ee'.repeat(32), status: { confirmed: true } });
+    const again = await ux.reclaim({ rec: moved, walletPriv: WALLET_PRIV });
+    ok(again.reclaim.fundingUtxo.txid === z.txid && again.reclaim.fundingUtxo.vout === z.vout && again.reclaim.prior?.length === 1, 'a coin spent elsewhere is left, and another is taken');
+    ok(sent.length === 2, 'and the new pair is sent');
+  }
+  {
+    const { chain, ux, outs, moved } = await make(), fund = moved.reclaim.fundingUtxo;
+    const sent = []; chain.broadcastWithRetry = async (hex) => { sent.push(hex); return 'txid'; };
+    outs.set(`${fund.txid}:${fund.vout}`, { spent: true, txid: moved.reclaim.commitTxid, status: { confirmed: false } });
+    await assert.rejects(() => ux.reclaim({ rec: moved, walletPriv: WALLET_PRIV }), /first transaction after all/, 'a coin its own first commit spends means Bitcoin has that commit: not signed again');
+    ok(sent.length === 0 && ux.list(moved.walletPub)[0].reclaim.txid === moved.reclaim.txid, 'and nothing changes');
+  }
+  {
+    const { chain, ux, outs, moved } = await make(), fund = moved.reclaim.fundingUtxo;
+    outs.set(`${fund.txid}:${fund.vout}`, { spent: false });
+    chain.broadcastWithRetry = async () => { throw new Error('min relay fee not met'); };
+    await assert.rejects(() => ux.reclaim({ rec: moved, walletPriv: WALLET_PRIV }), /min relay fee/, 'a pair Bitcoin refuses at once is thrown');
+    const kept = ux.list(moved.walletPub)[0];
+    ok(kept.stage === 'reclaim-sent' && kept.reclaim.txid === moved.reclaim.txid && !kept.reclaim.prior, 'and the record keeps the pair it had');
+  }
+}
 // A move back is not made over a burn Bitcoin has, and not from a row the bridge has left.
 {
   const world = makeWorld(), ux = makeUx(world, makeMemStorage());

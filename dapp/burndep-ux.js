@@ -799,6 +799,10 @@ export function makeBurnDepositUx(deps) {
     'reclaim-sent': async (rec) => {
       const t = await fetchChainJson(`/tx/${stripHex(rec.reclaim.txid)}`).catch(() => null);
       if (!t || !t.status || !t.status.confirmed) {
+        for (const p of rec.reclaim.prior || []) {
+          const o = await fetchChainJson(`/tx/${stripHex(p.txid)}`).catch(() => null);
+          if (o && o.status && o.status.confirmed) return putRecord({ ...rec, stage: 'reclaimed', reclaimedAt: now() });
+        }
         if (rec.burn && rec.burn.txid) {
           const b = await fetchChainJson(`/tx/${stripHex(rec.burn.txid)}`).catch(() => null);
           if (b && b.status && b.status.confirmed) return putRecord({ ...rec, stage: 'burn-mined', burnMinedAt: now(), burnHeight: b.status.block_height });
@@ -814,6 +818,7 @@ export function makeBurnDepositUx(deps) {
             return putRecord({ ...rest, stage: reclaimFrom || 'stopped', lastError: { message: 'Bitcoin did not take the move back, and its coin was spent elsewhere. Your TAC is where it was: Move back makes it again.', at: now() }, errorCount: 0 });
           }
         }
+        if (refused.length) throw new Error(`burndep-ux: Bitcoin has not taken the move back: ${refused[0]}`);
         return rec;
       }
       return putRecord({ ...rec, stage: 'reclaimed', reclaimedAt: now() });
@@ -1361,7 +1366,7 @@ export function makeBurnDepositUx(deps) {
 
   const CANCEL_TOO_EARLY_STAGES = new Set(['migrate-signed', 'migrate-sent']);
   const CANCELABLE_STAGES = new Set(['migrate-confirmed', 'traced', 'burn-signed', 'burn-submitted', 'stopped']);
-  async function buildCancel({ rec, walletPriv, feeRate = null } = {}) {
+  async function buildCancel({ rec, walletPriv, feeRate = null, prefer = null } = {}) {
     if (!walletPriv) throw new Error('burndep-ux: buildCancel needs the wallet key');
     if (!rec || !rec.stage) throw new Error('burndep-ux: rec required');
     if (!CANCELABLE_STAGES.has(rec.stage)) {
@@ -1379,7 +1384,15 @@ export function makeBurnDepositUx(deps) {
       amount: rec.source.amount, burnHomeTxid: rec.burnHome.txid, chainSpk,
     });
     const rate = Number(feeRate != null ? feeRate : await chain.getFeeRate('priority'));
-    const fundingUtxo = await pickFundingUtxo(P.wallet.address(), Math.ceil(600 * rate * 1.3) + 846, rec);
+    const need = Math.ceil(600 * rate * 1.3) + 846;
+    // A move back made again spends the coin the first one did while that coin is free, so the two cannot both be mined.
+    let fundingUtxo = null;
+    if (prefer && Number(prefer.value) >= need) {
+      const o = await outspendOf(prefer.txid, prefer.vout);
+      if (!o.spent) fundingUtxo = { txid: stripHex(prefer.txid).toLowerCase(), vout: Number(prefer.vout), value: Number(prefer.value) };
+      else if (o.by && prefer.by && lc(stripHex(o.by)) === lc(stripHex(prefer.by))) throw new Error('burndep-ux: Bitcoin has the move back’s first transaction after all, so it was not signed again; it goes on from its row');
+    }
+    if (!fundingUtxo) fundingUtxo = await pickFundingUtxo(P.wallet.address(), need, rec);
     const built = await reveal.buildCancelTx({ prims: P, burnHome, assetId: tacAssetId, walletPriv, walletPub, fundingUtxo, feeRate: rate });
     return { ...built, fundingUtxo: { txid: fundingUtxo.txid, vout: fundingUtxo.vout, value: fundingUtxo.value } };
   }
@@ -1397,8 +1410,18 @@ export function makeBurnDepositUx(deps) {
         if (burnState === 'present') return putRecord({ ...rec, stage: 'burn-submitted', submittedAt: rec.submittedAt || now(), lastError: null, errorCount: 0 });
         if (burnState !== 'absent') throw new Error('burndep-ux: Bitcoin could not be asked about the burn just now, so nothing was moved back; try again in a minute');
       }
-      const built = await buildCancel({ rec, walletPriv, feeRate });
-      const sent = putRecord({ ...rec, stage: 'reclaim-sent', reclaimFrom: rec.stage, reclaim: { commitTxid: built.commitTxid, txid: built.revealTxid, commitHex: built.commitHex, revealHex: built.revealHex, fundingUtxo: built.fundingUtxo }, reclaimSentAt: now(), lastError: null, errorCount: 0 });
+      const again = rec.stage === 'reclaim-sent';
+      if (again) {
+        if (!rec.reclaim || !rec.reclaim.commitHex || !rec.reclaim.revealHex) throw new Error('burndep-ux: this move back has no transactions on record to sign again');
+        const [commit, move] = await Promise.all([chainTxState(rec.reclaim.commitTxid), chainTxState(rec.reclaim.txid)]);
+        if (move === 'present') return rec;
+        if (commit === 'present') throw new Error('burndep-ux: Bitcoin has the first of the move back’s two transactions, so a second move back would spend the same TAC twice; the second is sent again on every pass');
+        if (commit !== 'absent' || move !== 'absent') throw new Error('burndep-ux: Bitcoin could not be asked about the move back just now, so it was not signed again; try again in a minute');
+      }
+      const from = again ? rec.reclaimFrom || 'stopped' : rec.stage;
+      const built = await buildCancel({ rec: again ? { ...rec, stage: from } : rec, walletPriv, feeRate, prefer: again ? { ...rec.reclaim.fundingUtxo, by: rec.reclaim.commitTxid } : null });
+      const prior = again ? [...(rec.reclaim.prior || []), { commitTxid: rec.reclaim.commitTxid, txid: rec.reclaim.txid }] : null;
+      const sent = putRecord({ ...rec, stage: 'reclaim-sent', reclaimFrom: from, reclaim: { commitTxid: built.commitTxid, txid: built.revealTxid, commitHex: built.commitHex, revealHex: built.revealHex, fundingUtxo: built.fundingUtxo, ...(prior ? { prior } : {}) }, reclaimSentAt: now(), lastError: null, errorCount: 0 });
       try { await chain.broadcastWithRetry(built.commitHex); }
       catch (e) {
         if ((await chainTxState(built.commitTxid)) === 'absent') { putRecord(rec); throw e; }
