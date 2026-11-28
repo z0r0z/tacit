@@ -220,6 +220,44 @@ export async function depositFee(get = globalThis.fetch, keeper = CHAIN.keeper) 
 // which is fetched instead when the copy is missing, cannot be opened, or does not match.
 const gzOf = (name) => /\.(wasm|zkey)$/.test(name) && typeof DecompressionStream === 'function';
 const gunzip = async (z) => (z[0] === 0x1f && z[1] === 0x8b ? new Uint8Array(await new Response(new Blob([z]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()) : z);
+const zapApprovals = (token, amount, had) => [...(had > 0n && lc(token) === USDT ? [{ to: token, data: encApprove(ZAP, 0n), value: 0n }] : []), { to: token, data: encApprove(ZAP, amount), value: 0n }];
+// How the zap (ZAP) takes `amount` of `token` from the signer, asking the least of it: an allowance in place; an EIP-2612 permit (not DAI's) or a Permit2
+// signature transfer, each checked on chain first; the approval in one batch with the deposit (`before`) where the wallet takes batches; else an approval of
+// exactly the amount, mined first (USDT's set to zero before, as USDT asks). → zapDeposit's `pull` (and `before`, the batch's approvals).
+// `signer`: { address, send, signTyped?, batch?, canBatch? }; `mined(hash)` waits for a receipt and throws on a failed one; `calldata` → the gateway's encoder.
+export async function zapPullWith({ ethCall, signer, mined, calldata, token, sym, amount, deadline, onStep = () => {} }) {
+  const owner = signer.address, acc = await readAccess({ ethCall, token, owner, spender: ZAP });
+  if (acc.balance < amount) throw new Error(`Not enough ${sym} in the wallet for the deposit. Nothing was sent.`);
+  if (acc.allowed >= amount) return { kind: 'allowance' };
+  if (signer.signTyped) {
+    const t = await readToken({ ethCall, keccak256: keccak_256, address: token }).catch(() => null);
+    if (t?.permit && acc.nonce != null && lc(token) !== DAI) {
+      try {
+        onStep('sign the permit');
+        const p = splitSig(await signer.signTyped(permitTyped({ token, name: t.name, version: t.permit, owner, spender: ZAP, value: amount, nonce: acc.nonce, deadline })));
+        await ethCall(token, '0xd505accf' + word(owner) + word(ZAP) + amount.toString(16).padStart(64, '0') + BigInt(deadline).toString(16).padStart(64, '0') + p.v.toString(16).padStart(64, '0') + word(p.r) + word(p.s), 'latest');
+        return { kind: 'permit', value: amount, deadline: BigInt(deadline), ...p };
+      } catch (e) { if (declined(e)) throw e; }
+    }
+    if (acc.permit2 >= amount) {
+      try {
+        onStep('sign the permit');
+        const nonce = permit2Nonce(), sig = await signer.signTyped(permit2Typed({ token, amount, nonce, deadline, spender: ZAP }));
+        const enc = await calldata();
+        await ethCall(PERMIT2, enc('permitTransferFrom(((address,uint256),uint256,uint256),(address,uint256),address,bytes)', [{ tuple: [{ tuple: ['address', 'uint256'] }, 'uint256', 'uint256'] }, { tuple: ['address', 'uint256'] }, 'address', 'bytes'],
+          [[[token, amount], nonce, BigInt(deadline)], [ZAP, amount], owner, sig]), 'latest', { from: ZAP });
+        return { kind: 'permit2', nonce, deadline: BigInt(deadline), sig };
+      } catch (e) { if (declined(e)) throw e; }
+    }
+  }
+  const ask = zapApprovals(token, amount, acc.allowed);
+  if (signer.batch && signer.canBatch && await Promise.resolve(signer.canBatch()).catch(() => false)) return { kind: 'allowance', before: ask };
+  let zeroed = false;
+  try { for (const c of ask) { const reset = c.data === encApprove(ZAP, 0n); onStep(reset ? 'reset the allowance' : 'approve'); await mined(await signer.send(c)); if (reset) zeroed = true; } }
+  catch (e) { throw zeroed ? afterReset(e) : e; }
+  return { kind: 'allowance' };
+}
+
 export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, sendPrivate = null, store = globalThis.localStorage, chain = CHAIN, prove: proveWith = null, tokens = null, walletOf = null, routes = {}, knows = null, callRan = null, gasPrice: gasNow = null, now = Date.now }) {
   const rt = { routeOut, routeFrom, routeOutTac, ...routes };
   const secs = () => Math.floor(now() / 1000);
@@ -397,39 +435,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       store.setItem(TOKEN_POOLS_KEY, JSON.stringify([{ token: lc(hop.token), sym, dec, pool: hop.pool, router: hop.router, id: hop.id, from: hop.from || TOKEN_POOLS_FROM }, ...all].slice(0, 40)));
     } catch { }
   };
-  const approvals = (token, amount, had) => [...(had > 0n && lc(token) === USDT ? [{ to: token, data: encApprove(ZAP, 0n), value: 0n }] : []), { to: token, data: encApprove(ZAP, amount), value: 0n }];
-  async function zapPull({ token, sym, amount, deadline, onStep }) {
-    const owner = signer.address, acc = await readAccess({ ethCall, token, owner, spender: ZAP });
-    if (acc.balance < amount) throw new Error(`Not enough ${sym} in the wallet for the deposit. Nothing was sent.`);
-    if (acc.allowed >= amount) return { kind: 'allowance' };
-    if (signer.signTyped) {
-      const t = await readToken({ ethCall, keccak256: keccak_256, address: token }).catch(() => null);
-      if (t?.permit && acc.nonce != null && lc(token) !== DAI) {
-        try {
-          onStep('sign the permit');
-          const p = splitSig(await signer.signTyped(permitTyped({ token, name: t.name, version: t.permit, owner, spender: ZAP, value: amount, nonce: acc.nonce, deadline })));
-          await ethCall(token, '0xd505accf' + word(owner) + word(ZAP) + amount.toString(16).padStart(64, '0') + BigInt(deadline).toString(16).padStart(64, '0') + p.v.toString(16).padStart(64, '0') + word(p.r) + word(p.s), 'latest');
-          return { kind: 'permit', value: amount, deadline: BigInt(deadline), ...p };
-        } catch (e) { if (declined(e)) throw e; }
-      }
-      if (acc.permit2 >= amount) {
-        try {
-          onStep('sign the permit');
-          const nonce = permit2Nonce(), sig = await signer.signTyped(permit2Typed({ token, amount, nonce, deadline, spender: ZAP }));
-          const { gw } = await mods();
-          await ethCall(PERMIT2, gw.calldata('permitTransferFrom(((address,uint256),uint256,uint256),(address,uint256),address,bytes)', [{ tuple: [{ tuple: ['address', 'uint256'] }, 'uint256', 'uint256'] }, { tuple: ['address', 'uint256'] }, 'address', 'bytes'],
-            [[[token, amount], nonce, BigInt(deadline)], [ZAP, amount], owner, sig]), 'latest', { from: ZAP });
-          return { kind: 'permit2', nonce, deadline: BigInt(deadline), sig };
-        } catch (e) { if (declined(e)) throw e; }
-      }
-    }
-    const ask = approvals(token, amount, acc.allowed);
-    if (signer.batch && signer.canBatch && await Promise.resolve(signer.canBatch()).catch(() => false)) return { kind: 'allowance', before: ask };
-    let zeroed = false;
-    try { for (const c of ask) { const reset = c.data === encApprove(ZAP, 0n); onStep(reset ? 'reset the allowance' : 'approve'); await mined(await signer.send(c)); if (reset) zeroed = true; } }
-    catch (e) { throw zeroed ? afterReset(e) : e; }
-    return { kind: 'allowance' };
-  }
+  const zapPull = async (o) => zapPullWith({ ethCall, signer, mined, calldata: async () => (await mods()).gw.calldata, ...o });
 
   async function start({ swapWei, extraWei = 0n, token, sym, dec, to, toName = null, depositWei, dest = { kind: 'address' }, gasWei = 0n, pay = null, hop = null, onStep = () => {} }) {
     if (hop) return startHop({ swapWei, extraWei, token, sym, dec, to, toName, depositWei, pay, hop, onStep });

@@ -8,7 +8,7 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=6d715552';
 import { openBtcWallet } from '/trade/btc-session.js?cb=0c5298ce';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { isPasskeyAvailable } from '/prf-wallet.js';
-import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
+import { secp, keccak_256, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { GOV_NETWORK, PROPOSE_FLOOR_TAC, CATEGORIES, voteMessage, proposeMessage, delegateMessage } from '/govern/message.js?cb=7d912cb1';
 import { invaderSvg } from '/prove/invader.js?cb=e8a5ec59';
 
@@ -26,7 +26,7 @@ const S = {
   btc: null, btcReading: false, btcErr: '',                       // Bitcoin: TAC held by the open Tacit wallet (8 decimals)
   use: { eth: true, btc: true }, tier: null, from: null,          // the ballot's sources, the Bitcoin tier, and which chain opens a proposal
   steps: {},                                                      // per source, what happened on the last cast
-  dg: { avail: undefined, me: null, toYou: null, to: '', rights: 'vote' },   // delegation: whether the API has it, who this wallet points at, who points at it, the form
+  dg: { avail: undefined, me: null, toYou: null, to: '', rights: 'vote', res: null },   // delegation: whether the API has it, who this wallet points at, who points at it, the form
 };
 const say = (text, bad = false) => { S.note = text; S.bad = bad; const el = $('#note'); if (el) { el.className = `status${bad ? ' err' : ''}`; el.textContent = text; } };
 
@@ -194,7 +194,7 @@ function renderSide() {
     </div>
     <div class="side-rule"></div>
     <div class="kv"><span>To open a proposal</span><b class="num">${PROPOSE_FLOOR_TAC} TAC</b></div>
-    ${S.dg.avail === false ? '' : `<div class="kv" id="dg-side"><span>Delegation</span><b>${S.dg.me ? `To ${addrView(S.dg.me.to, 4)} · <a href="#delegate">Change</a>` : S.dg.toYou?.count ? `${esc(fmtTac(S.dg.toYou.weight))} TAC to you · <a href="#delegate">View</a>` : '<a href="#delegate">Delegate your vote</a>'}</b></div>`}
+    ${S.dg.avail === false ? '' : `<div class="kv" id="dg-side"><span>Delegation</span><b>${S.dg.me ? `To ${nameFor(S.dg.me.to) ? esc(nameFor(S.dg.me.to)) : addrView(S.dg.me.to, 4)} · <a href="#delegate">Change</a>` : S.dg.toYou?.count ? `${esc(fmtTac(S.dg.toYou.weight))} TAC to you · <a href="#delegate">View</a>` : '<a href="#delegate">Delegate your vote</a>'}</b></div>`}
     <p class="note">A vote weighs the TAC held when its proposal opened. Vote from one chain or both at once: each counts on its own.</p>
     <p class="note">A Bitcoin vote proves the TAC you hold clears a tier (1, 10, 100… TAC) without showing the amount.</p>`;
   $('#side-connect', side)?.addEventListener('click', () => conn.connect());
@@ -236,7 +236,7 @@ function sources(p) {
       : S.weight == null ? 'Counts the TAC held at the snapshot block.'
         : S.weight === 0n ? `Held no TAC at block ${p.eth_snapshot_block}, so it has no vote here.` : `${fmtUnits(S.weight, 18, 2)} TAC, held at block ${p.eth_snapshot_block}.`;
   const carried = S.dg.toYou?.count ? ` Also carries TAC delegated to this wallet before the proposal opened (${S.dg.toYou.count} holder${S.dg.toYou.count === 1 ? '' : 's'} now); a holder who votes themselves is left out.` : '';
-  const gone = S.dg.me && S.dg.me.at <= (p.created_at || 0) ? ` You delegated to ${S.dg.me.to.slice(0, 6)}…${S.dg.me.to.slice(-4)}: they vote with your TAC here unless you vote yourself.` : '';
+  const gone = S.dg.me && S.dg.me.at <= (p.created_at || 0) ? ` You delegated to ${nameFor(S.dg.me.to) || `${S.dg.me.to.slice(0, 6)}…${S.dg.me.to.slice(-4)}`}: they vote with your TAC here unless you vote yourself.` : '';
   if (eth.ready || (S.weight === 0n && S.dg.toYou?.count)) eth.line += carried + gone;
   else if (W.account && gone) eth.line += gone;
   if (S.weight === 0n && !S.dg.toYou?.count) eth.ready = false;
@@ -344,13 +344,45 @@ function newView() {
 }
 
 // ── delegation ──
+// A delegate can be typed as a name: alice.wei (or .gwei, .eth) is looked up on Ethereum, by the same reader the Send card uses, and the address it
+// points at is what gets signed (the wallet's prompt shows that address). A name the holder used is remembered here to show beside the address.
+const nameOf = (v) => (/^[a-z0-9-]+(\.[a-z0-9-]+)*\.(wei|gwei|eth)$/i.test(v || '') ? String(v).toLowerCase() : '');
+let namesApi = null;
+const getNames = () => (namesApi ||= import('/confidential-names.js?cb=b0ce51f3').then((m) => m.makeConfidentialNames({ call: m.makeMainnetCall(), secp, keccak256: keccak_256 })));
+async function addressOfName(name) {
+  let r;
+  try { r = await (await getNames()).resolveAddress(name); }
+  catch (e) { throw new Error(e.name === 'NameError' ? e.message : `Could not look up ${name} just now. Try again, or paste its 0x address.`); }
+  if (!r || !isAddr(r.address)) throw new Error(`${name} does not point at an address yet. Paste the 0x address instead.`);
+  return r.address.toLowerCase();
+}
+const NAMES_KEY = 'tacit-gov-delegate-names-v1';
+const savedNames = () => { try { return JSON.parse(localStorage.getItem(NAMES_KEY) || '{}') || {}; } catch { return {}; } };
+const nameFor = (addr) => (addr ? savedNames()[addr.toLowerCase()] || '' : '');
+const rememberName = (addr, name) => { try { const m = savedNames(); m[addr.toLowerCase()] = name; localStorage.setItem(NAMES_KEY, JSON.stringify(m)); } catch { /* the address alone shows */ } };
+const resLine = (r) => (!r ? '' : r.state === 'reading' ? `Looking up ${esc(r.name)}…` : r.state === 'ok' ? `${esc(r.name)} is ${esc(r.address)}` : esc(r.text));
+let peekTimer = 0;
+// as a name is typed, show the address it points at without redrawing the field
+function peek() {
+  clearTimeout(peekTimer);
+  const raw = S.dg.to, name = nameOf(raw);
+  if (!name) { S.dg.res = null; paintRes(); return; }
+  if (S.dg.res?.name === name && S.dg.res.state !== 'reading') { paintRes(); return; }
+  S.dg.res = { name, state: 'reading' }; paintRes();
+  peekTimer = setTimeout(async () => {
+    try { const address = await addressOfName(name); if (S.dg.to !== raw) return; S.dg.res = { name, state: 'ok', address }; }
+    catch (e) { if (S.dg.to !== raw) return; S.dg.res = { name, state: 'err', text: e.message }; }
+    paintRes();
+  }, 450);
+}
+function paintRes() { const el = $('#dg-res'); if (!el) return; const t = resLine(S.dg.res); el.innerHTML = t; el.hidden = !t; el.className = `mute${S.dg.res?.state === 'err' ? ' err' : ''}`; }
 function delegateView() {
   const d = S.dg, on = !!W.account, back = '<p class="eyebrow"><a href="#">← All proposals</a></p>';
   if (d.avail === false) return `${back}<h2 class="ptitle">Delegate your vote</h2><p class="lede">Delegation is not available yet.</p>`;
   const me = d.me, yours = d.toYou;
   const rightsWord = (r) => (r === 'all' ? 'Vote and open proposals' : 'Vote');
   const current = me
-    ? `<div class="kv"><span>Delegate</span><b class="who-f">${face(me.to, 22)}${addrView(me.to, 5)}</b></div>
+    ? `<div class="kv"><span>Delegate</span><b class="who-f">${face(me.to, 22)}${nameFor(me.to) ? `${esc(nameFor(me.to))} · ` : ''}${addrView(me.to, 5)}</b></div>
        <div class="kv"><span>Rights</span><b>${rightsWord(me.rights)}</b></div>
        <div class="kv"><span>Since</span><b>${esc(new Date(me.at * 1000).toLocaleDateString())}</b></div>
        <button class="btn ghost" type="button" id="dg-off" ${S.busy ? 'disabled' : ''} style="margin-top:10px">${S.busy ? 'Waiting…' : 'Take it back'}</button>`
@@ -362,7 +394,7 @@ function delegateView() {
     <p class="lede">Let someone you trust vote with the TAC in your Ethereum wallet. It counts on proposals that open after you sign. You can vote yourself on any proposal, and that vote replaces theirs for your TAC. Take it back whenever you like.</p>
     ${on ? `<div class="sec"><p class="eyebrow">Your delegate</p>${current}</div>
     <form class="form sec" id="dgform">
-      <label class="f"><span class="lbl">${me ? 'Change to' : 'Delegate to'}</span><input class="fld" id="dg-to" inputmode="text" autocomplete="off" spellcheck="false" placeholder="0x…" value="${esc(d.to)}"></label>
+      <label class="f"><span class="lbl">${me ? 'Change to' : 'Delegate to'}</span><input class="fld" id="dg-to" inputmode="text" autocomplete="off" spellcheck="false" placeholder="0x… or name.wei" value="${esc(d.to)}"><small id="dg-res" class="mute${d.res?.state === 'err' ? ' err' : ''}" aria-live="polite"${resLine(d.res) ? '' : ' hidden'}>${resLine(d.res)}</small></label>
       <div class="f"><span class="lbl">What they can do</span><div class="seg two-way" role="radiogroup" aria-label="What they can do">${[['vote', 'Vote'], ['all', 'Vote and open proposals']].map(([k, l]) => `<button type="button" role="radio" aria-checked="${d.rights === k}" class="${d.rights === k ? 'on' : ''}" data-rights="${k}">${l}</button>`).join('')}</div></div>
       <button class="btn" type="submit" id="dg-go" ${S.busy ? 'disabled' : ''}>${S.busy ? 'Waiting for your wallet…' : me ? 'Sign and change' : 'Sign and delegate'}</button>
       <p class="status" id="note" aria-live="polite"></p>
@@ -373,9 +405,9 @@ function delegateView() {
 }
 
 // ── actions ──
-async function setDelegate(to, rights) {
+async function setDelegate(to, rights, name = '') {
   if (!W.account) { await conn.connect(); return; }
-  if (to && !isAddr(to)) { say('Enter an Ethereum address that starts with 0x.', true); return; }
+  if (to && !isAddr(to)) { say('Enter a 0x address or a name ending in .wei.', true); return; }
   if (to && to.toLowerCase() === W.account.toLowerCase()) { say('That is your own address.', true); return; }
   if (S.busy) return;
   S.busy = true; render();
@@ -383,9 +415,10 @@ async function setDelegate(to, rights) {
     const c = { network: GOV_NETWORK, delegate: to.toLowerCase(), rights, issued: Math.floor(Date.now() / 1000) };
     const sig = await conn.wallet.signMessage(delegateMessage(c), W.account);
     await getJson('/delegate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ delegate: c.delegate, rights: c.rights, issued: c.issued, eth_sig: sig }) });
-    S.busy = false; S.dg.to = '';
+    S.busy = false; S.dg.to = ''; S.dg.res = null;
+    if (to && name) rememberName(to, name);
     await readDelegation(); render();
-    say(to ? 'Delegated. It counts on proposals that open from now on.' : 'Your delegation is taken back.');
+    say(to ? `Delegated${name ? ` to ${name}` : ''}. It counts on proposals that open from now on.` : 'Your delegation is taken back.');
   } catch (e) {
     S.busy = false; render();
     say(e.userStopped || e.unlockCancelled ? declinedWords(e, 'Nothing was sent.') : plain(e), !e.userStopped);
@@ -408,9 +441,22 @@ function wire(root) {
   $('#dg-off', root)?.addEventListener('click', () => setDelegate('', 'vote'));
   const dgf = $('#dgform', root);
   if (dgf) {
-    dgf.oninput = () => { S.dg.to = $('#dg-to').value.trim(); };
+    dgf.oninput = () => { S.dg.to = $('#dg-to').value.trim(); if (S.note) say(''); peek(); };
     dgf.querySelectorAll('[data-rights]').forEach((b) => { b.onclick = () => { S.dg.to = $('#dg-to').value.trim(); S.dg.rights = b.dataset.rights; render(); }; });
-    dgf.onsubmit = (e) => { e.preventDefault(); S.dg.to = $('#dg-to').value.trim(); if (!S.dg.to) { say('Enter the address to delegate to.', true); return; } setDelegate(S.dg.to, S.dg.rights); };
+    dgf.onsubmit = async (e) => {
+      e.preventDefault(); S.dg.to = $('#dg-to').value.trim();
+      if (!S.dg.to) { say('Enter the address or name to delegate to.', true); return; }
+      const name = isAddr(S.dg.to) ? '' : nameOf(S.dg.to);
+      if (!isAddr(S.dg.to) && !name) { say('Enter a 0x address or a name ending in .wei.', true); return; }
+      if (!name) { setDelegate(S.dg.to, S.dg.rights); return; }
+      let address = S.dg.res?.name === name && S.dg.res.state === 'ok' ? S.dg.res.address : '';
+      if (!address) {
+        say(`Looking up ${name}…`);
+        try { address = await addressOfName(name); } catch (err) { say(err.message, true); return; }
+      }
+      setDelegate(address, S.dg.rights, name);
+    };
+    peek();
   }
   const form = $('#newform', root);
   if (form) {
