@@ -4,7 +4,7 @@ import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=62608560';
 import { count } from '/metrics.js?cb=48a20c0d';
 import { notesAt } from '/trade/ext-notes.js?cb=e050b7c2';
 
-const MARKET_URL = '/btc-market.js', CSS_URL = '/trade/btc-market.css?cb=ac513811';
+const MARKET_URL = '/btc-market.js', CSS_URL = '/trade/btc-market.css?cb=028348ba';
 const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const TAC_ASSET = { id: TAC, title: 'TAC on Bitcoin', after: 'To sell TAC you hold on Ethereum, bridge it to Bitcoin first. <a href="/#bridge">Bridge →</a>' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

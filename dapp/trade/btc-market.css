@@ -194,6 +194,8 @@ body[data-market-mode="asset"] .market-intro-note { display: none; }
 .bm-tag { font-style: normal; font-size: 9px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; margin-right: 6px; vertical-align: 1px; color: var(--ink-mid); }
 .bm-tag.you { color: var(--orange); }
 .bm-tag.auto { color: var(--green); }
+.bm-row.bm-fold { font-style: italic; color: var(--ink-mid); border-top: 1px dashed var(--bm-line, currentColor); }
+.bm-row.bm-fold::before { display: none; }
 .bm-tag.wait { color: var(--amber); }
 .bm-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
 .bm-dot.wait { background: var(--amber); } .bm-dot.auto { background: var(--green); }
