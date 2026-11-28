@@ -830,35 +830,13 @@ await step('farmback', async () => {
     if (r.errors.length) { fails++; console.log('FAIL farmback page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
-// The quick starts above the tile: three chips at 0.01 ETH; the private swap one fills the card with ETH for USDC, Swap privately on and 0.01 in; the shield one opens the
-// Shield way with 0.01. Each only fills the card: nothing is sent.
+// The front page has no quick-start chips for a visitor with nothing held: the farms stand under the card on their own.
 await step('hints', async () => {
   const r = await openPage({ account: A0, key: K0 }), p = r.page;
   try {
     await p.goto(r.url);
-    await p.waitForSelector('#hints .hint', { state: 'attached', timeout: 60000 });
-    ok(await p.$eval('#hints', (e) => getComputedStyle(e).display === 'none'), 'hints: the quick starts are not shown on the front page with nothing held (the farms are)');
-    await p.addStyleTag({ content: '#hints { display: flex !important; }' });      // what follows checks what each one fills in, should the row be shown
-    const names = await p.$$eval('#hints .hint', (bs) => bs.map((b) => b.dataset.hint));
-    ok(names.includes('pswap') && names.includes('shield'), `hints: quick starts show above the card (${names.join(' ')})`);
-    ok(await p.$$eval('#hints .hint', (bs) => bs.every((b) => b.querySelectorAll('svg.tk').length >= 2 && b.textContent.trim().length > 10)), 'hints: each carries its token marks and says what it does');
-    ok(names.includes('send'), 'hints: a Send start is among them');
-    ok(names.includes('buytac') && names.indexOf('buytac') === names.indexOf('send') + 1, `hints: a Buy TAC with BTC start follows Send (${names.join(' ')})`);
-    ok(await p.$eval('#hints [data-hint="buytac"]', (b) => b.querySelectorAll('svg.tk').length === 2 && /Buy\s*TAC\s*with BTC/.test(b.textContent)), 'hints: and says what it does, with BTC and TAC marks');
-    await p.click('#hints [data-hint="send"]');
-    ok(await p.waitForFunction(() => document.querySelector('#hx-sa')?.value === 'wusdc' && document.querySelector('#hx-amt')?.value === '25' && document.activeElement?.id === 'hx-rcpt', null, { timeout: 30000 }).then(() => true, () => false), 'hints: the Send start opens Send on the wallet\'s USDC with 25 in and the recipient asked for');
-    await p.click('[data-hxm="swap"]');
-    await p.click('#hints [data-hint="pswap"]');
-    ok(await p.waitForFunction(() => document.querySelector('#hx-swap #amt')?.value === '0.01', null, { timeout: 30000 }).then(() => true, () => false), 'hints: the private swap start puts 0.01 in the card');
-    ok(await cardIs(p, 'ETH>USDC'), 'hints: on ETH for USDC');
-    // the card takes the private way from the link (Swap privately itself needs quotes, which this fork does not give)
-    ok(await p.waitForFunction(() => /private=to/.test(location.search) && /to=USDC/.test(location.search), null, { timeout: 30000 }).then(() => true, () => false), 'hints: asking for the private way (the card\'s own link grammar)');
-    await p.click('#hints [data-hint="shield"]');
-    ok(await p.waitForFunction(() => document.querySelector('#hx-swap #amt')?.value === '0.01' && /Private|private|DeFi/.test(document.querySelector('#hx-swap')?.textContent || ''), null, { timeout: 30000 }).then(() => true, () => false), 'hints: the shield start opens the way to the private pool with 0.01');
-    // the Bitcoin start leaves the front page for the trade page, open on the Bitcoin order book and naming itself
-    const gone = p.waitForURL(/\/trade\/tac\/\?lane=btc&src=chip$/, { timeout: 30000 }).then(() => true, () => false);
-    await p.click('#hints [data-hint="buytac"]');
-    ok(await gone, 'hints: the Buy TAC with BTC start goes to the trade page on the Bitcoin order book (?lane=btc&src=chip)');
+    await p.waitForSelector('#fms a', { timeout: 60000 });
+    ok(await p.evaluate(() => { const h = document.querySelector('#hints'); return !h || h.hidden || !h.querySelector('.hint:not(.own)'); }), 'hints: no quick-start chips with nothing held, only the farms');
   } finally { await r.browser.close(); }
 });
 

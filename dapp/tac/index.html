@@ -37,7 +37,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /front/main.js /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /auto-claim.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js /rescan-gate.js /pub-address.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/front/main.js?cb=85fb7f3f">
+<link rel="modulepreload" href="/front/main.js?cb=1e832cb4">
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/own-node.js?cb=ed1de110">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -241,12 +241,11 @@ main:focus { outline: none; }
    proved ahead; a farm with that pool's ETH zap. On a phone each row scrolls sideways, fading at the edge it runs off. */
 .starts { display: grid; grid-template-columns: minmax(0, max-content); justify-content: center; row-gap: 8px; margin: 22px 0 0; }
 .hints { display: flex; align-items: center; gap: 4px; justify-content: flex-start; margin: 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; min-height: 30px; }
-.hints-k, .fms-k { flex: none; width: 48px; margin-right: 6px; font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.fms-k { flex: none; width: 48px; margin-right: 6px; font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 /* signed in, the row is the two ways to what is held: they sit centred over the farms */
 .hints:has(> .own) { justify-content: center; justify-content: safe center; }
 .hints::-webkit-scrollbar { display: none; }
 .hint { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px 0 4px; font: inherit; font-size: 12px; letter-spacing: 0; color: var(--ink); background: transparent; border: 1px solid color-mix(in srgb, var(--hair) 70%, transparent); border-radius: 15px; cursor: pointer; white-space: nowrap; transition: background .15s, color .15s, border-color .15s, transform .1s; animation: hint-in .5s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 70ms); }
-.hint .pair { display: inline-flex; } .hint .pair .tk { width: 16px; height: 16px; } .hint .pair .tk + .tk { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--paper); }
 .hint b { font-weight: 500; color: var(--ink); }
 .hint .go { font-style: normal; color: var(--mute); opacity: 0; transform: translateX(-4px); transition: opacity .15s, transform .15s; margin-left: -2px; }
 @media (hover: hover) { .hint:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 4%, transparent); border-color: color-mix(in srgb, var(--hair) 70%, transparent); } .hint:hover b { color: var(--ink); } .hint:hover .pair .tk { opacity: 1; filter: none; } .hint:hover .go { opacity: 1; transform: none; } }
@@ -254,12 +253,6 @@ main:focus { outline: none; }
 .hint:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; color: var(--ink); }
 .hint:focus-visible .go { opacity: 1; transform: none; }
 /* the proof's state: a pulse while it is being made, a dot once it is made */
-.hint .pf { display: none; width: 6px; height: 6px; margin-left: -2px; border-radius: 50%; background: var(--mute); }
-.hint[data-pf] .pf { display: inline-block; }
-.hint[data-pf="proving"] .pf { opacity: .55; animation: hint-pf 1.4s ease-in-out infinite; }
-.hint[data-pf="ready"] .pf { background: var(--ok, #3a8f5a); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok, #3a8f5a) 18%, transparent); }
-@keyframes hint-pf { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: .8; transform: scale(1); } }
-@media (prefers-reduced-motion: reduce) { .hint[data-pf="proving"] .pf { animation: none; } }
 .hint:active { transform: scale(.98); }
 .hint.own { gap: 6px; padding: 0 12px 0 10px; } .hint.own svg { width: 14px; height: 14px; }
 @keyframes hint-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
@@ -377,19 +370,11 @@ main:focus { outline: none; }
 .hero-t { margin: 0 auto 40px; text-align: center; }
 /* What is new, under the count: the chain and, while it is open, the airdrop. Two quiet pills of one make, each opening its page; side by side where they fit. */
 .says { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px 12px; margin: 36px 0 0; }
-.says:not(:has(> .chl:not([hidden]))):not(:has(.news:not([hidden]))) { display: none; }
-.news, .chb { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 10px; min-height: 34px; padding: 6px 16px; border: 1px solid var(--hair-2); border-radius: 17px; font-size: 12.5px; line-height: 1.4; color: var(--mute); text-decoration: none; transition: border-color .15s; }
+.says:not(:has(.news:not([hidden]))) { display: none; }
+.news { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 10px; min-height: 34px; padding: 6px 16px; border: 1px solid var(--hair-2); border-radius: 17px; font-size: 12.5px; line-height: 1.4; color: var(--mute); text-decoration: none; transition: border-color .15s; }
 .newsl { display: flex; justify-content: center; }
-.chl { display: flex; justify-content: center; color: var(--mute); text-align: center; }
-.chl[hidden] { display: none; }
-/* the chain's pill: what it is; its dot says whether the chain is answering (the numbers are the hover) */
-.chb .tk { width: 14px; height: 14px; }
-.chb b { font-weight: 500; color: var(--ink); }
-.chb i { font-style: normal; color: var(--ink); transition: transform .2s; }
-.chb .dot { width: 6px; height: 6px; margin-left: -4px; }
-@media (hover: hover) { .chb:hover, .news:hover { border-color: var(--ink); } .chb:hover i { transform: translateX(3px); } }
-@media (prefers-reduced-motion: reduce) { .chb, .chb i, .news { transition: none; } }
-@media (max-width: 560px) { .chl .w { display: none; } .chb { gap: 4px 8px; padding: 6px 13px; } }
+@media (hover: hover) { .news:hover { border-color: var(--ink); } }
+@media (prefers-reduced-motion: reduce) { .news { transition: none; } }
 /* the airdrop's pill goes when its chip does: once the airdrop closes, or signed in, where the Airdrop card in Your Tacit already shows it */
 .newsl.below:not(:has(> .news:not([hidden]))), .hero:has(~ #dash:not([hidden]) [data-dash-open="airdrop"]) .newsl.below { display: none; }
 /* the banner over the headline is the ceremony's, with how much of its TAC pot is earned so far (the points service's figure, read once the page is up) */
@@ -402,9 +387,8 @@ main:focus { outline: none; }
 @media (prefers-reduced-motion: reduce) { #pxb-fill { transition: none; } }
 .pxb-m { display: none; }
 @media (max-width: 560px) { .pxb-w { display: none; } .pxb-m { display: inline; } .pxb-p { flex-wrap: wrap; gap: 6px 10px; } .pxb-bar { flex: 1 0 100%; max-width: none; } }
-/* the front page under the card: the farms and their APR, the quick starts only when signed in (the two ways to what is held), and of the pills only the airdrop's;
+/* the front page under the card: the farms and their APR, and of the pills only the airdrop's;
    the card's pool line waits for an amount, and its Bitcoin and Ethereum switch is the Swap tab's (Shield's From lists Bitcoin's coins) */
-:root:not([data-page]) .hints:not(:has(> .own)), :root:not([data-page]) .says > .newsl:not(.below), :root:not([data-page]) .says > .chl { display: none; }
 :root:not([data-page]) #hx .swc:has(#amt:placeholder-shown) #homes:has(> .one) { display: none; }
 :root:not([data-page]) #hx:has([data-hxm="shield"][aria-selected="true"]) .swc:not(.atom):not(.btc) .mode { display: none; }
 /* The farms, the second row of the table under the card: a pair and its APR a chip, best first, each opening the card's Earn tab on that pool's ETH zap. The row's height is
@@ -2744,10 +2728,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       </div>
     </div>
     <div class="says">
-      <div class="newsl"><a class="news" id="spx-news" href="/spx/" title="SPX6900 on Tacit"><img class="tk" src="/swap/logos/0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c.webp" alt="" width="16" height="16" decoding="async"><b>SPX6900</b><span>shield, send<span class="w"> and farm it privately</span></span><span class="go"><span class="w">SPX page </span>→</span></a></div>
-      <div class="chl" id="chl">
-        <a class="chb" id="chl-a" href="/tac/" title="The Tacit chain, live"><svg class="tk w" aria-hidden="true"><use href="#tk-tac"/></svg><b>Tacit chain</b><span class="dot" id="chl-dot" aria-hidden="true"></span><span>stake TAC, earn<span class="w"> from every payment</span>, pay<span class="w"> privately</span></span><i aria-hidden="true">→</i></a>
-      </div>
       <div class="newsl below">
         <a class="news" id="air-news" href="/rewards/"><span class="dot" data-dot="tac"></span><b>TAC airdrop</b><span data-foot="tac">Is your wallet in it?</span><span class="go"><span class="w">Check yours </span>→</span></a>
       </div>
@@ -3073,6 +3053,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
 <div class="toasts" id="toast-container" popover="manual"></div>
 
-<script type="module" src="/front/main.js?cb=85fb7f3f"></script>
+<script type="module" src="/front/main.js?cb=1e832cb4"></script>
 </body>
 </html>

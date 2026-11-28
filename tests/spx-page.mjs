@@ -118,7 +118,7 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   await p.waitForTimeout(5000);
   const seen = await p.evaluate(() => window.__seen), logos = await p.evaluate(() => document.querySelectorAll('#hx img.tk').length);
   ok(seen.length > 0 && seen.every((k) => k === 'true|false|0') && logos >= 2, `the tile never shows the default pair or a letter mark for SPX: its first paint is SPX with its logo (${seen.join(' > ')}, ${logos} logos)`);
-  ok(await p.evaluate(() => { const a = document.querySelector('#spx-news'); return !!a && !a.offsetParent; }), 'the landing strip’s link to this page is not shown on this page itself');
+  ok(await p.evaluate(() => { const a = document.querySelector('#spx-news'); return !a || !a.offsetParent; }), 'the landing strip’s link to this page is not shown on this page itself');
   await ctx.close();
 }
 // the token's logo does not wait for the swap card (which holds the token list, mounts with the Swap tab, and so is late or never comes on a visit that begins on Send, Request or

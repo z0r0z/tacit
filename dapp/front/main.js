@@ -7215,7 +7215,7 @@ function tacPageSet(on) {
   viewTitle();
   for (const a of $$('a[href="/tac/"]')) { if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
   if (!on) {
-    TPOOL.open = false; tpgAct(null); tacClaimStop(); chainLive(false); chlRead(); refreshTape();
+    TPOOL.open = false; tpgAct(null); tacClaimStop(); chainLive(false); refreshTape();
     if (!numsAt && store.get(NUMS_KEY)) paintNums(store.get(NUMS_KEY));
     if (Date.now() - numsAt > NUMS_MS) refreshNums();
     if (HX.tab === 'swap' && !SWC.el) paintHx();
@@ -7877,48 +7877,17 @@ function paintHints() {
   const mine = held.length ? [...held, ['trade', 'Trade TAC', 'M4 17l5-6 4 4 7-8M15 7h5v5']] : held;
   if (mine.length) {
     const own = html`${mine.map(([id, t, d], i) => html`<button type="button" class="hint own" data-hint="${id}" style="--i:${i}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${t}</span></button>`)}`;
+    el.hidden = false;
     if (el.__h !== own.s) { el.__h = own.s; mount(el, own); }
     hintsWarm();
     return;
   }
-  const hs = [
-    { id: 'shield', ic: ['tk-eth', 'tk-teth'], lead: 'Shield ', amt: `${HINT_ETH} ETH`, rest: '', tip: 'Put ETH in the pool, then swap, farm and send from there. Earns points' },
-    { id: 'pswap', ic: ['tk-eth', 'tk-usdc'], lead: 'Swap ', amt: `${HINT_ETH} ETH`, rest: ' to USDC privately', tip: 'ETH goes into the private pool and the relay swaps and sends USDC out: nothing on chain links them' },
-    { id: 'send', ic: ['tk-usdc', 'tk-teth'], lead: 'Pay ', amt: '25 USDC', rest: ' privately', tip: 'Paid from your wallet into their private balance: the deposit shows, not whose it is' },
-    { id: 'buytac', ic: ['tk-btc', 'tk-tac'], lead: 'Buy ', amt: 'TAC', rest: ' with BTC', tip: 'The Bitcoin order book: listings priced in sats, paid from your own key and settled on Bitcoin. Nothing to connect first' },
-    HINT_POOL && { id: 'zap', ic: ['tk-teth', ...HINT_POOL.icons.slice(1)], lead: 'Farm ', amt: `${HINT_ETH} ETH`, rest: ` in ${HINT_POOL.name}`, tip: `The best farm for this amount now (${HINT_POOL.name}): one transaction puts ETH in and your share is farmed` },
-  ].filter(Boolean);
-  const view = html`<span class="hints-k" aria-hidden="true">Try</span>${hs.map((h, i) => html`<button type="button" class="hint" data-hint="${h.id}" title="${h.tip}" style="--i:${i}">${pair(h.ic)}<span>${h.lead}<b>${h.amt}</b>${h.rest}</span><i class="pf" role="img" aria-hidden="true"></i><i class="go" aria-hidden="true">→</i></button>`)}`;
-  if (el.__h !== view.s) { el.__h = view.s; mount(el, view); }
-  hintsWarm();
-  hintsReady().catch(() => {});
-}
-async function hintsReady() {
-  const el = $('#hints');
-  if (!el) return;
-  const mark = (id, st) => { const b = el.querySelector(`[data-hint="${id}"]`); if (!b) return; if (st) b.dataset.pf = st; else delete b.dataset.pf; b.setAttribute('aria-label', st === 'ready' ? `${b.textContent.trim()}. Its proof is made: one transaction.` : ''); if (!st) b.removeAttribute('aria-label'); };
-  if (!S.key) { mark('shield', ''); mark('zap', ''); return; }
-  const v = await vouchers(), pub = S.key.pubHex, size = String(KEEP_FIRST[0]);
-  const state = (list, f) => { const mine = list.filter(f); return mine.some((x) => x.status === 'ready') ? 'ready' : mine.length ? 'proving' : ''; };
-  mark('shield', state(v.list(pub, 'cETH'), (x) => x.amount === size));
-  mark('zap', HINT_POOL ? state(v.list(pub, lpTicker(HINT_POOL.poolId)), (x) => x.size === size) : '');
+  el.hidden = true;
 }
 function hintGo(id) {
-  if (id === 'buytac') { location.href = '/trade/tac/?lane=btc&src=chip'; return; }       // the trade page opens on the Bitcoin order book, and counts that a chip brought the visitor
   if (id === 'trade') { location.href = '/trade/tac/?src=chip'; return; }
   if (id === 'bal') { openPortfolio(); return; }
-  if (id === 'act') { openAct(); return; }
-  if (S.wallet && !S.key && !signing) { signing = true; open.eth({ address: S.wallet }).catch(() => {}).finally(() => { signing = false; if (S.key) { try { hxQuote(); } catch { } } }); }
-  if (id === 'zap' && HINT_POOL) return hxPreset(`earn:ether:${HINT_POOL.spec}`, HINT_ETH);
-  if (id === 'shield') return hxPreset('shield:ether:defi', HINT_ETH);
-  if (id === 'send') { hxPreset('send:wusdc', '25'); $('#hx-rcpt')?.focus({ preventScroll: true }); return $('#hx').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' }); }
-  if (id !== 'pswap') return;
-  for (const o of $$('dialog.sheet[open]')) o.close();
-  hxKeepAmt(() => { HX.q = null; HX.tab = 'swap'; HX.flow = null; HX.via = false; SWC.ask = new URLSearchParams({ from: 'ETH', to: 'USDC', private: 'to', amt: HINT_ETH }); });
-  paintHx();
-  const card = $('#hx'), calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  card.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'center' });
-  if (!calm) card.animate([{ outline: '2px solid var(--orange)', outlineOffset: '2px' }, { outline: '2px solid transparent', outlineOffset: '12px' }], { duration: 1100, easing: 'ease-out' });
+  if (id === 'act') openAct();
 }
 function paintFarmChips(pools) {
   const el = $('#fms'), chips = pools.filter(({ p }) => !p.idle && String(p.reserves?.assetA).toLowerCase() === CETH_ID && Number(p.reserves?.lpTotalShares)).map(({ p, apr }) => ({
@@ -7951,7 +7920,6 @@ function farmDay(p, eth) {
   return eth > 0 && FARM.program?.epoch?.active && Number(r.lpTotalShares) ? Number(p.tacPerDayForPool) * eth / (staked + eth) : 0;
 }
 function readyMarks() {
-  hintsReady().catch(() => {});
   if (HX.tab === 'earn') hxReadyRead().catch(() => {});
   if (HX.tab === 'swap') SWC.card?.refresh?.();
 }
@@ -15011,28 +14979,6 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) rest
 let lastTick = Date.now();
 const tick = () => { lastTick = Date.now(); paintEarn(); if (!TACP.on) refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); brWaitTick(); bswTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (!TACP.on && lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if (shown(n) && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
 setInterval(() => { if (!document.hidden) tick(); }, 60e3);
-const CHL = { p: null };
-const chlAgo = (s) => (s < 90 ? 'just now' : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`);
-function chlRead() {
-  const el = $('#chl');
-  if (!el || TACP.on || CHL.p || document.hidden) return;
-  CHL.p = import('/tacit-chain-config.js?cb=74171404').then(async (cf) => {
-    const cfg = cf.tacitChain();
-    if (!cfg) { el.hidden = true; return; }
-    const [st, w] = await Promise.all([
-      leaderState(cfg.leader).catch(() => null),
-      multicall(['0ef26743', '2fb9bbfd', '16f0115b', '03314efa'].map((sel) => ({ to: cfg.blocks, data: sel }))).catch(() => []),
-    ]);
-    const [height, last, pool, shares] = [0, 1, 2, 3].map((i) => { try { return w[i] ? BigInt(w[i]) : null; } catch { return null; } });
-    if (height == null || pool == null || shares == null) return;
-    const pending = Number(st?.pending || 0), quiet = last ? Date.now() / 1000 - Number(last) : null;
-    $('#chl-dot').className = `dot ${!st ? '' : pending && quiet > 180 ? 'live' : 'on'}`;
-    const bits = [`block ${Number(height).toLocaleString('en-US')}`, quiet != null && last > 0n && chlAgo(quiet), `1 share = ${tpgPrice(pool, shares).toFixed(4)} TAC`, `${fmt(pool, 8, 2)} TAC private`, pending && `${pending} in the next block`];
-    $('#chl-a').title = `The Tacit chain, live: ${bits.filter(Boolean).join(' · ')}`;
-  }).catch(() => {}).finally(() => { CHL.p = null; });
-}
-(window.requestIdleCallback || setTimeout)(() => chlRead());
-setInterval(() => { if (!document.hidden) chlRead(); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastTick > 60e3) tick(); });
 const route = () => {
   route.at = performance.now();
