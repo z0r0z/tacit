@@ -89,5 +89,18 @@ export function estimate(m, dir, amount) {
     const get = dir === 'b2e' ? BigInt(Math.floor(Number(net) * m.rate)) : BigInt(Math.floor(Number(net) / m.rate));
     if (!best || get > best.get) best = { get, provider: p.name };
   }
+  // BTC for ETH past what one provider takes: the largest few together, as the lane's plan splits it (a last part under its provider's least takes it from the
+  // part before); the estimate shown before the wallet is open, so the most the limits name reads as an amount, not as nothing
+  if (!best && dir === 'b2e') {
+    const ss = m.providers.map((p) => p.b2e).filter((x) => x && takeable(x) >= x.min).sort((x, y) => (takeable(y) > takeable(x) ? 1 : takeable(y) < takeable(x) ? -1 : 0)).slice(0, SPLIT_LEGS);
+    const legs = [];
+    let left = a;
+    for (const x of ss) { if (left <= 0n) break; const take = left < takeable(x) ? left : takeable(x); legs.push([x, take]); left -= take; }
+    if (left > 0n || legs.length < 2) return null;
+    const last = legs[legs.length - 1], prev = legs[legs.length - 2];
+    if (last[1] < last[0].min) { const need = last[0].min - last[1]; if (prev[1] - need < prev[0].min) return null; prev[1] -= need; last[1] = last[0].min; }
+    const net = legs.reduce((t, [x, take]) => t + afterFee(x, take), 0n);
+    return { get: BigInt(Math.floor(Number(net) * m.rate)), provider: `${legs.length} providers` };
+  }
   return best;
 }
