@@ -33,9 +33,10 @@ export function tierOf(hw) {
 export function makeLeases(opts = {}) {
   const o = { leaseMs: 120000, waitMs: 20000, canaryEvery: 6, canaryMaxAgeMs: 86400000, strikeLimit: 3, strikeWindowMs: 3600000, banMs: 3600000, onlineMs: 60000, maxTries: 2,
     now: () => Date.now(), ledger: null, canary: null, vet: () => null, scan: null, check: null, checkShare: 1, rand: Math.random, payable: null, scanPerHour: 12, sweepMs: 5000,
-    points: { answer: 1, canary: 1, scan: 1, check: 1 },      // credited per unit; the policy is the operator's, set by env in server.mjs
+    points: { answer: 1, canary: 1, scan: 1, check: 1, agent: 0 },      // credited per unit; the policy is the operator's, set by env in server.mjs
     clientMaxPerDay: 100,                           // points one client (IP hash) can earn in a UTC day, however many addresses it names
     clientIdleMs: 3 * 86400000, statsMiners: 50,    // a client unheard of this long (not banned, no recent strikes) is forgotten; /stats names this many miners, the most points first
+    agentModels: [], agentLeaseMs: 600000,   // agentModels: the model-name prefixes a node must run to be handed agent turns (none: agent jobs are off); a turn can run for minutes, so its lease is long
     persist: null, ipSalt: '', ...opts };   // persist: a file for bans, strikes and totals, so a restart does not clear them; ipSalt: keys the client hash (empty: a plain hash)
   const ckOf = (ip) => (o.ipSalt ? createHmac('sha256', String(o.ipSalt)).update(String(ip)).digest('hex').slice(0, 16) : hash(ip));
   const queue = [];                 // real jobs waiting for a node
@@ -51,6 +52,8 @@ export function makeLeases(opts = {}) {
   const nodeKey = (ck, a) => hash(`${ck}|${String(a).toLowerCase()}`);
   const node = (ck, a) => { const k = nodeKey(ck, a); if (!nodes.has(k)) nodes.set(k, { ck, seen: 0, hw: null, ewmaMs: 0, timed: 0 }); return nodes.get(k); };
   const miner = (a) => { a = a.toLowerCase(); if (!miners.has(a)) miners.set(a, { answered: 0, canaryPass: 0, canaryFail: 0, errors: 0, points: 0, last: 0 }); return miners.get(a); };
+  // An agent turn goes only to a node that asked for it, holds a big model whole (tierOf), and says it runs one of the allowed models: the operator names those, nothing else is trusted.
+  const agentOk = (nd) => !!(o.agentModels.length && nd && nd.model && tierOf(nd.hw) === 'big' && o.agentModels.some((p) => nd.model.startsWith(p)));
   const log = (rec) => { if (o.ledger) try { appendFileSync(o.ledger, JSON.stringify({ t: o.now(), ...rec }) + '\n'); } catch {} };
 
   // Points for one unit of work: the configured amount, unless this client has reached its day's cap or is the very client that asked the
@@ -64,12 +67,12 @@ export function makeLeases(opts = {}) {
   // A canary follows work a client has handed in (an answer taken, a review or a check that was paid), not jobs it was handed: a client that
   // takes jobs and lets them lapse is not working, and must not be able to call up canaries (each pays a point) by asking.
   const delivered = (ck) => { client(ck).sinceCanary++; };
-  const give = (id, job, who) => { const token = randomBytes(16).toString('hex'); leased.set(id, { job, token, addr: who.addr.toLowerCase(), ck: who.ck, expires: o.now() + o.leaseMs, at: o.now() }); job.tries = (job.tries || 0) + 1;
-    return { id, lease: token, kind: job.scan ? 'scan' : job.kind, messages: job.messages, max_tokens: job.max_tokens, temperature: job.temperature }; };   // a skeptic's job goes out as a scan: a node cannot tell the roles apart
+  const give = (id, job, who) => { const token = randomBytes(16).toString('hex'); leased.set(id, { job, token, addr: who.addr.toLowerCase(), ck: who.ck, expires: o.now() + (job.leaseMs || o.leaseMs), at: o.now() }); job.tries = (job.tries || 0) + 1;
+    return { id, lease: token, kind: job.scan ? 'scan' : job.kind, messages: job.messages, max_tokens: job.max_tokens, temperature: job.temperature, ...(job.kind === 'agent' ? { tools: job.tools, seed: job.seed } : {}) }; };   // a skeptic's job goes out as a scan: a node cannot tell the roles apart
 
-  function enqueue(kind, messages, { max_tokens = 300, temperature = 0.2, timeoutMs = 12000, ctxText = '', askerIp = null } = {}) {
+  function enqueue(kind, messages, { max_tokens = 300, temperature = 0.2, timeoutMs = 12000, ctxText = '', askerIp = null, tools, seed } = {}) {
     return new Promise((resolve, reject) => {
-      const job = { id: randomBytes(8).toString('hex'), kind, messages, max_tokens, temperature, ctxText, resolve, reject, tries: 0, canary: false, askerCk: askerIp ? ckOf(askerIp) : null };
+      const job = { id: randomBytes(8).toString('hex'), kind, messages, max_tokens, temperature, ctxText, resolve, reject, tries: 0, canary: false, askerCk: askerIp ? ckOf(askerIp) : null, ...(kind === 'agent' ? { tools, seed, leaseMs: o.agentLeaseMs } : {}) };
       job.timer = setTimeout(() => { const i = queue.indexOf(job); if (i >= 0) queue.splice(i, 1); leased.delete(job.id); reject(new Error('no node answered in time')); }, timeoutMs);
       queue.push(job); wake();
     });
@@ -90,7 +93,7 @@ export function makeLeases(opts = {}) {
     if (hw !== undefined) nd.hw = cleanHw(hw);   // a node that says nothing keeps what it said before
     if (model !== undefined) nd.model = cleanModel(model);
     if (c.bannedUntil > t) return { banned: true };
-    kinds = kinds.filter((k) => k === 'answer' || k === 'scan'); if (!kinds.length) return null;
+    kinds = kinds.filter((k) => k === 'answer' || k === 'scan' || (k === 'agent' && agentOk(nd))); if (!kinds.length) return null;
     const who = { addr, ck }; c.leases++;
     // A canary rides along with real work: one after every canaryEvery jobs this client has taken, or after a day without one (so a node
     // that is only ever idle is still checked now and then). Idle polls do not count, so an idle node is never woken just to be tested.
@@ -125,6 +128,13 @@ export function makeLeases(opts = {}) {
     leased.delete(id); const job = L.job, m = miner(addr);
     const requeue = () => { if (!job.canary && !job.scan && job.tries < o.maxTries && queue.indexOf(job) < 0) { queue.unshift(job); wake(); } else if (!job.canary && !job.scan) { clearTimeout(job.timer); job.reject?.(new Error('no node could answer')); } };
     if (error || typeof text !== 'string' || !text.trim()) { m.errors++; log({ ev: 'error', miner: addr, why: String(error || 'empty').slice(0, 80) }); requeue(); return { ok: true, points: 0 }; }   // a proof starting is not misbehaviour
+    if (job.kind === 'agent') {
+      // an agent turn is a model's whole reply (words and/or tool calls) as JSON; it is not shown to anyone and not vetted like a visitor's answer, but it must have the shape asked for
+      const msg = agentMessage(text);
+      if (!msg) { m.errors++; log({ ev: 'agent-invalid', miner: addr, sample: String(text).slice(0, 120) }); requeue(); return { ok: true, points: 0 }; }
+      clearTimeout(job.timer); m.answered++; timed(ck, L); const pts = credit(ck, addr, 'agent', job); if (pts > 0) log({ ev: 'agent', miner: addr, job: job.id, points: pts });
+      job.resolve({ message: msg, miner: addr, node: { tier: tierOf(node(ck, addr).hw), model: node(ck, addr).model || null } }); return { ok: true, points: pts };
+    }
     text = text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, 4000);
     if (job.canary) {
       const pass = (() => { try { return !!job.check(text); } catch { return false; } })();
@@ -169,8 +179,28 @@ export function makeLeases(opts = {}) {
   const capacity = () => { const tiers = { big: 0, small: 0, unknown: 0 }; let ramGb = 0, vramGb = 0; for (const c of online()) { tiers[tierOf(c.hw)]++; if (c.hw) { ramGb += c.hw.ram; vramGb += c.hw.vram; } } return { tiers, ramGb, vramGb }; };
   const stats = () => ({ online: nodesOnline(), queued: queue.length, leased: leased.size, waiting: waiters.length,
     minerCount: miners.size, miners: [...miners.entries()].sort((x, y) => y[1].points - x[1].points).slice(0, o.statsMiners).map(([a, m]) => ({ miner: a.slice(0, 8) + '…' + a.slice(-4), ...m })), banned: [...clients.values()].filter((c) => c.bannedUntil > o.now()).length,
-    capacity: capacity(), nodes: online().map((c) => ({ tier: tierOf(c.hw), ...(c.hw || {}), model: c.model || null, ewmaMs: c.ewmaMs || null, timed: c.timed || 0, seenSecs: Math.round((o.now() - c.seen) / 1000) })) });
+    capacity: capacity(), agentNodes: online().filter(agentOk).length, nodes: online().map((c) => ({ tier: tierOf(c.hw), ...(c.hw || {}), model: c.model || null, ewmaMs: c.ewmaMs || null, timed: c.timed || 0, seenSecs: Math.round((o.now() - c.seen) / 1000) })) });
   return { enqueue, lease, submit, nodesOnline, capacity, stats, _queue: queue, _clients: clients, _prune: prune, close: () => { clearInterval(sweep); clearInterval(saver); save(); } };
+}
+
+// An agent turn's reply, as a node sends it: JSON text of an assistant message, { content, tool_calls }. Returns the cleaned message or null. Tool calls are kept to
+// what a chat server returns (a name made of letters and underscores, arguments as a JSON string); nothing in it is run here.
+export function agentMessage(text) {
+  let m; try { m = JSON.parse(String(text)); } catch { return null; }
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return null;
+  const content = typeof m.content === 'string' ? m.content.slice(0, 20000) : '';
+  const calls = [];
+  if (m.tool_calls !== undefined) {
+    if (!Array.isArray(m.tool_calls) || m.tool_calls.length > 4) return null;
+    for (const c of m.tool_calls) {
+      const f = c && c.function; if (!f || typeof f.name !== 'string' || !/^[A-Za-z_]{1,40}$/.test(f.name)) return null;
+      const args = typeof f.arguments === 'string' ? f.arguments : (f.arguments && typeof f.arguments === 'object' ? JSON.stringify(f.arguments) : '{}');
+      if (args.length > 12000) return null;
+      calls.push({ id: typeof c.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(c.id) ? c.id : 'call_' + randomBytes(6).toString('hex'), type: 'function', function: { name: f.name, arguments: args } });
+    }
+  }
+  if (!content.trim() && !calls.length) return null;
+  return { role: 'assistant', content, ...(calls.length ? { tool_calls: calls } : {}) };
 }
 
 // Whether a scan reply has the shape asked for: an object holding a `findings` list (found as the scan feed finds it, among any prose around it).

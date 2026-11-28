@@ -56,7 +56,10 @@ export function parseDigest(b) {
   return { digest: { day, reviewed, unit: UNITS.includes(b.unit) ? b.unit : 'commit', findings } };
 }
 
-export function renderFinding(f) {
+export const sendBotMessage = (env, message, fetchImpl = fetch) => sendMessage(env, message, fetchImpl);
+
+// opts.fix adds a "Prepare a fix" button (only when the code agent is switched on: see pr-agent.js)
+export function renderFinding(f, opts = {}) {
   const where = f.file ? `\`${f.file}${f.line ? `:${f.line}` : ''}\`` : '';
   const lines = [
     `**${f.severity} · ${STATUS_TEXT[f.status]}**${f.by ? ` · by ${f.by}` : ''} ${where}${f.commit ? ` · \`${f.commit.slice(0, 7)}\`` : ''}${f.subject ? ` ${f.subject}` : ''}`,
@@ -68,7 +71,8 @@ export function renderFinding(f) {
     content: lines.join('\n').slice(0, 1900),
     allowed_mentions: { parse: [] },
     flags: 4,
-    components: [{ type: 1, components: Object.entries(NUDGE_LABELS).map(([k, label]) => ({ type: 2, style: k === 'useful' ? 3 : k === 'noise' ? 4 : 2, label, custom_id: `${NUDGE_PREFIX}${k}:${f.id}` })) }],
+    components: [{ type: 1, components: [...Object.entries(NUDGE_LABELS).map(([k, label]) => ({ type: 2, style: k === 'useful' ? 3 : k === 'noise' ? 4 : 2, label, custom_id: `${NUDGE_PREFIX}${k}:${f.id}` })),
+      ...(opts.fix ? [{ type: 2, style: 1, label: 'Prepare a fix', custom_id: `${NUDGE_PREFIX}fix:${f.id}` }] : [])] }],
   };
 }
 
@@ -83,7 +87,7 @@ export const renderPing = () => ({ content: 'The review channel is connected.', 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // POST one message as the bot; a rate-limited reply is waited out once.
-async function sendMessage(env, message, fetchImpl) {
+async function sendMessage(env, message, fetchImpl) {   // (exported below as sendBotMessage, for the code agent's reports)
   const url = `https://discord.com/api/v10/channels/${env.NUDGER_CHANNEL_ID}/messages`;
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await fetchImpl(url, { method: 'POST', headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify(message) });
@@ -124,7 +128,7 @@ export async function postDigest(env, digest, fetchImpl = fetch) {
   for (const f of digest.findings) {
     const key = `nudge:f:${f.id}`;
     if (await env.REGISTRY_KV.get(key)) { posted.push(f.id); continue; }
-    const r = await sendMessage(env, renderFinding(f), fetchImpl);
+    const r = await sendMessage(env, renderFinding(f, { fix: !!env.GITHUB_DISPATCH_TOKEN && !!(env.IMPROVE_USER_IDS || env.IMPROVE_ROLE_IDS) }), fetchImpl);
     if (!r.ok) return { status: 502, body: { ok: false, error: r.error, posted } };
     await env.REGISTRY_KV.put(key, JSON.stringify({ ...f, day: digest.day, message: r.id, posted_at: Date.now(), label: null }), { expirationTtl: KEEP_SECONDS });
     posted.push(f.id);
@@ -160,15 +164,17 @@ export async function labelsReport(env, since, now = new Date()) {
   const start = Number.isNaN(asked.getTime()) ? new Date(now.getTime() - 30 * 86400_000) : new Date(Math.max(asked.getTime(), oldest));
   const rows = [];
   for (let d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate())), n = 0; d.getTime() <= now.getTime() + 86400_000 && n <= MAX_REPORT_DAYS; d = new Date(d.getTime() + 86400_000), n++) {
-    const day = d.toISOString().slice(0, 10), raw = await env.REGISTRY_KV.get(`nudge:day:${day}`);
-    if (!raw) continue;
-    for (const id of JSON.parse(raw).ids) {
+    const day = d.toISOString().slice(0, 10), raw = await env.REGISTRY_KV.get(`nudge:day:${day}`), agentRaw = await env.REGISTRY_KV.get(`pra:day:${day}`);
+    if (!raw && !agentRaw) continue;
+    for (const id of [...(raw ? JSON.parse(raw).ids : []), ...(agentRaw ? JSON.parse(agentRaw) : [])]) {
       const f = await env.REGISTRY_KV.get(`nudge:f:${id}`);
-      if (f) { const r = JSON.parse(f); rows.push({ id, day, file: r.file, line: r.line, commit: r.commit, severity: r.severity, status: r.status, by: r.by || null, label: r.label || null, by_name: r.by_name || null }); }
+      if (f) { const r = JSON.parse(f); rows.push({ id, day, file: r.file, line: r.line, commit: r.commit, severity: r.severity, status: r.status, by: r.by || null, label: r.label || null, by_name: r.by_name || null, ...(r.unit === 'agent' ? { agent: true, pr: r.pr || null } : {}) }); }
     }
   }
   const count = (k) => rows.filter((r) => r.label === k).length;
-  return { findings: rows, totals: { posted: rows.length, labelled: rows.filter((r) => r.label).length, useful: count('useful'), noise: count('noise'), known: count('known') } };
+  const ag = rows.filter((r) => r.agent), agCount = (k) => ag.filter((r) => r.label === k).length;
+  return { findings: rows, totals: { posted: rows.length, labelled: rows.filter((r) => r.label).length, useful: count('useful'), noise: count('noise'), known: count('known') },
+    agent: { posted: ag.length, labelled: ag.filter((r) => r.label).length, useful: agCount('useful'), noise: agCount('noise'), known: agCount('known') } };
 }
 
 export async function findingById(env, id) {

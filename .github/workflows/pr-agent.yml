@@ -1,0 +1,101 @@
+name: tacit-bot code agent
+
+# tacit-bot's code agent (tools/pr-agent). One run = one task:
+#   - started from Discord (the /improve command, the "Prepare a PR" message command, or a "Prepare a fix" button on a review finding), with the task as the input; or
+#   - once a day on the schedule below, with no input: an autonomous touch-up pass over recently changed files that looks for ONE obvious mistake.
+# The model is a community node's (the help desk gateway's /agent/chat). This job is only the hands and the gates: it reads, edits and runs tests in this checkout, then either opens a
+# DRAFT pull request (every gate passed) or reports a suggestion / nothing to Discord as tacit-bot. It never merges, approves or marks a PR ready; a person does.
+#
+# Secrets (Settings > Secrets and variables > Actions):
+#   AGENT_SECRET          bearer token of the gateway's /agent/chat (the gateway's AGENT_SECRET)
+#   NUDGER_SECRET         the API's NUDGER_SECRET: posts the outcome to the review channel
+#   PR_AGENT_PUSH_TOKEN   (optional) a fine-grained token with Contents and Pull requests write on this repo. Without it the job's own token pushes the branch and opens the PR, but
+#                         GitHub does not run CI on a PR opened that way; with it, CI runs like on any PR.
+# Variables: PR_AGENT_CHAT_URL (default https://tacit-helpdesk.onrender.com/agent/chat), PR_AGENT_REPORT_API (default https://api.tacit.finance).
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'One task as JSON (the Discord bot fills this in). Leave empty for an autonomous touch-up pass.'
+        required: false
+        default: ''
+  schedule:
+    - cron: '23 3 * * *'
+
+concurrency:
+  group: pr-agent
+  cancel-in-progress: false
+
+jobs:
+  agent:
+    name: Run the code agent
+    # not on a fork: it has none of the secrets, and a scheduled run there would only spend minutes
+    if: github.repository == 'z0r0z/tacit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 60
+          # the push token is handed to the agent's delivery step alone (as a one-shot header), never stored in .git/config, where a test the model wrote could read it
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies (the tests the agent runs need them)
+        run: |
+          npm ci --no-audit --no-fund
+          for d in tests worker worker-relay; do (cd "$d" && npm ci --no-audit --no-fund); done
+
+      # The agent edits this checkout, so it must not run from it: a copy made now, before the model has touched anything, is what runs (and what its gates use).
+      - name: Keep a pristine copy of the agent
+        run: |
+          mkdir -p "$RUNNER_TEMP/agent/tools"
+          cp -R tools/pr-agent "$RUNNER_TEMP/agent/tools/"
+          cp tools/noweb.cjs "$RUNNER_TEMP/agent/tools/"
+
+      # The task arrives through an environment variable and is written to a file; it is never placed inside a command line.
+      - name: Write the task
+        env:
+          TASK_JSON: ${{ inputs.task }}
+        run: |
+          if [ -n "$TASK_JSON" ]; then printf '%s' "$TASK_JSON" > "$RUNNER_TEMP/task.json"; echo "mode=task" >> "$GITHUB_ENV"; else echo "mode=touchup" >> "$GITHUB_ENV"; fi
+
+      - name: Run the agent
+        env:
+          AGENT_SECRET: ${{ secrets.AGENT_SECRET }}
+          NUDGER_SECRET: ${{ secrets.NUDGER_SECRET }}
+          GH_TOKEN: ${{ secrets.PR_AGENT_PUSH_TOKEN || github.token }}
+          PR_AGENT_CHAT_URL: ${{ vars.PR_AGENT_CHAT_URL || 'https://tacit-helpdesk.onrender.com/agent/chat' }}
+          PR_AGENT_REPORT_API: ${{ vars.PR_AGENT_REPORT_API || 'https://api.tacit.finance' }}
+        run: |
+          if [ "$mode" = "task" ]; then SRC="--task $RUNNER_TEMP/task.json"; else SRC="--auto-touchup"; fi
+          node "$RUNNER_TEMP/agent/tools/pr-agent/pr-agent.mjs" $SRC \
+            --repo "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/out" --noweb "$RUNNER_TEMP/agent/tools/noweb.cjs" \
+            --deliver both --report-api "$PR_AGENT_REPORT_API" --build-cmd "npm run build && npm run build:verify" --keep
+
+      - name: What happened
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/out/result.json" ]; then node -e "const r=require(process.argv[1]); console.log(JSON.stringify({status:r.status,title:r.title,prUrl:r.prUrl,turns:r.turns,tokens:r.tokens,finish:r.finish,gates:(r.gates||[]).map(g=>g.gate+': '+(g.ok?'pass':'NO')+' '+g.note)},null,1))" "$RUNNER_TEMP/out/result.json"; else echo "no result"; fi
+
+      # What the model and the tests said, for a person to read. (The model never sees a secret: tests and builds run with a scrubbed environment.)
+      - name: Keep the transcript
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-agent-${{ github.run_id }}
+          path: ${{ runner.temp }}/out
+          retention-days: 30
+          if-no-files-found: ignore

@@ -110,6 +110,7 @@ import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS } from '../../dapp/disco
 import { DISCORD_VERIFY_BUTTON_ID } from '../../discord/panel.js';
 import { buyerOpeningMsg } from '../../dapp/buyer-opening-msg.js';
 import { NUDGE_PREFIX, MAX_NUDGER_BODY, parseDigest, postDigest, postPing, nudgeButton, labelsReport, findingById } from './nudger.js';
+import { IMPROVE_COMMAND, IMPROVE_MESSAGE_COMMAND, FIX_PREFIX, improveCommand, fixButton, parseReport, postReport } from './pr-agent.js';
 import { makeTacAncestry } from './tac-ancestry.js';
 import { makeOutpointClassifier } from './outpoint-classify.js';
 import { makeTacArchive, ARCHIVE_MAX_ROOTS, ARCHIVE_MAX_IMPORT } from './tac-archive.js';
@@ -28968,6 +28969,10 @@ async function handleDiscordInteraction(req, env, cors) {
     return new Response(JSON.stringify({ type: 1 }), { headers: { 'Content-Type': 'application/json' } });
   }
 
+  // the code agent: a "Prepare a fix" click, the /improve command, the "Prepare a PR" message command (pr-agent.js decides who may ask)
+  if (interaction.type === 3 && String(interaction.data?.custom_id || '').startsWith(FIX_PREFIX)) return jsonResponse(await fixButton(env, interaction), 200, cors);
+  if (interaction.type === 2 && (interaction.data?.name === IMPROVE_COMMAND || interaction.data?.name === IMPROVE_MESSAGE_COMMAND)) return jsonResponse(await improveCommand(env, interaction), 200, cors);
+
   if (interaction.type === 3 && String(interaction.data?.custom_id || '').startsWith(NUDGE_PREFIX)) {
     return jsonResponse(await nudgeButton(env, interaction), 200, cors);
   }
@@ -29037,6 +29042,18 @@ async function handleNudgerReport(req, env, url, cors) {
   const one = url.pathname.match(/^\/nudger\/finding\/(n\d{6}-\d{1,2})$/);
   if (one) { const f = await findingById(env, one[1]); return f ? jsonResponse(f, 200, { ...cors, 'Cache-Control': 'no-store' }) : jsonResponse({ ok: false, error: 'not found' }, 404, cors); }
   return jsonResponse(await labelsReport(env, url.searchParams.get('since')), 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+// The code agent's outcome, posted by its runner with the same NUDGER_SECRET: a draft PR to read, a suggestion, or a note. The runner's text is cleaned again here.
+async function handlePrAgentReport(req, env, cors) {
+  const denied = nudgerAuth(req, env, cors); if (denied) return denied;
+  const text = await req.text();
+  if (text.length > 20000) return jsonResponse({ ok: false, error: 'body too large' }, 413, cors);
+  let b; try { b = JSON.parse(text); } catch { b = null; }
+  const { report, error } = parseReport(b);
+  if (error) return jsonResponse({ ok: false, error }, 400, cors);
+  const r = await postReport(env, report);
+  return jsonResponse(r.body, r.status, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 // ============== ROUTER ==============
@@ -29368,6 +29385,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/discord/nonce' && req.method === 'POST')  return handleDiscordNonce(req, env, cors);
     if (url.pathname === '/discord/verify' && req.method === 'POST') return handleDiscordVerify(req, env, cors);
     if (url.pathname === '/nudger/digest' && req.method === 'POST') return handleNudgerDigest(req, env, cors);
+    if (url.pathname === '/pr-agent/report' && req.method === 'POST') return handlePrAgentReport(req, env, cors);
     if ((url.pathname === '/nudger/labels' || /^\/nudger\/finding\/n\d{6}-\d{1,2}$/.test(url.pathname)) && req.method === 'GET') return handleNudgerReport(req, env, url, cors);
     { const g = url.pathname.match(/^\/discord\/gate\/([0-9a-f]{32})$/); if (g && req.method === 'GET') return handleDiscordGate(req, env, g[1], cors); }
     {

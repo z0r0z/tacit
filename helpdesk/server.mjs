@@ -6,12 +6,12 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { buildIndex } from './retrieval.mjs';
 import { looksLikeSecret } from './guard.mjs';
 import { makeBackend, BusyError } from './backend.mjs';
-import { makeLeases, makeVet, isAddr, creditsFor, makeCreditCache } from './lease.mjs';
+import { makeLeases, makeVet, isAddr, creditsFor, makeCreditCache, agentMessage } from './lease.mjs';
 import { makeScanFeed } from './scanfeed.mjs';
 import { makeDigestPoster } from './reviewdigest.mjs';
 import { makeCheckFeed } from './checkfeed.mjs';
@@ -106,6 +106,12 @@ function promptFor(question, ctx) {
 
 // ---- the community nodes (tacit-prover's helpdesk.rs): they pull questions, and code-check windows when idle
 const LEASE_ON = process.env.HELPDESK_LEASE !== '0';
+// The agent endpoint: an OpenAI-style chat call (messages + tools) leased to a community node that holds a big model (lease.mjs, kind 'agent'). It is for our own runner
+// (tools/pr-agent), not the public: AGENT_SECRET (32+ characters) is its bearer token and nothing answers without it, and AGENT_MODELS names the model-name prefixes a node must
+// run to be handed a turn (empty: no node is, and the endpoint is off).
+const AGENT_MODELS = (process.env.AGENT_MODELS || '').split(',').map((x) => x.trim()).filter(Boolean);
+const AGENT_SECRET = process.env.AGENT_SECRET || '';
+const AGENT_ON = LEASE_ON && AGENT_SECRET.length >= 32 && AGENT_MODELS.length > 0;
 const CANARIES = [
   { q: 'How many TAC will ever exist?', check: (t) => /21,?000,?000/.test(t) },
   { q: 'Who is allowed to run a relay?', check: (t) => /anyone|any account/i.test(t) },
@@ -128,7 +134,7 @@ scanFeed = process.env.SCAN_REPO ? makeScanFeed({ repo: process.env.SCAN_REPO, r
 const checkFeed = SWARM ? makeCheckFeed({ source: scanFeed.source, sample: scanFeed.sample, inbox: INBOX, checks: voteBook, exam: examBook, pool, panel: Number(process.env.CHECK_PANEL ?? 3), quorum: Number(process.env.CHECK_QUORUM ?? 2), examEvery: Number(process.env.CHECK_EXAM_EVERY ?? 4), say: (m) => console.log(m) }) : null;
 // What a unit of work earns, the most an address or a client earns in a UTC day, and whether the points service pays these points (REVIEW_PAID=1 once
 // GET /helpdesk/credits is one of its mining feeds): /stats says so, and the prove page offers pay only when it is paid.
-const POINTS = { answer: Number(process.env.POINTS_ANSWER ?? 1), canary: Number(process.env.POINTS_CANARY ?? 1), scan: Number(process.env.POINTS_SCAN ?? 1), check: Number(process.env.POINTS_CHECK ?? 1) };
+const POINTS = { answer: Number(process.env.POINTS_ANSWER ?? 1), canary: Number(process.env.POINTS_CANARY ?? 1), scan: Number(process.env.POINTS_SCAN ?? 1), check: Number(process.env.POINTS_CHECK ?? 1), agent: Number(process.env.POINTS_AGENT ?? 0) };   // agent turns pay nothing until work that passed its checks is paid for (see tools/pr-agent)
 const MAX_DAY = Number(process.env.POINTS_MAX_DAY ?? 100);
 // What the day's review points may add up to (a fixed share of the mining pot: past it, every address is scaled down to fit), and the least an address
 // earns in a day to be credited at all. A bad value keeps the default; POINTS_DESK_BUDGET=0 sets no budget.
@@ -140,6 +146,7 @@ const PAY = { paid: process.env.REVIEW_PAID === '1', points: POINTS, maxPerDay: 
 const leases = makeLeases({
   ledger: path.join(DATA, 'ledger.jsonl'), persist: path.join(DATA, 'leases-state.json'), ipSalt: process.env.HELPDESK_IP_SALT || '',
   points: POINTS, clientMaxPerDay: MAX_DAY, vet: makeVet(corpus.chunks.map((c) => c.text).join('\n')),
+  agentModels: AGENT_ON ? AGENT_MODELS : [], agentLeaseMs: Number(process.env.AGENT_LEASE_MS || 600000),
   canaryEvery: Number(process.env.CANARY_EVERY || 6), waitMs: Number(process.env.LEASE_HOLD_MS || 20000),
   scan: scanFeed, check: checkFeed, scanPerHour: Number(process.env.SCAN_PER_HOUR ?? (SWARM ? 30 : 12)), payable: examBook ? (kind, ctx) => examBook.payable(kind, ctx.node) : null, checkShare: Number(process.env.CHECK_SHARE ?? 0.5),
   canary: async () => { const c = CANARIES[canaryI++ % CANARIES.length]; const { chunks } = await retrieve(c.q); return { messages: promptFor(c.q, chunks), check: c.check, ctxText: chunks.map((x) => x.text).join('\n') }; },
@@ -216,6 +223,52 @@ function cors(req, res) {
 const utcDay = () => Math.floor(Date.now() / 86400000);
 const readJson = (req, max = 65536) => new Promise((resolve, reject) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > max) { req.destroy(); reject(new Error('too large')); } }); req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch (e) { reject(e); } }); req.on('error', reject); });
 const send = (res, code, o) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(o === undefined ? '' : JSON.stringify(o)); };
+// ---- POST /agent/chat: one model turn for our runner, answered by a community node ------------------------------------------------------------------------------------
+const sha = (x) => createHash('sha256').update(String(x)).digest();
+const agentAuthed = (req) => { const m = /^Bearer (\S+)$/.exec(req.headers.authorization || ''); return !!m && timingSafeEqual(sha(m[1]), sha(AGENT_SECRET)); };
+const AGENT_MAX = Number(process.env.AGENT_MAX_INFLIGHT || 4); let agentInflight = 0;
+const NAME = /^[A-Za-z_]{1,40}$/;
+// the request cut down to what a chat server takes, or null: roles from a short list, text as text, tool calls through the same check a node's reply gets, sizes bounded
+function cleanAgentRequest(b) {
+  if (!b || typeof b !== 'object' || !Array.isArray(b.messages) || b.messages.length < 1 || b.messages.length > 80) return null;
+  const messages = [];
+  for (const m of b.messages) {
+    if (!m || !['system', 'user', 'assistant', 'tool'].includes(m.role)) return null;
+    if (m.content != null && typeof m.content !== 'string') return null;
+    const out = { role: m.role, content: m.content ?? '' };
+    if (m.role === 'tool') { if (typeof m.tool_call_id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(m.tool_call_id)) return null; out.tool_call_id = m.tool_call_id; }
+    if (m.role === 'assistant' && m.tool_calls !== undefined) { const am = agentMessage(JSON.stringify({ content: out.content, tool_calls: m.tool_calls })); if (!am) return null; out.tool_calls = am.tool_calls; }
+    messages.push(out);
+  }
+  if (JSON.stringify(messages).length > 300000) return null;
+  let tools;
+  if (b.tools !== undefined) {
+    if (!Array.isArray(b.tools) || b.tools.length > 12 || JSON.stringify(b.tools).length > 12000) return null;
+    tools = [];
+    for (const t of b.tools) { const f = t && t.function; if (!f || !NAME.test(f.name || '')) return null; tools.push({ type: 'function', function: { name: f.name, description: String(f.description || '').slice(0, 600), parameters: f.parameters && typeof f.parameters === 'object' ? f.parameters : { type: 'object', properties: {} } } }); }
+  }
+  const num = (x, lo, hi, d) => (Number.isFinite(Number(x)) && x !== null && x !== undefined ? Math.min(hi, Math.max(lo, Number(x))) : d);
+  return { messages, tools, max_tokens: Math.floor(num(b.max_tokens, 16, 2048, 1024)), temperature: num(b.temperature, 0, 1, 0.2), seed: Number.isInteger(b.seed) ? b.seed : undefined };
+}
+async function agentApi(req, res) {
+  if (!AGENT_ON) return send(res, 404, { error: 'not found' });
+  if (!agentAuthed(req)) return send(res, 401, { error: 'unauthorized' });
+  if (req.method === 'GET' && req.url === '/agent/status') { const st = leases.stats(); return send(res, 200, { ok: true, nodes: st.agentNodes, queued: st.queued, models: AGENT_MODELS }); }
+  if (req.method !== 'POST' || req.url !== '/agent/chat') return send(res, 404, { error: 'not found' });
+  let body; try { body = await readJson(req, 400000); } catch { return send(res, 400, { error: 'bad request' }); }
+  const r = cleanAgentRequest(body); if (!r) return send(res, 400, { error: 'the request is not a valid chat turn' });
+  if (agentInflight >= AGENT_MAX) return send(res, 429, { error: 'too many turns in flight' });
+  agentInflight++;
+  try {
+    const out = await leases.enqueue('agent', r.messages, { tools: r.tools, max_tokens: r.max_tokens, temperature: r.temperature, seed: r.seed, timeoutMs: Number(process.env.AGENT_WAIT_MS || 1200000) });
+    const est = (x) => Math.ceil(JSON.stringify(x).length / 3.5);   // no node counts tokens for us: an estimate, enough for a caller deciding when its context is getting full
+    return send(res, 200, { id: 'agent-' + randomBytes(6).toString('hex'), object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: out.node.model || 'swarm',
+      choices: [{ index: 0, message: out.message, finish_reason: out.message.tool_calls ? 'tool_calls' : 'stop' }],
+      usage: { prompt_tokens: est(r.messages), completion_tokens: est(out.message), total_tokens: est(r.messages) + est(out.message) }, swarm: { tier: out.node.tier, model: out.node.model, miner: out.miner } });
+  } catch (e) {
+    return send(res, /in time/.test(String(e.message)) ? 504 : 502, { error: String(e.message || 'no node answered') });
+  } finally { agentInflight--; }
+}
 async function nodeApi(req, res) {
   const ip = clientIp(req);
   if (!LEASE_ON) return send(res, 404, { error: 'not found' });
@@ -250,6 +303,7 @@ if (process.argv[2] === 'serve') {
       return send(res, 200, creditsCached(day, () => creditsFor(path.join(DATA, 'ledger.jsonl'), day, { maxPerDay: MAX_DAY, minPoints: DESK_MIN, budget: DESK_BUDGET, fromDay: DESK_FROM }))); }
     if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff' }); return res.end(PAGE); }
     if (req.method === 'GET' && (req.url === '/health' || req.url === '/stats')) { const st = llm.stats(); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(req.url === '/health' ? { ok: st.backends.some((b) => b.up) || leases.nodesOnline() > 0, nodes: leases.nodesOnline(), capacity: leases.capacity(), dense: denseState, backends: st.backends.map((b) => ({ url: b.url, up: b.up })) } : { ...st, nodes: leases.stats(), swarm: checkFeed ? checkFeed.summary() : null, pay: PAY })); }
+    if (pathname === '/agent/chat' || pathname === '/agent/status') return agentApi(req, res).catch(() => { if (!res.headersSent) send(res, 500, { error: 'the agent endpoint failed' }); else res.end(); });
     if (req.url.startsWith('/helpdesk/')) return nodeApi(req, res).catch(() => { if (!res.headersSent) send(res, 500, { error: 'the help desk could not answer' }); else res.end(); });
     if (req.method === 'POST' && req.url === '/ask') {
       if (!ok(ip)) { res.writeHead(429, { 'content-type': 'application/json' }); return res.end('{"error":"Too many questions, try again in a minute."}'); }
