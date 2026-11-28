@@ -5,7 +5,7 @@
 // shapes the few bits of a plan or a line that carry markup (an icon, a ratio's zone, the button that adds TAC), `hooks` is told what changed.
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeReader, staticCalls, parseStatic, dynamicCalls, parseDynamic, timestampCall, refusal, decString, SEL, wordAt, addrWord,
-  encDeposit, encWithdraw, encBorrow, encRepay, encCancel, encApprove, encPermit, encMulticall } from '/vault/chain.js?cb=3c1d1b84';
+  encDeposit, encWithdraw, encBorrow, encRepay, encCancel, encApprove, encPermit, encMulticall } from '/vault/chain.js?cb=d6944a3e';
 import { RECORD_GAS, PER_TX, GAS_ROOM, encBatch, MULTICALL3 } from '/vault/feed.js?cb=bd584ab8';
 import { simulateBundle, sendBundle, batchSupport, readMixed } from '/vault/batch.js?cb=4beda57b';
 import { ROUTER_SEL, encRouterRecords, encRouterBorrow, encRouterWithdraw, encRouterDeposit, encRouterRepay, encRouterPermitSynth, borrowTyped, withdrawTyped } from '/vault/router.js?cb=21df6509';
@@ -513,6 +513,7 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
     if (F.busy) return;
     if (!W.account) { await hooks.connect(); return; }
     F.busy = true; F.ticket = !!what; hooks.feed();
+    let read = false;
     try {
       for (let round = 1; round <= 12; round++) {
         const V = V0, st = await feed.read(V.addr);
@@ -532,7 +533,7 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
         if (rc.status !== '0x1') throw new Error(`The transaction failed (${hash.slice(0, 10)}…). Nothing more was sent.`);
         setFeed(`Batch ${round} recorded ${txLink(hash)}.`);
       }
-      F.busy = false; await loadFeed();
+      F.busy = false; await loadFeed(); read = true;
       const left = feedOf(V0)?.missing;
       if (feedOf(V0)?.ready) { setFeed('The price feed is up to date.'); if (what) { F.ticket = false; say(`The prices are recorded: check the amount for ${what}, then press the button.`); hooks.focusAmount(); } }
       else if (leave && left <= leave) {
@@ -543,7 +544,12 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
     } catch (e) {
       F.busy = false;
       setFeed(errText(e), !(e instanceof UserStopped || e instanceof StopWaiting));
-    } finally { F.busy = false; F.ticket = false; await loadFeed(); hooks.refresh(); }
+    } finally {
+      F.busy = false; F.ticket = false;
+      // the feed was just read on the way out of a finished run; only a run that stopped early reads it here
+      if (read) hooks.feed(); else await loadFeed();
+      hooks.refresh();
+    }
   }
   return {
     load, derive, readable, setFeed, busyNote, lapsedCure, postOf, lapsed, needs, planOf, run, loadFeed, pokeFeed, prepare, maybePrepare, checkRouter, detectBatch,

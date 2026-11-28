@@ -9,9 +9,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const page = readFileSync(path.join(here, '..', 'dapp', 'index.html'), 'utf8');
+const page = frontPage(path.join(here, '..', 'dapp', 'index.html'));
 const between = (from, to) => { const a = page.indexOf(from), b = page.indexOf(to, a + from.length); assert.ok(a >= 0 && b > a, `cannot find ${from} .. ${to}`); return page.slice(a, b); };
 const m = /const feeAgreed = (\(now, shown\) => .*);\n/.exec(page);
 assert.ok(m, 'feeAgreed is in the page');

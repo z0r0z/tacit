@@ -295,20 +295,24 @@ test('the TAC bought: the provider\'s share of each buy, pro rata to its part of
 const kvMem = () => { const m = new Map(); return { get: async (id) => (m.has(id) ? JSON.parse(m.get(id)) : null), put: async (r) => { m.set(r.id, JSON.stringify(r)); }, m }; };
 const autoCfg = (env = {}) => ({ recycle: recycleConfig({}, env), skew: skewConfig({}, env), notes: notesConfig({}, env), buyback: buybackConfig({}, env), target: targetConfig({}, env) });
 test('a look: swaps that ended before it began are not counted; then each new one is, the lean follows what is held, and /info carries it all', async () => {
-  const fwd = [{ id: 'old', phase: 'done', quoteId: 'q0', takes: [] }];
+  const fwd = [{ id: 'old', phase: 'done', quoteId: 'q0', amount: '17', takes: [], offer: { evm: { amount: '29000' } } }];
   const rev = [];
   const kv = kvMem();
   let eth = 2n * 10n ** 8n, sats = 30_000_000n;           // 2 ETH and 0.3 BTC (0.009 ETH at this rate): ETH heavy
   const a = makeAutomation({
-    cfg: autoCfg(), kv, rate: () => RATE, fwd: store(fwd), rev: store(rev), fwdQuote: async (id) => (id === 'q1' ? { btcValue: '1000000', evmAmount: '29000', mkt: { num: String(RATE.num), den: String(RATE.den) } } : null),
+    cfg: autoCfg(), kv, rate: () => RATE, fwd: store(fwd), rev: store(rev), fwdQuote: async (id) => (/^q[01]$/.test(id) ? { btcValue: '1000000', evmAmount: '29000', mkt: { num: String(RATE.num), den: String(RATE.den) } } : null),
     ethFree: async () => eth, btcSats: async () => sats, txFee: async () => 700, relayFee: async () => 0n, feeAtMin: { fwd: 87, rev: 95 }, now: () => 5000,
   });
   await a.tick();
-  assert.equal(a.info().stats.swaps, 0, 'the old swap is not counted'); assert.equal(a.skew(), 15);
+  assert.equal(a.info().stats.swaps, 0, 'the old swap is not counted in P&L');
+  assert.equal(a.info().stats.volumeSats, '1000000', 'the old swap is still counted in traversed volume from its canonical quote, not record.amount'); assert.equal(a.skew(), 15);
   fwd.push({ id: 'new', phase: 'done', quoteId: 'q1', takes: [T('t')], offer: { evm: { amount: '29000' } } });
   await a.tick();
   const i = a.info();
   assert.equal(i.stats.swaps, 1); assert.equal(i.stats.feesEarnedSats, String(1000000n - 966667n)); assert.equal(i.stats.networkCostSats, '700');
+  assert.equal(i.stats.volumeSats, '2000000'); assert.equal(i.stats.volumeEth, '58000');
+  assert.equal(i.stats.volumeSwaps, 2); assert.equal(i.stats.volumeForward, 2); assert.equal(i.stats.volumeReverse, 0);
+  assert.deepEqual(i.stats.volumeCoverage, { btcQuoted: 2, ethQuoted: 2, ethKnown: 2, swaps: 2 });
   assert.equal(i.target.reached, false); assert.equal(i.buyback.on, false); assert.equal(i.buyback.routedEth, '0'); assert.equal(i.skewBps, 15);
   assert.ok(i.stats.capacity && i.stats.capacity.eth === String(eth));
   eth = 1000n; sats = 10n ** 9n; await a.tick(); assert.equal(a.skew(), -15, 'BTC heavy: the rate falls');
@@ -458,6 +462,29 @@ test('auto-shield keeps one deposit in flight and waits the gap before the next'
   const both = await Promise.all([slow.s.step(), slow.s.step()]);
   assert.deepEqual(both.map((x) => x.did).sort(), ['busy', 'shielded']);
   assert.equal((await slow.s.step()).did, 'wait', 'the least gap between deposits');
+});
+
+test('auto-shield from a fresh address: the deposit is sent from that address through the same counter, a restart settles it, and one address cannot shield while another\'s deposit is pending', async () => {
+  const store = memStore(), froms = [];
+  const m = mkShield({ bal: () => E('0.3') }, undefined, store, { sendFrom: async ({ amountWei, index, priv }) => { froms.push({ amountWei, index, priv }); return { txHash: '0x' + 'bb'.repeat(32) }; } });
+  const fresh = { address: '0xfresh1', priv: new Uint8Array(32).fill(2), reserveWei: E('0.002'), minWei: E('0.01') };
+  const r = await m.s.shieldFrom(fresh);
+  assert.equal(r.did, 'shielded');
+  assert.equal(froms.length, 1); assert.equal(froms[0].amountWei, E('0.298'), 'the balance less the gas it keeps'); assert.equal(froms[0].index, 7);
+  assert.equal(m.c.sent.length, 0, 'the address\'s own account sent nothing'); assert.equal(m.c.settled, 1);
+  assert.equal(store.get().nextIndex, 8, 'the one counter moved on');
+  assert.equal((await m.s.shieldFrom({ ...fresh, reserveWei: E('0.3') })).did, 'low', 'nothing under the least');
+  // a deposit from one address is pending: another address waits, the same one carries it on
+  const store2 = memStore();
+  const a = mkShield({ bal: () => E('0.3'), receipt: null }, undefined, store2, { sendFrom: async () => ({ txHash: '0x' + 'cc'.repeat(32) }) });
+  assert.equal((await a.s.shieldFrom(fresh)).did, 'pending');
+  assert.equal((await a.s.shieldFrom({ ...fresh, address: '0xfresh2' })).did, 'busy');
+  assert.equal(store2.get().pending.src, '0xfresh1');
+  const b = mkShield({ bal: () => E('0.3') }, undefined, store2, { sendFrom: async () => { throw new Error('not again'); } });
+  assert.equal((await b.s.step()).did, 'shielded', 'after a restart the address\'s own step settles it, nothing sent again');
+  assert.equal(b.c.settled, 1);
+  const off = mkShield({ bal: () => E('0.3') }, {}, undefined, { sendFrom: async () => ({ txHash: '0x' + 'dd'.repeat(32) }) });
+  assert.equal((await off.s.shieldFrom(fresh)).did, 'off');
 });
 
 test('auto-shield: a restart settles the pending deposit and does not send it again', async () => {

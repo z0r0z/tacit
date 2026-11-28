@@ -52,6 +52,7 @@ import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, 
 import { safeErr } from './lib/safe-err.js';
 import { tacitChainVerdict, paymentsWaiting } from './lib/tacit-chain-health.js';
 import { peripheryVerdict } from './lib/periphery-guards.js';
+import { praxisVerdict } from './lib/praxis-health.js';
 
 const log = (...a) => console.log(`[monitor ${new Date().toISOString()}]`, ...a);
 
@@ -796,9 +797,24 @@ async function checkVast() {
   if (v.log) log(v.log);
 }
 
+async function checkPraxis() {
+  if (!CFG.praxisUrl) return;
+  let head = null, transcript = null;
+  try {
+    const get = async (path) => {
+      const res = await fetch(`${CFG.praxisUrl}${path}`, { signal: AbortSignal.timeout(15000) });
+      return res.ok ? res.json() : null;
+    };
+    [head, transcript] = await Promise.all([get('/api/head'), get('/api/transcript')]);
+  } catch { head = null; }
+  const v = praxisVerdict(head, transcript, { warnSecs: CFG.praxisStallWarnSecs, criticalSecs: CFG.praxisStallCriticalSecs });
+  for (const a of v.alerts) await alert(a.level, a.msg, a.extra);
+  if (v.log) log(v.log);
+}
+
 async function main() {
   log(`monitor run — worker=${CFG.workerBase} relay=${relayWallet ? relayWallet.account.address : '(no key on this service — watching by address)'}`);
-  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkVast(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkBtcKeepers(), checkProverBoard(), checkTacitChain(), checkPoolReplay(), checkPeripheryGuards()]);
+  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkVast(), checkPraxis(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkBtcKeepers(), checkProverBoard(), checkTacitChain(), checkPoolReplay(), checkPeripheryGuards()]);
   for (const r of results) if (r.status === 'rejected') log('check threw:', r.reason?.message || r.reason);
   log(`monitor done — ${criticals} critical${criticals === 1 ? '' : 's'}`);
   // Exit non-zero so the cron run is marked failed even with no webhook configured. A check that THREW is

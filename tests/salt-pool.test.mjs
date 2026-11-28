@@ -428,3 +428,13 @@ test('a salt is never called spent on an answer the chain could not give', async
   assert.equal(b2.bank[0].spent, true, 'the mark survives');
   assert.equal(b2.free, 0);
 });
+
+test('a seen salt is kept until its day can no longer be sent, and no longer', async () => {
+  const ttls = new Map(), kv = { get: async () => null, put: async (k, v, o) => { if (k.startsWith('sl:seen:')) ttls.set(k, o?.expirationTtl); } };
+  const t = 100 * DAY + 6 * 3_600_000, pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, sendEveryMs: 0 }, now: () => t });
+  const today = grind(100, 8), yesterday = grind(99, 8);
+  assert.equal((await pool.submit({ miner: A, salts: [today.salt, yesterday.salt], client: 'c1' })).body.accepted, 2);
+  // today's can come back until the end of tomorrow (42 h away), yesterday's until the end of today (18 h away)
+  assert.equal(ttls.get(`sl:seen:${today.salt}`), 42 * 3600 + SALT_POOL.seenSlackSecs);
+  assert.equal(ttls.get(`sl:seen:${yesterday.salt}`), 18 * 3600 + SALT_POOL.seenSlackSecs);
+});

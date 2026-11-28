@@ -540,6 +540,7 @@ test('a copy of the swaps that this key did not save is not read: no MAC, a MAC 
   const file = { v: 2, kind: 'tacit-btc-eth-swaps', prefix: w.prefix, at: w.NOW, items: w.foreignItems };
   assert.throws(() => loadCopy(JSON.stringify(file), w.prefix, w.storage), /Open your Tacit wallet/);
   assert.throws(() => loadCopy(JSON.stringify(file), w.prefix, w.storage, w.macOf(w.priv)), /saved before copies were signed/);
+  assert.throws(() => loadCopy('not json at all', w.prefix, w.storage, w.macOf(w.priv)), /^Error: This file is not a swaps backup: it could not be read\.$/);
   const otherKey = secp.utils.randomPrivateKey();
   const signedByOther = { v: 2, kind: 'tacit-btc-eth-swaps', prefix: w.prefix, at: w.NOW, items: w.foreignItems };
   assert.throws(() => loadCopy(JSON.stringify({ ...signedByOther, mac: w.macOf(otherKey)(signed(signedByOther)) }), w.prefix, w.storage, w.macOf(w.priv)), /not saved by this wallet/);

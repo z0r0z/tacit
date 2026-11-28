@@ -88,7 +88,9 @@ const isRevert = (e) => e instanceof CallRevert || (e && (e.code === 3 || (typeo
 const revertData = (e) => String((e && e.data) || '').replace(/^0x/, '').toLowerCase();
 const isOffchainRevert = (e) => revertData(e).startsWith(SEL.offchainLookup);
 
-export function makeMainnetCall({ fetchImpl, rpcs = MAINNET_RPCS, timeoutMs = 10000, agree = 2 } = {}) {
+// Asks `agree` endpoints first, in order, and one more each time one fails or disagrees (or every `hedgeMs` while none has settled it), so a lookup
+// that two endpoints agree on costs two requests. Requests still out when it is settled are cancelled.
+export function makeMainnetCall({ fetchImpl, rpcs = MAINNET_RPCS, timeoutMs = 10000, agree = 2, hedgeMs = 1500 } = {}) {
   const f = fetchImpl || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
   const need = Math.max(1, Math.min(agree, rpcs.length));
   return function call({ to, data, from }) {
@@ -99,11 +101,17 @@ export function makeMainnetCall({ fetchImpl, rpcs = MAINNET_RPCS, timeoutMs = 10
 
     return new Promise((resolve, reject) => {
       const answers = new Map();
-      let lastErr = null, replies = 0, settled = 0, done = false;
+      let lastErr = null, replies = 0, settled = 0, launched = 0, done = false, hedge = null;
+      const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+      const signalOf = () => {
+        const t = AbortSignal.timeout(timeoutMs);
+        return ctl && typeof AbortSignal.any === 'function' ? AbortSignal.any([ctl.signal, t]) : t;
+      };
+      const end = () => { done = true; clearInterval(hedge); try { ctl?.abort(); } catch { } };
 
       const finishIfExhausted = () => {
-        if (done || settled < rpcs.length) return;
-        done = true;
+        if (done || launched < rpcs.length || settled < launched) return;
+        end();
         if (answers.size > 1) {
           reject(new NameError('rpc-disagreement', `Ethereum endpoints returned ${answers.size} different answers for this lookup, so it cannot be trusted. Try again, or paste the recipient's tacit1… address.`));
         } else {
@@ -111,10 +119,10 @@ export function makeMainnetCall({ fetchImpl, rpcs = MAINNET_RPCS, timeoutMs = 10
         }
       };
 
-      rpcs.forEach((url) => {
+      const ask = (url) => {
         (async () => {
           try {
-            const r = await f(url, { method: 'POST', headers: { 'content-type': bodyType(url) }, body, signal: AbortSignal.timeout(timeoutMs) });
+            const r = await f(url, { method: 'POST', headers: { 'content-type': bodyType(url) }, body, signal: signalOf() });
             if (!r.ok) { lastErr = new Error(`rpc ${r.status}`); return; }
             const j = await r.json();
             if (j && j.error) {
@@ -126,7 +134,7 @@ export function makeMainnetCall({ fetchImpl, rpcs = MAINNET_RPCS, timeoutMs = 10
                 const rkey = `revert:${typeof d === 'string' ? d.toLowerCase() : ''}`;
                 const rseen = (answers.get(rkey) || 0) + 1;
                 answers.set(rkey, rseen);
-                if (rseen >= need && !done) { done = true; reject(new CallRevert(j.error.message, typeof d === 'string' ? d : null)); }
+                if (rseen >= need && !done) { end(); reject(new CallRevert(j.error.message, typeof d === 'string' ? d : null)); }
                 return;
               }
               lastErr = new Error(j.error.message || 'rpc error');
@@ -137,15 +145,20 @@ export function makeMainnetCall({ fetchImpl, rpcs = MAINNET_RPCS, timeoutMs = 10
             const key = String(out == null ? '' : out).toLowerCase();
             const seen = (answers.get(key) || 0) + 1;
             answers.set(key, seen);
-            if (seen >= need && !done) { done = true; resolve(out); }
+            if (seen >= need && !done) { end(); resolve(out); }
           } catch (e) {
             lastErr = e;
           } finally {
             settled++;
+            // one more endpoint only when those still out could not make up the agreement
+            if (!done && (launched - settled) + Math.max(0, ...answers.values()) < need) next();
             finishIfExhausted();
           }
         })();
-      });
+      };
+      const next = () => { if (!done && launched < rpcs.length) ask(rpcs[launched++]); };
+      for (let i = 0; i < need; i++) next();
+      if (launched < rpcs.length) hedge = setInterval(() => { next(); if (launched >= rpcs.length) clearInterval(hedge); }, hedgeMs);
     });
   };
 }

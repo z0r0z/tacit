@@ -268,14 +268,14 @@ const RPCV = { balance: 10n ** 18n, receipt: { status: '0x1' } };
 const hex = (v) => '0x' + BigInt(v).toString(16);
 // the house provider's /info, with what its upkeep adds (fastbridge-lp/lib/automation.mjs): null answers 404, as a provider without it does
 const HOUSE = 'https://tacit-fastbridge-pair-lp.onrender.com';
-let houseInfo = { v: 1, stats: { since: 1795608000, swaps: 4, swapsForward: 3, swapsReverse: 1, refunds: 0, reinvestedEth: '1234567', netEth: '1234567', capacity: { eth: '320000000', sats: '1500000', valueEth: '365000000' } }, target: { eth: '1000000000', btcAsEth: '1000000000', reached: false }, skewBps: 0, buyback: { on: false, startedAt: null, routedEth: '0', tacBought: '0', sends: 0 } };
+let houseInfo = { v: 1, stats: { since: 1795608000, swaps: 4, swapsForward: 3, swapsReverse: 1, refunds: 0, volumeSwaps: 4, volumeForward: 3, volumeReverse: 1, volumeSince: 1795608000, volumeSats: '1500000', volumeEth: '6500000', medianSecs: 1320, reinvestedEth: '1234567', netEth: '1234567', capacity: { eth: '320000000', sats: '1500000', valueEth: '365000000' } }, target: { eth: '1000000000', btcAsEth: '1000000000', reached: false }, skewBps: 0, buyback: { on: false, startedAt: null, routedEth: '0', tacBought: '0', sends: 0 } };
 const BAD = [], FLAKY = { on: false, asked: [] };
 // the network: the board and the public nodes are answered here, everything else off the machine is refused
 async function wire(page, { ads, boardDelayMs = 0 }) {
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const req = route.request(), url = req.url();
     if (url === `${HOUSE}/info`) return houseInfo ? route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(houseInfo) }) : route.fulfill({ status: 404, body: '{}' });
-    if (url === `${BOARD}/ads`) { if (boardDelayMs) await sleep(boardDelayMs); return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ ads }) }).catch(() => {}); }
+    if (url === `${BOARD}/ads`) { if (ads === null) return route.abort('connectionrefused').catch(() => {}); if (boardDelayMs) await sleep(boardDelayMs); return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ ads }) }).catch(() => {}); }
     // nodes that answer a browser with a 429 that carries no CORS headers (a CORS block, a console line for each request): the page must never ask them. FLAKY: publicnode refuses like that when a test sets it
     if (/mevblocker|buidlguidl/.test(url) || (FLAKY.on && /publicnode/.test(url))) { (/publicnode/.test(url) ? FLAKY.asked : BAD).push(url); return route.abort('failed'); }
     if (req.method() === 'POST' && /publicnode|drpc|1rpc|tenderly|mevblocker|blastapi|buidlguidl|thirdweb|stakely|nodereal|flashbots|tacit-node-gw/.test(url)) {
@@ -332,7 +332,13 @@ console.log('the page: the marks, the line, the lane');
   await page.waitForFunction(() => !document.querySelector('#pv-fund').hidden, null, { timeout: 10000 });
   const fundLine = await text(page, '#pv-fund');
   ok(/back into its capacity until it holds 10 ETH and as much in BTC\. Past that, they go to TAC buybacks\./.test(fundLine) && /3\.6 of 20 ETH/.test(fundLine) && /0\.01234567 ETH of fees reinvested since Nov 2\d/.test(fundLine) && !/TAC bought/.test(fundLine), `the house provider's fees: the rule, capacity against its target, what was reinvested; no buyback figure before buybacks start (${fundLine})`);
-  ok(/Tacit’s provider has finished 4 swaps \(3 BTC to ETH, 1 ETH to BTC\) since Nov 2\d, 0 refunded\./.test(fundLine), `the track record: swaps finished, by direction, refunds (${fundLine.slice(0, 140)})`);
+  ok(/Tacit’s provider has finished 4 swaps \(3 BTC to ETH, 1 ETH to BTC\) since Nov 2\d\./.test(fundLine) && !/refunded/.test(fundLine), `the track record: swaps finished by direction, without a refund counter (${fundLine.slice(0, 140)})`);
+  await page.waitForFunction(() => !document.querySelector('#rec').hidden, null, { timeout: 10000 });
+  const recTxt = await text(page, '#rec');
+  ok(/4\s*swaps finished\s*3\s*BTC → ETH\s*1\s*ETH → BTC\s*0\.015\s*BTC traversed\s*0\.065\s*ETH traversed\s*~22\s*min, typical swap/.test(recTxt) && !/refunded/.test(recTxt), `the track record at the top: swaps, both assets traversed, and no refund counter (${recTxt})`);
+  ok(await page.$eval('#rec', (e) => getComputedStyle(e).display === 'grid' && getComputedStyle(e).gridTemplateColumns.split(' ').length === 3), 'the track record uses a balanced three-column grid');
+  const tint = await page.evaluate(() => [...document.querySelectorAll('#rec .rt')].map((e) => getComputedStyle(e).borderTopColor));
+  ok(tint[1] === 'rgb(247, 147, 26)' && tint[2] === 'rgb(98, 126, 234)', `BTC → ETH is orange and ETH → BTC is blue (${tint.join(' | ')})`);
   const barW = await page.$eval('#pv-fund .bar i', (e) => e.getBoundingClientRect().width / e.parentElement.getBoundingClientRect().width);
   ok(Math.abs(barW - 0.1825) < 0.01, `the bar is at 18% of the target (${barW.toFixed(3)})`);
 
@@ -485,6 +491,15 @@ console.log('no provider online');
   const { page } = await fresh({ ads: [] });
   await page.waitForFunction(() => /No provider is online/.test(document.querySelector('#cap').textContent), null, { timeout: 20000 });
   ok((await page.$$('#pv-list li')).length === 0 && /no provider online/.test(await text(page, '#live')), 'the list says so, and the line under the heading too');
+  await page.close();
+}
+
+console.log('the providers cannot be reached (a network that blocks them)');
+{
+  const { page } = await fresh({ ads: null });
+  await page.waitForFunction(() => /could not be reached/.test(document.querySelector('#cap').textContent), null, { timeout: 20000 });
+  ok(/providers not reached just now/.test(await text(page, '#live')) && !/no provider online/.test(await text(page, '#live')), `not "none online" when nothing answered (${await text(page, '#live')})`);
+  ok(/not reached just now/.test(await text(page, '#atomic')) && !/none online/.test(await text(page, '#atomic')), 'the card says the same');
   await page.close();
 }
 

@@ -230,7 +230,7 @@ const htmlVal = (html) => ({ html });
 const cell = (v) => (v && v.html != null ? v.html : esc(v));
 const isName = (t) => /^[^\s/@]+\.(eth|wei|gwei)$/i.test(t);
 let namesP = null;
-const names = () => (namesP ||= Promise.all([import('/confidential-names.js?cb=c7e1989f'), import('/vendor/tacit-deps.min.js')])
+const names = () => (namesP ||= Promise.all([import('/confidential-names.js?cb=b0ce51f3'), import('/vendor/tacit-deps.min.js')])
   .then(([n, d]) => n.makeConfidentialNames({ call: n.makeMainnetCall(), secp: d.secp, keccak256: d.keccak_256 })).catch((e) => { namesP = null; throw e; }));
 const tacitName = (t) => t.name || `tacit1…${String(t.pubHex).slice(-6)}`;
 const recipient = () => (S.to && !S.inP && !S.outP && lc(S.to) !== lc(W.account || '') ? S.to : null);
@@ -580,12 +580,12 @@ function requote(now_ = false) {
   if (!wei) { S.q = null; paint(); return; }
   if (exiting()) {
     S.q = { ...(S.q || {}), kind: 'exit', busy: true }; paintQuote();
-    qTimer = setTimeout(() => quoteExit(my, wei).catch((e) => { if (my === S.seq) { S.q = { kind: 'exit', err: e?.message || String(e) }; paint(); } }), now_ ? 0 : 200);
+    qTimer = setTimeout(() => quoteExit(my, wei).catch((e) => { if (my === S.seq) { S.q = { kind: 'exit', err: e?.message || String(e), at: now(), fails: (S.q?.fails || 0) + 1 }; paint(); } }), now_ ? 0 : 200);
     return;
   }
   const was = S.q && !S.q.err && !S.q.busy && S.q.wei ? picked(S.q) : null;
   S.q = { ...(S.q || {}), busy: true, est: was?.out ? (was.out * wei) / S.q.wei : S.q?.est ?? null }; paintQuote();
-  qTimer = setTimeout(() => quote(my, wei).catch((e) => { if (my === S.seq) { S.q = { err: e?.message || String(e) }; paint(); } }), now_ ? 0 : 200);
+  qTimer = setTimeout(() => quote(my, wei).catch((e) => { if (my === S.seq) { S.q = { err: e?.message || String(e), at: now(), fails: (S.q?.fails || 0) + 1 }; paint(); } }), now_ ? 0 : 200);
 }
 async function quote(my, wei) {
   const kind = kindOf(S.pay, S.get), pay = tokenOf(S.pay), get = tokenOf(S.get);
@@ -595,12 +595,12 @@ async function quote(my, wei) {
   if (laterOn(kind) && !isEth(S.pay) && viaToken()) {
     const lt = await ltLoad(), stand = '0x' + Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, '0')).join('');
     const r = await within(lt.mod.routeFrom({ ethCall, venues, tokenIn: S.pay, token: isEth(S.get) ? R.ZERO : S.get, amount: wei, to: stand, slippageBps: S.slip, deadline: chainDeadline(1200), gasPrice: gasPrice() }), 25e3, 'zQuoter did not answer in time. Try again.');
-    if (!r) return done({ rows: [], why: `No onchain route sells ${esc(pay.sym)} for ${esc(get.sym)} right now.`, lt: 'hop' });
+    if (!r) return done({ rows: [], why: `No onchain route sells ${pay.sym} for ${get.sym} right now.`, lt: 'hop' });
     return done({ rows: [{ k: 'later', name: `${pay.sym} pool → ${r.name}`, note: '', out: r.out, min: r.min, hop: true, legs: r.legs, legsFrom: 'TAC', gas: GAS.zap, best: true }], lt: 'hop' });
   }
   if (laterOn(kind) && !isEth(S.pay)) {
     const lt = await ltLoad(), v = await within(lt.mod.quoteThrough({ ethCall, venues, pay: S.pay, get: S.get, amountIn: wei, slippageBps: S.slip, deadline: chainDeadline(1200), gasPrice: gasPrice() }), 25e3, 'zQuoter did not answer in time. Try again.');
-    if (!v) return done({ rows: [], why: `No onchain route takes ${esc(pay.sym)} through the private pool to ${esc(get.sym)} right now.`, lt: 'zap' });
+    if (!v) return done({ rows: [], why: `No onchain route takes ${pay.sym} through the private pool to ${get.sym} right now.`, lt: 'zap' });
     return done({ rows: [{ k: 'later', name: `${v.r0.name} → ETH pool → ${v.r1.name}`, note: '', out: v.r1.out, min: v.r1.min, via: { ...v, spend: (wei * v.ethWei) / v.r0.out }, legs: v.r0.legs || v.r1.legs, legsFrom: v.r0.legs ? 'TAC' : 'ETH', gas: GAS.zap, best: true }], lt: 'zap' });
   }
   if (kind === 'tac' && isEth(S.pay) && laterOn(kind)) {
@@ -628,7 +628,7 @@ async function quote(my, wei) {
   }
   if (kind === 'any') {
     const q = await within(R.quoteAnyToTac({ ethCall, venues, token: S.pay, amountIn: wei, account: account || '0x0000000000000000000000000000000000000001', slippageBps: S.slip, deadline: chainDeadline(1800), reuse: true }), 15e3, 'zQuoter did not answer in time. Try again.');
-    if (!q) return done({ rows: [], why: `No pool trades ${esc(pay.sym)} against WETH deeply enough. Swap it for ETH elsewhere first.` });
+    if (!q) return done({ rows: [], why: `No pool trades ${pay.sym} against WETH deeply enough. Swap it for ETH elsewhere first.` });
     const hop = q.hop ? `${q.hop.name}${q.hop.feeBps ? ` ${Number(q.hop.feeBps) / 100}%` : ''}` : null;
     return done({ rows: [{ k: 'any', name: hop ? `${hop} → Precision pool` : 'Precision pool', note: '', out: q.tacOut, any: q, gas: GAS.any, best: true }] });
   }
@@ -636,12 +636,12 @@ async function quote(my, wei) {
     const who = account || '0x0000000000000000000000000000000000000001', dest = recipient() || who, args = { ethCall, amountIn: wei, account: who, to: dest, slippageBps: S.slip, deadline: chainDeadline(1800), reuse: true };
     if (kind === 'out') {
       const q = await within(R.quoteTacitToToken({ ...args, venues, tokenIn: S.pay, tokenOut: S.get }), 20e3, 'zQuoter did not answer in time. Try again.');
-      if (!q) return done({ rows: [], why: `No pool trades WETH for ${esc(get.sym)} deeply enough. Sell ${esc(pay.sym)} for ETH, then swap it elsewhere.` });
+      if (!q) return done({ rows: [], why: `No pool trades WETH for ${get.sym} deeply enough. Sell ${pay.sym} for ETH, then swap it elsewhere.` });
       const via = q.leg.venue === 'precision' ? 'Precision pool' : 'Tacit pool', hop = q.hop ? `${q.hop.name}${q.hop.feeBps ? ` ${Number(q.hop.feeBps) / 100}%` : ''}` : null;
       return done({ rows: [{ k: 'out', name: hop ? `${via} → ${hop}` : via, note: '', out: q.out, val: q.val, min: q.min, sell: q, gas: GAS.out, best: true }] });
     }
     const q = await within(R.quoteTokenToTacit({ ...args, token: S.pay, tokenOut: S.get }), 20e3, 'zQuoter did not answer in time. Try again.');
-    if (!q) return done({ rows: [], why: `No pool trades ${esc(pay.sym)} against WETH deeply enough. Swap it for ETH elsewhere first.` });
+    if (!q) return done({ rows: [], why: `No pool trades ${pay.sym} against WETH deeply enough. Swap it for ETH elsewhere first.` });
     const hop = `${q.hop.name}${q.hop.feeBps ? ` ${Number(q.hop.feeBps) / 100}%` : ''}`;
     return done({ rows: [{ k: 'in', name: `${hop} → Tacit pool`, note: '', out: q.out, buy: q, gas: GAS.in, best: true }] });
   }
@@ -665,12 +665,12 @@ async function quote(my, wei) {
   }
   if (kind === 'zap') {
     const who = account || PREVIEW, zq = await within(buyQuote({ to: who, tokenOut: S.get, amount: wei, slippageBps: S.slip, deadline: chainDeadline(1200) }), 20e3, 'zQuoter did not answer in time. Try again.');
-    if (!zq) return done({ rows: [], why: `No pool trades ETH for ${esc(get.sym)} deeply enough right now.` });
+    if (!zq) return done({ rows: [], why: `No pool trades ETH for ${get.sym} deeply enough right now.` });
     return done({ rows: [{ k: 'zap', name: `${zq.name} → private ${esc(get.sym)}`, note: '', out: zq.amountOut, min: zq.amountLimit, zap: zq, gas: GAS.split, best: true, at: now() }] });
   }
   if (kind === 'pin') {
     const who = account || PREVIEW, r1 = await within(A.bestRoute({ ethCall, to: who, refundTo: who, tokenIn: S.pay, tokenOut: R.ZERO, amountIn: wei, slippageBps: S.slip, deadline: chainDeadline(1200) }), 20e3, 'zQuoter did not answer in time. Try again.');
-    if (!r1) return done({ rows: [], why: `No pool trades ${esc(pay.sym)} for ETH deeply enough.` });
+    if (!r1) return done({ rows: [], why: `No pool trades ${pay.sym} for ETH deeply enough.` });
     const units = r1.min / E10;
     if (!units) return done({ rows: [], why: 'Enter a larger amount.', tiny: true });
     const q = await privQuote(units, 'eth', 'ETH');
@@ -722,7 +722,7 @@ async function privQuote(units, from, sym) {
   const stops = from === 'eth' || to === 'eth' ? [to] : ['eth', to];
   // A swap from the private balance can be sent from the person's own account (S.self): the relay proves and charges no fee, the network fee is theirs. Offered when the fee is the problem.
   const selfOk = selfPossible(), f0 = S.self && selfOk ? 0n : await opFee(t, POOL_TK[from], 'route'), fee = stops.length > 1 ? twoDigits((f0 * 14n) / 10n) : f0;
-  if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, pdOf(from), 6)} ${esc(sym)}: the relay’s fee is ${fmtUnits(fee, pdOf(from), 6)}.`, whyHtml: selfOk ? ' Or <button class="link" type="button" id="pv-self-on">send it from your own account</button>: no relay fee, and the network fee is yours.' : '', tiny: true };
+  if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, pdOf(from), 6)} ${sym}: the relay’s fee is ${fmtUnits(fee, pdOf(from), 6)}.`, whyHtml: selfOk ? ' Or <button class="link" type="button" id="pv-self-on">send it from your own account</button>: no relay fee, and the network fee is yours.' : '', tiny: true };
   // through tETH, as every pair goes; and, for a token the pool holds by registration (SPX), the pool that holds both coins when it gives more (one hop, one fee)
   const hub = await (async () => {
     let cur = id(from), amt = units - fee, at = from;
@@ -745,7 +745,7 @@ async function privQuote(units, from, sym) {
       use = { pools: [{ a: from, b: to, feeBps: Number(h.feeBps), ra: BigInt(lo ? h.reserveAPre : h.reserveBPre), rb: BigInt(lo ? h.reserveBPre : h.reserveAPre) }], amt: dbest.amountOut, fee: f0 };
     }
   }
-  if (!use) return stops.length === 1 && from === 'eth' && ownPool(to) ? { rows: [], why: `No pool trades tETH for ${esc(PSYM[to] || 'it')} yet.`, start: to } : { rows: [], why: 'The Tacit pool has no price for this pair right now.' };
+  if (!use) return stops.length === 1 && from === 'eth' && ownPool(to) ? { rows: [], why: `No pool trades tETH for ${PSYM[to] || 'it'} yet.`, start: to } : { rows: [], why: 'The Tacit pool has no price for this pair right now.' };
   // what the pools say of it: the price the swap moves them by, and against the market where there is a price for the coin
   const spent = units - use.fee, hit = R.poolImpact?.(use.pools, spent), mkt = await marketGap(from === 'eth' ? 'teth' : S.pay, S.get, spent, use.amt).catch(() => null);
   return { rows: [{ k: 'private', name: 'Tacit pool', note: '', out: use.amt * scOf(S.get), best: true, priv: true }], fee: use.fee, feeTick: from, pools: use.pools, impact: hit?.impact ?? null, mkt, tip: tipP ? await tipP : null };
@@ -758,7 +758,7 @@ async function quoteOut(units, pay, get) {
   const pools = [];
   if (from !== 'eth') {
     fee = await opFee(t, POOL_TK[from], 'route');
-    if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, pdOf(from), 6)} ${esc(pay.sym)}: the relay’s fee is ${fmtUnits(fee, pdOf(from), 6)}.`, tiny: true };
+    if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, pdOf(from), 6)} ${pay.sym}: the relay’s fee is ${fmtUnits(fee, pdOf(from), 6)}.`, tiny: true };
     const cur = IDS[from], next = IDS.eth;
     const best = await bestTier(t, cur, next, units - fee);
     if (!best) return { rows: [], why: 'The Tacit pool has no price for this pair right now.' };
@@ -774,7 +774,7 @@ async function quoteOut(units, pay, get) {
   const base = { fee, xfee, xmin, pools, tUnits };
   if (eth) return { ...base, rows: [{ k: 'pout', name: `${via}out of the pool`, out: wei, min: wei, wei, best: true, priv: true, pout: true }] };
   const sale = await within(buyQuote({ to: S.to || '0x0000000000000000000000000000000000000001', tokenOut: S.get, amount: wei, slippageBps: S.slip, deadline: chainDeadline(1800) }), 20e3, 'zQuoter did not answer in time. Try again.');
-  if (!sale) return { rows: [], why: `No pool trades ETH for ${esc(get.sym)} deeply enough.` };
+  if (!sale) return { rows: [], why: `No pool trades ETH for ${get.sym} deeply enough.` };
   const venue = `${sale.name}${sale.feeBps ? ` ${Number(sale.feeBps) / 100}%` : ''}`;
   return { ...base, rows: [{ k: 'pout', name: `${via}${venue}`, sale: venue, out: sale.amountOut, min: sale.amountLimit, wei, best: true, priv: true, pout: true }] };
 }
@@ -1629,7 +1629,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=80e55154').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=7ca373ea').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
 const laterPair = (kind, pay = S.pay, get = S.get) => laterPay(pay)
   && (isEth(pay) ? kind === 'agg' || (kind === 'tac' && get === lc(R.TAC)) : (kind === 'agg' && get !== lc(R.WETH)) || kind === 'any' || kind === 'out' || kind === 'tac');
@@ -2295,7 +2295,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=fbe272a5').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=a0a52215').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -2883,7 +2883,7 @@ let lane = null, laneP = null;
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 async function openLane() {
   try {
-    laneP ||= import('/swap/bitcoin.js?cb=de20c325').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
+    laneP ||= import('/swap/bitcoin.js?cb=eba00b23').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
     await laneP;
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = laneP = null; }
@@ -2923,7 +2923,7 @@ async function openAtomic() {
   try {
     // the same lane as /btc/, with the same two helpers: ETH added from the Ethereum wallet in one press, and "Receive as" (the ETH kept private or sent on).
     // The page's own panels (the Bitcoin send, the ETH send) are on /btc/, so a finished swap's next step opens them there.
-    atomicP ||= Promise.all([import('/swap/atomic.js?cb=45c8ecc6'), import('/btc/add-eth.js?cb=d423798a'), import('/btc/payout.js?cb=3b028d52')]).then(([mod, ae, po]) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir ,
+    atomicP ||= Promise.all([import('/swap/atomic.js?cb=a4fd0931'), import('/btc/add-eth.js?cb=d423798a'), import('/btc/payout.js?cb=3b028d52')]).then(([mod, ae, po]) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir ,
       shield: ae.makeAddEth({ getUx }), payout: po.makePayout({ getUx }),
       onNext: ({ act }) => { if (act === 'send') location.href = '/btc/?dir=e2b#mybtc'; else if (act === 'withdraw') location.href = '/btc/#myeth'; } })));
     await atomicP;
@@ -3169,7 +3169,8 @@ export function mountSwapCard(root, host = {}) {
     readPrices().catch(() => {});
     gasPrice().then(() => { rerank(); paintQuote(); }, () => {});
     if (now() - routeAt > 300) { routeAt = now(); checkAmmRoute(); }
-    if (S.q && !S.busy && !S.q.busy && now() - (S.q.at || 0) > (['any', 'out', 'in', 'pout', 'agg', 'pin', 'exit', 'private'].includes(S.q.kind) ? 55 : 25)) requote(true);
+    // A quote that failed is tried again after 25 s, then twice as long each time it fails again, up to 5 minutes.
+    if (S.q && !S.busy && !S.q.busy && now() - (S.q.at || 0) > (S.q.err ? Math.min(300, 25 * 2 ** ((S.q.fails || 1) - 1)) : ['any', 'out', 'in', 'pout', 'agg', 'pin', 'exit', 'private'].includes(S.q.kind) ? 55 : 25)) requote(true);
     if (S.inP && PV?.unlocked && !PV.held && !S.busy) PV.read(true).then(paint, () => {});
   };
   setInterval(tick, 30e3);

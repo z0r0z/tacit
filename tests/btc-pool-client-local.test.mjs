@@ -81,4 +81,37 @@ await test('a spend whose root cannot be read waits instead of naming its notes'
   assert.ok(calls.some((c) => c.startsWith('/btc-pool/path/3')) && calls.some((c) => c.startsWith('/btc-pool/path/6')), 'the caller that allowed it gets its paths from the replay');
 });
 
+await test('a later feed read asks only from twelve blocks below its newest note, and paths over the grown feed still match', async () => {
+  // leaves a block apart from 50 on, so the first read's tail (blocks 50+n-13 on) is a small part of it
+  const mk = (i) => { const v = BigInt(i * 104729 + 7) * 999983n; return { leafIndex: i, txid: 'bb'.repeat(32), height: 50 + i, leaf: '0x' + v.toString(16).padStart(64, '0'), asset: '0x00', pk_eph: '0x00', ct_note: '0x00' }; };
+  const grown = Array.from({ length: 40 }, (_, i) => mk(i));
+  const t = new PoseidonTree(); grown.forEach((x) => t.append(x.leaf));
+  let shown = 30, now = Date.now();
+  const calls = [];
+  const json = (v) => ({ ok: true, status: 200, json: async () => v });
+  const fetchImpl = async (url) => {
+    const u = new URL(url), p = u.pathname;
+    calls.push(p + u.search);
+    if (p === '/btc-pool/status') return json({ height: 50 + shown - 1 });
+    if (p === '/btc-pool/notes') { const from = Number(u.searchParams.get('from')); return json({ notes: grown.slice(from, shown), next: shown }); }
+    if (p.startsWith('/btc-pool/root/')) { const h = Number(p.split('/').pop()); return json({ height: h, root: hex(t.rootAndPathAt(0, h - 50 + 1).root), retained: true }); }
+    return json({ error: 'not found' });
+  };
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const client = makePoolClient({ api: 'http://replay', fetchImpl });
+    const spend = async (i) => client.anchorAndPaths([{ leafIndex: i, leaf: grown[i].leaf, height: grown[i].height }], { anchor: 50 + shown - 1 });
+    let r = await spend(20);
+    assert.deepEqual(r.notes[0].path, t.rootAndPathAt(20, shown).path.map(hex));
+    assert.ok(calls.find((c) => c.startsWith('/btc-pool/notes')).includes('from=0'));
+    const mark = calls.length;
+    shown = 40; now += 21e3;
+    r = await spend(35);
+    assert.equal(r.root, hex(t.rootAndPathAt(0, 40).root));
+    assert.deepEqual(r.notes[0].path, t.rootAndPathAt(35, 40).path.map(hex));
+    assert.ok(calls.slice(mark).find((c) => c.startsWith('/btc-pool/notes')).includes('from=17'), calls.join(' '));
+  } finally { Date.now = realNow; }
+});
+
 console.log(`\n${passed} passed`);

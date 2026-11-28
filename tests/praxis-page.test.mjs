@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 import http from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || 'playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
@@ -155,6 +156,14 @@ console.log('a name left as the command\'s placeholder');
   ok(mod.nameOf({ name: 'Ada', handle: A }) === 'Ada', 'a real name is kept');
 }
 
+console.log('the wait for a place');
+{
+  const mod = await import(new URL('../dapp/praxis/receipt.js', import.meta.url));
+  ok(mod.waitText(331, 34) === '331 in the queue · about 10 days to your turn at the last day\'s pace (34 contributions a day)', 'the wait is measured from the last day\'s contributions, not a fixed guess');
+  ok(mod.waitText(3) === '3 in the queue · about 60 min to your turn' && mod.waitText(0) === 'Nobody waiting: your turn comes at once', 'with nothing measured, the default slot length stands and says so');
+  ok(/about 6 h to your turn/.test(mod.waitText(12, 48)), 'a short wait is in hours');
+}
+
 console.log('earned, not yet paid');
 {
   const mod = await import(new URL('../dapp/praxis/receipt.js', import.meta.url));
@@ -179,11 +188,11 @@ console.log('what a shared link looks like');
 
 console.log('the banner on the landing page');
 {
-  const land = readFileSync(join(DAPP, 'index.html'), 'utf8');
+  const land = frontPage(join(DAPP, 'index.html'));
   const m = land.match(/<a class="pxb" href="([^"]+)"[^>]*>(.*?)<\/a>/s);
   const txt = m ? m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '';
   ok(m && m[1] === '/praxis/' && /smart contracts on Bitcoin/.test(txt) && /up to 5 TAC/.test(txt) && !/not reviewed|not built/i.test(txt), `the landing page has a quiet line to the ceremony that says what it is (${txt.slice(0, 90)})`);
-  ok(/class="pxb"/.test(readFileSync(join(DAPP, 'tac/index.html'), 'utf8')) && /class="pxb"/.test(readFileSync(join(DAPP, 'spx/index.html'), 'utf8')), 'and the pages built from it carry it too');
+  ok(/class="pxb"/.test(frontPage(join(DAPP, 'tac/index.html'))) && /class="pxb"/.test(frontPage(join(DAPP, 'spx/index.html'))), 'and the pages built from it carry it too');
 }
 
 console.log('a receipt that was changed, and a chain that does not link');
@@ -312,9 +321,10 @@ console.log('the rewards, in TAC');
 
 console.log('take part: the big button, the command for this computer, the queue and the coordinator from the window');
 {
-  const { ctx, page, errs } = await fresh({ coordinator: { open: true, coordinator: 'http://198.51.100.7:9999', queue: 3, index: 18 } });
+  const { ctx, page, errs } = await fresh({ coordinator: { open: true, coordinator: 'http://198.51.100.7:9999', queue: 3, index: 18, browser: true, community: true } });
   await page.waitForFunction(() => /queue/.test(document.querySelector('#queue').textContent), null, { timeout: 10000 });
   ok(/3 in the queue · about 60 min/.test(await text(page, '#queue')) && (await text(page, '#n-queue')) === '3', `the queue and the wait, and the stat (${await text(page, '#queue')})`);
+  await page.evaluate(() => { document.getElementById('cmd-alt').open = true; }); // the terminal command is folded while the browser path is offered: open it to read it
   await page.selectOption('#plat', 'linux-amd64');
   await page.fill('#addr', '0x' + 'ab'.repeat(20));
   await page.fill('#name', "Ada O'Neil");
@@ -334,6 +344,11 @@ console.log('take part: the big button, the command for this computer, the queue
   await page.click('#cta-go');
   await page.waitForFunction(() => document.activeElement && document.activeElement.id === 'addr', null, { timeout: 4000 });
   ok(true, 'the Contribute button takes you to the form and into the address field');
+  ok(/one in three turns is reserved/i.test(await text(page, '#community')) && /No transaction or spending permission/i.test(await text(page, '#community')), 'the community lane explains its bounded share and harmless proof');
+  await page.evaluate(() => { globalThis.ethereum = { request: async ({ method }) => method === 'eth_requestAccounts' ? ['0x' + '12'.repeat(20)] : null }; });
+  await page.click('#community-connect');
+  await page.waitForFunction(() => /ready/i.test(document.querySelector('#community-status').textContent));
+  ok(/0x1212…1212 ready/.test(await text(page, '#community-connect')) && /harmless signature/i.test(await text(page, '#community-status')), 'an external supporter wallet is armed without a transaction');
   ok(/tacit-prover/.test(await text(page, '.alt')) && /v0\.7\.0/.test(await text(page, '.alt')), 'a line for people who run tacit-prover');
   ok(!errs.length, 'no script errors');
   await ctx.close();

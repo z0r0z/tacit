@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // What the front page's head asks of the host, read from dapp/index.html alone (no browser, no chain). The host sends the document first and everything the
 // head names after it, so the first paint and the tile (the Swap card, which TAC is traded in) are only as early as the head lets them be:
-//   1. nothing in the head holds the first paint: no stylesheet without a media query that keeps it back, no script that is not deferred, async or a module;
+//   1. nothing in the head holds the first paint: no stylesheet without a media query that keeps it back, no script that is not deferred, async or a module, but the small routing script, which blocks
+//      so that a redirect leaves before the rest of the head is fetched;
 //   2. every module the page's own script imports statically is named in the head as a modulepreload (the script cannot start until they have all arrived, and
 //      one the head leaves out is asked for only when the whole document has been read), and so is the swap card with the modules it imports, which the
 //      script loads as soon as it has run;
@@ -11,11 +12,12 @@
 //   node tests/front-head.mjs
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
 const DAPP = join(new URL('../', import.meta.url).pathname, 'dapp');
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
-const page = readFileSync(join(DAPP, 'index.html'), 'utf8');
+const page = frontPage(join(DAPP, 'index.html'));
 const head = /<head>([\s\S]*?)<\/head>/.exec(page)[1], mod = /<script type="module">([\s\S]*?)<\/script>/.exec(page)[1];
 const STATIC_IMPORT = /(?:^|[\n;}])\s*(?:import|export)\s*(?:[^'"();]*?\sfrom\s*)?(['"])([^'"]+)\1/g;
 
@@ -23,8 +25,8 @@ const STATIC_IMPORT = /(?:^|[\n;}])\s*(?:import|export)\s*(?:[^'"();]*?\sfrom\s*
 const sheets = [...head.matchAll(/<link\b[^>]*\brel="stylesheet"[^>]*>/g)].map((m) => m[0]);
 ok(sheets.length > 0 && sheets.every((l) => /\bmedia="print"/.test(l)), `a stylesheet in the head is kept back with media="print" (${sheets.length} of them)`);
 const scripts = [...head.matchAll(/<script\b[^>]*\bsrc="[^"]+"[^>]*>/g)].map((m) => m[0]);
-ok(scripts.length > 0 && scripts.every((t) => /\b(defer|async)\b|type="module"/.test(t)), `every script the head loads is deferred, async or a module (${scripts.length})`);
-ok(/<script defer src="\/front-route\.js/.test(head), 'the routing script is deferred: it runs after the document and before the page\'s module, in that order');
+ok(scripts.length > 0 && scripts.every((t) => /\b(defer|async)\b|type="module"/.test(t) || /src="\/front-route\.js/.test(t)), `every script the head loads is deferred, async or a module, but the routing script (${scripts.length})`);
+ok(/<script src="\/front-route\.js/.test(head) && head.indexOf('/front-route.js') < head.indexOf('/px-strip.js') && head.indexOf('/front-route.js') < head.indexOf('rel="modulepreload"'), 'the routing script blocks, before px-strip and the preloads, so a redirect leaves before they are fetched');
 
 // 2. the head names what the script imports, and the card
 const named = new Set([...head.matchAll(/<link rel="modulepreload" href="([^"]+)"/g)].map((m) => m[1].split('?')[0]));

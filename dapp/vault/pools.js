@@ -1,4 +1,4 @@
-import { word, addrWord, wordAt, SEL, encApprove } from '/vault/chain.js?cb=3c1d1b84';
+import { word, addrWord, wordAt, SEL, encApprove } from '/vault/chain.js?cb=d6944a3e';
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { MULTICALL3, batchSupport, simulateBundle, sendBundle } from '/vault/batch.js?cb=4beda57b';
 import { planReopen } from '/vault/reopen.js?cb=40aab9d5';

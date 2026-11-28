@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { chain } from './fake-eth-chain.mjs';
+import { frontPage } from './lib/front-page.mjs';
 
 const ET = new EventTarget();
 globalThis.addEventListener = ET.addEventListener.bind(ET); globalThis.removeEventListener = ET.removeEventListener.bind(ET); globalThis.dispatchEvent = ET.dispatchEvent.bind(ET);
@@ -15,7 +16,7 @@ const mem = new Map(); globalThis.localStorage = { getItem: (k) => (mem.has(k) ?
 const { makeWallet } = await import('../dapp/trade/wallet.js');
 await import('../dapp/activity.js');                                       // (the wallet loads it when first wanted: here it is loaded already, so a wait of a quarter of a second learns of a pending transaction on a busy machine too)
 
-const src = (file) => readFileSync(new URL(`../dapp/${file}`, import.meta.url), 'utf8');
+const src = (file) => frontPage(new URL(`../dapp/${file}`, import.meta.url));
 const cut = (text, from, to, what) => { const a = text.indexOf(from), b = text.indexOf(to, a + 1); assert.ok(a > 0 && b > a, `${what} is where this test expects it`); return text.slice(a, b); };
 const tradeSrc = cut(src('trade/app.js'), 'async function checkPending() {', '\n}\n', 'checkPending') + '\n}\n';
 const sendSrc = cut(src('trade/app.js'), 'async function sendAndReport(', '// A trade\'s receipt:', 'sendAndReport');

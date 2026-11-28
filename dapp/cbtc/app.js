@@ -8,10 +8,10 @@ import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1
 import { makeConnect } from '/trade/connect.js?cb=514272b7';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
 import { makeKeySession, signInSheet, pickWalletSheet } from '/trade/key.js?cb=e9a3a06d';
-import { btcWay, btcSeen } from '/trade/btc-way.js?cb=41091b7e';
+import { btcWay, btcSeen } from '/trade/btc-way.js?cb=b92d2c8f';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=3784b81d';
-import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=ca6e2054';
+import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=d08d9f88';
 import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=9c8b4133';
 
 const SCAN = 'https://etherscan.io/', MEMPOOL = 'https://mempool.space/';
@@ -273,7 +273,9 @@ async function loadHistory() {
     if (h.partial && D.hist && !D.hist.partial) return;
     D.hist = h; D.live = h.partial ? null : h.live; D.histFailed = h.partial;
   } catch { if (!D.hist) D.histFailed = true; }
+  histMiss = D.histFailed ? histMiss + 1 : 0; histAt = tick + Math.min(2 ** histMiss, 5);
 }
+let histMiss = 0, histAt = 0, tick = 0;
 async function loadTotals() { const j = await api('/stats?network=mainnet&view=front'); const t = totalsOf(j); if (t) D.totals = t; }
 async function loadChain() { const [e, r] = await Promise.allSettled([readEngine(), readRates()]); if (e.status === 'fulfilled') D.engine = e.value; if (r.status === 'fulfilled') D.rates = r.value; }
 async function loadPools() { const [pl, pg] = await Promise.allSettled([readPools(), readProgram()]); if (pl.status === 'fulfilled') D.pools = pl.value; if (pg.status === 'fulfilled' && pg.value?.epoch) D.program = pg.value; if (D.pools) D.rows = poolRows(D.pools, D.program, { ethUsd: ethUsd(), usdBtc: usdBtc(), tacEth: D.rates.tacEth }); }
@@ -324,6 +326,5 @@ Promise.allSettled([totals, loadChain().then(() => { renderHead(); renderBacking
   if (params.get('amount')) { S.amt = params.get('amount'); $('#amt').value = S.amt; requote(); }
   paintAll();
 });
-let tick = 0;
-// the minute's reads (the history every fifth minute, and every minute while it is missing or short of the newest events), painted once when they are all in
-setInterval(() => { if (!document.hidden) Promise.allSettled([loadTotals(), loadChain().then(() => loadPools()), ++tick % 5 === 0 || D.histFailed ? loadHistory() : null]).then(paintAll); }, 60e3);
+// the minute's reads (the history every fifth minute, and sooner while it is missing or short of the newest events: after 2, 4, then 5 minutes), painted once when they are all in
+setInterval(() => { if (!document.hidden) Promise.allSettled([loadTotals(), loadChain().then(() => loadPools()), ++tick % 5 === 0 || (D.histFailed && tick >= histAt) ? loadHistory() : null]).then(paintAll); }, 60e3);

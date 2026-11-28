@@ -20,17 +20,27 @@ const strip = (h) => String(h).replace(/^0x/i, '').toLowerCase();
 const DEPTH = 32;
 const ZEROS = (() => { const z = [0n]; for (let i = 1; i <= DEPTH; i++) z.push(poseidon2([z[i - 1], z[i - 1]])); return z; })();
 const word = (v) => '0x' + v.toString(16).padStart(64, '0');
-// Root of the tree of the feed's leaves through block `h`, and the paths of `indexes` in it.
-function pathsAt(feed, h, indexes) {
+// Root of the tree of the feed's leaves through block `h`, and the paths of `indexes` in it. `memo` keeps the tree's levels between
+// calls: a later call rehashes only from the first leaf that differs from the last one (the feed only grows, bar a reorg at its tip).
+function pathsAt(feed, h, indexes, memo = { keys: [], levels: [] }) {
   let n = 0;
   while (n < feed.length && feed[n].height <= h) { if (feed[n].leafIndex !== n) throw new Error('the note feed has a gap'); n++; }
   if (indexes.some((i) => i >= n)) throw new Error('a note is newer than the anchor');
-  const levels = [feed.slice(0, n).map((x) => BigInt('0x' + strip(x.leaf)))];
-  for (let i = 0; i < DEPTH; i++) {
-    const a = levels[i], b = new Array(Math.ceil(a.length / 2));
-    for (let j = 0; j < b.length; j++) b[j] = poseidon2([a[2 * j], 2 * j + 1 < a.length ? a[2 * j + 1] : ZEROS[i]]);
-    levels.push(b);
-  }
+  const { keys, levels } = memo;
+  while (levels.length <= DEPTH) levels.push([]);
+  let p = 0;
+  const same = Math.min(n, keys.length);
+  while (p < same && keys[p] === strip(feed[p].leaf)) p++;
+  try {
+    keys.length = n; levels[0].length = n;
+    for (let j = p; j < n; j++) { keys[j] = strip(feed[j].leaf); levels[0][j] = BigInt('0x' + keys[j]); }
+    for (let i = 0, s = p; i < DEPTH; i++) {
+      const a = levels[i], b = levels[i + 1];
+      s = Math.floor(s / 2);
+      b.length = Math.ceil(a.length / 2);
+      for (let j = s; j < b.length; j++) b[j] = poseidon2([a[2 * j], 2 * j + 1 < a.length ? a[2 * j + 1] : ZEROS[i]]);
+    }
+  } catch (e) { keys.length = 0; throw e; }
   const node = (i, j) => (j < levels[i].length ? levels[i][j] : ZEROS[i]);
   return { root: word(node(DEPTH, 0)), paths: indexes.map((idx) => Array.from({ length: DEPTH }, (_, i) => word(node(i, Math.floor(idx / 2 ** i) ^ 1)))) };
 }
@@ -173,14 +183,25 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
   const nullifier = (nf) => getJson(`${api}/btc-pool/nullifier/${strip(nf)}`);
   const exit = (txid, vout) => getJson(`${api}/btc-pool/exit/${strip(txid)}/${vout}`);
 
-  // The note feed, read again only when the last read is over 20 s old (a spend reads it right after the balance did).
+  // The note feed, read again only when the last read is over 20 s old (a spend reads it right after the balance did). A later
+  // read keeps the notes it has and asks only from twelve blocks below its newest note on, for reorgs; `fresh` reads it all.
   let feedMemo = null;
   async function feedNow(fresh = false) {
     if (!fresh && feedMemo && Date.now() - feedMemo.at < 20e3) return feedMemo.notes;
-    const notes = await allNotes();
+    let notes = null;
+    const had = !fresh && feedMemo?.notes;
+    if (had && had.length) {
+      const floor = had[had.length - 1].height - 12;
+      let cut = had.length;
+      while (cut > 0 && had[cut - 1].height >= floor) cut--;
+      const tail = await allNotes({ from: cut });
+      if (!tail.length || tail[0].leafIndex === cut) notes = had.slice(0, cut).concat(tail);
+    }
+    if (!notes) notes = await allNotes();
     feedMemo = { at: Date.now(), notes };
     return notes;
   }
+  const treeMemo = { keys: [], levels: [] };
   // Every nullifier the pool has seen, kept between reads and read again from twelve blocks back for reorgs; null when
   // the replay does not serve the list.
   let nfMemo = null;
@@ -304,7 +325,7 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
     if (R?.root && R.retained !== false) {
       for (const fresh of [false, true]) {
         try {
-          const feed = await feedNow(fresh), L = pathsAt(feed, hAnchor, notes.map((n) => n.leafIndex));
+          const feed = await feedNow(fresh), L = pathsAt(feed, hAnchor, notes.map((n) => n.leafIndex), treeMemo);
           if (strip(L.root) !== strip(R.root) || notes.some((n) => strip(feed[n.leafIndex].leaf) !== strip(n.leaf))) continue;
           return { hAnchor, root: L.root, tip: s.height, notes: notes.map((n, i) => ({ ...n, path: L.paths[i] })) };
         } catch { /* read the paths from the replay */ }

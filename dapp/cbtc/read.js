@@ -85,27 +85,40 @@ export function farmApr(row, program, { ethUsd, tacEth }) {
 }
 
 // The engine's events are written down up to a settled block (history-base.js); the page reads the blocks after it, in ranges every node that serves old
-// logs takes, three at a time, each kept in its place.
-async function tailEvents(from) {
-  const head = Number(BigInt(await rpc('eth_blockNumber', [], ETH_LOG_NODES))), spans = [];
+// logs takes, three at a time, each kept in its place. What was read up to a few blocks under the head is kept, so a later read starts there, and a range
+// that failed is read again next time without the ones before it.
+const SETTLE = 12;
+const kept = { to: BASE.block, logs: [] };
+let tailP = null;
+const blockTime = async (b) => Number(BigInt((await rpc('eth_getBlockByNumber', [b, false], ETH_LOG_NODES)).timestamp));
+async function readTail() {
+  const head = Number(BigInt(await rpc('eth_blockNumber', [], ETH_LOG_NODES))), from = kept.to + 1, spans = [];
   for (let f = from; f <= head; f += SPAN) spans.push([f, Math.min(f + SPAN - 1, head)]);
-  const out = new Array(spans.length);
+  const out = new Array(spans.length).fill(null);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(3, spans.length) }, async () => {
-    for (let j = next++; j < spans.length; j = next++) out[j] = await rpc('eth_getLogs', [filterFor(...spans[j])], ETH_LOG_NODES);
+    for (let j = next++; j < spans.length; j = next++) { try { out[j] = await rpc('eth_getLogs', [filterFor(...spans[j])], ETH_LOG_NODES); } catch { /* read again next time */ } }
   }));
-  return eventsOf(await withTimes(out.flat(), async (b) => Number(BigInt((await rpc('eth_getBlockByNumber', [b, false], ETH_LOG_NODES)).timestamp))));
+  let ok = 0; while (ok < spans.length && out[ok]) ok++;
+  const logs = await withTimes(out.slice(0, ok).flat(), blockTime);
+  const to = ok ? Math.min(spans[ok - 1][1], head - SETTLE) : kept.to, at = (l) => Number(BigInt(l.blockNumber));
+  if (to > kept.to) { kept.logs.push(...logs.filter((l) => at(l) <= to)); kept.to = to; }
+  if (ok < spans.length) throw new Error('some blocks could not be read');
+  return eventsOf([...kept.logs, ...logs.filter((l) => at(l) > kept.to)]);
 }
+const tailEvents = () => (tailP ||= readTail().finally(() => { tailP = null; }));
 // `partial` is set when the newest events could not be read: the history stops where the written-down part does, and `live` (read for the locks it knows) may miss a lock.
 export async function readHistory({ locked, out }) {
   let tail = { posted: [], loans: [] }, partial = false;
-  try { tail = await tailEvents(BASE.block + 1); } catch { partial = true; }
+  try { tail = await tailEvents(); } catch { partial = true; }
   const first = new Map();
   for (const [t, op] of [...BASE.posted, ...tail.posted]) if (!first.has(op)) first.set(op, t);
   const loans = [...BASE.loans, ...tail.loans].map(([t, v]) => [t, BigInt(v)]);
   const ops = [...first.keys()], reads = [];
   const per = [{ to: POOL, sel: SEL.cbtcLockVBtc }, { to: POOL, sel: SEL.lockSpent }, { to: POOL, sel: SEL.lockRedeemed }, { to: POOL, sel: SEL.cbtcMinted }, { to: ENGINE, sel: SEL.escrowTotal }];
-  for (let i = 0; i < ops.length; i += 20) reads.push(...await batch(ops.slice(i, i + 20).flatMap((o) => per.map((x) => ({ to: x.to, data: x.sel + strip(o) })))));
+  const chunks = [];
+  for (let i = 0; i < ops.length; i += 20) chunks.push(ops.slice(i, i + 20));
+  for (const r of await Promise.all(chunks.map((c) => batch(c.flatMap((o) => per.map((x) => ({ to: x.to, data: x.sel + strip(o) }))))))) reads.push(...r);
   const w = (k) => (reads[k] ? wordAt(reads[k], 0) : 0n);
   const live = { locked: 0n, locks: 0, minted: 0n, mints: 0, bond: 0n, bonds: 0 };
   const locks = ops.flatMap((o, i) => {

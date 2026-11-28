@@ -274,6 +274,11 @@ if (process.env.CBTC_REDEEM_VECTOR_OUT) {
   assert.equal(R.pickNotes([mk(100000, { amount: null })], 100000n), null, 'a note whose amount could not be opened is ignored');
   const many = Array.from({ length: 20 }, (_, i) => mk(1000 + i));
   assert.equal(R.pickNotes(many, 5n), null, 'twenty notes, no subset: finishes');
+  const similar = Array.from({ length: 30 }, (_, i) => mk(10000 + 2 * i));
+  const t0 = Date.now();
+  assert.equal(R.pickNotes(similar, 150001n), null, 'thirty similar notes and an odd total none can make: null');
+  assert.ok(Date.now() - t0 < 3000, `and quickly (${Date.now() - t0} ms)`);
+  assert.equal(sum(R.pickNotes(similar, 10000n + 10058n)), 20058n, 'a pair among them is still found');
   ok('pickNotes finds the fewest notes that sum exactly, and nothing when none do');
 }
 

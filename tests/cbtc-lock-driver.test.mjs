@@ -33,7 +33,7 @@ function parseTx(hex) {
 // Bitcoin, as the driver sees it: the address's coins, a fee estimate, and a mempool that takes or refuses what is posted.
 // `commit` and `reveal` are 'ok', a refusal's text (answered 400), or 'down' (no answer at all).
 function world({ utxos, rate = 4, commit = 'ok', reveal = 'ok' }) {
-  const w = { posts: [], known: new Set(), commit, reveal, onPost: null, home: HOME };
+  const w = { posts: [], known: new Set(), commit, reveal, onPost: null, home: HOME, elsewhere: new Map() };
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url), json = (o) => new Response(JSON.stringify(o), { status: 200 });
     if (opts.method === 'POST' && u.endsWith('/tx')) {
@@ -59,6 +59,7 @@ function world({ utxos, rate = 4, commit = 'ok', reveal = 'ok' }) {
     }
     if (u.endsWith('/fee-estimates')) return json({ 2: rate });
     const os = u.match(/\/tx\/([0-9a-f]{64})\/outspend\/(\d+)$/);
+    if (os && w.elsewhere.has(`${os[1]}:${os[2]}`)) return json({ spent: true, txid: w.elsewhere.get(`${os[1]}:${os[2]}`) });
     if (os) { const by = w.posts.map(parseTx).find((x) => x.ins.some((i) => i.txid === os[1] && i.vout === Number(os[2]))); return json(by && w.known.has(by.txid) ? { spent: true, txid: by.txid } : { spent: false }); }
     // as the explorers answer: a transaction they have never seen is a 404 only when it is asked for itself; its status reads unconfirmed
     if (/\/tx\/[0-9a-f]{64}\/status$/.test(u)) return json({ confirmed: false });
@@ -166,8 +167,26 @@ await test('a kept lock whose coins went another way is let go', async () => {
   await LN.lock(t, priv, { sats: 100000n, rate: 4 }).catch(() => {});
   const kept = signed()[0];
   w.commit = 'bad-txns-inputs-missingorspent'; w.reveal = 'ok';
+  assert.deepEqual(await LN.resumeLocks(t, priv), { locked: [], waiting: 1 }, 'refused, but no coin of it is spent yet: it waits');
+  assert.equal(signed().length, 1);
+  const c0 = parseTx(kept.commitHex).ins[0];
+  w.elsewhere.set(`${c0.txid}:${c0.vout}`, 'e1'.repeat(32));
   assert.deepEqual(await LN.resumeLocks(t, priv), { locked: [], waiting: 0 });
   assert.deepEqual([signed(), protectedNow().includes(`${kept.lockTxid}:1`)], [[], false], 'nothing of it is on Bitcoin, so nothing is kept or protected');
+});
+
+await test('a kept lock whose commit meets a fee floor is kept', async () => {
+  fresh();
+  const w = world({ utxos: [coin(0, 500000)], commit: 'down', reveal: 'down' });
+  await LN.lock(t, priv, { sats: 100000n, rate: 4 }).catch(() => {});
+  const kept = signed()[0];
+  for (const why of ['mempool min fee not met', 'min relay fee not met']) {
+    w.commit = why; w.reveal = 'ok';
+    assert.deepEqual(await LN.resumeLocks(t, priv), { locked: [], waiting: 1 }, why);
+    assert.deepEqual([signed().length, protectedNow().includes(`${kept.lockTxid}:1`)], [1, true], `${why}: the signed lock and its protection stay`);
+  }
+  w.commit = 'ok';
+  assert.equal((await LN.resumeLocks(t, priv)).locked.length, 1, 'once the commit is taken, the lock is finished');
 });
 
 await test('fees are topped up from the largest coins, never from one that costs more than it holds or is unconfirmed', async () => {

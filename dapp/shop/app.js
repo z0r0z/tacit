@@ -1,6 +1,7 @@
 import { makeConnect } from '/trade/connect.js?cb=514272b7';
 import { esc } from '/trade/sheet.js?cb=d857446c';
 import { $, rpc } from '/trade/util.js?cb=9c8b4133';
+import { MULTICALL3, encodeBatch, decodeBatch } from '/trade/batch.js';
 import { readSpot, readPrecision } from '/trade/farm-read.js?cb=fb6ec72f';
 import { makeEvmTradeVenues, ZROUTER } from '/evm-trade-venues.js?cb=9aac0fac';
 import { SHOP, MARKET, TAC, TAC_NAME, FROM_BLOCK, TOPICS, foldShelf, sortShelf, filterShelf, zeroTiers, zerosOf, zerosText, zeroBits, addressParts, tacText, usdText, priceUsd, tacUsdFrom, tokenNumber,
@@ -47,10 +48,14 @@ async function logsBetween(from, to) {
     return [...await logsBetween(from, mid), ...await logsBetween(mid + 1, to)];
   }
 }
+// the logs up to a few blocks under the head are kept, so a refresh reads only the blocks after them
+const SETTLE = 12, kept = { to: FROM_BLOCK - 1, logs: [] };
 async function readShelf() {
   try {
-    const head = Number(BigInt(await rpc('eth_blockNumber', [])));
-    S.logs = await logsBetween(FROM_BLOCK, head);
+    const head = Number(BigInt(await rpc('eth_blockNumber', []))), settled = head - SETTLE, at = (l) => Number(BigInt(l.blockNumber));
+    const fresh = kept.to < head ? await logsBetween(kept.to + 1, head) : [];
+    if (settled > kept.to) { kept.logs.push(...fresh.filter((l) => at(l) <= settled)); kept.to = settled; }
+    S.logs = [...kept.logs, ...fresh.filter((l) => at(l) > kept.to)];
     S.shelf = sortShelf(foldShelf(S.logs));
     S.loaded = true; S.failed = false;
   } catch { S.failed = true; }
@@ -70,13 +75,14 @@ async function readTokens() {
   readingTokens = true;
   try {
     const ids = soldTo(S.logs, who).slice(0, 40), found = [];
-    await Promise.all(ids.map(async (id) => {
-      try {
-        if (decodeAddress(await rpc('eth_call', [{ to: MARKET, data: ownerOfData(id) }, 'latest'])) !== who.toLowerCase()) return;
-        const vanity = decodeAddress(await rpc('eth_call', [{ to: MARKET, data: addressOfData(id) }, 'latest']));
-        if (vanity) found.push({ id, vanity, bits: zeroBits(vanity) });
-      } catch { /* used, or not readable now */ }
-    }));
+    // two Multicall3 reads for all of them: who owns each, then the address of each one this wallet still owns
+    const many = async (datas) => (datas.length ? decodeBatch(await rpc('eth_call', [{ to: MULTICALL3, data: encodeBatch(datas.map((data) => ({ to: MARKET, data }))) }, 'latest']), datas.length) : []);
+    try {
+      const owners = await many(ids.map(ownerOfData));
+      const mine = ids.filter((id, i) => decodeAddress(owners[i]) === who.toLowerCase());
+      const vanities = await many(mine.map(addressOfData));
+      mine.forEach((id, i) => { const vanity = decodeAddress(vanities[i]); if (vanity) found.push({ id, vanity, bits: zeroBits(vanity) }); });
+    } catch { return; }      // not readable now: the list stays as it was
     if (who !== W.account) return;
     found.sort((a, b) => b.bits - a.bits || (a.id < b.id ? -1 : 1));
     // a purchase just made is shown at once, before the logs have it: it stays until the logs do

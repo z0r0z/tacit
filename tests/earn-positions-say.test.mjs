@@ -7,9 +7,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(path.join(here, '..', 'dapp', 'index.html'), 'utf8');
+const src = frontPage(path.join(here, '..', 'dapp', 'index.html'));
 const paint = src.slice(src.indexOf('function hxPosPaint()'), src.indexOf('function hxBwRows()'));
 const handler = paint.slice(paint.indexOf('el.onclick = (e) => {'));
 

@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { keccak_256 } from '@noble/hashes/sha3';
+import { frontPage } from './lib/front-page.mjs';
 
 const store = new Map();
 Object.defineProperty(globalThis, 'localStorage', { value: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) }, configurable: true });
@@ -22,7 +23,7 @@ const { hedgedRpc } = await import('../dapp/trade/rpc.js');
 const LIGHT = ETH_NODES.find((u) => u.includes('tacit-node-gw'));
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const page = readFileSync(path.join(here, '..', 'dapp', 'index.html'), 'utf8');
+const page = frontPage(path.join(here, '..', 'dapp', 'index.html'));
 const between = (from, to) => {
   const a = page.indexOf(from), b = page.indexOf(to, a);
   if (a < 0 || b < 0) throw new Error(`cannot find ${JSON.stringify(from)} .. ${JSON.stringify(to)} in dapp/index.html`);

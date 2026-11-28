@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import http from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const SPX = '0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c';
@@ -21,7 +22,7 @@ const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails+
 const read = (p) => readFileSync(join(DAPP, p), 'utf8');
 
 // ── the file ──
-const page = read('spx/index.html'), front = read('index.html');
+const page = frontPage(join(DAPP, 'spx/index.html')), front = frontPage(join(DAPP, 'index.html'));
 ok(/<html lang="en" data-page="spx">/.test(page) && /<html lang="en">/.test(front), 'the page is marked data-page="spx" and the front page is not');
 {
   // the zap's transaction finishes the proof job it spends (else its Activity item never closes and offers to send the spent proof again),
@@ -47,9 +48,9 @@ ok(/<html lang="en" data-page="spx">/.test(page) && /<html lang="en">/.test(fron
 ok(/<title>tacit SPX<\/title>/.test(page) && /<link rel="canonical" href="https:\/\/tacit\.finance\/spx\/">/.test(page), 'it is called tacit SPX, at /spx/');
 ok(/<meta property="og:image" content="https:\/\/tacit\.finance\/spx\/card\.jpg">/.test(page) && existsSync(join(DAPP, 'spx/card.jpg')), 'its share card is its own, and the file is there');
 const cspOf = (t) => /<meta http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(t)?.[1];
-ok(!!cspOf(page) && cspOf(page) === cspOf(front), 'its CSP, and so the pinned hash of the one inline script, is the front page’s');
+ok(!!cspOf(page) && cspOf(page) === cspOf(front), 'its CSP is the front page’s');
 const scriptOf = (t) => /<script type="module">([\s\S]*?)<\/script>/.exec(t)?.[1];
-ok(!!scriptOf(page) && scriptOf(page) === scriptOf(front), 'and the inline script is the front page’s, byte for byte');
+ok(!!scriptOf(page) && scriptOf(page) === scriptOf(front), 'and its code (/front/main.js) is the front page’s, byte for byte');
 ok((page.match(/<h1\b/g) || []).length === (front.match(/<h1\b/g) || []).length && /<h1 id="hero-h"><img[^>]*alt="SPX6900"/.test(page) && !page.includes('Private DeFi<span class="sr">'), 'its hero h1 is the SPX6900 wordmark, in the place of the front page’s title');
 const ops = [...page.matchAll(/<li><button type="button" data-hx="([^"]+)"><b>(\d\d)<\/b><span>([A-Z]+)<\/span>/g)].map((m) => [m[3], m[1]]);
 ok(JSON.stringify(ops) === JSON.stringify([['SHIELD', `shield:${SPX}:defi`], ['SEND', `send:xp${SPX}`], ['WITHDRAW', `shield:${SPX}:wallet`], ['BRIDGE', `bridge:xp${SPX}`]]), 'Shield, Send, Withdraw and Bridge are the tile’s links on $SPX’s address, in that order');

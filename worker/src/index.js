@@ -667,7 +667,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/community/beat', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/nodes/list', '/nodes/status', '/nodes/records', '/nodes/relay', '/nodes/ad', '/nodes/credits', '/gas/done', '/outpoints/classify', '/metrics', '/metrics/event']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/cancel', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/community/beat', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/nodes/list', '/nodes/status', '/nodes/records', '/nodes/relay', '/nodes/ad', '/nodes/credits', '/gas/done', '/outpoints/classify', '/metrics', '/metrics/event']);
 // Usage counts (worker/src/metrics.js): one instance per environment, writing to the same store as the rest.
 const _metricsOfEnv = new WeakMap();
 function metricsOf(env) { let m = _metricsOfEnv.get(env); if (!m) { m = makeMetrics({ kv: env.REGISTRY_KV }); _metricsOfEnv.set(env, m); } return m; }
@@ -4637,6 +4637,19 @@ export function queueSender(ip) {
 }
 // What a job keeps of its sender: the same grouping, as a keyed hash instead of the network itself (a mint's own key is not an address and stays).
 export const senderKey = (env, s) => (!s || /^armed:/.test(s) ? s : 'n:' + ipBucket(env, s));
+// POST /confidential/cancel {jobId, secret} → drop the sender's own job while it still waits unclaimed (see confidential-settle.js cancelJob):
+// only the page that submitted it holds the secret whose hash the job carries. Metered on the strict bucket like a submit.
+async function handleConfidentialCancel(req, env, cors) {
+  const q = confSettler(env), h = { ...cors, 'Cache-Control': 'no-store' };
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, h);
+  const rl = await proveRateLimit(env, req.headers.get('CF-Connecting-IP') || 'anon');
+  if (!rl.ok) return jsonResponse({ ok: false, error: `too many requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...h, 'Retry-After': String(rl.retryAfter) });
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, h); }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonResponse({ ok: false, error: 'bad json' }, 400, h);
+  const r = await q.cancelJob({ jobId: body.jobId, secret: body.secret });
+  return jsonResponse(r, r.ok ? 200 : 409, h);
+}
 async function handleConfidentialSubmit(req, env, cors) {
   const q = confSettler(env);
   const sender = senderKey(env, queueSender(req.headers.get('CF-Connecting-IP')));
@@ -4678,7 +4691,7 @@ async function handleConfidentialSubmit(req, env, cors) {
       if (!cb.ok) return jsonResponse({ ok: false, error: `free relayed settles for today are used up (${cb.used}/${cb.cap}) — attach a fee above the floor, or prove-mode and settle it yourself`, code: 'free_budget', class: cls }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '3600' });
     }
     try {
-      const r = await q.submitJob({ type: body.type, memos: body.memos, mode: 'sealed', feeAsset: body.feeAsset, sealed: body.sealed, client: sender });
+      const r = await q.submitJob({ type: body.type, memos: body.memos, mode: 'sealed', feeAsset: body.feeAsset, sealed: body.sealed, client: sender, cancel: body.cancel });
       if (sealedFree && !r.deduped) { await spendDailyBudget(env, 'free').catch(() => {}); await spendDailyBudget(env, `free:${freeClassOf(body.type)}`).catch(() => {}); }
       return jsonResponse({ ok: true, ...r, ...(relay ? { relay: relay.state } : {}) }, 200, { ...cors, 'Cache-Control': 'no-store' });
     } catch (e) { return jsonResponse({ ok: false, error: String(e.message || e) }, 400, { ...cors, 'Cache-Control': 'no-store' }); }
@@ -4803,7 +4816,7 @@ async function handleConfidentialSubmit(req, env, cors) {
   const charge = feeless || postedFree ? { day: new Date().toISOString().slice(0, 10), names: ['free', `free:${freeClassOf(body.type)}`, ...(mintBurn ? [`bridgemint:${mintBurn}`] : [])] } : undefined;
   try {
     const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode, feeAsset: body.feeAsset, exit: body.exit,
-      publicValues: body.publicValues, proof: body.proof, paid: paidProve || undefined, sealed: body.sealed, charge, early: submitMode === 'prove' && body.ahead === true, free: postedFree, client: sender });
+      publicValues: body.publicValues, proof: body.proof, paid: paidProve || undefined, sealed: body.sealed, charge, early: submitMode === 'prove' && body.ahead === true, free: postedFree, client: sender, cancel: body.cancel });
     if (!r.deduped) wakeRelay();
     // Spend only on a job we actually accepted and will prove — a dedupe hit costs us nothing.
     if (!r.deduped) {
@@ -9991,6 +10004,65 @@ async function _recordSettledTradeVolume(env, network, assetIdHex, lastTrade) {
   // swallows that, so we don't need a separate guard here.
   try { await _bustAssetDetailCache(network, assetIdHex); } catch {}
   return true;
+}
+
+// Authenticated one-off repair for a transaction that was observed in a
+// mempool, persisted by the legacy hint path, and later disappeared. The
+// caller identifies the exact asset + txid; no prefix or bulk deletion is
+// supported. This keeps every aggregate derived from that record in sync.
+async function _removePhantomTrade(env, network, assetIdHex, txidHex) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex) || !/^[0-9a-f]{64}$/.test(txidHex)) {
+    throw new Error('asset_id and txid must be 64 lowercase hex chars');
+  }
+  const eventKey = tradeEventKey(network, assetIdHex, txidHex);
+  const ringKey = tradesRingKey(network, assetIdHex);
+  const [event, ringRaw, lastTrade, outlierTrade, seen] = await Promise.all([
+    env.REGISTRY_KV.get(eventKey, 'json'),
+    env.REGISTRY_KV.get(ringKey),
+    env.REGISTRY_KV.get(lastTradeKey(network, assetIdHex), 'json'),
+    env.REGISTRY_KV.get(`${lastTradeKey(network, assetIdHex)}:outlier`, 'json'),
+    env.REGISTRY_KV.get(transferSeenKey(network, assetIdHex, txidHex)),
+  ]);
+  let ring = [];
+  try { const parsed = ringRaw ? JSON.parse(ringRaw) : []; if (Array.isArray(parsed)) ring = parsed; } catch {}
+  const ringTrade = ring.find(t => t?.txid === txidHex) || null;
+  const record = event || ringTrade;
+  if (!record && !seen && lastTrade?.txid !== txidHex && outlierTrade?.txid !== txidHex) {
+    return { removed: false, reason: 'not-found', asset_id: assetIdHex, txid: txidHex };
+  }
+
+  const priceSats = Math.max(0, Number(record?.price_sats) || 0);
+  const ts = Number(record?.ts) || 0;
+  await env.REGISTRY_KV.delete(eventKey);
+  if (ringTrade) {
+    ring = ring.filter(t => t?.txid !== txidHex);
+    await env.REGISTRY_KV.put(ringKey, JSON.stringify(ring));
+  }
+  if (lastTrade?.txid === txidHex) {
+    if (ring.length > 0) await env.REGISTRY_KV.put(lastTradeKey(network, assetIdHex), JSON.stringify(ring[0]));
+    else await env.REGISTRY_KV.delete(lastTradeKey(network, assetIdHex));
+  }
+  if (outlierTrade?.txid === txidHex) {
+    await env.REGISTRY_KV.delete(`${lastTradeKey(network, assetIdHex)}:outlier`);
+  }
+  if (priceSats > 0) {
+    if (ts > 0) {
+      const dayKey = tradeDayKey(network, assetIdHex, _utcYyyymmdd(ts));
+      const day = Number(await env.REGISTRY_KV.get(dayKey)) || 0;
+      await env.REGISTRY_KV.put(dayKey, String(Math.max(0, day - priceSats)), { expirationTtl: TRADE_DAY_TTL_SECONDS });
+    }
+    const lifeKey = tradeLifetimeKey(network, assetIdHex);
+    const life = Number(await env.REGISTRY_KV.get(lifeKey)) || 0;
+    await env.REGISTRY_KV.put(lifeKey, String(Math.max(0, life - priceSats)));
+  }
+  if (seen) {
+    await env.REGISTRY_KV.delete(transferSeenKey(network, assetIdHex, txidHex));
+    const countKey = transferCountKey(network, assetIdHex);
+    const count = parseInt((await env.REGISTRY_KV.get(countKey)) || '0', 10) || 0;
+    await env.REGISTRY_KV.put(countKey, String(Math.max(0, count - 1)));
+  }
+  try { await _bustAssetDetailCache(network, assetIdHex); } catch {}
+  return { removed: true, asset_id: assetIdHex, txid: txidHex, price_sats: priceSats, transfer_count_adjusted: !!seen };
 }
 
 // Recent-trades ring buffer per asset. Bounded at TRADES_RING_CAP entries.
@@ -16926,6 +16998,13 @@ async function handleAttest(assetIdHex, req, env, network, cors) {
   return jsonResponse({ ok: true, attestation }, 200, cors);
 }
 
+// Only confirmed transactions may enter durable transfer/trade history. Kept
+// as a tiny named predicate so the mempool-eviction invariant has direct unit
+// coverage instead of being buried inside the large hint handler.
+function _shouldPersistAssetHint(confirmed) {
+  return confirmed === true;
+}
+
 // Targeted-scan endpoint. The cron polls in 5-min ticks, so a freshly broadcast
 // etch can take ~5–15 min to surface in /assets. The dApp calls this right after
 // broadcast with the reveal txid; the worker fetches the tx directly from
@@ -17074,7 +17153,20 @@ async function handleAssetHint(req, env, network, cors, ctx) {
       try { derived = await _deriveTradeFromChain(env, network, tx, decoded.opcode, dx.asset_id, dx); }
       catch { return jsonResponse({ ok: true, source: 'deferred', asset_id: dx.asset_id, network }, 200, cors); }
     }
-    const counted = await bumpTransferCount(env, network, dx.asset_id, txidHex);
+    // A mempool sighting is not durable chain history. Transactions can be
+    // evicted or replaced after an explorer has briefly served them; writing
+    // xferseen + trade aggregates here used to leave a permanent phantom
+    // trade and also made the later confirmed cron scan dedupe itself away.
+    //
+    // Keep returning the optimistic decoded record to the submitting dapp,
+    // but only persist counters/history once an explorer reports the tx as
+    // confirmed. An unconfirmed tx that later confirms is picked up by the
+    // normal block scanner (or a repeated hint), neither of which is blocked
+    // by a premature xferseen marker.
+    const persistHint = _shouldPersistAssetHint(confirmed);
+    const counted = persistHint
+      ? await bumpTransferCount(env, network, dx.asset_id, txidHex)
+      : false;
     let lastTrade = null;
     if (derived && derived.price_sats > 0) {
       lastTrade = {
@@ -17102,7 +17194,7 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     }
     await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
     return jsonResponse({
-      ok: true, source: counted ? 'hint' : 'already-counted',
+      ok: true, source: !persistHint ? 'pending-confirmation' : counted ? 'hint' : 'already-counted',
       asset_id: dx.asset_id,
       kind: decoded.opcode === T_AXFER ? 'axfer'
           : decoded.opcode === T_AXFER_VAR ? 'axfer-var'
@@ -28524,6 +28616,7 @@ export {
   // (b) helper writes match the hint-path aggregates byte-for-byte.
   // Drift in either silently breaks lifetime + 24h volume accuracy.
   _deriveAxferTradeFromChain, _recordSettledTradeVolume, sweepPreauthPhantoms, _recordPreauthFillFromSweep,
+  _removePhantomTrade, _shouldPersistAssetHint,
   // Journal-based reconcile — race-free authoritative recompute of the
   // lifetime counter from the trade-event journal. Tests pin (a) sum
   // correctness across N entries, (b) single put semantics (no RMW),
@@ -29122,6 +29215,7 @@ async function _routeFetch(req, env, ctx) {
     // /confidential/submit enqueues a user's confidential op; /confidential/job lets the relayer claim +
     // prove it; /confidential/ack records the on-chain settle; /confidential/status is the dapp poll.
     if (url.pathname === '/confidential/submit' && req.method === 'POST') return handleConfidentialSubmit(req, env, cors);
+    if (url.pathname === '/confidential/cancel' && req.method === 'POST') return handleConfidentialCancel(req, env, cors);
     if (url.pathname === '/confidential/job' && req.method === 'GET') return handleConfidentialJob(req, env, cors);
     if (url.pathname === '/confidential/queue' && req.method === 'GET') return handleConfidentialQueue(req, env, cors);
     if (url.pathname === '/confidential/wake' && req.method === 'GET') return handleConfidentialWake(req, env, cors);
@@ -31936,6 +32030,21 @@ async function _routeFetch(req, env, ctx) {
         // the next /assets/:id read without waiting on the SWR FRESH window.
         ctx.waitUntil(_bustAssetDetailCache(network, aid));
         return jsonResponse(result, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    // POST /admin/remove-phantom-trade?aid=X&txid=Y
+    //   Remove one explicitly identified mempool-evicted trade written by
+    //   the pre-confirmation hint path. DEBUG_TOKEN-gated and deliberately
+    //   non-bulk: operators must first verify the tx is absent from chain.
+    if (url.pathname === '/admin/remove-phantom-trade' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = (url.searchParams.get('aid') || '').toLowerCase();
+        const txid = (url.searchParams.get('txid') || '').toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(aid) || !/^[0-9a-f]{64}$/.test(txid)) {
+          return jsonResponse({ error: 'aid and txid are required (64-hex)' }, 400, cors);
+        }
+        return jsonResponse(await _removePhantomTrade(env, network, aid, txid), 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
     }
     // GET /admin/volume-disagree?aid=X[&limit=N]

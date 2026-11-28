@@ -8,9 +8,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
+import { frontPage } from './lib/front-page.mjs';
 
 const card = readFileSync(new URL('../dapp/swap/card.js', import.meta.url), 'utf8');
-const page = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+const page = frontPage(new URL('../dapp/index.html', import.meta.url));
 const body = (src, head, end = '\n}\n') => { const i = src.indexOf(head); assert.ok(i >= 0, `${head} is in the source`); return src.slice(i, src.indexOf(end, i) + end.length); };
 
 test('the card clears its move quote and tells the page the amount is gone', () => {

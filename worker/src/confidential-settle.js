@@ -114,6 +114,14 @@ export function makeLock() {
 // an op is refused at submit. Without it every op is queued as it comes.
 // `senders`: a Map kept across the settlers built over one store, of each queued job's sender (see servedOrder); a sender never changes, so each is
 // read once. Without it the settler keeps its own. `kinds` is the same for each job's `{ pinned, at }` (whether it pins reserves, and when it was queued). `retries`: a Map kept the same way, of each sender's one place at the head of the queue and when it ends (see RETRY_LANE_MS).
+// A job's cancel hash (submit's `cancel`): sha256 of the page's secret, hex. The words a cancelled job ends with name what happened and that nothing was spent.
+const CANCEL_HASH = (h) => typeof h === 'string' && /^0x[0-9a-f]{64}$/i.test(h);
+export const CANCELLED = 'cancelled by its sender before the relay took it: it was built again on the pool as it is now, so nothing was spent';
+async function sha256Hex(s) {
+  const d = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+  return '0x' + [...d].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee, sleep, lock, verifyPosted, expiryOf, refund, checkOp = null, senders = new Map(), kinds = new Map(), retries = new Map(), maxProveOnlyPerSender = MAX_PROVE_ONLY_PER_SENDER }) {
   // storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job) }
   // feeGate({ type, op }) -> bool : OPTIONAL profitability gate for the relayed (mode:'settle') flow — reject
@@ -226,14 +234,14 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   const chargeOf = (c) => (c && typeof c === 'object' && /^\d{4}-\d{2}-\d{2}$/.test(String(c.day)) && Array.isArray(c.names)
     ? { day: String(c.day), names: c.names.map(String).slice(0, 6) } : null);
   // `client`: who sent it (a short key for the sender's network), for the order the queue is served in and the per-sender cap.
-  async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null, exit = null, publicValues = null, proof = null, paid = false, sealed = null, charge = null, early = false, free = false, client = null }) {
+  async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null, exit = null, publicValues = null, proof = null, paid = false, sealed = null, charge = null, early = false, free = false, client = null, cancel = null }) {
     if (mode === 'preproven') return postProven({ type, memos, publicValues, proof, exit, free: !!free && FREE_POSTED_TYPES.includes(type), charge: free ? chargeOf(charge) : null });
     const sender = typeof client === 'string' && /^[0-9A-Za-z.:/_-]{1,64}$/.test(client) ? client : null;
     if (mode === 'sealed') {
       if (!type || !SEALED_SHAPE(sealed)) throw new Error('submitJob: a sealed job needs type + sealed { worker, epk, iv, ct }');
       if (!OPEN_TYPES.includes(type)) throw new Error(`submitJob: a ${type} cannot be sent sealed (its settle is not a plain pool.settle)`);
       if (exit != null) throw new Error('submitJob: a sealed job cannot carry an exit recipe');
-      return submitSealed({ type, sealed, memos: memos || [], feeAsset, sender });
+      return submitSealed({ type, sealed, memos: memos || [], feeAsset, sender, cancel });
     }
     if (!type || !op) throw new Error('submitJob: type + op required');
     // Drop a caller-supplied feeUsd FIRST, before anything derives from `op`.
@@ -295,6 +303,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       ...(sender ? { client: sender } : {}),
       status: 'pending', createdAt: clock(), claimedAt: 0, txHash: null, error: null,
       publicValues: null, proof: null,
+      ...(mode === 'settle' && CANCEL_HASH(cancel) ? { cancelHash: cancel.toLowerCase() } : {}),
     };
     // Dedupe, backpressure, record and queue entry are one step: the record is what makes a later submit
     // read as a duplicate, so it is only ever left behind together with its queue entry.
@@ -478,7 +487,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // `mode`, when given, takes only jobs of that mode ('prove' or 'settle'), oldest first; others stay queued.
   // `openable` takes only a relayed job that may go on the board once proved (the relay proves those while it cannot
   // pay for settles, so a sender can take them).
-  async function submitSealed({ type, sealed, memos, feeAsset, sender = null }) {
+  async function submitSealed({ type, sealed, memos, feeAsset, sender = null, cancel = null }) {
     const id = hash(JSON.stringify({ type, sealed: sealed.ct }));
     return exclusive(async () => {
       const seen = await storage.getJob(id);
@@ -487,6 +496,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
         id, type, op: null, mode: 'settle', sealed: { worker: sealed.worker, epk: sealed.epk, iv: sealed.iv, ct: sealed.ct }, memos,
         feeUnits: null, feeUsd: null, feeToken: null, feeAsset: feeAsset || null, exit: null, activateTx: null, activateError: null,
         ...(sender ? { client: sender } : {}),
+        ...(CANCEL_HASH(cancel) ? { cancelHash: cancel.toLowerCase() } : {}),
         status: 'pending', createdAt: clock(), claimedAt: 0, txHash: null, error: null,
       };
       const pend = await storage.getPending();
@@ -496,6 +506,24 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       senders.set(id, sender || ''); kinds.set(id, { pinned: PINNED_TYPES.includes(type), patient: PATIENT_TYPES.includes(type), at: job.createdAt, retry: !!job.retryLane });
       if (!pend.includes(id)) { pend.push(id); await storage.putPending(pend); }
       return { jobId: id, status: 'pending' };
+    });
+  }
+
+  // A sender drops its own job while it still waits unclaimed: a swap whose pool moved before the relay took it is built again by the page, and the
+  // job left behind would only take the relay's look (and a place at the front of the queue, with the other swaps) to be refused. The job was
+  // submitted with `cancel` = sha256 of a secret only the page holds, so nobody else can drop it; once claimed ('proving') it runs its course.
+  async function cancelJob({ jobId, secret } = {}) {
+    if (typeof jobId !== 'string' || !/^0x[0-9a-f]{64}$/i.test(jobId) || typeof secret !== 'string' || !/^0x[0-9a-f]{64}$/i.test(secret)) return { ok: false, error: 'cancel needs jobId and secret (0x + 64 hex each)' };
+    const want = await sha256Hex(secret.toLowerCase());
+    return exclusive(async () => {
+      const j = await storage.getJob(jobId);
+      if (!j || !j.cancelHash || j.cancelHash !== want) return { ok: false, error: 'no such job to cancel' };
+      if (j.status !== 'pending') return { ok: false, status: j.status, error: `the job is ${j.status}, so it runs its course` };
+      await storage.putJob(jobId, { ...j, status: 'failed', error: CANCELLED, cancelledAt: clock() });
+      const pend = await storage.getPending();
+      if (pend.includes(jobId)) await storage.putPending(pend.filter((x) => x !== jobId));
+      senders.delete(jobId); kinds.delete(jobId);
+      return { ok: true, jobId, status: 'failed' };
     });
   }
 
@@ -840,7 +868,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     });
   }
 
-  return { submitJob, nextJob, nextBatch, ackJob, stageJob, requeueJob, renewJobOp, jobStatus, pendingCount, queueStats, jobIdOf, openList, nextOpen, landedJob };
+  return { submitJob, cancelJob, nextJob, nextBatch, ackJob, stageJob, requeueJob, renewJobOp, jobStatus, pendingCount, queueStats, jobIdOf, openList, nextOpen, landedJob };
 }
 
 // KV-backed wiring for the worker runtime. KV keys: cps:pending (id[]), cps:open (id[]), cps:job:<id> (job).

@@ -11,9 +11,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const page = readFileSync(join(ROOT, 'dapp/index.html'), 'utf8');
+const page = frontPage(join(ROOT, 'dapp/index.html'));
 const wallet = readFileSync(join(ROOT, 'dapp/evm-pool-wallet.js'), 'utf8');
 
 let pass = 0, fail = 0;

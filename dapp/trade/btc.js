@@ -1,4 +1,4 @@
-import { makeBtcSession, short } from '/trade/btc-session.js?cb=46d5d96c';
+import { makeBtcSession, short } from '/trade/btc-session.js?cb=185e1bbc';
 import { overlay, esc } from '/trade/sheet.js?cb=d857446c';
 import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=62608560';
 import { count } from '/metrics.js?cb=48a20c0d';
@@ -94,13 +94,14 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
     const c = o.body.querySelector('[data-copy]');
     c.onclick = () => navigator.clipboard?.writeText(addr).then(() => { c.textContent = 'Copied'; }, () => { c.textContent = 'Could not copy'; });
     const b = o.body.querySelector('[data-send]');
+    let reads = 0;
     if (b) b.onclick = async () => {
       b.disabled = true; say('Confirm it in your wallet…');
       try {
         const x = connected ? session.T.extWallet : await connectExt();
         await noteSafe(x);
         await x.sendSats(addr, send);
-        say('Sent. Waiting for Bitcoin to show it…');
+        say('Sent. Waiting for Bitcoin to show it…'); reads = 0;
       } catch (e) {
         const m = e?.message || String(e);
         say(e?.carriers || e?.scanFailed ? m : /reject|cancel|denied|declin/i.test(m) ? 'Nothing was sent.' : `Could not send: ${m}`);
@@ -109,8 +110,12 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
     };
     const read = async () => { const u = await session.T.getUtxos(addr).catch(() => null); return Array.isArray(u) ? u.reduce((a, x) => a + (Number(x.value) > 546 ? Number(x.value) : 0), 0) : null; };
     let base = await read();
-    for (let i = 0; i < 360 && !o.closed; i++) {
-      await sleep(5000);
+    // every 5 s for the first minute, then slower up to once a minute; no reads while the tab is hidden
+    const until = Date.now() + 30 * 60e3;
+    while (Date.now() < until && !o.closed) {
+      await sleep(reads < 12 ? 5000 : Math.min(60e3, 10e3 * 2 ** Math.floor((reads - 12) / 3)));
+      if (o.closed || globalThis.document?.hidden) continue;
+      reads++;
       const now = await read();
       if (now == null) continue;
       if (base == null || now <= base) { base = base == null ? now : Math.min(base, now); continue; }

@@ -21,9 +21,9 @@ export const SNAPSHOT = Object.freeze({
   cutChars: 600_000, // a piece ends at the first block boundary past this many characters of rows; split again if it still packs over maxPiece
   gateways: Object.freeze([
     'https://ipfs.filebase.io/ipfs/',
-    'https://trustless-gateway.link/ipfs/', // raw blocks only (?format=raw), which is all a snapshot is
     'https://ipfs.orbitor.dev/ipfs/',
     'https://gateway.pinata.cloud/ipfs/',
+    'https://trustless-gateway.link/ipfs/', // raw blocks only (?format=raw), which is all a snapshot is; last, its 5xx answers carry no CORS header
   ]),
 });
 
@@ -232,22 +232,39 @@ export function readPointer(result) {
   } catch { return null; }
 }
 
-// The bytes a raw-block CID names, from the first gateway whose answer hashes to it.
-export async function fetchBlock(cid, { fetchImpl, sha256, gateways = SNAPSHOT.gateways, timeoutMs = 20000 }) {
+// The bytes a raw-block CID names, from the first gateway whose answer hashes to it. A gateway that errors or times out
+// is asked again on a second pass (their 5xx comes in short bursts); one that served the wrong bytes is not.
+export async function fetchBlock(cid, { fetchImpl, sha256, gateways = SNAPSHOT.gateways, timeoutMs = 20000, retryMs = 700 }) {
   const want = cidSha(cid);
   if (!want) throw new Error(`pool-snapshot: ${cid} is not a raw-block CID`);
   let last = null;
-  for (const g of gateways) {
-    try {
-      const raw = /trustless-gateway/.test(g);
-      const r = await fetchImpl(g + cid + (raw ? '?format=raw' : ''), { headers: raw ? { accept: 'application/vnd.ipld.raw' } : {}, signal: AbortSignal.timeout(timeoutMs) });
-      if (!r.ok) { last = new Error(`${new URL(g).host}: HTTP ${r.status}`); continue; }
-      const bytes = new Uint8Array(await r.arrayBuffer());
-      if (bytes.length <= SNAPSHOT.maxPiece && hex(sha256(bytes)) === hex(want)) return bytes;
-      last = new Error(`${new URL(g).host}: bytes that are not ${cid}`);
-    } catch (e) { last = e; }
+  const liars = new Set();
+  for (let pass = 0; pass < 2; pass++) {
+    if (pass) { if (liars.size === gateways.length) break; await new Promise((r) => setTimeout(r, retryMs)); }
+    for (const g of gateways) {
+      if (liars.has(g)) continue;
+      try {
+        const raw = /trustless-gateway/.test(g);
+        const r = await fetchImpl(g + cid + (raw ? '?format=raw' : ''), { headers: raw ? { accept: 'application/vnd.ipld.raw' } : {}, signal: AbortSignal.timeout(timeoutMs) });
+        if (!r.ok) { last = new Error(`${new URL(g).host}: HTTP ${r.status}`); if (r.status === 404 || r.status === 410) liars.add(g); continue; }
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        if (bytes.length <= SNAPSHOT.maxPiece && hex(sha256(bytes)) === hex(want)) return bytes;
+        liars.add(g);
+        last = new Error(`${new URL(g).host}: bytes that are not ${cid}`);
+      } catch (e) { last = e; }
+    }
   }
   throw last || new Error('pool-snapshot: no gateway');
+}
+
+// Run fn over items, at most n at a time, results in order.
+async function pooled(items, n, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (next < items.length) { const i = next++; out[i] = await fn(items[i]); }
+  }));
+  return out;
 }
 
 // The manifest and every log it lists, each piece checked against its CID. `expect`: { chainId, pool, addresses, topics } the page's read needs.
@@ -257,11 +274,7 @@ export async function loadSnapshot(cid, { fetchImpl, sha256, gateways, expect })
   const has = new Set((m.addresses || []).map(lc)), topics = new Set((m.topics || []).map(lc));
   if (!expect.addresses.every((a) => has.has(lc(a))) || !expect.topics.every((t) => topics.has(lc(t)))) throw new Error('pool-snapshot: a manifest that leaves out logs the page reads');
   if (!Number.isSafeInteger(m.to) || !Array.isArray(m.pieces)) throw new Error('pool-snapshot: a malformed manifest');
-  const pieces = new Array(m.pieces.length);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(4, m.pieces.length) }, async () => {
-    while (next < m.pieces.length) { const i = next++; pieces[i] = unpackPiece(await gunzip(await fetchBlock(m.pieces[i].cid, { fetchImpl, sha256, gateways }))); }
-  }));
+  const pieces = await pooled(m.pieces, 4, async (p) => unpackPiece(await gunzip(await fetchBlock(p.cid, { fetchImpl, sha256, gateways }))));
   const logs = pieces.flat();
   for (let i = 1; i < logs.length; i++) if (byChainOrder(logs[i - 1], logs[i]) >= 0) throw new Error('pool-snapshot: logs out of chain order');
   if (logs.length && blockOf(logs[logs.length - 1]) > m.to) throw new Error('pool-snapshot: a log past the manifest\'s block');
@@ -269,7 +282,7 @@ export async function loadSnapshot(cid, { fetchImpl, sha256, gateways, expect })
   let txInputs = null;
   if (m.txInputs && Array.isArray(m.txInputs.pieces) && m.txInputs.pieces.length) {
     try {
-      const got = await Promise.all(m.txInputs.pieces.map(async (p) => unpackInputs(await gunzip(await fetchBlock(p.cid, { fetchImpl, sha256, gateways })))));
+      const got = await pooled(m.txInputs.pieces, 4, async (p) => unpackInputs(await gunzip(await fetchBlock(p.cid, { fetchImpl, sha256, gateways }))));
       txInputs = new Map(got.flat());
     } catch { txInputs = null; }
   }

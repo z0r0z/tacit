@@ -24,8 +24,8 @@
 <link rel="preconnect" href="https://tacit-fast-board.onrender.com" crossorigin>
 <!-- preload-roots: /fast/app.js | | /fast/wire.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/fast/app.js?cb=4958b930">
-<link rel="modulepreload" href="/trade/btc-session.js?cb=46d5d96c">
+<link rel="modulepreload" href="/fast/app.js?cb=79718296">
+<link rel="modulepreload" href="/trade/btc-session.js?cb=185e1bbc">
 <link rel="modulepreload" href="/tab-key.js?cb=e90d6a31">
 <link rel="modulepreload" href="/prf-wallet.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -57,7 +57,7 @@
 <link rel="modulepreload" href="/fast/provide.js?cb=f205b95a">
 <link rel="modulepreload" href="/fast/bound.js?cb=f0f32804">
 <link rel="modulepreload" href="/fast/reverse.js?cb=826337bd">
-<link rel="modulepreload" href="/fast/discover.js?cb=de0fd260">
+<link rel="modulepreload" href="/fast/discover.js?cb=e806c31e">
 <link rel="modulepreload" href="/fastbridge-http.js">
 <link rel="modulepreload" href="/fastbridge-client.js?cb=81a9bef3">
 <link rel="modulepreload" href="/fastbridge-bl.js">
@@ -71,8 +71,7 @@
 <link rel="modulepreload" href="/sealed-request.js">
 <link rel="modulepreload" href="/fastbridge-board.js">
 <link rel="modulepreload" href="/fastbridge-board-client.js?cb=b3c3ac03">
-<link rel="modulepreload" href="/fast/want.js?cb=aef09b79">
-<link rel="modulepreload" href="/fastbridge-price.js?cb=ab195d5c">
+<link rel="modulepreload" href="/fast/want.js?cb=41285a3e">
 <link rel="modulepreload" href="/prove/invader.js">
 <!-- preload:end -->
 <style>
@@ -394,6 +393,11 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh.sh-l { max-width: 560px; text-align: left; } .sh.sh-l .sh-more { margin-top: 18px; }
 @media (hover: hover) { .sh-t a:hover { color: var(--ink); } }
 @media (max-width: 520px) { .sh { margin-top: 18px; } .sh-t { display: grid; grid-auto-columns: 1fr; } .sh-t a { padding: 6px 6px; font-size: 12px; } }
+/* Chains has several distinct routes. On a phone they are a legible 3 × 2 map, not six squeezed labels in one row. */
+@media (max-width: 640px) {
+  .sh[data-of="chains"] .sh-t { display: grid; grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .sh[data-of="chains"] .sh-t a { min-width: 0; padding-inline: 6px; white-space: normal; text-wrap: balance; }
+}
 .sh-more { list-style: none; margin: 22px auto 0; padding: 4px 18px; max-width: 560px; text-align: left; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
 .sh-more li + li { border-top: 1px solid var(--hair); }
 .sh-more a { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 2px 14px; padding: 14px 2px; color: var(--ink); font: 400 14px/1.3 var(--mono); text-decoration: none; }
@@ -514,7 +518,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=4c9196f2" defer></script>
+<script src="/chrome.js?cb=4658dd80" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -566,7 +570,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
   <main>
     <!-- chrome:sec:begin -->
-    <div class="sh" id="sec-head" data-of="chains"><h1 tabindex="-1">Chains</h1><p>Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.</p><nav class="sh-t" aria-label="Chains"><i class="sh-i" aria-hidden="true"></i><a href="/#/chains/move" data-v="move">Move</a><a href="/btc/" data-v="btc">BTC ⇄ ETH</a><a href="/#/chains/bridge" data-v="bridge">Bridge</a><a href="/fast/" data-v="fast" aria-current="page">Fast bridge</a><a href="/tac/?v=notes#bridge" data-v="notes">Notes</a></nav><p class="sh-n">TAC from Bitcoin in minutes, paid out by a provider for a fee; or be a provider.</p></div>
+    <div class="sh" id="sec-head" data-of="chains"><h1 tabindex="-1">Chains</h1><p>Choose where your money starts and where you want it to arrive.</p><nav class="sh-t" aria-label="Chains"><i class="sh-i" aria-hidden="true"></i><a href="/#/chains/overview" data-v="overview">Overview</a><a href="/#/chains/move" data-v="move">Private balance</a><a href="/btc/" data-v="btc">BTC ⇄ ETH</a><a href="/#/chains/bridge" data-v="bridge">TAC bridge</a><a href="/fast/" data-v="fast" aria-current="page">Fast TAC</a><a href="/tac/?v=notes#bridge" data-v="notes">Bitcoin notes</a></nav><p class="sh-n">Move TAC from Bitcoin in minutes through a provider for a quoted fee.</p></div>
     <!-- chrome:sec:end -->
     <section class="hero" aria-labelledby="h">
       <h1 id="h">Bridge in <em>minutes</em></h1>
@@ -583,7 +587,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </main>
 <!-- warm:begin -->
 <template id="warm">
-<link rel="modulepreload" href="/fast/wire.js?cb=45e401c4">
+<link rel="modulepreload" href="/fast/wire.js?cb=30d256dc">
 <link rel="modulepreload" href="/bitcoin-taproot-wallet.js">
 <link rel="modulepreload" href="/adaptor-btc-tx.js">
 <link rel="modulepreload" href="/fastbridge-btc.js?cb=82196961">
@@ -605,7 +609,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 <link rel="modulepreload" href="/burn-deposit-provenance.js">
 <link rel="modulepreload" href="/burn-deposit-assembler.js">
 <link rel="modulepreload" href="/confidential-crossout-consumer.js">
-<link rel="modulepreload" href="/fast/sweep.js?cb=713466b3">
 </template>
 <!-- warm:end -->
 
@@ -635,6 +638,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/fast/app.js?cb=4958b930"></script>
+<script type="module" src="/fast/app.js?cb=79718296"></script>
 </body>
 </html>

@@ -70,6 +70,16 @@ export function govDeriveProposalId(c) {
   return { contentHash, idHex: bytesToHex(sha256(concatBytes(GOV_PROPOSAL_ID_DOMAIN, contentHash))) };
 }
 
+// What an Ethereum holder signs to open a proposal: names the whole content (through its hash), so the signature
+// cannot be reused for different text. MUST match the page's copy in dapp/govern/message.js.
+export function govEthProposeMessage(c) {
+  const h = bytesToHex(sha256(enc(JSON.stringify([
+    'tacit-governance-eth-proposal-v1', c.network, c.title, c.body, c.choices, c.category,
+    c.voting_ends_at | 0, c.quorum || '0', c.exec_target || '', c.exec_note || '',
+  ]))));
+  return `Tacit governance proposal\nNetwork: ${c.network}\nTitle: ${c.title}\nVoting ends: ${c.voting_ends_at | 0}\nContent: ${h}\nThis opens a signalling proposal for TAC holders. No funds move.`;
+}
+
 export function buildGovernance(deps) {
   const {
     jsonResponse, safeInt,
@@ -526,6 +536,7 @@ export function buildGovernance(deps) {
     const execTarget = String(body.exec_target || '').slice(0, 80);
     const execNote = String(body.exec_note || '').slice(0, 400);
     const envelopeHex = String(body.propose_envelope || '').toLowerCase();
+    const ethProposal = body.kind === 'public';
 
     if (!title || title.length > GOV_MAX_TITLE) return jsonResponse({ error: `title required (1..${GOV_MAX_TITLE} chars)` }, 400, cors);
     if (text.length > GOV_MAX_BODY) return jsonResponse({ error: `body exceeds ${GOV_MAX_BODY} chars` }, 400, cors);
@@ -535,36 +546,59 @@ export function buildGovernance(deps) {
     if (choices.some((c) => !c || c.length > 80)) return jsonResponse({ error: 'each choice 1..80 chars' }, 400, cors);
     if (new Set(choices).size !== choices.length) return jsonResponse({ error: 'choices must be distinct' }, 400, cors);
     if (!GOV_CATEGORIES.includes(category)) return jsonResponse({ error: `category must be one of ${GOV_CATEGORIES.join(', ')}` }, 400, cors);
-    if (!/^[0-9a-f]{66}$/.test(proposerPub) || !/^0[23]/.test(proposerPub)) return jsonResponse({ error: 'proposer_pubkey must be 33-byte compressed hex' }, 400, cors);
+    if (!ethProposal && (!/^[0-9a-f]{66}$/.test(proposerPub) || !/^0[23]/.test(proposerPub))) return jsonResponse({ error: 'proposer_pubkey must be 33-byte compressed hex' }, 400, cors);
     const dur = endsAt - nowS();
     if (dur < GOV_MIN_DURATION_S || dur > GOV_MAX_DURATION_S) {
       return jsonResponse({ error: `voting window must be ${GOV_MIN_DURATION_S / 3600}h..${GOV_MAX_DURATION_S / 86400}d from now` }, 400, cors);
     }
-    if (!/^[0-9a-f]+$/.test(envelopeHex)) return jsonResponse({ error: 'propose_envelope (hex) required' }, 400, cors);
+    if (!ethProposal && !/^[0-9a-f]+$/.test(envelopeHex)) return jsonResponse({ error: 'propose_envelope (hex) required' }, 400, cors);
+
+    // An Ethereum holder opens a proposal with a wallet signature: the signer must have held the floor of
+    // public TAC at the Ethereum snapshot. The Bitcoin snapshot is the server's own current tip.
+    let ethSnapEarly = null, ethProposer = null;
+    if (ethProposal) {
+      const token = govTacErc20(env, network);
+      if (!token) return jsonResponse({ error: 'public ETH proposals not enabled (TAC ERC20 not live on this network yet)' }, 501, cors);
+      const ethSig = String(body.eth_sig || '');
+      if (!/^0x[0-9a-fA-F]{130}$/.test(ethSig)) return jsonResponse({ error: 'eth_sig (65-byte hex) required' }, 400, cors);
+      try { ethProposer = recoverEthAddr(govEthProposeMessage({ network, title, body: text, choices, category, voting_ends_at: endsAt, quorum, exec_target: execTarget, exec_note: execNote }), ethSig); }
+      catch (e) { return jsonResponse({ error: 'eth sig recover failed: ' + (e.message || 'unknown') }, 400, cors); }
+      ethSnapEarly = await ethSnapshot(network);
+      if (!Number.isInteger(ethSnapEarly.eth_snapshot_block)) return jsonResponse({ error: 'Ethereum snapshot unavailable, retry shortly' }, 502, cors);
+      const bal = await readErc20Balance(env, network, token, ethProposer, ethSnapEarly.eth_snapshot_block);
+      if (bal === null) return jsonResponse({ error: 'balance read at the snapshot block failed (needs an archive RPC: GOV_ETH_ARCHIVE_RPC)' }, 502, cors);
+      const floorBase = (() => { try { const t = BigInt(env.GOV_PROPOSE_MIN_BASE || '0'); return t > 0n ? t : GOV_PROPOSE_MIN_DEFAULT; } catch { return GOV_PROPOSE_MIN_DEFAULT; } })();
+      if (bal / GOV_ERC20_TO_BASE < floorBase) return jsonResponse({ error: `opening a proposal needs ${floorBase / TAC} TAC held at the snapshot` }, 403, cors);
+    }
 
     // Weight is judged at the snapshot, so it must be now: a proposal cannot pick a past height where some
     // holder had more, or a future one nobody can prove against yet.
     let tip = null;
     for (let i = 0; i < 2 && tip === null; i++) { try { tip = await fetchTipHeight(env, network); } catch { tip = null; } }
     if (tip === null) return jsonResponse({ error: 'chain tip unavailable, retry shortly' }, 502, cors);
-    if (!(snapshotHeight <= tip && snapshotHeight >= tip - GOV_SNAPSHOT_MAX_AGE)) {
+    const snapshotHeightUsed = ethProposal ? tip : snapshotHeight;
+    if (!(snapshotHeightUsed <= tip && snapshotHeightUsed >= tip - GOV_SNAPSHOT_MAX_AGE)) {
       return jsonResponse({ error: `snapshot_height must be the current Bitcoin tip (${tip}, within ${GOV_SNAPSHOT_MAX_AGE} blocks)` }, 400, cors);
     }
 
     const content = {
       network, title, body: text, choices, category,
-      snapshot_height: snapshotHeight, voting_ends_at: endsAt, quorum,
-      proposer_pubkey: proposerPub, exec_target: execTarget, exec_note: execNote,
+      snapshot_height: snapshotHeightUsed, voting_ends_at: endsAt, quorum,
+      proposer_pubkey: ethProposal ? ethProposer : proposerPub, exec_target: execTarget, exec_note: execNote,
     };
     const { contentHash, idHex } = deriveProposalId(content);
 
     // proposer must clear the propose floor AND authorise this exact content
-    const minPropose = (() => { try { const t = BigInt(env.GOV_PROPOSE_MIN_BASE || '0'); return t > 0n ? t : GOV_PROPOSE_MIN_DEFAULT; } catch { return GOV_PROPOSE_MIN_DEFAULT; } })();
-    let envBytes;
-    try { envBytes = hexToBytes(envelopeHex); } catch { return jsonResponse({ error: 'bad envelope hex' }, 400, cors); }
-    const v = await verifyThresholdAttestation(env, envBytes, GOV_PROPOSE_DOMAIN, proposeScopeId(contentHash), minPropose, network);
-    if (!v.ok) return jsonResponse({ error: v.reason }, v.status || 403, cors);
-    if (v.holderPubkeyHex !== proposerPub) return jsonResponse({ error: 'envelope holder != proposer_pubkey' }, 403, cors);
+    let proposerTier = null;
+    if (!ethProposal) {
+      const minPropose = (() => { try { const t = BigInt(env.GOV_PROPOSE_MIN_BASE || '0'); return t > 0n ? t : GOV_PROPOSE_MIN_DEFAULT; } catch { return GOV_PROPOSE_MIN_DEFAULT; } })();
+      let envBytes;
+      try { envBytes = hexToBytes(envelopeHex); } catch { return jsonResponse({ error: 'bad envelope hex' }, 400, cors); }
+      const v = await verifyThresholdAttestation(env, envBytes, GOV_PROPOSE_DOMAIN, proposeScopeId(contentHash), minPropose, network);
+      if (!v.ok) return jsonResponse({ error: v.reason }, v.status || 403, cors);
+      if (v.holderPubkeyHex !== proposerPub) return jsonResponse({ error: 'envelope holder != proposer_pubkey' }, 403, cors);
+      proposerTier = v.tier;
+    }
 
     const existing = await env.REGISTRY_KV.get(pKey(network, idHex), 'json');
     if (existing) return jsonResponse({ error: 'identical proposal already exists', id: idHex }, 409, cors);
@@ -572,17 +606,17 @@ export function buildGovernance(deps) {
     // Ethereum-side snapshot, fixed at creation: the block public TAC balances are read at, and how many
     // pool notes existed (cTAC votes count only those). Best-effort: when unreadable, those vote kinds are
     // refused for this proposal rather than weighed without a snapshot.
-    const ethSnap = await ethSnapshot(network);
+    const ethSnap = ethSnapEarly || await ethSnapshot(network);
 
     // pin the canonical proposal blob to IPFS
-    const blob = { schema: 'tacit-governance-proposal-v1', id: idHex, ...content, ...ethSnap, created_at: nowS(), proposer_tier: v.tier.toString() };
+    const blob = { schema: 'tacit-governance-proposal-v1', id: idHex, ...content, ...ethSnap, created_at: nowS(), proposer_tier: proposerTier !== null ? proposerTier.toString() : null };
     let pinned;
     try { pinned = await pinFileToIpfs(env, enc(JSON.stringify(blob)), 'application/json', 'tacit-gov-proposal'); }
     catch (e) { return jsonResponse({ error: e.msg || 'pin failed' }, e.status || 502, cors); }
 
     const record = {
       schema: 'tacit-governance-proposal-v1', id: idHex, ...content, ...ethSnap,
-      created_at: nowS(), cid: pinned.cid, proposer_tier: v.tier.toString(),
+      created_at: nowS(), cid: pinned.cid, proposer_tier: proposerTier !== null ? proposerTier.toString() : null,
       tally: emptyTally(choices.length), finalized: false,
     };
     await env.REGISTRY_KV.put(pKey(network, idHex), JSON.stringify(record));

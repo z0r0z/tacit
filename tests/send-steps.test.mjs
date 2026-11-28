@@ -8,8 +8,9 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
-const page = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'dapp/index.html'), 'utf8');
+const page = frontPage(join(dirname(fileURLToPath(import.meta.url)), '..', 'dapp/index.html'));
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (!c) throw new Error(m); };
 const test = (label, fn) => { try { fn(); console.log(`  PASS  ${label}`); pass++; } catch (e) { console.log(`  FAIL  ${label}: ${e.message}`); fail++; } };

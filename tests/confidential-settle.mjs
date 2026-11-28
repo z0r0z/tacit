@@ -6,7 +6,8 @@
 // Run: node tests/confidential-settle.mjs
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
-import { makeConfidentialSettler } from '../worker/src/confidential-settle.js';
+import { makeConfidentialSettler, CANCELLED } from '../worker/src/confidential-settle.js';
+import { createHash, randomBytes } from 'node:crypto';
 import assert from 'node:assert';
 
 const hash = (s) => '0x' + Buffer.from(keccak_256(new TextEncoder().encode(s))).toString('hex');
@@ -690,6 +691,46 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   assert.strictEqual((await q.nextJob()).type, 'swap', 'a prove-only swap is the same kind of job for its pool');
   assert.strictEqual((await q.nextJob()).type, 'transfer');
   ok('queueStats: pendingPinned counts the relayed swaps and adds that wait, not prove-only, early, claimed or other kinds');
+}
+
+// ───────────────── cancel: a sender drops its own job while it waits unclaimed, with the secret only it holds ─────────────────
+{
+  const pair = () => { const secret = '0x' + randomBytes(32).toString('hex'); return { secret, hash: '0x' + createHash('sha256').update(secret).digest('hex') }; };
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
+  const k = pair(), other = pair();
+  const a = await q.submitJob({ type: 'route', op: routeOp, cancel: k.hash, client: '1.2.3.0/24' });
+  assert.strictEqual((await q.cancelJob({ jobId: a.jobId, secret: other.secret })).ok, false, 'a wrong secret drops nothing');
+  assert.strictEqual((await q.cancelJob({ jobId: a.jobId, secret: 'nope' })).ok, false, 'a malformed secret drops nothing');
+  assert.strictEqual(await q.pendingCount(), 1);
+  const r = await q.cancelJob({ jobId: a.jobId, secret: k.secret.toUpperCase().replace('0X', '0x') });
+  assert.strictEqual(r.ok, true, 'the secret drops it (hex case aside)');
+  assert.strictEqual(await q.pendingCount(), 0, 'out of the queue');
+  const st = await q.jobStatus(a.jobId);
+  assert.strictEqual(st.status, 'failed');
+  assert.strictEqual(st.error, CANCELLED);
+  assert.match(CANCELLED, /nothing was spent/);
+  assert.strictEqual(await q.nextJob(), null, 'nothing left to claim');
+  assert.strictEqual((await q.cancelJob({ jobId: a.jobId, secret: k.secret })).ok, false, 'twice is a no-op');
+  const again = await q.submitJob({ type: 'route', op: routeOp, cancel: k.hash });
+  assert.strictEqual(again.status, 'pending', 'the same op can be sent again after a cancel (a failed job is resubmittable)');
+  ok('cancelJob: the right secret drops a pending job (failed, out of the queue, never claimed); a wrong or malformed one does nothing');
+
+  const q2 = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
+  const b = await q2.submitJob({ type: 'route', op: routeOp, cancel: k.hash });
+  const c = await q2.nextJob();
+  assert.strictEqual(c.jobId, b.jobId);
+  const late = await q2.cancelJob({ jobId: b.jobId, secret: k.secret });
+  assert.strictEqual(late.ok, false, 'a claimed job runs its course');
+  assert.strictEqual(late.status, 'proving');
+  assert.strictEqual((await q2.jobStatus(b.jobId)).status, 'proving');
+  const d = await q2.submitJob({ type: 'swap', op: swapOp });
+  assert.strictEqual((await q2.cancelJob({ jobId: d.jobId, secret: k.secret })).ok, false, 'a job sent without a cancel hash cannot be dropped');
+  const e = await q2.submitJob({ type: 'swap', op: lpOp, mode: 'prove', cancel: k.hash });
+  assert.strictEqual((await q2.cancelJob({ jobId: e.jobId, secret: k.secret })).ok, false, 'a prove-only job keeps no cancel hash');
+  const sealed = { worker: 'w1', epk: '0x02' + '11'.repeat(32), iv: 'AAAAAAAAAAAAAAAA', ct: 'B'.repeat(64) };
+  const sj = await q2.submitJob({ type: 'route', mode: 'sealed', sealed, memos: [], cancel: other.hash });
+  assert.strictEqual((await q2.cancelJob({ jobId: sj.jobId, secret: other.secret })).ok, true, 'a sealed job is dropped the same way');
+  ok('cancelJob: a claimed job, one sent without a hash and a prove-only one are never dropped; a sealed one is');
 }
 
 console.log(`\n${n} confidential-settle checks passed.`);

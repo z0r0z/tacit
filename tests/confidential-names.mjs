@@ -537,7 +537,7 @@ test('makeMainnetCall: falls through failing endpoints, and a revert is final on
 
   seen.length = 0;
   const reverting = makeMainnetCall({ rpcs: ['https://a', 'https://b'], fetchImpl: mk(() => ({ ok: true, json: async () => ({ error: { code: 3, message: 'execution reverted', data: '0xdeadbeef' } }) })) });
-  // Every endpoint is asked at once; two that revert the same way settle the call as a revert, never as an answer.
+  // Two that revert the same way settle the call as a revert, never as an answer.
   await assert.rejects(reverting({ to: WNS, data: '0x' }), (e) => e instanceof CallRevert && e.data === '0xdeadbeef');
 
   const down = makeMainnetCall({ rpcs: ['https://a', 'https://b'], fetchImpl: mk(() => { throw new Error('boom'); }) });
@@ -573,7 +573,7 @@ test('makeMainnetCall: an answer needs two endpoints that agree, and a disagreem
 
   const agreeing = makeMainnetCall({ rpcs: ['https://a', 'https://b', 'https://c'], fetchImpl: mk(() => ok(REAL)) });
   assert.strictEqual(await agreeing({ to: WNS, data: '0x' }), REAL);
-  assert.strictEqual(seen.length, 3, 'every endpoint is asked at once; the first two that match settle it');
+  assert.strictEqual(seen.length, 2, 'two endpoints are asked first; when they match, no other is');
 
   // A single lying endpoint ahead of the honest ones neither wins nor poisons the answer.
   seen.length = 0;

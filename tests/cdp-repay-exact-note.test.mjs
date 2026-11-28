@@ -6,8 +6,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { frontPage } from './lib/front-page.mjs';
 
-const page = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+const page = frontPage(new URL('../dapp/index.html', import.meta.url));
 const start = page.indexOf('  async repay(run, where, btn, pos) {'), end = page.indexOf('\n  },\n', start);
 assert.ok(start > 0 && end > start, 'the page has BWX.repay');
 const SRC = page.slice(start, end + 4);

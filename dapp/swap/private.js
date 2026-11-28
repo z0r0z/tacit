@@ -3,12 +3,12 @@ import { forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=ce5e16c2';
 import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=3784b81d';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
-import { makeRunner } from '/activity.js?cb=f692784e';
+import { makeRunner } from '/activity.js?cb=7766c464';
 
 export { Cancelled, relayWords };
 
 let namesP = null;
-const names = () => (namesP ||= import('/confidential-names.js?cb=c7e1989f').then(({ makeConfidentialNames, makeMainnetCall }) => makeConfidentialNames({ call: makeMainnetCall(), secp, keccak256: keccak_256 })).catch((e) => { namesP = null; throw e; }));
+const names = () => (namesP ||= import('/confidential-names.js?cb=b0ce51f3').then(({ makeConfidentialNames, makeMainnetCall }) => makeConfidentialNames({ call: makeMainnetCall(), secp, keccak256: keccak_256 })).catch((e) => { namesP = null; throw e; }));
 export async function resolveTacit(raw) {
   const n = await names();
   const local = (s) => {

@@ -5,9 +5,10 @@ import { _internal, MULTICALL3 } from '/evm-trade-venues.js?cb=9aac0fac';
 import { bodyType } from '../rpc-body.js';
 
 // The nodes the page's reads ask, in order (one that answers is kept until it fails). ARCHIVE are the ones that still hold the state of blocks hours old, which the
-// price feed needs for eth_getProof (a node that has pruned it answers with an error); HISTORY are the nodes asked for the headers of those blocks.
+// price feed needs for eth_getProof (a node that has pruned it answers with an error); HISTORY are the nodes asked for the headers of those blocks. PublicNode is
+// left out: it answers this site's browsers with a 403 (see eth-nodes.js).
 export const RPCS = [
-  'https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io',
+  'https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io',
   'https://ethereum-json-rpc.stakely.io', 'https://eth.rpc.blxrbdn.com', 'https://1rpc.io/eth', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://1.rpc.thirdweb.com',
 ];
 export const ARCHIVE = ['https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://1.rpc.thirdweb.com', 'https://eth-mainnet.public.blastapi.io'];

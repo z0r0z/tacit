@@ -8,6 +8,7 @@ import { checkNote, readBridges, inRow, outRow, inActs, outActs, rowNote, inDue,
 import { NOTE_MAX_RAW, CROSSOUT_TETH_MIN_RAW, CROSSOUT_CBTC_MIN_RAW, CROSSOUT_CUSD_MIN_RAW, CROSSOUT_CUSDT_DEC, CROSSOUT_CUSDT_MIN_RAW } from '../dapp/crossout-ux.js';
 import { NOTE_MAX_RAW as BURNDEP_NOTE_MAX } from '../dapp/burndep-ux.js';
 import { makeCrossoutMintReveal } from '../dapp/crossout-mint-reveal.js';
+import { frontPage } from './lib/front-page.mjs';
 
 const NOW = 1_760_000_000_000;
 const PUB = '02' + 'ab'.repeat(32);
@@ -170,7 +171,7 @@ test('the limits the page shows are the ones the bridge enforces', () => {
   assert.equal(NOTE_MAX_RAW, 10n ** 18n); assert.equal(BURNDEP_NOTE_MAX, NOTE_MAX_RAW);
   for (const k of ['tac', 'teth', 'cbtc', 'cusd', 'cusdt']) { assert.equal(LIMITS[k].out.max, NOTE_MAX_RAW, `${k} out`); assert.equal(LIMITS[k].in.max, NOTE_MAX_RAW, `${k} in`); }
   assert.equal(LIMITS.teth.out.min, CROSSOUT_TETH_MIN_RAW); assert.equal(LIMITS.cbtc.out.min, CROSSOUT_CBTC_MIN_RAW); assert.equal(LIMITS.cusd.out.min, CROSSOUT_CUSD_MIN_RAW); assert.equal(LIMITS.cusdt.out.min, CROSSOUT_CUSDT_MIN_RAW);
-  const front = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+  const front = frontPage(new URL('../dapp/index.html', import.meta.url));
   const tacMin = /tac: \{ key: 'tac'[^\n]*?\bmin: ([0-9_]+)n/.exec(front);
   assert.ok(tacMin, 'the front page keeps a TAC minimum');
   assert.equal(LIMITS.tac.out.min, BigInt(tacMin[1].replaceAll('_', '')));
@@ -307,7 +308,7 @@ test('a bridge waiting on its history check says where the check stands, and not
 });
 
 test('the front page words the same wait, from the same facts', () => {
-  const src = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+  const src = frontPage(new URL('../dapp/index.html', import.meta.url));
   const m = /function brCheckNote\(cw\) \{[\s\S]*?\n\}\n/.exec(src);
   assert.ok(m, 'the front page has brCheckNote');
   const real = Date.now; Date.now = () => NOW;

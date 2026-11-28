@@ -10,7 +10,8 @@
 //   · each of the four wallet sources starts it after its wrap, with the asset it bridges
 //   node tests/bridge-then-bridge.test.mjs
 import { readFileSync } from 'node:fs';
-const PAGE = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+import { frontPage } from './lib/front-page.mjs';
+const PAGE = frontPage(new URL('../dapp/index.html', import.meta.url));
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 

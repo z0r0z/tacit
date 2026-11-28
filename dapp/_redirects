@@ -32,6 +32,14 @@
 /vault    /vault/    301
 /tasks    /tasks/    301
 /discord    /discord/    301
+/govern    /govern/    301
+/nodes    /nodes/    301
+/sats    /sats/    301
+/secret-sats    /secret-sats/    301
+/ceremony    /ceremony/    301
+/tacit-v1    /tacit-v1/    301
+/weld/stats    /weld/stats/    301
+/recover    /recover/    301
 /praxis     /praxis/     301
 /shop      /shop/      301
 /vanity    /shop/      301

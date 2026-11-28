@@ -90,7 +90,8 @@ const restored = (suffix, v) => {
 // Only records of this key are read back (the prefix names it, the MAC says the key made the copy), and only where this browser has none.
 export function loadCopy(json, prefix, storage = globalThis.localStorage, mac) {
   if (typeof mac !== 'function') throw new Error('Open your Tacit wallet first.');
-  const j = typeof json === 'string' ? JSON.parse(json) : json;
+  let j;
+  try { j = typeof json === 'string' ? JSON.parse(json) : json; } catch { throw new Error('This file is not a swaps backup: it could not be read.'); }
   if (!j || j.kind !== KIND || j.prefix !== prefix || !j.items || typeof j.items !== 'object') throw new Error('This file is not a copy of this wallet’s swaps.');
   if (!j.mac) throw new Error('This copy was saved before copies were signed by the key, so it is not read. Your swaps are found again from your key on the chains.');
   if (!sameHex(j.mac, mac(signed(j)))) throw new Error('This file was not saved by this wallet, so it is not read.');

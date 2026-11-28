@@ -1327,6 +1327,12 @@ test('relay.waitForSettle: asks whileQueued only while the job waits unclaimed, 
   assert.deepEqual(asked, ['pending', 'pending', 'pending'], 'asked at every poll while pending, never once the relay had it (proving, proving)');
   i = 0;
   await assert.rejects(ux.relay.waitForSettle('j1', { intervalMs: 0, sleep: async () => {}, queuedCheckMs: 0, whileQueued: async () => i >= 2 }), (e) => e.staleQueued === true && e.jobId === 'j1' && /^not proved: the pool moved while this waited/.test(e.message) && /0x29b3c833\)$/.test(e.message));
+  i = 0; const left = [];
+  await assert.rejects(ux.relay.waitForSettle('j1', { intervalMs: 0, sleep: async () => {}, queuedCheckMs: 0, whileQueued: async () => true, onLeft: (id) => left.push(id) }), (e) => e.staleQueued === true);
+  assert.deepEqual(left, ['j1'], 'the job walked away from is named, so the page stops holding its notes for it');
+  i = 0; let gone = 0;
+  await assert.rejects(ux.relay.waitForSettle('j1', { intervalMs: 0, sleep: async () => {}, queuedCheckMs: 0, whileQueued: async () => true, onLeft: () => { gone++; throw new Error('page gone'); } }), (e) => e.staleQueued === true);
+  assert.equal(gone, 1, 'an onLeft that throws never changes how the wait ends');
   i = 0; let n = 0;
   await ux.relay.waitForSettle('j1', { intervalMs: 0, sleep: async () => {}, whileQueued: async () => { n++; return true; } });
   assert.equal(n, 0, 'with the default pace (six seconds) a quick wait is not asked at all');

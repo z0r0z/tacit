@@ -27,7 +27,7 @@ import {
 } from '../worker/src/index.js';
 import {
   buildGovernance, GOV_TIERS, GOV_VOTE_DOMAIN, GOV_PROPOSE_DOMAIN,
-  govDeriveProposalId, govProposeScopeId, govVoteScopeId,
+  govDeriveProposalId, govProposeScopeId, govVoteScopeId, govEthProposeMessage,
 } from '../worker/src/governance.js';
 
 const hash160 = (b) => ripemd160(sha256(b));
@@ -291,6 +291,49 @@ test('public votes: balance at the snapshot block, in the same units as private 
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   ethHead = 5000;
   delete env.GOV_TAC_ERC20_MAINNET;
+});
+
+test('Ethereum holders open proposals with a signature: floor read at the snapshot block, tip taken by the server', async () => {
+  env.GOV_TAC_ERC20_MAINNET = '0xa1313eb9f3a445606d9583bcac3ebeb56a858279';
+  const ethPriv = sha256(new TextEncoder().encode('gov-test-eth-proposer'));
+  const addr = '0x' + bytesToHex(keccak_256(secp.getPublicKey(ethPriv, false).slice(1)).slice(12));
+  const sign = async (msg) => {
+    const m = new TextEncoder().encode(msg);
+    const digest = keccak_256(concatBytes(new TextEncoder().encode(`\x19Ethereum Signed Message:\n${m.length}`), m));
+    const sig = await secp.signAsync(digest, ethPriv);
+    return '0x' + sig.toCompactHex() + (27 + sig.recovery).toString(16);
+  };
+  const c = { network: NET, title: 'Signal: list TAC on a venue', body: 'Do holders want it?', choices: ['Yes', 'No'], category: 'general',
+    voting_ends_at: Math.floor(Date.now() / 1000) + 3 * 86400, quorum: '0', exec_target: '', exec_note: '' };
+  const snapTag = '0x' + (ethHead - 12).toString(16);
+  ethBalanceAt = (tag) => (tag === snapTag ? '0x' + (150n * 10n ** 18n).toString(16).padStart(64, '0') : null);
+  const post = async (body) => gov.handle(mkReq('POST', body), env, mkUrl('/governance/proposals'), NET, {});
+
+  const ok = await post({ ...c, kind: 'public', eth_sig: await sign(govEthProposeMessage(c)) });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.proposal.proposer_pubkey, addr);
+  assert.equal(ok.body.proposal.snapshot_height, TIP, 'the server fills the Bitcoin snapshot');
+  assert.equal(ethCalls.at(-1).blockTag, snapTag);
+  // the proposal takes votes like any other
+  const vmsg = `Tacit governance vote\nProposal: ${ok.body.id}\nChoice: 0 — Yes\nThis casts a vote weighted by your public TAC balance. No funds move.`;
+  const v = await gov.handle(mkReq('POST', { kind: 'public', choice: 0, eth_sig: await sign(vmsg) }), env, mkUrl(`/governance/proposal/${ok.body.id}/vote`), NET, {});
+  assert.equal(v.status, 200, JSON.stringify(v.body));
+
+  // a signature for other text does not open this one
+  const swapped = await post({ ...c, title: 'Something else', kind: 'public', eth_sig: await sign(govEthProposeMessage(c)) });
+  assert.notEqual(swapped.body.proposal?.proposer_pubkey, addr);
+  // under the floor at the snapshot
+  ethBalanceAt = (tag) => (tag === snapTag ? '0x' + (99n * 10n ** 18n).toString(16).padStart(64, '0') : null);
+  const c2 = { ...c, title: 'Under the floor' };
+  const low = await post({ ...c2, kind: 'public', eth_sig: await sign(govEthProposeMessage(c2)) });
+  assert.equal(low.status, 403, JSON.stringify(low.body));
+  // no archive answer fails closed
+  ethBalanceAt = () => null;
+  const c3 = { ...c, title: 'No archive' };
+  assert.equal((await post({ ...c3, kind: 'public', eth_sig: await sign(govEthProposeMessage(c3)) })).status, 502);
+  // the token not live: refused
+  delete env.GOV_TAC_ERC20_MAINNET;
+  assert.equal((await post({ ...c, kind: 'public', eth_sig: await sign(govEthProposeMessage(c)) })).status, 501);
 });
 
 test('execution: only a verified multisig transaction after the vote can be linked, and only by the operator', async () => {

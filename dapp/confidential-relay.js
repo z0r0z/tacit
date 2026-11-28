@@ -30,6 +30,27 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
 
   const jobTypes = new Map();
   const jobBy = new Map();
+  // each relayed job is sent with the hash of a secret kept here, so the page can drop it while it still waits unclaimed (a swap the pool moved under,
+  // built again: confidential-settle.js cancelJob); a page without WebCrypto sends none and its jobs run as before
+  const cancelKeys = new Map();
+  const hex = (u8) => '0x' + [...u8].map((b) => b.toString(16).padStart(2, '0')).join('');
+  async function cancelPair() {
+    const c = globalThis.crypto;
+    if (!c?.getRandomValues || !c?.subtle) return null;
+    const secret = hex(c.getRandomValues(new Uint8Array(32)));
+    return { secret, hash: hex(new Uint8Array(await c.subtle.digest('SHA-256', new TextEncoder().encode(secret)))) };
+  }
+  // best effort and quick: a job that cannot be dropped is refused by the relay once taken, as before
+  async function cancel(jobId) {
+    const secret = cancelKeys.get(jobId);
+    if (!secret) return false;
+    try {
+      const res = await f(`${jobRoot(jobId)}/confidential/cancel`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jobId: bareId(jobId), secret }), ...within(5000) });
+      const r = await res.text().then((x) => JSON.parse(x), () => null).catch(() => null);
+      if (r?.ok) cancelKeys.delete(jobId);
+      return !!r?.ok;
+    } catch { return false; }
+  }
   function announce(st) {
     try {
       if (!st || !st.jobId || typeof globalThis.dispatchEvent !== 'function' || typeof CustomEvent !== 'function') return;
@@ -130,13 +151,15 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
       sealedJobs.delete(opKey);
     }
     const sealedIn = sealing ? await sealer({ type, op, memos: sealedMemos }) : null;
+    const cp = mode === 'prove' ? null : await cancelPair().catch(() => null);
     const body = await postSubmit(at, JSON.stringify(sealedIn
-      ? { type, mode: 'sealed', sealed: sealedIn, memos: sealedMemos, ...(feeAsset ? { feeAsset } : {}) }
-      : { type, op, memos: sealedMemos, ...(mode ? { mode } : {}), ...(feeAsset ? { feeAsset } : {}), ...(depositTx ? { depositTx } : {}), ...(exit ? { exit } : {}), ...(ahead ? { ahead: true } : {}) }, bigintSafe),
+      ? { type, mode: 'sealed', sealed: sealedIn, memos: sealedMemos, ...(feeAsset ? { feeAsset } : {}), ...(cp ? { cancel: cp.hash } : {}) }
+      : { type, op, memos: sealedMemos, ...(mode ? { mode } : {}), ...(cp ? { cancel: cp.hash } : {}), ...(feeAsset ? { feeAsset } : {}), ...(depositTx ? { depositTx } : {}), ...(exit ? { exit } : {}), ...(ahead ? { ahead: true } : {}) }, bigintSafe),
     mode === 'prove' ? 'prove' : 'settle');
     if (body && body.jobId) body.jobId = tagId(body.jobId, at);
     if (body && body.jobId) {
       if (opKey) sealedJobs.set(opKey, body.jobId);
+      if (cp && body.status === 'pending' && !body.deduped) cancelKeys.set(body.jobId, cp.secret);
       jobTypes.set(body.jobId, type);
       const by = opExpiry(type, op) * 1000; if (by) jobBy.set(body.jobId, by);
       if (onJob) { try { onJob(body.jobId, type); } catch { } }
@@ -221,7 +244,7 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
 
   // `whileQueued` (optional): asked every `queuedCheckMs` while the job still waits unclaimed in the relay's queue ('pending'), never once the relay has it. It answers whether what the job was built on has gone
   // stale (a swap's pinned reserves: the pool moved); if so the wait ends with `staleQueued`, so the caller can build it again now instead of after the relay has taken it, refused it, and the holder has learned of it.
-  async function waitForSettle(jobId, { intervalMs = 2000, timeoutMs = 5 * 60 * 1000, openGraceMs = 20_000, onUpdate, sleep, whileQueued = null, queuedCheckMs = 6000 } = {}) {
+  async function waitForSettle(jobId, { intervalMs = 2000, timeoutMs = 5 * 60 * 1000, openGraceMs = 20_000, onUpdate, sleep, whileQueued = null, queuedCheckMs = 6000, onLeft = null } = {}) {
     const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     const deadline = Date.now() + timeoutMs;
     let last = null, lastStage, openAt = 0, nearAt = 0, queuedAt = Date.now();
@@ -238,6 +261,8 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
         queuedAt = Date.now();
         let stale = false;
         try { stale = !!(await whileQueued(st)); } catch { stale = false; }                       // a check that cannot be made never ends the wait
+        // the job is dropped from the relay's queue (cancel; one already taken is refused there, its reserves gone), and `onLeft` lets the page stop holding its notes for it
+        if (stale) { await cancel(jobId); try { onLeft?.(jobId); } catch { } }
         if (stale) throw Object.assign(new Error('not proved: the pool moved while this waited for the relay to take it, so nothing was spent (0x29b3c833)'), { staleQueued: true, jobId });
       }
       if (st.status === 'open' && st.publicValues && st.proof) {
@@ -391,5 +416,5 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
     }
   }
 
-  return { relays: () => [root, ...alts], relayNow: () => pick, submitOp, hold, sealFor, status, state, waitForSettle, settle, waitForProof, prove, provenMemos, verifyEmittedMemos, landed, openJobs, postProof, useProver, ownProving: () => !!ownProver, useSealer, sealing: () => !!sealer };
+  return { relays: () => [root, ...alts], relayNow: () => pick, submitOp, cancel, hold, sealFor, status, state, waitForSettle, settle, waitForProof, prove, provenMemos, verifyEmittedMemos, landed, openJobs, postProof, useProver, ownProving: () => !!ownProver, useSealer, sealing: () => !!sealer };
 }

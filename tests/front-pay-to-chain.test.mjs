@@ -13,10 +13,11 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { mergePlan } from '../dapp/evm-pool-wallet.js';
+import { frontPage } from './lib/front-page.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tacJs = readFileSync(join(ROOT, 'dapp/front/tac.js'), 'utf8');
-const page = readFileSync(join(ROOT, 'dapp/index.html'), 'utf8');
+const page = frontPage(join(ROOT, 'dapp/index.html'));
 
 let pass = 0, fail = 0;
 const test = async (label, fn) => {

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gatewayKeys, newGatewayKey, openRequest } from '../dapp/sealed-request.js';
+import { frontPage } from './lib/front-page.mjs';
 
 let n = 0;
 const check = async (name, fn) => { await fn(); n++; console.log(`ok - ${name}`); };
@@ -145,7 +146,7 @@ await check('what the page pins is what the keeper serves', () => {
 await check('every host the route can use is in the CSP of every page that can carry it', () => {
   const pages = ['index.html', 'spx/index.html', 'tac/index.html', 'sats/index.html', 'pay/eth/index.html'];
   for (const pg of pages) {
-    const html = readFileSync(new URL(`../dapp/${pg}`, import.meta.url), 'utf8');
+    const html = frontPage(new URL(`../dapp/${pg}`, import.meta.url));
     const connect = (/http-equiv="Content-Security-Policy"[^>]*?connect-src([^;]*)/s.exec(html)?.[1] || '').split(/\s+/);
     assert.ok(connect.length > 5, `${pg} has a connect-src in its CSP meta tag`);
     for (const host of [SHIPPED.keeper, ...SHIPPED.forwarders, ...SHIPPED.nostr]) assert.ok(connect.includes(host), `${pg} does not allow ${host}`);
@@ -178,7 +179,7 @@ await check('the pay page reads the wallet\'s side through the wallet-read gatew
 });
 
 await check('every module that talks to the relay takes the route\'s fetch, and every page that calls the relay sets it and names the forwarders', () => {
-  const read = (f) => readFileSync(new URL(`../dapp/${f}`, import.meta.url), 'utf8');
+  const read = (f) => frontPage(new URL(`../dapp/${f}`, import.meta.url));
   for (const [f, min] of [['confidential-pool-ux.js', 1], ['confidential-relay.js', 1], ['confidential-bridge-mint.js', 3], ['community-ops.js', 1], ['activity.js', 2], ['prove/app.js', 1], ['index.html', 3]]) {
     const hits = (read(f).match(/__tacitRelayFetch/g) || []).length;
     assert.ok(hits >= min, `${f} takes the route's fetch (${hits} of at least ${min})`);

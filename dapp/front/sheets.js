@@ -204,6 +204,15 @@ function renderAct() {
   };
 }
 const LEGACY_SHEET = [[/^(Make .* TAC public|Withdraw [\d.,]+ TAC)$/, 'tac'], [/^Withdraw .* ETH to /, 'eth'], [/^Withdraw .* cUSD as tacUSD$/, 'borrow']];
+// What the last balance read says of the notes a failed action took (its row's `notes`, kept by the page): unspent and back in the balance, or gone from it.
+// Nothing is said without notes or without a read made after the action ended (an older read cannot tell).
+function keptLine(it) {
+  const keys = Array.isArray(it.notes) ? it.notes : [];
+  if (!keys.length || !P.scan || (it.end && P.scan.since < it.end)) return '';
+  const all = P.scan.notes || [], seen = all.filter((n) => keys.includes(kNote(n)));
+  if (!seen.length) return 'Its note no longer shows in your private balance: it may have gone through after all. Read your balance again in a minute.';
+  return freeNotes(seen).length ? 'Its note is unspent and back in your private balance: nothing was spent.' : 'Its note is unspent: it shows in your private balance again once the relay lets go of it.';
+}
 function againLine(it) {
   if (it.status !== 'failed' || (it.kind !== 'job' && it.kind !== 'op') || otherKey(it)) return '';
   const s = String(it.err || '');
@@ -211,7 +220,8 @@ function againLine(it) {
   const own = it.sheet || LEGACY_SHEET.find(([re]) => re.test(String(it.label || '')))?.[1];
   const sheet = own && $(`#sheet-${own}`) ? own : null, link = sheet ? null : farmLinkOf(it);
   // a farm entry made from the Earn card has no sheet of its own to go back to: it is tried again from its farm, which takes the same two private notes
-  return html`${/nothing was spent/i.test(failText(it)) ? '' : html`<div class="actr-f">Nothing was spent: it is still in your private balance.</div>`}
+  const kept = keptLine(it);
+  return html`${kept ? html`<div class="actr-f">${kept}</div>` : /nothing was spent/i.test(failText(it)) ? '' : html`<div class="actr-f">Nothing was spent: it is still in your private balance.</div>`}
     <div class="brr-a">${link ? html`<a class="btn ghost" href="#${link}" data-link="${link}">Try again</a>`
       : html`<button class="btn ghost" type="button" data-act-again="${sheet || ''}">${sheet ? 'Try again' : 'Read my balance again'}</button>`}</div>`;
 }
@@ -931,13 +941,20 @@ async function swapFee(t, from, to) {
 // The least a swap through the pools takes: 1%, and more where the pool is thin for this swap (swap/slip.js). `impact` is the plan's, in percent, the pool's fee not in it.
 const slipMod = () => import('/swap/slip.js?cb=b2233769');
 const poolLeast = async (plan) => { const { poolSlipBps, floorOf } = await slipMod(); return floorOf(plan.amountOut, poolSlipBps((plan.impact || 0) / 100)); };
+// The fee tiers that have a pool, per pair, kept 10 minutes so each edit quotes only those.
+const TIERS = new Map();
 async function swapPlan(t, from, to, units, fee, id = (k) => P.scan[k].id) {
   let cur = id(from), amt = units - fee, mid = Number(amt);
   const path = [];
   for (const k of swapStops(from, to)) {
-    const next = id(k);
-    const tiers = await Promise.all([30, 5, 100, 1].map((feeBps) => t.quoteRoute({ asset0: cur, amountIn: amt, path: [{ assetNext: next, feeBps }] }).then((r) => r && r.amountOut > 0n ? { feeBps, out: r.amountOut, hop: r.hops[0] } : null, () => null)));
-    const best = tiers.filter(Boolean).sort((x, y) => (x.out < y.out ? 1 : x.out > y.out ? -1 : 0))[0];
+    const next = id(k), key = `${cur}:${next}`, kept = TIERS.get(key);
+    const ask = (list) => Promise.all(list.map((feeBps) => t.quoteRoute({ asset0: cur, amountIn: amt, path: [{ assetNext: next, feeBps }] }).then((r) => r && r.amountOut > 0n ? { feeBps, out: r.amountOut, hop: r.hops[0] } : null, () => null)));
+    let tiers = kept && Date.now() - kept.at < 600e3 ? (await ask(kept.list)).filter(Boolean) : [];
+    if (!tiers.length) {
+      tiers = (await ask([30, 5, 100, 1])).filter(Boolean);
+      if (tiers.length) TIERS.set(key, { at: Date.now(), list: tiers.map((x) => x.feeBps) });
+    }
+    const best = tiers.sort((x, y) => (x.out < y.out ? 1 : x.out > y.out ? -1 : 0))[0];
     if (!best) return null;
     const lo = BigInt(cur) <= BigInt(next);
     mid = (mid * Number(lo ? best.hop.reserveBPre : best.hop.reserveAPre)) / Number(lo ? best.hop.reserveAPre : best.hop.reserveBPre) * (1 - best.feeBps / 1e4);
@@ -3008,7 +3025,7 @@ function farmZap(el, p, status, has, top) {
     })}`);
     sizesEl.querySelectorAll('[data-size]').forEach((b) => { b.onclick = () => { aIn.value = plain(BigInt(b.dataset.size) / zapUnit * zapUnit, 18); aIn.dispatchEvent(new Event('input')); }; });
   };
-  if (sizesEl) { paintSizes().catch(() => {}); const tick = setInterval(() => { if (!sizesEl.isConnected) clearInterval(tick); else paintSizes().catch(() => {}); }, 30e3); }
+  if (sizesEl) { paintSizes().catch(() => {}); const tick = setInterval(() => { if (!sizesEl.isConnected || !$('#sheet-farm')?.open || !S.key) clearInterval(tick); else if (!document.hidden) paintSizes().catch(() => {}); }, 30e3); }
   const gateOk = () => { go.disabled = !q || q.over || !lossOk(ackBox, q.impact || 0, q.off); };
   ethBalance().then((b) => { bal = b; if (balEl.isConnected) balEl.textContent = b == null ? '' : `${payName()} ${fmt(b, 18, 4)}`; noEthYet($(`#sz-fund-${pid}`), b, '', 'zap it into the farm'); });
   const requote = debounce(async () => {

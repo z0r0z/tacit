@@ -10,7 +10,7 @@ const TABS = Object.keys(ROUTES);
 try {
   const host = document.getElementById('tk-usdt')?.parentNode;
   for (const e of readRuntime(localStorage)) {
-    if (!addBridgeAsset({ key: e.key, id: e.id, route: bridgeRoute({ ticker: e.ticker, icon: runtimeIcon(e.addr), dp: e.dp, dec: e.dec, addr: e.addr }), limits: bridgeLimitEntry(NO_LIMITS) })) continue;   // a limit an older visit saved is not one any more
+    if (!addBridgeAsset({ key: e.key, id: e.id, route: bridgeRoute({ ticker: safeSymbol(e.ticker, e.addr), icon: runtimeIcon(e.addr), dp: e.dp, dec: e.dec, addr: e.addr }), limits: bridgeLimitEntry(NO_LIMITS) })) continue;   // a limit an older visit saved is not one any more
     if (host && !document.getElementById(runtimeIcon(e.addr))) host.append(runtimeSymbol(document, e));
   }
 } catch { }
@@ -344,9 +344,9 @@ function rowHtml(r) {
     r.ethTx ? `<a href="https://etherscan.io/tx/${esc(r.ethTx)}" target="_blank" rel="noopener" title="Ethereum transaction" aria-label="Ethereum transaction">${mk('eth')} tx</a>` : '',
   ].filter(Boolean).join('');
   return `<li class="mb${r.done ? ' done' : ''}${nx.due ? ' due' : ''}" data-dir="${r.dir}">
-    <svg class="tk" aria-hidden="true"><use href="#${a.icon}"/></svg>
+    <svg class="tk" aria-hidden="true"><use href="#${esc(a.icon)}"/></svg>
     <div class="mb-m">
-      <div class="mb-t"><b class="num">${fmtAmount(r.amount, a.dp, a.dec)} ${a.ticker}</b>${to}<small>${r.since ? ago(r.since) : ''}</small></div>
+      <div class="mb-t"><b class="num">${fmtAmount(r.amount, a.dp, a.dec)} ${esc(a.ticker)}</b>${to}<small>${r.since ? ago(r.since) : ''}</small></div>
       <div class="mb-r" role="img" aria-label="${esc(where)}">${ticks}</div>
       <div class="mb-w"><span>${stepHtml(where)}</span>${live ? `<span class="mb-live">${esc(live)}</span>` : ''}</div>
       ${r.note ? `<p class="mb-n">${esc(r.note)}</p>` : ''}
@@ -434,7 +434,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=90b336f8').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=7b1e4690').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });

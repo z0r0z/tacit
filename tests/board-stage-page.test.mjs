@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import { makeConfidentialSettler } from '../worker/src/confidential-settle.js';
+import { frontPage } from './lib/front-page.mjs';
 
 const mem = new Map();
 globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
@@ -22,7 +23,7 @@ const { makeConfidentialRelay } = await import('../dapp/confidential-relay.js');
 const A = await import('../dapp/activity.js');
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const page = readFileSync(join(ROOT, 'dapp/index.html'), 'utf8');
+const page = frontPage(join(ROOT, 'dapp/index.html'));
 const hash = (s) => '0x' + Buffer.from(keccak_256(new TextEncoder().encode(s))).toString('hex');
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (!c) throw new Error(m); };

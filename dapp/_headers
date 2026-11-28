@@ -35,3 +35,13 @@
 
 /kit/*
   Access-Control-Allow-Origin: *
+
+# The front page's modules, always loaded by a ?cb= URL the build makes from their bytes: a changed file is a new URL.
+/front/main.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/front/sheets.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/front/tac.js
+  Cache-Control: public, max-age=31536000, immutable

@@ -175,6 +175,34 @@ await check('a scan through a rate-limited node beside one that refuses every ra
   assert.ok(windows < 3 * Math.ceil((TIP + 1) / 2000) + 6, `${windows} base windows for a 10,001-block stream at 2,000 blocks`);
 });
 
+await check('a window quartered on a vague failure widens again; a limit a node names holds', async () => {
+  const run = async (...msgs) => {
+    const sizes = [];
+    let failed = false;
+    const rpc = async (m, p) => {
+      if (m === 'eth_blockNumber') return '0x' + TIP.toString(16);
+      if (m !== 'eth_getLogs') throw new Error(`unexpected ${m}`);
+      const size = Number(BigInt(p[0].toBlock)) - Number(BigInt(p[0].fromBlock)) + 1;
+      if (!failed) { failed = true; throw Object.assign(new Error(msgs[0]), { all: msgs.map((message) => ({ message })) }); }
+      if (size > 1000) throw Object.assign(new Error('too wide'), { all: [{ message: 'eth_getLogs is limited to a 1,000 range' }] });
+      sizes.push(size);
+      return [];
+    };
+    const w = makeEvmPoolWallet({
+      zk, keys: evmPoolKeys(zk, new Uint8Array(32).fill(12)), prove: null,
+      chain: { chainId: 8453, pool: '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', router: '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5', rpc, deployBlock: 0, confirmations: 0, logChunk: 1000 },
+    });
+    await w.sync();
+    return sizes;
+  };
+  const vague = await run('upstream request timed out', 'ranges over 10000 blocks are not supported on free plan');
+  assert.equal(vague[0], 250);
+  assert.equal(Math.max(...vague), 1000, 'back to the full window');
+  assert.ok(vague.length < 20, `${vague.length} windows for a 10,001-block stream`);
+  const named = await run('eth_getLogs is limited to a 400 range');
+  assert.ok(named.every((x) => x <= 400), 'a named limit is kept');
+});
+
 await check('state saved with every leaf and nullifier loads as a tree of unspent notes only', async () => {
   const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9';
   const keys = evmPoolKeys(zk, new Uint8Array(32).fill(9));

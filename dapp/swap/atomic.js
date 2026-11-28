@@ -24,19 +24,19 @@
 // to be seen again can miss its window); and the page asks before it is left while one is under way.
 import { esc, fmtUnits, parseUnits, plain, E10 } from '/trade/util.js?cb=9c8b4133';
 
-const BTC_MODULE = '/trade/btc.js?cb=679a3143';
-const PAIR_WIRE = '/fast/pair-wire.js?cb=45628220';
+const BTC_MODULE = '/trade/btc.js?cb=fdb5ab71';
+const PAIR_WIRE = '/fast/pair-wire.js?cb=2cc61dac';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const NO_ANSWER = 'No answer just now. Nothing was sent. Try again soon.', RETRY_MS = [2000, 4000, 8000, 15000, 30000], RETRY_SHOWN = 3;
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
 // A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
 // one too near its end asks for a new one first
 const RENEW_SECS = 150, START_SECS = 125;
-const MARKET_MODULE = '/swap/atomic-market.js?cb=c7e4d123';
+const MARKET_MODULE = '/swap/atomic-market.js?cb=7bd954be';
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
 // the most providers one BTC-for-ETH swap is split among (fastbridge-pair.js splitLegs)
-const SPLIT_LEGS = 4;
+const SPLIT_LEGS = 4; // = atomic-market.js SPLIT_LEGS (the page's header totals)
 const DISMISS_KEY = 'tacit-atomic-dismissed-v1';
 const LOCK_GUESS_SATS = 3000;                                     // what Max keeps back for the Bitcoin fee until a quote has said what it is
 const SHIELD_NOTE = 'The deposit is public. Nothing on chain links it to the swap or your Bitcoin address.';
@@ -61,6 +61,8 @@ export function addUnits(amount, available) { const a = BigInt(amount), have = a
 
 const tidy = (s) => s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 export const fmt = (v) => tidy(fmtUnits(v, DEC, DEC));
+// A most to show: four significant figures, rounded down (so the figure shown can always be swapped; 0.18973122 reads 0.1897)
+export const fmtMost = (v) => { const n = BigInt(v), cut = BigInt(Math.max(0, n.toString().length - 4)); return fmt((n / 10n ** cut) * 10n ** cut); };
 // A small amount of a fee, readable: under 0.001 BTC in sats, under 0.001 ETH to six places (a 7-decimal figure cannot be read at a glance)
 export const smallAmt = (v, sym) => { const n = BigInt(v); return n > 0n && n < 100000n ? (sym === 'BTC' ? `\u2248 ${n.toLocaleString('en-US')} sats` : `${tidy(fmtUnits(n, DEC, 6))} ${sym}`) : `${fmt(n)} ${sym}`; };
 const nowSecs = () => Math.floor(Date.now() / 1000);
@@ -422,7 +424,13 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (C) return { label: C.phase === 'adding' && !C.mined ? 'Adding ETH…' : 'Starting the swap…', off: true };
     if (L.busy) return { label: 'Swapping…', off: true };
     if (!L.loaded) return { label: 'Loading…', off: true };
-    if (!D.unlocked) return { label: 'Sign in to swap', act: 'unlock' };
+    if (!D.unlocked) {
+      // an amount past the limits is said before the sign-in, not found after it (the press still signs in)
+      const t0 = termsFor(L.dir), a0 = amountBase(), sym = COINS[SIDES[L.dir][0]].sym;
+      if (t0 && a0 && t0.max >= t0.min && a0 > t0.max) return { label: `Sign in · at most ${fmtMost(t0.max)} ${sym}`, act: 'unlock' };
+      if (t0 && a0 && a0 < t0.min) return { label: `Sign in · at least ${fmt(t0.min)} ${sym}`, act: 'unlock' };
+      return { label: 'Sign in to swap', act: 'unlock' };
+    }
     if (!pair) return { label: 'Loading…', off: true };
     // nothing is swapped against a balance not read yet; a read that failed is offered again (the refresh also tries again by itself)
     if (bal == null) return L.unread?.[pk] ? { label: 'Read the balance again', act: 'reread' } : { label: 'Reading your balance…', off: true };
@@ -435,7 +443,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     // a provider that holds less than its own minimum cannot take any swap: say so, instead of a minimum nobody can meet and then a maximum under it
     if (t && t.max < t.min) return { label: 'No provider has enough right now', off: true };
     if (t && amount < t.min) return { label: `Minimum ${fmt(t.min)} ${c.sym}`, off: true };
-    if (t && amount > t.max) return { label: `Maximum ${fmt(t.max)} ${c.sym}`, off: true };
+    if (t && amount > t.max) return { label: `Maximum ${fmtMost(t.max)} ${c.sym}`, off: true };
     const held = heldOf(pk), exact = pk === 'eth' && L.fits && L.fits.amt === amount && L.fits.ok;
     if (bal != null && amount > bal && !exact) {
       if (pk === 'btc') {
@@ -493,12 +501,13 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const ts = (m.providers || []).map((p) => p[L.dir]).filter(Boolean), now0 = ts.reduce((a, s) => { const n = s.available != null && s.available < s.max ? s.available : s.max; return n >= s.min && n > a ? n : a; }, 0n);
     const out = [];
     if (m.rate) out.push(['Market', (L.dir === 'b2e' ? rateText(m.rate) : `1 ETH = ${tidy((1 / m.rate).toFixed(6))} BTC`) + (m.rateAt ? ` (price from ${Math.max(1, Math.round((Date.now() / 1000 - m.rateAt) / 60))} min ago)` : ''), '']);
-    if (!ts.length) out.push(['Providers', 'none online right now', 'warn']);
+    if (!m.rate) out.push(['Market', 'price not read just now', '']);
+    if (!ts.length) out.push(['Providers', m.unreached ? 'not reached just now: check your connection' : 'none online right now', 'warn']);
     else {
       // the limits the ads name (what a provider holds now is the next row)
       // what the plan can fill: from the smallest amount any provider takes up to the most the best providers together can take now
       const lo = t ? t.min : ts[0].min, hi = t ? t.max : now0, fills = hi >= lo && hi > 0n;
-      out.push(['Limits', fills ? `${fmt(lo)}\u2060–\u2060${fmt(hi)} ${c.sym}` : 'none until a provider refills', fills && !(amount && t && (amount < t.min || amount > t.max)) ? '' : 'warn']);
+      out.push(['Limits', fills ? `${fmt(lo)}\u2060–\u2060${fmtMost(hi)} ${c.sym}` : 'none until a provider refills', fills && !(amount && t && (amount < t.min || amount > t.max)) ? '' : 'warn']);
       out.push([ts.length === 1 ? 'Provider' : 'Providers', ts.length === 1 ? (m.providers.find((p) => p[L.dir])?.name || 'Provider') : `${ts.length} online`, '']);
     }
     if (amount && !D.unlocked) out.push(['Price', 'after you sign in', '']);
@@ -1129,7 +1138,14 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   }
   function dismiss(id) { const s = dismissed(); s.add(id); try { localStorage.setItem(DISMISS_KEY, JSON.stringify([...s].slice(-50))); } catch { /* storage is a convenience */ } paintRecs(); }
   const setAmt = (v) => { L.amt = v; L.sticky = false; if (L.cls === 'err' && !L.busy) say(''); onState(); requote(); };
-  host.addEventListener('input', (e) => { if (e.target.id === 'a-amt') { fit(e.target); setAmt(e.target.value.trim()); } });
+  // the field takes a number only: digits, one point (a comma is taken as one), at most DEC decimals (what the swap reads); a paste is cleaned the same way
+  const cleanAmt = (v) => { const t = String(v).replace(/,/g, '.').replace(/[^\d.]/g, ''), i = t.indexOf('.'); return i < 0 ? t : t.slice(0, i + 1) + t.slice(i + 1).replace(/\./g, '').slice(0, DEC); };
+  host.addEventListener('input', (e) => {
+    if (e.target.id !== 'a-amt') return;
+    const el = e.target, v = cleanAmt(el.value);
+    if (v !== el.value) { const at = Math.max(0, (el.selectionStart ?? v.length) - (el.value.length - v.length)); el.value = v; try { el.setSelectionRange(at, at); } catch {} }
+    fit(el); setAmt(v);
+  });
   host.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'a-amt' && !$('a-go').disabled) $('a-go').click(); });
   host.addEventListener('click', (e) => {
     const t = e.target;

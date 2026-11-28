@@ -278,4 +278,21 @@ await check('a refund box taken while a read is under way keeps its number when 
   assert.notEqual(await makeEvmPoolWallet({ zk, keys, prove: null, store, partial: false, chain }).refundBox(), box, 'and so for a wallet made from the stored state');
 });
 
+await check('a rescan in a partial wallet that held the whole history reads it whole again, and the stored state stays until it has', async () => {
+  const pool = pointed(), store = memStore(), W = wallet(pool, { store });
+  await W.sync();
+  assert.equal(await W.backfill(), true);
+  assert.equal((await W.sync()).balance, 107n);
+  const skey = `tacit-evm-pool-v1:8453:${POOL.toLowerCase()}:${keys.address}`, before = store.kv.get(skey), writes = [];
+  const set = store.set; store.set = (k, v) => { if (k === skey) writes.push(v); return set(k, v); };
+  const seen = [], R = makeEvmPoolWallet({ zk, keys, prove: null, store, partial: true, chain: { chainId: 8453, pool: POOL, router: ROUTER, rpc: pool.node(seen), deployBlock: 1, confirmations: 0 } });
+  const s = await R.rescan();
+  assert.equal(s.balance, 107n, 'the notes behind the point are still there');
+  assert.equal(s.behind, null);
+  assert.equal(firstFrom(seen), 1, 'read from the first block');
+  assert.ok(writes.length >= 1 && writes[0] !== before);
+  const back = makeEvmPoolWallet({ zk, keys, prove: null, store, partial: true, chain: { chainId: 8453, pool: POOL, router: ROUTER, rpc: pool.node(), deployBlock: 1, confirmations: 0 } });
+  assert.equal((await back.sync()).balance, 107n, 'and so in storage');
+});
+
 console.log(`${n} checks passed`);

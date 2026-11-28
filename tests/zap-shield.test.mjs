@@ -19,9 +19,10 @@ import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
 import * as R from '../dapp/swap/route.js';
 import { decodeZRouterCall } from '../dapp/zrouter-guard.js';
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
+import { frontPage } from './lib/front-page.mjs';
 
 const cardSrc = readFileSync(new URL('../dapp/swap/card.js', import.meta.url), 'utf8');
-const frontSrc = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+const frontSrc = frontPage(new URL('../dapp/index.html', import.meta.url));
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures/zap-shield-quotes.json', import.meta.url), 'utf8'));
 
 const SPX = '0xE0f63A424a4439cBE457D80E4f4b51aD25b2c56C', OTHER = '0x' + 'ba'.repeat(20), ROUTER = R.CONF_ROUTER, WALLET = '0x' + '0a'.repeat(20);

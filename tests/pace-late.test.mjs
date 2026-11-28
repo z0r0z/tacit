@@ -10,9 +10,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makePace } from '../dapp/activity.js';
+import { frontPage } from './lib/front-page.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const page = readFileSync(join(ROOT, 'dapp/index.html'), 'utf8');
+const page = frontPage(join(ROOT, 'dapp/index.html'));
 let pass = 0, fail = 0;
 const test = async (label, fn) => { try { await fn(); console.log(`  PASS  ${label}`); pass++; } catch (e) { console.log(`  FAIL  ${label}: ${e.message}`); fail++; } };
 const ok = (c, m) => { if (!c) throw new Error(m); };

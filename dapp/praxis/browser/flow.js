@@ -63,7 +63,7 @@ const hex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, '0')).join('')
 
 // opts: api, name, handle, spawn (a worker factory), workers, getRandom, onStatus, signal, partSize
 export async function runContribution(opts) {
-  const { api, name, handle = '', spawn, spawnBeat, workers = 4, getRandom = (b) => crypto.getRandomValues(b), onStatus = () => {}, signal, partSize = 16 << 20 } = opts;
+  const { api, name, handle = '', spawn, spawnBeat, workers = 4, getRandom = (b) => crypto.getRandomValues(b), onStatus = () => {}, onJoined, signal, partSize = 16 << 20 } = opts;
   const joined = await call(api, 'POST', '/join', null, { name, handle }, signal);
   const token = joined.token;
   let state = joined, lost = null, finished = false;
@@ -85,6 +85,7 @@ export async function runContribution(opts) {
   const leave = () => F(api + '/leave', { method: 'DELETE', headers: { 'X-Ceremony-Token': token }, keepalive: true }).catch(() => {});
   let pool, hasher;
   try {
+    await onJoined?.(token);
     let last = -1;
     while (state.state !== 'claim' && state.state !== 'active') {
       if (lost) throw new Refused('the coordinator dropped this place in the queue', 404);

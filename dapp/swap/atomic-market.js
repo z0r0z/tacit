@@ -5,10 +5,12 @@
 //   const m = await readMarket({ fetchImpl, lists, call, now })
 //   m.rate          ETH per BTC, or null when the market could not be read
 //   m.providers     [{ id, name, b2e: { min, max, available, feeBps, flatFee }, e2b: same | null }]: b2e amounts and flat fee in sats, e2b in pool units (1e-8 ETH)
-//   m.totals        { b2e: { min, max, now }, e2b: same } over every provider (null for a direction none offers): the least taken, the most asked, the most takeable now
+//   m.unreached     true when no provider and no board answered at all (the network, not the providers): "none online" would be wrong
+//   m.totals        { b2e: { min, max, now, split }, e2b: same } over every provider (null for a direction none offers): the least taken, the most asked, the most takeable now
+//                   by one provider, and by the best few together (split)
 //   estimate(m, dir, amount) -> { get, provider } | null       what the best provider would give for `amount`, before its own quote
 
-import { discoverProviders } from '/fast/discover.js?cb=de0fd260';
+import { discoverProviders } from '/fast/discover.js?cb=e806c31e';
 import { makeRateFeed, chainlinkEthBtc, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=b392f6cc';
 import { ETH_NODES, batchSize } from '/eth-nodes.js';
 import { bodyType } from '/rpc-body.js';
@@ -25,10 +27,13 @@ const loadLists = async (fetchImpl) => {
 const side = (t) => (t ? { min: BigInt(t.minAmount), max: BigInt(t.maxAmount), available: t.available == null ? null : BigInt(t.available), feeBps: Number(t.feeBps) || 0, flatFee: BigInt(t.flatFee ?? 0) } : null);
 // the most one swap can be with a provider right now: its maximum, or what it holds when that is less
 export const takeable = (s) => (!s ? 0n : s.available != null && s.available < s.max ? s.available : s.max);
+export const SPLIT_LEGS = 4; // the most providers one BTC-for-ETH swap is split across
 const totalOf = (ss) => {
   const on = ss.filter(Boolean);
   if (!on.length) return null;
-  return { min: on.reduce((a, s) => (s.min < a ? s.min : a), on[0].min), max: on.reduce((a, s) => (s.max > a ? s.max : a), 0n), now: on.reduce((a, s) => { const t = takeable(s); return t >= s.min && t > a ? t : a; }, 0n) };
+  // split: what one swap can take when the best few providers fill it together (as the lane's plan sums them, BTC for ETH only)
+  const caps = on.map((s) => (takeable(s) >= s.min ? takeable(s) : 0n)).sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
+  return { min: on.reduce((a, s) => (s.min < a ? s.min : a), on[0].min), max: on.reduce((a, s) => (s.max > a ? s.max : a), 0n), now: on.reduce((a, s) => { const t = takeable(s); return t >= s.min && t > a ? t : a; }, 0n), split: caps.slice(0, SPLIT_LEGS).reduce((a, c) => a + c, 0n) };
 };
 
 // The market price's nodes are the page's one list (eth-nodes.js: its own node when it is on, then the public ones), and the connected wallet's node after the first few on
@@ -54,7 +59,7 @@ export async function readMarket({ fetchImpl = (...a) => fetch(...a), lists = nu
     : makeRateFeed({ sources: [priceSource({ fetchImpl, now, ...(nodes ? { nodes: typeof nodes === 'function' ? nodes : () => nodes } : {}) })], counted: true, minSources: 2, maxSpreadBps: 1, unanimous: true, maxAgeSecs: 600, ...(now ? { now } : {}) });
   const l = lists || (await loadLists(fetchImpl));
   const [found, rate] = await Promise.all([
-    discoverProviders({ ...l, fetchImpl, assets: { btcAsset: SATS_ASSET_ID, evmAsset: ETH_ASSET_ID }, ...(now ? { now } : {}) }).catch(() => []),
+    discoverProviders({ ...l, fetchImpl, assets: { btcAsset: SATS_ASSET_ID, evmAsset: ETH_ASSET_ID }, ...(now ? { now } : {}) }).catch(() => Object.defineProperty([], 'reached', { value: false })),
     feed.refresh().then((c) => (c ? c.ethPerBtc : null), () => null),
   ]);
   // (ETH for Bitcoin is shown only for a provider the site names, as the pair client asks only those: fastbridge-pair.js namedProvider)
@@ -64,7 +69,7 @@ export async function readMarket({ fetchImpl = (...a) => fetch(...a), lists = nu
   const nowS = Math.floor(Date.now() / 1000);
   let rateOut = rate, rateAt = null;
   if (rate) lastPut({ ethPerBtc: rate, at: nowS }); else { const m = lastGet(nowS); if (m) { rateOut = m.ethPerBtc; rateAt = m.at; } }
-  return { rate: rateOut, ...(rateAt ? { rateAt } : {}), providers, totals: { b2e: totalOf(providers.map((p) => p.b2e)), e2b: totalOf(providers.map((p) => p.e2b)) }, at: Math.floor(Date.now() / 1000) };
+  return { rate: rateOut, ...(rateAt ? { rateAt } : {}), providers, ...(found.reached === false ? { unreached: true } : {}), totals: { b2e: totalOf(providers.map((p) => p.b2e)), e2b: totalOf(providers.map((p) => p.e2b)) }, at: Math.floor(Date.now() / 1000) };
 }
 
 // what is left of `amount` after a side's fee (its share and its flat part, both in the paying side's units)

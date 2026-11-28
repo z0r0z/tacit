@@ -183,7 +183,7 @@ function notify(msg, kind = '', ms = 5000) {
 }
 async function openBitcoin(prime = null) {
   try {
-    bitcoin ||= (await import('/trade/btc.js?cb=679a3143')).makeBitcoin({ notify, onTraded: () => loadMarket().then(paintAll).catch(() => {}),
+    bitcoin ||= (await import('/trade/btc.js?cb=fdb5ab71')).makeBitcoin({ notify, onTraded: () => loadMarket().then(paintAll).catch(() => {}),
       asset: { id: BTC_ID, title: 'tETH on Bitcoin', ticker: 'tETH', decimals: 8, bound: true, after: 'tETH reaches Bitcoin through the bridge: <a href="/#private/bitcoin/out">Bridge →</a>' } });
     await bitcoin.open(prime);
   } catch (e) { notify(`Could not open the Bitcoin market: ${e?.message || e}`, 'error', 9000); }
@@ -818,10 +818,11 @@ function refreshCredit() {
 function pollCredit(before) {
   const until = Date.now() + 6 * 60e3, pub = O.pub;
   O.waiting = until; O.waitFrom = before; renderOwn();
+  // only the latest top-up's loop runs: a newer one replaces O.waiting and this loop stops
   const tick = async () => {
-    if (O.pub !== pub || !key.unlocked) return;
+    if (O.pub !== pub || !key.unlocked || O.waiting !== until) return;
     await refreshCredit();
-    if (!O.waiting) return;
+    if (O.waiting !== until) return;
     if (Date.now() < until) setTimeout(tick, 20e3); else { O.waiting = 0; renderOwn(); }
   };
   setTimeout(tick, 20e3);

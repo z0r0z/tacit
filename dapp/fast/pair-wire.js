@@ -24,9 +24,9 @@ import { ETH_NODES, batchSize } from '/eth-nodes.js';
 import * as EN from '/eth-nodes.js';   // (a namespace: eth-nodes.js has no cache token)
 import { guardedStorage } from '/safe-storage.js';
 import { bodyType } from '/rpc-body.js';
-import { discoverProviders } from '/fast/discover.js?cb=de0fd260';
-import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=45e401c4';
+import { discoverProviders } from '/fast/discover.js?cb=e806c31e';
+import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=a8287ce3';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=30d256dc';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();

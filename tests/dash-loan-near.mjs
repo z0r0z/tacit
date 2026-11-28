@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import http from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/tacit/node_modules/playwright-core');
 const DAPP = process.env.DAPP || new URL('../dapp/', import.meta.url).pathname;
@@ -30,7 +31,7 @@ let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 
 // the page with a hook into its module (and no CSP: the module's hash no longer matches)
-let PAGE = readFileSync(join(DAPP, 'index.html'), 'utf8').replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, '');
+let PAGE = frontPage(join(DAPP, 'index.html')).replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, '');
 const at = PAGE.indexOf('const store = {'), end = PAGE.indexOf('</script>', at);
 if (at < 0 || end < 0 || !/const getUx = lazy\(/.test(PAGE)) { console.log('FAIL   the page has the names this test hooks into'); process.exit(1); }
 PAGE = PAGE.slice(0, end) + `\n;globalThis.__t = { S, P, LOANS, TPX, HXR, LOCK, dashLoans, dashSoon, hxBwView, hxBwList, VE, dashVaults, stub: (o) => { if (o.cdpLoans) cdpLoans = o.cdpLoans; if (o.loadTacPrice) loadTacPrice = o.loadTacPrice; if (o.getUx) getUx = o.getUx; if (o.vaultLoad) vaultLoad = o.vaultLoad; } };\n` + PAGE.slice(end);

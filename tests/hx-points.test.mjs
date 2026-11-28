@@ -5,8 +5,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { countedRows, KIND_OF } from '../worker-relay/src/lib/points-engagement.js';
+import { frontPage } from './lib/front-page.mjs';
 
-const page = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+const page = frontPage(new URL('../dapp/index.html', import.meta.url));
 const src = page.match(/function hxWeek\(sp, rows, today, kindOf, wt, kind, add\) \{[\s\S]*?\n\}\n/)?.[0];
 assert.ok(src, 'hxWeek is in the page');
 const hxWeek = new Function(`${src}; return hxWeek;`)();

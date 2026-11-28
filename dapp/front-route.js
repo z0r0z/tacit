@@ -1,8 +1,9 @@
 (function () {
   var CLASSIC = '/classic.html';
   var TABS = ['wallet', 'holdings', 'transfer', 'discover', 'market', 'pool', 'farms', 'etch', 'factory', 'drops', 'claim',
-    'about', 'mixer', 'confidential-pool', 'otc', 'cdp', 'csend', 'cswap', 'earn', 'points', 'govern'];
-  var PAGES = ['sats', 'secret-sats', 'ceremony', 'tacit-v1', 'tac', 'trade', 'trade/tac', 'teth', 'cbtc', 'vault', 'pay', 'weld/stats', 'weld/keeper', 'pay/eth', 'swap', 'assets', 'rewards', 'bridge', 'discord', 'farm', 'spx'];
+    'about', 'mixer', 'confidential-pool', 'otc', 'cdp', 'csend', 'cswap', 'earn', 'points'];
+  var PAGES = ['sats', 'secret-sats', 'ceremony', 'tacit-v1', 'tac', 'trade', 'trade/tac', 'teth', 'cbtc', 'vault', 'pay', 'weld/stats', 'weld/keeper', 'pay/eth', 'swap', 'assets', 'rewards', 'bridge', 'discord', 'farm', 'spx',
+    'govern', 'etch', 'nodes', 'fast', 'btc', 'help', 'build', 'shop', 'vanity', 'face', 'tasks', 'relay', 'splitter', 'recover', 'prove', 'chain', 'praxis', 'docs/btc', 'docs/chain'];
   var CLASSIC_HASH = /^#(?:(?:tab|recv|claim|dclaim|gate|tacit-invoice|amm)=|amm-?ceremony$)/;
   var CLASSIC_QUERY = ['ceremony', 'coordinator', 'amm', 'ammceremony'];
   var VIEWS = ['lock', 'borrow', 'farm', 'leaderboard', 'bitcoin', 'private', 'device', 'buy', 'sell', 'activity', 'asset', 'airdrop'];
@@ -20,6 +21,7 @@
     if (seg === 'trade') return away('/trade/tac/' + q + h);
     if (seg === 'trade/teth') return away('/teth/' + q + h);
     if (seg === 'trade/cbtc') return away('/cbtc/' + q + h);
+    if (seg === 'mine') return away('/prove/' + q + h);
     if (seg === 'vault/tac') return away('/vault/' + q + h);
     if (seg === 'vault/btc') return away('/vault/' + q + (h && h !== '#' ? h : '#btc'));
     if (PAGES.indexOf(seg) !== -1 && !/\/$/.test(path)) return away('/' + seg + '/' + q + h);
@@ -38,16 +40,19 @@
     if (/(^#|&)(gift|proof|pay)=/.test(h)) return away((/^#(btc|tac)&/i.test(h) ? '/pay/' : '/pay/eth/') + h);
     var parts = path.toLowerCase().replace(/^\/+|\/+$/g, '').split('/');
     var view = VIEWS.indexOf(parts[0]) !== -1 && parts.every(function (x) { return /^[a-z0-9-]+$/.test(x); });
-    if (path !== '/') window.history.replaceState(null, '', '/' + q + (view && !h ? '#' + parts.join('/') : h));
+    var front = '/' + q + (view && !h ? '#' + parts.join('/') : h);
+    // the front page is cross-origin isolated (threaded proving) only when served at '/': from any other path it loads '/' itself
+    if (path !== '/' && window.crossOriginIsolated === false) return away(front);
+    if (path !== '/') window.history.replaceState(null, '', front);
     // a link that opens a sheet: the sheets' code is asked for now, beside the page's module, not once the module reaches the link
     if (window.location.hash.length > 1) {
       var pre = document.createElement('link');
-      pre.rel = 'modulepreload'; pre.href = '/front/sheets.js?cb=a740ec32';
+      pre.rel = 'modulepreload'; pre.href = '/front/sheets.js?cb=f987d7fe';
       document.head.appendChild(pre);
       // and a link to TAC's page (its card, the bridge, a claim) the TAC page's code too
       if (/^#(?:tac|bridge)(?:\/|$)|^#tacclaim=/.test(window.location.hash)) {
         var tac = document.createElement('link');
-        tac.rel = 'modulepreload'; tac.href = '/front/tac.js?cb=3da7bf93';
+        tac.rel = 'modulepreload'; tac.href = '/front/tac.js?cb=ca8f0d77';
         document.head.appendChild(tac);
       }
     }

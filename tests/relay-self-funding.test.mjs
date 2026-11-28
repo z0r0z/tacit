@@ -14,6 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { frontPage } from './lib/front-page.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -824,7 +825,7 @@ test('a wrap counts as paid only for its own deposit, through our forwarder, to 
 });
 
 test('Tacit\'s own front page pays the splitter when the quote names one, and the ops address otherwise', async () => {
-  const page = readFileSync(join(ROOT, 'dapp/index.html'), 'utf8');
+  const page = frontPage(join(ROOT, 'dapp/index.html'));
   ok(page.includes('j.tipSplitter || j.recommendedTipRecipient'), 'the Shield card takes the tip address from tipSplitter first');
   ok(page.includes('[ADDR.tipOps, ADDR.tipSplitter].find('), 'and pays only one of Tacit\'s two tip addresses, whatever the quote names');
   // The ceiling, not the name that holds it: this read `tip * 10000n` until the variable became `full`, and the check then

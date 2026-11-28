@@ -12,6 +12,7 @@ import http from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { createHash } from 'node:crypto';
+import { frontPage } from './lib/front-page.mjs';
 
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 let n = 0, fails = 0;
@@ -35,12 +36,12 @@ p.on('pageerror', (e) => bad.push('script error: ' + e.message));
 p.on('console', (m) => { if (m.type() === 'error' && !NOISE.test(m.text())) bad.push('console: ' + m.text().slice(0, 160)); if (/Content Security Policy/.test(m.text())) bad.push('CSP: ' + m.text().slice(0, 160)); });
 {
   // a swap's output is rarely a whole number of the pool's units for an 18-decimal token: the shield rounds it down (AAVE canary: 'amount not aligned to unitScale')
-  const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), body = fn.slice(fn.indexOf('async function xtShieldRaw('), fn.indexOf('async function xtZapShield(') > 0 ? fn.indexOf('// The deposit of the one-transaction buy') : undefined);
+  const fn = frontPage(join(DAPP, 'index.html')), body = fn.slice(fn.indexOf('async function xtShieldRaw('), fn.indexOf('async function xtZapShield(') > 0 ? fn.indexOf('// The deposit of the one-transaction buy') : undefined);
   ok(/if \(r\.scale > 1n\) wei -= wei % r\.scale;/.test(body), 'the shield of a bought token rounds the amount down to the pool\'s unit scale');
 }
 {
   // a token the pool does not hold yet: the one-transaction buy adds it first, together with the buy when the wallet batches, else as its own confirmation
-  const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), dep = fn.slice(fn.indexOf('async function xtZapDeposit('), fn.indexOf('async function xtZapShield('));
+  const fn = frontPage(join(DAPP, 'index.html')), dep = fn.slice(fn.indexOf('async function xtZapDeposit('), fn.indexOf('async function xtZapShield('));
   ok(/if \(r\.registered !== true\) \{\s+if \(await canBatch\(\)\)/.test(dep) && /sendBatch\(\[t\.registerTokenCall\(r\.addr\), \{ to: router, data, value: plan\.value \}\]/.test(dep) && /await xtRegister\(run, t, r, 'wallet', status\);/.test(dep), 'the one-transaction buy registers a new token with the buy (batched) or just before it');
   ok(/r\.registered == null \|\| r\.err/.test(fn.slice(fn.indexOf('async function xtZapShield('), fn.indexOf('async function hxXOutGo('))), 'it is offered for a token the pool has not got yet, not only a registered one');
 }

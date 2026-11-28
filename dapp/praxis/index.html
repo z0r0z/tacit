@@ -27,8 +27,8 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /praxis/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/praxis/app.js?cb=558f6d2a">
-<link rel="modulepreload" href="/praxis/receipt.js?cb=e43d425d">
+<link rel="modulepreload" href="/praxis/app.js?cb=917ce45e">
+<link rel="modulepreload" href="/praxis/receipt.js?cb=95ecee78">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/reward-pop.js?cb=88973dac">
@@ -206,6 +206,16 @@ code { font: inherit; }
 .who { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); max-width: 760px; margin: 0 0 16px; }
 .who .field input { max-width: none; }
 .who .field label { margin-bottom: 6px; }
+.community { max-width: 760px; margin: 0 0 18px; padding: 16px 18px; border: 1px solid var(--hair-2); border-radius: 17px; background: color-mix(in srgb, var(--orange) 6%, var(--field)); }
+.community-top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.community-copy { flex: 1 1 320px; }
+.community h3 { margin: 0; font: 400 22px/1.1 var(--serif); }
+.community p { margin: 6px 0 0; font-size: 12px; color: var(--mute); line-height: 1.5; }
+.community .btn { width: auto; margin: 0; padding: 8px 16px; min-height: var(--tap); }
+.signals { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 12px; }
+.signals span { padding: 3px 9px; border: 1px solid var(--hair-2); border-radius: 99px; color: var(--mute); font-size: 10.5px; }
+.signals span.on { border-color: var(--orange); color: var(--ink); background: color-mix(in srgb, var(--orange) 12%, transparent); }
+.community-status { min-height: 1.5em; margin-top: 10px !important; color: var(--ink) !important; }
 /* the in-browser path: one big button, then four plain steps */
 .web { display: grid; gap: 10px; max-width: 560px; margin: 0 0 6px; }
 .web .go { margin-top: 0; min-height: 64px; font-size: 17px; border-radius: 18px; }
@@ -427,6 +437,11 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh.sh-l { max-width: 560px; text-align: left; } .sh.sh-l .sh-more { margin-top: 18px; }
 @media (hover: hover) { .sh-t a:hover { color: var(--ink); } }
 @media (max-width: 520px) { .sh { margin-top: 18px; } .sh-t { display: grid; grid-auto-columns: 1fr; } .sh-t a { padding: 6px 6px; font-size: 12px; } }
+/* Chains has several distinct routes. On a phone they are a legible 3 × 2 map, not six squeezed labels in one row. */
+@media (max-width: 640px) {
+  .sh[data-of="chains"] .sh-t { display: grid; grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .sh[data-of="chains"] .sh-t a { min-width: 0; padding-inline: 6px; white-space: normal; text-wrap: balance; }
+}
 .sh-more { list-style: none; margin: 22px auto 0; padding: 4px 18px; max-width: 560px; text-align: left; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
 .sh-more li + li { border-top: 1px solid var(--hair); }
 .sh-more a { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 2px 14px; padding: 14px 2px; color: var(--ink); font: 400 14px/1.3 var(--mono); text-decoration: none; }
@@ -547,7 +562,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=4c9196f2" defer></script>
+<script src="/chrome.js?cb=4658dd80" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -651,6 +666,14 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
           <input id="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x…"></div>
         <div class="field"><label for="name">Name <span class="opt">optional</span></label>
           <input id="name" type="text" autocomplete="off" spellcheck="false" maxlength="64" placeholder="as it will appear on the wall"></div>
+      </div>
+      <div class="community" id="community" hidden>
+        <div class="community-top">
+          <div class="community-copy"><h3>Community lane</h3><p>Long-time supporters can take a reserved turn by proving an external wallet. One in three turns is reserved; ordinary contributors keep the other two. No transaction or spending permission.</p></div>
+          <button class="btn ghost" type="button" id="community-connect">Verify supporter wallet</button>
+        </div>
+        <div class="signals" aria-label="Recognized community signals"><span data-signal="tac">TAC holder</span><span data-signal="wei">.wei name</span><span data-signal="zorgz">zOrgz</span></div>
+        <p class="community-status" id="community-status" role="status" aria-live="polite">Optional. Holdings are checked only when you join the line.</p>
       </div>
       <div class="web" id="web" hidden>
         <button class="btn big go" type="button" id="web-go">Contribute now</button>
@@ -783,6 +806,6 @@ shasum -a 256 phase2-*</pre></div>
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/praxis/app.js?cb=558f6d2a"></script>
+<script type="module" src="/praxis/app.js?cb=917ce45e"></script>
 </body>
 </html>

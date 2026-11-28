@@ -4,11 +4,12 @@
 import { readFileSync } from 'node:fs';
 import { secp, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { makeTacitAddress } from '../dapp/tacit-address.js';
+import { frontPage } from './lib/front-page.mjs';
 
 let n = 0, failures = 0;
 const ok = (c, m) => { if (c) { console.log('  ok -', m); n++; } else { console.error('  FAIL -', m); failures++; } };
 
-const html = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
+const html = frontPage(new URL('../dapp/index.html', import.meta.url));
 const src = html.slice(html.indexOf('async function btcRoute('), html.indexOf('const btcRouteM = memoRoute(btcRoute);'));
 ok(src.length > 200, 'btcRoute found in the page');
 

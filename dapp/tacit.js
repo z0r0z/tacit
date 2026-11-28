@@ -62638,6 +62638,7 @@ export {
   buildAndBroadcastCBurn,
   carveExactAmount,
   scanHoldings, invalidateHoldingsCache,
+  governanceApi,      // TAC governance for pages that load tacit.js under a key (dapp/govern/): Bitcoin votes and proposals
   _burndepUxSingleton as bridgeUx, _crossoutUxSingleton as crossoutUx, addBridgedAsset, _crossoutNotesSingleton as crossoutNotes, pickSafeCommitSats,
   discoverStealthFromTxid, scanAssetForStealthReceipts,
   recordStealthCredit, getStealthCredit, loadStealthCredits, removeStealthCredit,

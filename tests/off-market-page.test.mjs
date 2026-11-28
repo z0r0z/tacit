@@ -6,8 +6,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ackFor, offMarket, pairCost, payback, streamDays } from '../dapp/lp-zap.js';
+import { frontPage } from './lib/front-page.mjs';
 
-const page = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8'), sheets = readFileSync(new URL('../dapp/front/sheets.js', import.meta.url), 'utf8');
+const page = frontPage(new URL('../dapp/index.html', import.meta.url)), sheets = readFileSync(new URL('../dapp/front/sheets.js', import.meta.url), 'utf8');
 const cut = (src, a, b) => { const s = src.indexOf(a), e = src.indexOf(b, s + a.length); assert.ok(s >= 0 && e > s, `the source has ${a}`); return src.slice(s, e); };
 const make = (src, names, stubs, returns) => new Function(...names, `${src}\nreturn { ${returns} };`)(...names.map((k) => stubs[k]));
 // the page's html tag, as far as these functions use it: the pieces joined, nested fragments flattened

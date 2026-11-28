@@ -166,19 +166,32 @@ export function makeBtcHistoryProvider({ fetchImpl, sha256, bases: basesIn = nul
   // that the lock's reveal spends. A lock is the output of a reveal: it sits after output 0 and its transaction spends a
   // taproot output, so a plain payment to the same script is not listed as one. `spentBy` names the transaction that
   // spends a lock's output, when one does. Whether a lock is recorded, minted or retired is the pool's to say; the caller reads it.
+  const commitAnchors = new Map();
   async function locks(priv) {
     const spk = walletScripts(priv).lock, want = bytesToHex(spk), out = [], txs = await txsOf(spk);
     // what spends each output of the lock script, mempool included: a lock taken back or redeemed is gone before the pool records it
     const spends = new Map();
     for (const t of txs) for (const v of t.vin || []) if (v.prevout && String(v.prevout.scriptpubkey || '').toLowerCase() === want) spends.set(`${v.txid}:${v.vout}`, t.txid);
+    const found = [];
     for (const t of txs) {
       const vout = (t.vout || []).findIndex((o) => String(o.scriptpubkey || '').toLowerCase() === want && Number(o.value) > LOCK_FLOOR);
       if (vout < 1 || !t.vin || !t.vin[0] || t.vin[0].prevout?.scriptpubkey_type !== 'v1_p2tr') continue;
-      const commit = await getJson(`/tx/${t.vin[0].txid}`);
-      if (!commit || !commit.vin || !commit.vin[0]) continue;
+      found.push({ t, vout });
+    }
+    // each commit's first input, four reads at a time; a txid fixes its inputs, so what is read is kept for later calls
+    const todo = [...new Set(found.map(({ t }) => t.vin[0].txid).filter((id) => !commitAnchors.has(id)))];
+    await Promise.all(Array.from({ length: Math.min(4, todo.length) }, async () => {
+      for (let id; (id = todo.shift()) !== undefined;) {
+        const commit = await getJson(`/tx/${id}`);
+        if (commit && commit.vin && commit.vin[0]) commitAnchors.set(id, { txid: commit.vin[0].txid, vout: commit.vin[0].vout });
+      }
+    }));
+    for (const { t, vout } of found) {
+      const anchor = commitAnchors.get(t.vin[0].txid);
+      if (!anchor) continue;
       out.push({
         lockTxid: t.txid, lockVout: vout, vBtc: String(t.vout[vout].value),
-        anchor: { txid: commit.vin[0].txid, vout: commit.vin[0].vout }, at: ((t.status && t.status.block_time) || Date.now() / 1000) * 1000,
+        anchor: { ...anchor }, at: ((t.status && t.status.block_time) || Date.now() / 1000) * 1000,
         ...(spends.has(`${t.txid}:${vout}`) ? { spentBy: spends.get(`${t.txid}:${vout}`) } : {}),
       });
     }
