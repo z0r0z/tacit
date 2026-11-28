@@ -36,6 +36,12 @@
 /kit/*
   Access-Control-Allow-Origin: *
 
+# Fonts are version-controlled build assets and never change in place. Keep
+# them across page changes instead of revalidating the same files on every
+# route (the production host otherwise gives them max-age=0).
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable
+
 # The front page's modules, always loaded by a ?cb= URL the build makes from their bytes: a changed file is a new URL.
 /front/main.js
   Cache-Control: public, max-age=31536000, immutable

@@ -73,7 +73,7 @@
 (() => {
   const nav = document.querySelector('.sn');
   if (!nav || document.getElementById('act')) return;
-  import('/activity.js').then(({ activityCount, onActivity }) => {
+  const start = () => import('/activity.js').then(({ activityCount, onActivity }) => {
     const a = document.createElement('a'), n = document.createElement('b');
     a.className = 'sa'; a.href = '/#activity'; a.hidden = true;
     a.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>';
@@ -89,6 +89,9 @@
     addEventListener('focus', paint);
     setInterval(() => { if (!document.hidden) paint(); }, 30e3);
   }).catch(() => {});
+  if ('requestIdleCallback' in window) requestIdleCallback(start, { timeout: 2000 });
+  else if (document.readyState === 'complete') setTimeout(start, 0);
+  else addEventListener('load', () => setTimeout(start, 0), { once: true });
 })();
 
 (() => {
@@ -96,7 +99,10 @@
   let on = LIVE;
   try { const v = localStorage.getItem('tacit.help'); on = v === 'on' || (LIVE && v !== 'off'); } catch { }
   if (!on || window.top !== window.self || location.pathname.startsWith('/help')) return;
-  import('/help/widget.js').catch(() => {});
+  const start = () => import('/help/widget.js').catch(() => {});
+  if ('requestIdleCallback' in window) requestIdleCallback(start, { timeout: 2500 });
+  else if (document.readyState === 'complete') setTimeout(start, 250);
+  else addEventListener('load', () => setTimeout(start, 250), { once: true });
 })();
 
 (() => {

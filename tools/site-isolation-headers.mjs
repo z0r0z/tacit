@@ -1,4 +1,4 @@
-// Cross-origin isolation for the site's pages that prove (the front page and TAC's) and the files those pages start as workers: the threaded prover
+// Static-site performance headers plus cross-origin isolation for the site's pages that prove (the front page and TAC's) and the files those pages start as workers: the threaded prover
 // (dapp/btc-pool/threads/, rayon over Web Workers) needs shared memory, which a browser gives only to a cross-origin isolated page, and such a page
 // loads a worker only when the worker's script carries the embedder policy too. The rules are in tools/site-isolation-rules.mjs.
 // Adds the header rules the `tacit` static site on Render does not have yet; prints Render's answer for each. Safe to run again:

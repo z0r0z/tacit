@@ -357,7 +357,7 @@ function spxPageOf(text) {
   if (text.split(top).length !== 2 || text.split(below).length !== 2 || text.split(end).length !== 2) throw new Error('index.html should have one hero title block, one #how section and one chrome:head:end marker: update spxPageOf in build/build.mjs');
   const part = (name) => readFileSync(join(DAPP_DIR, 'spx', name), 'utf8').trimEnd();
   text = text.replace(top, () => `${part('hero.html')}\n`).replace(below, () => `${part('below.html')}\n\n${below}`)
-    .replace(end, () => `${end}\n<link rel="preload" href="/fonts/orbitron-latin.woff2" as="font" type="font/woff2" crossorigin>\n<link rel="preload" href="/fonts/space-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>\n<link rel="stylesheet" href="/spx/spx.css?cb=${fileToken('spx/spx.css')}">`);
+    .replace(end, () => `${end}\n<link rel="preload" href="/fonts/orbitron-latin.woff2" as="font" type="font/woff2" crossorigin fetchpriority="low">\n<link rel="preload" href="/fonts/space-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin fetchpriority="low">\n<link rel="stylesheet" href="/spx/spx.css?cb=${fileToken('spx/spx.css')}">`);
   const desc = /(<meta (?:name="description"|property="og:description") content=")[^"]*(">)/g;
   if ((text.match(desc) || []).length !== 2) throw new Error('index.html should have one description and one og:description: update spxPageOf in build/build.mjs');
   return text.replace(desc, (m, a, b) => `${a}${SPX_PAGE_DESC}${b}`)
