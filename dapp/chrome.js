@@ -212,7 +212,7 @@
   // A view opens the folds its page keeps shut that the view is for: the fast bridge's provider panel. At once, so it is open at the first paint;
   // once only, so a fold the holder shuts stays shut. The page's script fills a fold when it is told it opened, and may not have been listening
   // yet: once the page has loaded it is told again (each filler leaves a fold it has filled alone).
-  const FOLDS = { 'chains/fast': ['provide'] };
+  const FOLDS = {};
   const folds = (key) => {
     const mine = [];
     for (const id of FOLDS[key] || []) { const d = document.getElementById(id); if (d && !d.dataset.secOpen) { d.dataset.secOpen = '1'; if (!d.open) { d.open = true; mine.push(d); } } }

@@ -30,6 +30,16 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
   root.innerHTML = `
     <p class="fx-sum" id="fx-lp" aria-live="polite"></p>
     <div class="fx-back" id="fx-back" hidden></div>
+    <div id="fx-pre" hidden>
+      <p class="eyebrow"><span>You bridge</span><span class="who">from your Bitcoin address</span></p>
+      <div class="fx-amt"><input id="fx-pre-amt" inputmode="decimal" placeholder="0" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" aria-label="TAC to bridge"><span>TAC</span></div>
+      <p class="status" id="fx-pre-st" aria-live="polite"></p>
+      <div class="fx-out" id="fx-pre-out" hidden>
+        <p class="eyebrow"><span>You receive, private, about</span><span class="who">in your Tacit wallet</span></p>
+        <div class="fx-big"><output class="num" id="fx-pre-big" for="fx-pre-amt">0</output><span>TAC</span></div>
+      </div>
+      <div class="rows" id="fx-pre-recv" hidden></div>
+    </div>
     <div id="fx-form" hidden>
       <p class="eyebrow"><span>You bridge</span><span class="who num" id="fx-bal"></span></p>
       <div class="fx-amt"><input id="fx-amt" inputmode="decimal" placeholder="0" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" aria-label="TAC to bridge"><span>TAC</span><button class="linkbtn" id="fx-max" type="button" hidden>Max</button></div>
@@ -53,7 +63,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     <details class="fx-how" id="fx-how"><summary>New to the fast bridge?</summary>
       <p class="note">You lock TAC on Bitcoin. A liquidity provider pays you the same TAC, less its fee, into your private balance on Tacit (Ethereum’s private pool). It takes minutes; the quote says how many.</p>
       <p class="note">A private balance is not an Ethereum wallet. To hold the TAC in a wallet, withdraw it afterwards: <a href="${WITHDRAW}">Withdraw to Ethereum</a>.</p>
-      <p class="note">Use this when the regular bridge cannot take your TAC (a long history, or TAC that came out of Bitcoin’s shielded pool). The regular bridge has no provider fee but takes about 4 hours.</p>
+      <p class="note">Use this when the regular bridge cannot take your TAC (a long history, or TAC that came out of Bitcoin’s shielded pool). The regular bridge has no provider fee but takes hours, not minutes.</p>
       <p class="note">When no one provider can take an amount, the page splits it across several. Each part is a bridge of its own, locked from notes of its own with its own fee on Bitcoin, so it needs a note and a coin for each part.</p>
       <p class="note">Keep this page open until it says Done: it claims your TAC at the end. If a bridge cannot finish, your lock returns to your Bitcoin address when its timelock ends (12 to 48 hours, shown before you press), and this page sends it back: open it with your wallet then.</p>
       <p class="note">Closed the page mid-bridge, or cleared your browser? Open your wallet here: the page finds your lock from your key and, once its timelock has passed, sends your TAC back.</p>
@@ -92,8 +102,9 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     if (S.loaded && !sm && mine) { e.textContent = 'You are the provider online. Bridgers see your offer; to bridge yourself, use another wallet.'; return; }
     if (S.loaded && !sm) { e.textContent = `No provider is online right now. ${keyS.unlocked ? 'Enter an amount to wait for one, or provide below.' : 'Open your wallet to wait for one, or to provide.'}`; return; }
     if (!sm) { e.textContent = 'Reading the providers…'; return; }
-    const t = sm.best.terms, many = sm.count > 1, top = roomNow(sm);
-    e.innerHTML = `<b>${many ? `${sm.count} providers online` : esc(sm.best.name || 'Provider')}</b><span>${many ? 'from ' : ''}${esc(feeLine(t))} fee</span><span>${top > 0n ? `${esc(range(sm.min, top))}${top < sm.max ? ' now' : ''}` : 'full right now'}</span>`;
+    const t = sm.best.terms, many = sm.count > 1, top = roomNow(sm), room = others().filter(hasRoom).length;
+    if (!room) { e.innerHTML = `<b>${many ? `${sm.count} providers online` : esc(sm.best.name || 'Provider')}</b><span>${many ? 'all full right now' : 'full right now'}</span><span>${esc(feeLine(t))} fee when there is room</span>`; return; }
+    e.innerHTML = `<b>${many ? `${sm.count} providers online` : esc(sm.best.name || 'Provider')}</b>${many && room < sm.count ? `<span>${room} with room</span>` : ''}<span>${many && room > 1 ? 'cheapest ' : ''}${esc(feeLine(t))} fee</span><span>${top > 0n ? `${esc(range(sm.min, top))}${top < sm.max ? ' now' : ''}` : 'full right now'}</span>`;
   }
 
   function problem(units) {
@@ -118,6 +129,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     const signed = !!S.sess, form = $('fx-form'), go = $('fx-go'), recv = $('fx-recv'), out = $('fx-out'), wt = $('fx-wait');
     form.hidden = !signed;
     go.hidden = false;
+    $('fx-pre').hidden = signed;
     $('fx-bal').textContent = signed && S.bal != null ? `${fmtTac(S.bal)} TAC on Bitcoin` : '';
     $('fx-max').hidden = !(signed && S.bal > 0n);
     wt.hidden = !(signed && S.want);
@@ -125,7 +137,21 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     const dear = !wt.hidden ? pricedOut() : '';
     $('fx-wait-note').hidden = !dear; $('fx-wait-note').textContent = dear;
     $('fx-price').hidden = true;
-    if (!signed) { go.textContent = 'Sign in'; go.disabled = S.busy; recv.hidden = true; out.hidden = true; return; }
+    if (!signed) {
+      // before a key: the amount can be typed, and what the cheapest provider that takes it would keep is said; the quote itself needs the key
+      const raw = $('fx-pre-amt').value, units = parseTac(raw), bad = units != null ? problem(units) : (raw.trim() ? 'That is not an amount.' : '');
+      const fit = units != null && !bad ? byAmount(units) : [];
+      const best = fit.length ? fit.reduce((a, b) => (feeOf(b.terms, units) < feeOf(a.terms, units) ? b : a)) : null, fee = best ? feeOf(best.terms, units) : 0n, est = !!best && fee < units;
+      $('fx-pre-out').hidden = !est; $('fx-pre-recv').hidden = !est;
+      $('fx-pre-st').textContent = bad || (units != null && !best && S.loaded ? 'No one provider takes that amount right now. Signed in, the page can split it or wait for one.' : '');
+      if (est) {
+        $('fx-pre-big').textContent = fmtTac(units - fee);
+        $('fx-pre-recv').innerHTML = `<div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(fee))} TAC<small>${esc(feeLine(best.terms))}, the cheapest provider that takes this amount now</small></b></div>
+          <div class="kv"><span>Provider</span><b>${face(best.id)}${esc(best.name || 'Provider')}<small class="num">${esc(keyTag(best.id))}</small></b></div>
+          <p class="note">An estimate. Signed in, the provider quotes it, with the Bitcoin fee and the time.</p>`;
+      }
+      go.textContent = S.busy ? 'Working…' : est ? 'Sign in to bridge' : 'Sign in'; go.disabled = S.busy; recv.hidden = true; out.hidden = true; return;
+    }
     const units = parseTac(S.amt), bad = problem(units), q = S.quote, wait = waitable(units);
     // a bridge split across providers has its own offer: a receipt of its parts, in place of a single quote's
     const sp = !q && S.split && units != null && S.split.amount === units ? S.split : null, short = !!(sp ? sp.cost && sp.cost.short : S.cost && S.cost.short);
@@ -265,15 +291,17 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
       return;
     }
     const me = keyS.unlocked && keyS.key ? keyS.key.pubHex : null;
-    const ps = S.providers.slice().sort((a, b) => (a.id === me ? -1 : b.id === me ? 1 : a.terms.feeBps - b.terms.feeBps));
+    const ps = S.providers.slice().sort((a, b) => (a.id === me ? -1 : b.id === me ? 1 : (hasRoom(b) - hasRoom(a)) || a.terms.feeBps - b.terms.feeBps));
     const show = ps.length > 1 || (ps.length === 1 && ps[0].id === me);
     e.hidden = !show;
-    e.innerHTML = show ? `<p class="eyebrow"><span>Providers online</span><span class="who num">${ps.length}</span></p>
-      <div class="lp-grid">${ps.map((p) => `<div class="lp-tile${p.id === me ? ' mine' : ''}">
+    if (!show) { e.innerHTML = ''; return; }
+    const was = e.querySelector('details'), open = was ? was.open : false, room = ps.filter(hasRoom).length;
+    e.innerHTML = `<details class="lp-fold"${open ? ' open' : ''}><summary><span>Providers</span><span class="who num">${ps.length} online · ${room} with room</span></summary>
+      <div class="lp-grid">${ps.map((p) => `<div class="lp-tile${p.id === me ? ' mine' : ''}${hasRoom(p) ? '' : ' full'}">
         <div class="lp-top"><b>${face(p.id)}${esc(p.name || 'Provider')}</b><small class="num lp-key">${esc(keyTag(p.id))}</small>${p.id === me ? '<span class="lp-tag">You</span>' : ''}</div>
         <div class="kv"><span>Fee</span><b class="num">${esc(feeLine(p.terms))}</b></div>
         <div class="kv"><span>Takes</span><b class="num">${hasRoom(p) ? esc(range(p.terms.minAmount, capOf(p))) : 'full right now'}</b></div>
-      </div>`).join('')}</div>` : '';
+      </div>`).join('')}</div></details>`;
   }
 
   // The depth of the providers as a ladder (fast/ladder.js): what each size costs the way the page would bridge it now, and what is waiting for a
@@ -349,6 +377,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
         S.bal = await sess.balance();
         sess.recover().then((found) => { if (found.length && S.sess === sess) sess.records().then((l) => { S.recs = l; paintList(); }); }).catch(() => {});
         note('');
+        { const pre = $('fx-pre-amt').value.trim(); if (pre && !S.amt.trim()) { $('fx-amt').value = pre; setTimeout(typed, 0); } }      // an amount typed before the key opened is quoted now
         return sess;
       } catch (e) {
         if (S.opening !== me) return null;
@@ -451,6 +480,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
   };
 
   $('fx-amt').addEventListener('input', typed);
+  $('fx-pre-amt').addEventListener('input', () => { readProviders(); paintForm(); });
   $('fx-back').addEventListener('click', async (ev) => {
     if (!ev.target.closest('#fx-back-open')) return;
     try { await signIn(); } catch (e) { if (!e?.unlockCancelled) note(wording(e), true); }

@@ -171,7 +171,7 @@ test('several providers: how many, the lowest fee, the widest range, and what th
   const m = mount({ providers: [provider('Slow', { feeBps: 50 }), provider('Cheap', { feeBps: 20, minAmount: String(50n * TAC), maxAmount: String(5000n * TAC), available: String(800n * TAC) }), provider('Small', { feeBps: 40, maxAmount: String(200n * TAC) })] });
   await until(() => /online/.test(text(m.$('fx-lp'))), 'the summary');
   const t = text(m.$('fx-lp'));
-  assert.match(t, /3 providers online/); assert.match(t, /from 0\.20% \+ 1 TAC fee/);
+  assert.match(t, /3 providers online/); assert.match(t, /cheapest 0\.20% \+ 1 TAC fee/);
   assert.match(t, /10 to 1,000 TAC now/, 'the most any one of them can take now, when it is under the most they take');
 });
 
@@ -211,7 +211,7 @@ test('a full provider\'s least is not the summary\'s: the range is what the prov
   const m = mount({ providers: [provider('Full', { feeBps: 5, minAmount: String(5n * TAC), available: String(2n * TAC) }), provider('Room', { feeBps: 40, minAmount: String(50n * TAC), available: String(500n * TAC) })] });
   await until(() => /online/.test(text(m.$('fx-lp'))), 'the summary');
   const t = text(m.$('fx-lp'));
-  assert.match(t, /2 providers online/); assert.match(t, /from 0\.40%/, 'the fee of the one that can take a bridge'); assert.match(t, /50 to 500 TAC now/);
+  assert.match(t, /2 providers online/); assert.match(t, /1 with room.*0\.40%/, 'the fee of the one that can take a bridge'); assert.doesNotMatch(t, /cheapest/, 'one with room is not the cheapest of any'); assert.match(t, /50 to 500 TAC now/);
   assert.doesNotMatch(t, /5 to 2 TAC|5 to 500/);
 });
 
@@ -260,6 +260,28 @@ test('Sign in: the key sheet, then the TAC on Bitcoin and an amount field', asyn
   await until(() => !n.$('fx-go').hidden, 'the button');
   n.$('fx-go').click(); await tick(30);
   assert.equal(n.$('fx-st').textContent, ''); assert.equal(n.$('fx-form').hidden, true);
+});
+
+test('before a key: the amount can be typed, the cheapest provider with room is the estimate, and the amount is quoted once signed in', async () => {
+  const m = mount({ providers: [provider('Full', { feeBps: 10, flatFee: '0', available: '0' }), provider('Dear', { feeBps: 300, flatFee: String(10n * TAC) }), provider('Mid', { feeBps: 150, flatFee: String(2n * TAC) })] });
+  await until(() => /providers online/.test(text(m.$('fx-lp'))), 'the summary');
+  const t = text(m.$('fx-lp'));
+  assert.match(t, /3 providers online/); assert.match(t, /2 with room/); assert.match(t, /cheapest 1\.50% \+ 2 TAC fee/, 'the cheapest of the ones with room, not the full one');
+  assert.equal(m.$('fx-pre').hidden, false, 'the amount comes first'); assert.equal(m.$('fx-form').hidden, true); assert.equal(m.$('fx-go').textContent, 'Sign in');
+  m.$('fx-pre-amt').value = '100'; m.$('fx-pre-amt').dispatchEvent(new m.dom.window.Event('input'));
+  await until(() => !m.$('fx-pre-out').hidden, 'the estimate');
+  assert.equal(m.$('fx-pre-big').textContent, '96.5', '100 less 1.5 and 2 TAC');
+  assert.match(text(m.$('fx-pre-recv')), /Fee 3\.5 TAC/); assert.match(text(m.$('fx-pre-recv')), /Mid/); assert.doesNotMatch(text(m.$('fx-pre-recv')), /Full/);
+  assert.equal(m.$('fx-go').textContent, 'Sign in to bridge');
+  assert.deepEqual(m.st.calls.asked, [], 'nothing is asked of a provider before a key');
+  m.$('fx-pre-amt').value = '5'; m.$('fx-pre-amt').dispatchEvent(new m.dom.window.Event('input')); await tick(2);
+  assert.equal(m.$('fx-pre-out').hidden, true); assert.match(m.$('fx-pre-st').textContent, /least is 10 TAC/);
+  m.$('fx-pre-amt').value = '100'; m.$('fx-pre-amt').dispatchEvent(new m.dom.window.Event('input')); await tick(2);
+  await signIn(m);
+  assert.equal(m.$('fx-pre').hidden, true);
+  await until(() => m.st.calls.asked.length > 0, 'the quote');
+  assert.equal(m.$('fx-amt').value, '100', 'the amount typed before the key is the form\'s');
+  assert.equal(m.st.calls.asked[0].units, 100n * TAC);
 });
 
 test('the amount: checked against the providers\' limits and the balance, quoted when it is fine, the fee shown', async () => {
@@ -734,7 +756,7 @@ const waitsStub = () => ({ ask: async () => {}, kept: () => null, start: async (
 test('no one provider takes the amount but the providers do between them: the page offers a split, with each part, the fee, the Bitcoin fee and the time, and does not offer to wait', async () => {
   const st = splitSession(), m = mount({ session: st, providers: splitProviders(), wants: waitsStub() });
   await signIn(m);
-  assert.match(text(m.$('fx-lp')), /3 providers online.*from 1\.00% \+ 1 TAC fee.*10 to 1,200 TAC$/, 'the line says what can be had by splitting');
+  assert.match(text(m.$('fx-lp')), /3 providers online.*cheapest 1\.00% \+ 1 TAC fee.*10 to 1,200 TAC$/, 'the line says what can be had by splitting');
   typeIn(m, '1000');
   await until(() => !m.$('fx-go').disabled && /parts/.test(m.$('fx-go').textContent), 'the offer');
   assert.equal(m.$('fx-go').textContent, 'Bridge in 3 parts');
