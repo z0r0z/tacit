@@ -1,4 +1,5 @@
 import { declinedWords } from '../wallet-prompts.js';
+import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '../tab-key.js';
 
 const TACIT_URL = '/tacit.js?cb=082704c4';
 const SECRET_URL = '/sats/secret.js?cb=6a2b3864';
@@ -157,6 +158,7 @@ function counted(m) {
 }
 async function settle() { while (inflight.size) await Promise.allSettled([...inflight]); }
 let keyGen = 0;
+let tabKeyMeta = null;
 const pubNow = () => (T?.wallet.pub ? T.bytesToHex(T.wallet.pub) : null);
 
 function parseHash() {
@@ -279,6 +281,68 @@ async function keepShared(fn) {
 function saveIdentity(rec) { store.set(IDENTITY(T.NET.name), JSON.stringify(rec)); store.set(SESSION, '1'); }
 function readIdentity() { return store.json(IDENTITY(curNet())); }
 
+// The rest of the modern dapp keeps one unlocked wallet for this browser tab.
+// Join that session on mainnet only: signet derives a different identity and
+// must never replace the mainnet handoff. The record lives in sessionStorage,
+// expires with the shared idle policy, and is cleared by every explicit lock.
+function keepTabKey() {
+  if (T?.NET?.name !== 'mainnet' || !T.wallet?.priv || !T.wallet?.pub) return;
+  const rec = readIdentity() || {};
+  tabKeyWrite({
+    mode: rec.mode || tabKeyMeta?.mode || T.wallet.mode || 'local',
+    priv: T.bytesToHex(T.wallet.priv),
+    pubHex: T.bytesToHex(T.wallet.pub),
+    address: rec.address || rec.ext?.address || rec.btc?.address || tabKeyMeta?.address,
+    label: rec.label || tabKeyMeta?.label,
+    credentialId: rec.credentialId || tabKeyMeta?.credentialId,
+  });
+}
+
+async function restoreTabKey() {
+  if (T?.NET?.name !== 'mainnet') return false;
+  const k = tabKeyRead();
+  if (!k) return false;
+  try {
+    // An Ethereum-derived key remains valid only while the account that
+    // opened it is still selected. A passive read never opens a wallet popup;
+    // if the provider cannot prove the account, fail closed and leave the
+    // handoff for a page that can identify its selected EIP-6963 provider.
+    if (k.mode === 'eth') {
+      const want = String(k.address || '').toLowerCase();
+      const providers = new Set(window.ethereum?.request ? [window.ethereum] : []);
+      const announced = (e) => { if (e.detail?.provider?.request) providers.add(e.detail.provider); };
+      window.addEventListener('eip6963:announceProvider', announced);
+      try {
+        window.dispatchEvent(new Event('eip6963:requestProvider'));
+        await new Promise((r) => setTimeout(r, 120));
+      } finally { window.removeEventListener('eip6963:announceProvider', announced); }
+      const answers = await Promise.all([...providers].map((p) => p.request({ method: 'eth_accounts' }).catch(() => [])));
+      if (!answers.some((accounts) => Array.isArray(accounts) && accounts.some((a) => String(a).toLowerCase() === want))) {
+        tabKeyClear();
+        return false;
+      }
+    }
+    const { secp } = await import('/vendor/tacit-deps.min.js');
+    const priv = T.hexToBytes(k.priv);
+    const pub = secp.getPublicKey(priv, true);
+    T.wallet.priv = priv;
+    T.wallet.pub = pub;
+    if (T.bytesToHex(T.wallet.pub).toLowerCase() !== String(k.pubHex).toLowerCase()) throw new Error('tab wallet changed');
+    tabKeyMeta = k;
+    T.wallet.mode = k.mode === 'passkey' || k.mode === 'eth' || k.mode === 'btc' ? k.mode : null;
+    if (k.mode === 'passkey' && T.prfWallet) T.prfWallet.state = { label: k.label, credentialId: k.credentialId, pubkey: k.pubHex };
+    if (k.mode === 'eth' && k.address) T.ethWallet.state = { address: String(k.address).toLowerCase().replace(/^0x/, ''), pubkey: k.pubHex };
+    keyGen++;
+    try { T.invalidateHoldingsCache?.({ fromPoll: true }); } catch {}
+    return true;
+  } catch {
+    try { T.wallet.priv?.fill?.(0); } catch {}
+    T.wallet.priv = null; T.wallet.pub = null; T.wallet.mode = null;
+    tabKeyClear();
+    return false;
+  }
+}
+
 function blobPub(boundAddr = null) {
   const key = `tacit-wallet-v1:${T.NET.name}${boundAddr ? `:by:${boundAddr.toLowerCase()}` : ''}`;
   try {
@@ -331,6 +395,7 @@ function clearSession() {
   const w = T.wallet;
   try { w.priv?.fill?.(0); } catch {}
   w.priv = null; w.pub = null; w.mode = null;
+  tabKeyMeta = null;
   T.extWallet.state = null; T.ethWallet.state = null; T.btcWallet.state = null;
   if (T.prfWallet) T.prfWallet.state = null;
   keyGen++;
@@ -568,6 +633,7 @@ function silentAddress() {
 }
 
 async function connected() {
+  keepTabKey();
   show('connect', false);
   show('connected', true);
   show('send', true);
@@ -580,6 +646,7 @@ async function connected() {
 }
 
 function unlocked() {
+  keepTabKey();
   renderIdentity();
   refreshAssets();
   if (!exitSats.key) refreshSats();
@@ -790,6 +857,7 @@ function signOut() {
   if (scanAbort) scanAbort.abort();
   stopPoll();
   clearSession();
+  tabKeyClear();
   store.del(SESSION);
   satsTotal = null;
   faucetPending = null;
@@ -1477,6 +1545,14 @@ async function boot() {
   const { net, eth } = parseHash();
   if (net || eth) store.set(NET_PREF, net || 'mainnet');
   wire();
+  tabKeyWatch({
+    busy: () => !!(working || moving() || inflight.size),
+    onIdle: (why) => {
+      if (!T?.wallet?.priv) return;
+      signOut();
+      log(why);
+    },
+  });
   wireTabs();
   renderNet();
   refreshCreateLabel();
@@ -1490,11 +1566,12 @@ async function boot() {
 
 async function resume() {
   const sp = parseHash().sp || parseHash().st;
-  if (!(store.get(SESSION) === '1' && readIdentity()) && !sp) return;
+  if (!(store.get(SESSION) === '1' && readIdentity()) && !tabKeyRead() && !sp) return;
   try {
     await loadTacit();
     if (T.wallet.pub) return;
-    if (restore()) await connected();
+    if (await restoreTabKey()) { unlocked(); await connected(); }
+    else if (restore()) await connected();
     else if (sp) log('Someone sent you a payment link. Connect your wallet to check it.');
   } catch (e) { log('Could not load the wallet: ' + errMsg(e), 'error'); }
 }

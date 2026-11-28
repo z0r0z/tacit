@@ -163,6 +163,13 @@ async function tab(page, mode) {
   await page.waitForLoadState('domcontentloaded');
   await page.waitForSelector('#wallet-label', { timeout: 60000 });
 }
+async function sats(page) {
+  await page.evaluate(() => localStorage.setItem('tacit-sats-net-v1', 'mainnet'));
+  await page.goto(base + '/sats/');
+  await page.waitForSelector('#connected:not(.hidden)', { timeout: 60000 });
+  assert.equal(await page.locator('#connect:not(.hidden)').count(), 0, 'Sats did not draw its sign-in options');
+  assert.match((await page.locator('#w-addr').textContent()) || '', /^(bc1|[13])/, 'Sats adopted the open tab wallet');
+}
 const newKey = () => { let k; do { k = randomBytes(32); } while (k[0] === 0 || k[0] > 0xf0); return k.toString('hex'); };
 const shot = async (page, name) => { if (SHOTS) { await page.evaluate(() => scrollTo(0, 0)); await page.screenshot({ path: join(SHOTS, name + '.png') }); } };
 
@@ -191,6 +198,7 @@ await test('a pasted key: TAC, BTC and back to ETH open with the same wallet, wi
   // the key is in the tab's session and nowhere persistent
   assert.match(await stored(page) || '', new RegExp(key));
   assert.equal(await page.evaluate((k) => Object.keys(localStorage).some((n) => localStorage.getItem(n).includes(k)), key), false, 'the key is in no localStorage entry');
+  await sats(page);
   assert.deepEqual(problems, []);
   await ctx.close();
 });
@@ -204,6 +212,7 @@ await test('a passkey: the other tabs open with no second touch', async () => {
     assert.equal(await chipText(page), me, `${mode}: the same Tacit address`);
     assert.equal(await gateSeen(page), false, `${mode}: the sign-in options were never drawn on the way in`);
   }
+  await sats(page);
   assert.equal(probe.gets, touched, 'the passkey was not asked again');
   assert.deepEqual(problems, []);
   await ctx.close();
@@ -219,6 +228,7 @@ await test('an Ethereum wallet\'s key: the other tabs open with no signature whi
     assert.equal(await chipText(page), me, `${mode}: the same Tacit address`);
     assert.equal(await gateSeen(page), false, `${mode}: the sign-in options were never drawn on the way in`);
   }
+  await sats(page);
   assert.equal(probe.signs, signed, 'the wallet was not asked to sign again');
   assert.deepEqual(problems, []);
   await ctx.close();
