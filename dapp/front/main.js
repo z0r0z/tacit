@@ -10385,7 +10385,21 @@ function brxRead() {
   ].map((p) => p.catch(() => {}))).then(() => { BRX.at = Date.now(); BRX.p = null; }));
 }
 // the Bridge overview's standard routes, each way: the time and the Bitcoin fee as the card says them (brxRows), read when the overview shows
+// the overview's fast route: the cheapest fee among the providers that have room now (as /fast/ reads and words them), and how many have room;
+// the key's own provider is not one to bridge with
+const fastCap = (t) => (t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount);
+const fastRoom = (p) => fastCap(p.terms) >= p.terms.minAmount && fastCap(p.terms) > 0n;
+const fastFee = (t) => `${(Number(t.feeBps) / 100).toFixed(2)}%${BigInt(t.flatFee || 0n) > 0n ? ` + ${fmt(t.flatFee, 8, 2)} TAC` : ''}`;
+function cpgFastWords(list) {
+  const ps = (list || []).filter((p) => p?.terms && !(S.key && p.id === S.key.pubHex)), room = ps.filter(fastRoom);
+  if (!ps.length) return 'minutes, once a provider is online · none right now';
+  if (!room.length) return `minutes, once a provider has room · ${ps.length > 1 ? `all ${ps.length} are` : 'the one online is'} full right now`;
+  const best = room.reduce((a, b) => (b.terms.feeBps < a.terms.feeBps || (b.terms.feeBps === a.terms.feeBps && BigInt(b.terms.flatFee) < BigInt(a.terms.flatFee)) ? b : a));
+  return `minutes · ${room.length > 1 ? 'from ' : ''}${fastFee(best.terms)} fee${ps.length > 1 ? ` · ${room.length} of ${ps.length} providers with room` : ''}`;
+}
 function cpgLive() {
+  const fx = $('#page-chains [data-fastx]');
+  if (fx) try { fastMods().then(([, wire, lists]) => wire.discoverProviders(lists)).then((ps) => { const t = cpgFastWords(ps); if (fx.textContent !== t) fx.textContent = t; }).catch(() => {}); } catch { }      // (read before the page has set up its fast route: the line keeps its words)
   if (!$('#page-chains [data-brx]')) return;
   brxRead().then(() => {
     for (const el of $$('#page-chains [data-brx]')) {
