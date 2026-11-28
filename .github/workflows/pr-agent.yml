@@ -33,8 +33,9 @@ concurrency:
 jobs:
   agent:
     name: Run the code agent
-    # not on a fork: it has none of the secrets, and a scheduled run there would only spend minutes
-    if: github.repository == 'z0r0z/tacit'
+    # not on a fork (it has none of the secrets), and the daily pass stays off until the repository variable PR_AGENT_ON is 'true' (tools/pr-agent/ship.mjs sets it), so merging this
+    # does nothing by itself. A run started by hand or from Discord always goes.
+    if: github.repository == 'z0r0z/tacit' && (github.event_name == 'workflow_dispatch' || vars.PR_AGENT_ON == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
