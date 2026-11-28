@@ -57,7 +57,7 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/assets/f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b/bid-intents?network=mainnet" crossorigin fetchpriority="low">
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload:begin -->
-<link rel="modulepreload" href="/trade/app.js?cb=9c271766">
+<link rel="modulepreload" href="/trade/app.js?cb=3ea040c4">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
@@ -65,7 +65,7 @@
 <link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/confidential-deployments.generated.js">
 <link rel="modulepreload" href="/btc-book.js">
-<link rel="modulepreload" href="/trade/tape.js?cb=7b013b52">
+<link rel="modulepreload" href="/trade/tape.js?cb=337da1f0">
 <link rel="modulepreload" href="/trade/chart.js?cb=c0b1d232">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
 <link rel="modulepreload" href="/trade/depth.js?cb=4f87419e">
@@ -703,6 +703,8 @@ html[data-sec="rewards/"] #find-h { display: none !important; }
 .sm-p a[aria-current="page"] { background: var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
 .sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
+.sm-p .smg { margin: 10px 12px 4px; font: 500 10.5px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.sm-p .smg:first-of-type { margin-top: 6px; }
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
 @media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
@@ -780,7 +782,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=4658dd80" defer></script>
+<script src="/chrome.js?cb=1709bb7f" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -804,9 +806,9 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <!-- chrome:nav:begin -->
       <nav class="sn" aria-label="Sections">
           <a href="/#portfolio" title="Portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg><span>Portfolio</span></a>
-          <a href="/#/payments" title="Payments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Payments</span></a>
+          <a href="/#/payments" title="Pay"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Pay</span></a>
           <a href="/#/defi" title="DeFi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10l-3-3"/><path d="M17 17H7l3 3"/></svg><span>DeFi</span></a>
-          <a href="/#/chains" title="Chains"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Chains</span></a>
+          <a href="/#/chains" title="Bridge"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Bridge</span></a>
           <a href="/vault/" title="Borrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg><span>Borrow</span></a>
           <a href="/rewards/" title="Rewards"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg><span>Rewards</span></a>
           <details class="sm">
@@ -815,17 +817,19 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
             <a class="pr" href="/vault/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg>Borrow</a>
             <a class="pr" href="/rewards/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg>Rewards</a>
             <hr class="pr">
+            <p class="smg">Yours</p>
             <a href="/assets/" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
             <a href="/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>TAC</a>
             <a href="/trade/tac/?src=menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17l5-6 4 4 7-8"/><path d="M15 7h5v5"/></svg>Trade</a>
             <a href="/pay/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg>Pay pool</a>
-            <a href="/bridge/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
-            <a href="/btc/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7.6" cy="8" r="4.4"/><circle cx="16.4" cy="8" r="4.4"/><path d="M6.4 6h1.9a1 1 0 0 1 0 2H6.4m0 0h2.1a1 1 0 0 1 0 2H6.4M6.4 5.2V10.8"/><path d="M16.4 5.4l-1.5 2.5 1.5 2.7 1.5-2.7zM14.9 7.9h3"/><path d="M5 17.5h14m-2.2-2l2.2 2-2.2 2"/><path d="M19 21.5H5m2.2-2l-2.2 2 2.2 2"/></svg>BTC ⇄ ETH</a>
+            <p class="smg">Make</p>
             <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
             <a href="/shop/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 4h11L21 9l-9 11L3 9z"/><path d="M3 9h18"/><path d="M9.5 4L8 9l4 11 4-11-1.5-5"/></svg>Shop</a>
+            <a href="/face/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 20V10a6 6 0 0 1 12 0v10l-2-2-2 2-2-2-2 2-2-2z"/><path d="M9.5 11.5h1M13.5 11.5h1"/></svg>FACE</a>
+            <p class="smg">Help build</p>
             <a href="/prove/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Prove</a>
             <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
-            <a href="/face/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 20V10a6 6 0 0 1 12 0v10l-2-2-2 2-2-2-2 2-2-2z"/><path d="M9.5 11.5h1M13.5 11.5h1"/></svg>FACE</a>
+            <a href="/praxis/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15.5" r="4.5"/><path d="M11.2 12.3L20 3.5"/><path d="M17 6.5l2.5 2.5"/><path d="M14.5 9l2 2"/></svg>Praxis</a>
             </div>
           </details>
         </nav>
@@ -947,13 +951,13 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <nav class="bn" aria-label="Sections">
     <a href="/#portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg><span>Portfolio</span></a>
-    <a href="/#/payments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Payments</span></a>
+    <a href="/#/payments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Pay</span></a>
     <a href="/#/defi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10l-3-3"/><path d="M17 17H7l3 3"/></svg><span>DeFi</span></a>
-    <a href="/#/chains"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Chains</span></a>
+    <a href="/#/chains"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Bridge</span></a>
     <a href="/#/menu" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg><span>More</span></a>
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/trade/app.js?cb=9c271766"></script>
+<script type="module" src="/trade/app.js?cb=3ea040c4"></script>
 </body>
 </html>

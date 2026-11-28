@@ -12,7 +12,8 @@
   const m = document.querySelector('.sm');
   if (!m) return;
   const OUT = 'tacit-crossout-bridge-v1:mainnet:', IN = 'tacit-burndep-bridge-v1:mainnet:';
-  const summary = m.querySelector('summary'), link = m.querySelector('.sm-p a[href="/bridge/"]');
+  // the dot goes on the Bridge section's entry in the header (the menu's More where a page has no such entry); a menu that still lists /bridge/ also says the count there
+  const link = m.querySelector('.sm-p a[href="/bridge/"]'), summary = document.querySelector('.sn > a[href="/#/chains"]') || m.querySelector('summary');
   if (!summary) return;
   const mark = () => { const d = document.createElement('i'); d.className = 'bd'; d.setAttribute('aria-hidden', 'true'); d.hidden = true; return d; };
   const dot = mark(), tag = document.createElement('span');
@@ -20,7 +21,7 @@
   tag.hidden = true;
   summary.append(dot);
   if (link) link.append(tag);
-  const label = summary.getAttribute('aria-label') || 'More pages';
+  const label = summary.getAttribute('aria-label') || summary.getAttribute('title') || 'More pages';
   const MINER_WAIT = 12 * 3600e3, PLANS = 'tacit-lite-bridge-plan-v1', TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
   const tac = (r) => { const a = r.source || {}; return String(a.assetId || '').replace(/^0x/i, '').toLowerCase() === TAC || a.ticker === 'TAC'; };
   const waits = (out, r, plan, now) => {
@@ -149,7 +150,7 @@
 (() => {
   // (written as JSON: build/chrome.mjs reads this table to stamp the head into the pages that are a view by their path)
   const SEC = {
-    "payments": ["Payments", "Send to anyone, ask to be paid, or leave TAC for someone with no wallet yet.", [
+    "payments": ["Pay", "Send to anyone, ask to be paid, or leave TAC for someone with no wallet yet.", [
       ["send", "Send", "/#/payments/send", "One send for every asset: private TAC, ETH, cUSD, cBTC, TAC on the Tacit chain, BTC. To a tacit1 address, a name or 0x."],
       ["request", "Request", "/#/payments/request", "Ask to be paid in any asset: a link and a QR that open the payment, filled in."],
       ["links", "Claim links", "/tac/?v=links#pool/send", "Leave TAC for someone with no wallet yet, with a PIN if you like; take it back if they never claim."]]],
@@ -157,7 +158,7 @@
       ["swap", "Swap", "/#/defi/swap", "Public or private swaps at the best route."],
       ["farm", "Farm", "/farm/", "Pick a farm, put ETH in, earn TAC."],
       ["stake", "Stake", "/tac/?v=stake#private", "Stake TAC on the Tacit chain: it earns a share of every payment, with no lock."]]],
-    "chains": ["Chains", "Choose where your money starts and where you want it to arrive.", [
+    "chains": ["Bridge", "Choose where your money starts and where you want it to arrive.", [
       ["overview", "Overview", "/#/chains/overview", "Start here: compare every route by asset, destination, speed and privacy."],
       ["move", "Private balance", "/#/chains/move", "Move between a public wallet and your private Tacit balance."],
       ["btc", "BTC ⇄ ETH", "/btc/", "Swap Bitcoin and ETH directly. Your ETH arrives private."],
@@ -171,7 +172,7 @@
   };
   // the More page's line for each page of the menu
   const ABOUT = { '/assets/': 'TAC, tETH, cBTC, cUSD and how each is backed', '/tac/': 'the Tacit chain: stake, pay, bridge', '/trade/tac/?src=menu': 'buy and sell TAC: Ethereum pools, a Bitcoin order book', '/pay/': 'BTC, TAC and ETH paid privately from one key', '/bridge/': 'every way between Bitcoin and Ethereum', '/btc/': 'swap Bitcoin and ETH directly, either way',
-    '/etch/': 'issue your own asset', '/shop/': 'addresses that start with zeros, for TAC', '/prove/': 'run a prover, send waiting settles', '/tasks/': 'small jobs paid in TAC', '/face/': 'buy TAC: the biggest buyer wins the address' };
+    '/etch/': 'issue your own asset', '/shop/': 'addresses that start with zeros, for TAC', '/prove/': 'run a prover, send waiting settles', '/tasks/': 'small jobs paid in TAC', '/face/': 'buy TAC: the biggest buyer wins the address', '/praxis/': 'help build the key for smart contracts on Bitcoin' };
   // the mock-up's addresses for what is a page, a sheet or another address here
   const ELSE = { '#/portfolio': '/#portfolio', '#/defi/earn': '/#card=earn', '#/borrow': '/vault/', '#/borrow/btc': '/vault/#btc', '#/borrow/tac': '/vault/', '#/rewards': '/rewards/', '#/more': '/#/menu', '#/activity': '/#activity',
     '#/account': '/#wallet', '#/account/wallet': '/#wallet', '#/account/addresses': '/#bitcoin/receive', '#/account/proofs': '/#prove-self' };

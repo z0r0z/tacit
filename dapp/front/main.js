@@ -6321,6 +6321,27 @@ const air = makeTacAirdrop({ call: makeRpcCall({ rpcs: RPCS }), keccak256: kecca
 let AIR = null;
 const AIR_CLOSE = `Claims close ${dayFmt(air.config.deadline)}`;
 if (Number(air.config.deadline) * 1000 < Date.now()) $('#air-news').hidden = true;
+// The ceremony's banner: contributions so far against the TAC paid out of its pot (the chain's own count, and the points service's pot, as /praxis/ reads them).
+// Read once the page is up; a banner that cannot be read keeps its plain line.
+async function praxisBar() {
+  const box = $('#pxb-p');
+  if (!box) return;
+  const get = (u) => fetch(u, { cache: 'no-store', signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const [t, v] = await Promise.all([get('https://tacit-praxis-ceremony.onrender.com/api/transcript'), get('https://tacit-points.onrender.com/ceremony')]);
+  const made = Number(t?.head_index) - Number(t?.base_index);
+  let total = 0n, left = -1n;
+  try { total = BigInt(v?.pocket?.totalWei ?? 0); left = BigInt(v?.pocket?.remainingWei ?? -1); } catch {}
+  const pot = v?.enabled === true && total > 0n && left >= 0n && left <= total;
+  if (!(made >= 0) && !pot) return;
+  const T = (w) => (w / 10n ** 18n).toLocaleString('en-US');
+  const said = [made >= 0 ? `${made.toLocaleString('en-US')} contribution${made === 1 ? '' : 's'}` : '', pot ? `${T(total - left)} of ${T(total)} TAC paid` : ''].filter(Boolean).join(' · ');
+  $('#pxb-n').textContent = said;
+  $('.pxb-bar', box).hidden = !pot;
+  if (pot) $('#pxb-fill').style.width = `${Number(((total - left) * 1000n) / total) / 10}%`;
+  box.hidden = false;
+  $('#pxb')?.setAttribute('aria-label', `Tacit Praxis ceremony: help build the key for smart contracts on Bitcoin, earn up to 5 TAC. ${said}.`);
+}
+if ($('#pxb')) setTimeout(praxisBar, 1200);
 const AIRL = {};
 function loadAirdrop(force = false) {
   if (!S.wallet) { AIR = null; setFoot('tac', AIR_CLOSE); return Promise.resolve(); }

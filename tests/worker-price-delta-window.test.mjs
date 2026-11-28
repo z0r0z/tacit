@@ -29,6 +29,7 @@
 //
 // Run: `node tests/worker-price-delta-window.test.mjs`
 
+import { readFileSync } from 'node:fs';
 import { _computeWindowedPriceDeltas, _computeMarkPriceFromTrades } from '../worker/src/index.js';
 
 let pass = 0, fail = 0;
@@ -253,6 +254,67 @@ const tests = [
     return out?.source === 'median_outlier_guard' && Math.abs(out.unit - 200) < 1e-9
       ? true
       : `expected median_outlier_guard 200, got ${JSON.stringify(out)}`;
+  }],
+
+  // ── (9) The reference median is the market as it trades now, not the whole ring ──
+  // The real TAC Bitcoin-book ring of 2026-11-28 (618 fills, May to Nov; TAC repriced about fivefold in November): the median of the
+  // whole ring is 225 sats while the week's fills sit at 790-1,460. The day's only fill (910 sats) is within 0.76x of the week's median, so it is the mark.
+  ['real ring after a repricing: the one fill of the day is the mark, not the old median', () => {
+    const rows = JSON.parse(readFileSync(new URL('./fixtures/tac-btc-trades-2026-11-28.json', import.meta.url))).rows;
+    const dec8 = (p, a) => Number(BigInt(Math.floor(Number(p))) * 10n ** 8n * 100000000n / BigInt(a)) / 1e8;
+    const real = rows.map(([ts, price_sats, amount]) => ({ ts, price_sats, amount })).sort((a, b) => b.ts - a.ts);
+    const now = real[0].ts + 25 * HOUR;
+    const all = real.map((t) => dec8(t.price_sats, t.amount)).sort((a, b) => a - b), wholeRingMedian = all[all.length >> 1];
+    if (!(wholeRingMedian > 200 && wholeRingMedian < 250)) return `fixture changed: whole-ring median ${wholeRingMedian}`;
+    const out = _computeMarkPriceFromTrades({ lastTrade: real[0], ring: real, unitFn: dec8, nowSec: now });
+    return out?.source === 'last_trade' && Math.abs(out.unit - 910) < 0.01
+      ? true
+      : `expected last_trade 910 (the whole-ring median ${wholeRingMedian.toFixed(1)} is what the old code returned), got ${JSON.stringify(out)}`;
+  }],
+
+  ['a repricing with fills at the new price: the day\'s one print at the new price is kept', () => {
+    const now = 20_000_000;
+    const old = Array.from({ length: 40 }, (_, i) => ({ ts: now - 60 * DAY - i * HOUR, unit: 150 + (i % 5) }));
+    const fresh = Array.from({ length: 12 }, (_, i) => ({ ts: now - 2 * DAY - i * HOUR, unit: 1000 + (i % 4) * 20 }));
+    const r = ring([{ ts: now - 20 * 60, unit: 1100 }, ...fresh, ...old]);
+    const out = _computeMarkPriceFromTrades({ lastTrade: r[0], ring: r, unitFn, nowSec: now });
+    return out?.source === 'last_trade' && out.unit === 1100
+      ? true
+      : `expected last_trade 1100 (the old whole-ring median, ~150, made 1100 a 7x outlier), got ${JSON.stringify(out)}`;
+  }],
+
+  ['a lonely print far from this week\'s fills is still held back to the week\'s median', () => {
+    const now = 21_000_000;
+    const week = Array.from({ length: 10 }, (_, i) => ({ ts: now - 2 * DAY - i * HOUR, unit: 1000 }));
+    const r = ring([{ ts: now - 5 * 60, unit: 3200 }, ...week]);
+    const out = _computeMarkPriceFromTrades({ lastTrade: r[0], ring: r, unitFn, nowSec: now });
+    return out?.source === 'thin_liquidity_guard' && out.unit === 1000
+      ? true
+      : `expected thin_liquidity_guard 1000, got ${JSON.stringify(out)}`;
+  }],
+
+  ['a quiet fortnight: with under five fills in the week, the newest twenty fills are the reference', () => {
+    const now = 22_000_000;
+    const longAgo = Array.from({ length: 30 }, (_, i) => ({ ts: now - 120 * DAY - i * HOUR, unit: 150 }));
+    const recentish = Array.from({ length: 25 }, (_, i) => ({ ts: now - 10 * DAY - i * HOUR, unit: 1000 + (i % 3) * 10 }));
+    const r = ring([...recentish, ...longAgo]);
+    const wholeRing = r.map((t) => t.price_sats).sort((a, b) => a - b)[r.length >> 1];
+    const out = _computeMarkPriceFromTrades({ lastTrade: r[0], ring: r, unitFn, nowSec: now });
+    return wholeRing === 150 && out?.source === 'last_trade' && out.unit === 1000
+      ? true
+      : `expected last_trade 1000 (whole-ring median ${wholeRing} would call it a 6.7x outlier), got ${JSON.stringify(out)}`;
+  }],
+
+  ['the deltas follow the corrected mark: a 910-sat mark against a 1,200-sat week reads down, not down 75%', () => {
+    const now = 23_000_000;
+    const old = Array.from({ length: 40 }, (_, i) => ({ ts: now - 60 * DAY - i * HOUR, unit: 150 }));
+    const week = Array.from({ length: 12 }, (_, i) => ({ ts: now - (2 + i) * DAY, unit: 1200 }));
+    const r = ring([{ ts: now - 10 * 60, unit: 910 }, ...week, ...old]);
+    const mark = _computeMarkPriceFromTrades({ lastTrade: r[0], ring: r, unitFn, nowSec: now });
+    const d = _computeWindowedPriceDeltas(r, unitFn, mark.unit, 910, now);
+    return mark.unit === 910 && d.price_7d_change_pct > -30 && d.price_7d_change_pct < -20
+      ? true
+      : `expected a 7d change near -24%, got mark ${mark.unit} and ${JSON.stringify(d)}`;
   }],
 ];
 

@@ -6,7 +6,7 @@
 <!-- One page, one module: /front/main.js, which /tac/ and /spx/ load too (build/build.mjs keeps its ?cb= token). script-src
      allows same-origin files only, so no inline script runs on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com https://tacit-praxis-ceremony.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -36,7 +36,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /front/main.js /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /auto-claim.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js /rescan-gate.js /pub-address.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/front/main.js?cb=739ff324">
+<link rel="modulepreload" href="/front/main.js?cb=dfa17321">
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/own-node.js?cb=ed1de110">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -399,6 +399,21 @@ main:focus { outline: none; }
 @media (max-width: 560px) { .chl .w { display: none; } .chb { gap: 4px 8px; padding: 6px 13px; } }
 /* the airdrop's pill goes when its chip does: once the airdrop closes, or signed in, where the Airdrop card in Your Tacit already shows it */
 .newsl.below:not(:has(> .news:not([hidden]))), .hero:has(~ #dash:not([hidden]) [data-dash-open="airdrop"]) .newsl.below { display: none; }
+/* the banner over the headline is the ceremony's, with how much of its TAC pot is earned so far (the points service's figure, read once the page is up) */
+.pxb { border-color: color-mix(in srgb, var(--orange) 45%, var(--hair-2)); background: color-mix(in srgb, var(--orange) 5%, transparent); border-radius: 22px; }
+.pxb-c { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.pxb-p { display: flex; align-items: center; gap: 10px; font: 400 11px/1 var(--mono); color: var(--mute); }
+.pxb-p[hidden] { display: none; }
+.pxb-bar { flex: 1 1 auto; max-width: 240px; height: 4px; border-radius: 2px; background: var(--hair-2); overflow: hidden; }
+#pxb-fill { display: block; height: 100%; width: 0; background: var(--orange); border-radius: inherit; transition: width .6s ease; }
+@media (prefers-reduced-motion: reduce) { #pxb-fill { transition: none; } }
+.pxb-m { display: none; }
+@media (max-width: 560px) { .pxb-w { display: none; } .pxb-m { display: inline; } .pxb-p { flex-wrap: wrap; gap: 6px 10px; } .pxb-bar { flex: 1 0 100%; max-width: none; } }
+/* the front page under the card: the farms and their APR, the quick starts only when signed in (the two ways to what is held), and of the pills only the airdrop's;
+   the card's pool line waits for an amount, and its Bitcoin and Ethereum switch is the Swap tab's (Shield has From Bitcoin) */
+:root:not([data-page]) .hints:not(:has(> .own)), :root:not([data-page]) .says > .newsl:not(.below), :root:not([data-page]) .says > .chl { display: none; }
+:root:not([data-page]) #hx .swc:has(#amt:placeholder-shown) #homes:has(> .one) { display: none; }
+:root:not([data-page]) #hx-panel:has(> .hx-where) .swc:not(.atom):not(.btc) .mode { display: none; }
 /* The farms, the second row of the table under the card: a pair and its APR a chip, best first, each opening the card's Earn tab on that pool's ETH zap. The row's height is
    kept while empty, so nothing moves when the farms are read. */
 .fms { display: flex; align-items: center; gap: 4px; height: 30px; margin: 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; opacity: 0; transition: opacity .35s; }
@@ -2445,6 +2460,8 @@ html[data-sec="rewards/"] #find-h { display: none !important; }
 .sm-p a[aria-current="page"] { background: var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
 .sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
+.sm-p .smg { margin: 10px 12px 4px; font: 500 10.5px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.sm-p .smg:first-of-type { margin-top: 6px; }
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
 @media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
@@ -2522,7 +2539,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=4658dd80" defer></script>
+<script src="/chrome.js?cb=1709bb7f" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -2570,9 +2587,9 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <!-- chrome:nav:begin -->
       <nav class="sn" aria-label="Sections">
           <a href="/#portfolio" title="Portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg><span>Portfolio</span></a>
-          <a href="/#/payments" title="Payments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Payments</span></a>
+          <a href="/#/payments" title="Pay"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Pay</span></a>
           <a href="/#/defi" title="DeFi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10l-3-3"/><path d="M17 17H7l3 3"/></svg><span>DeFi</span></a>
-          <a href="/#/chains" title="Chains"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Chains</span></a>
+          <a href="/#/chains" title="Bridge"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Bridge</span></a>
           <a href="/vault/" title="Borrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg><span>Borrow</span></a>
           <a href="/rewards/" title="Rewards"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg><span>Rewards</span></a>
           <details class="sm">
@@ -2581,17 +2598,19 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
             <a class="pr" href="/vault/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg>Borrow</a>
             <a class="pr" href="/rewards/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg>Rewards</a>
             <hr class="pr">
+            <p class="smg">Yours</p>
             <a href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
             <a href="/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>TAC</a>
             <a href="/trade/tac/?src=menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17l5-6 4 4 7-8"/><path d="M15 7h5v5"/></svg>Trade</a>
             <a href="/pay/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg>Pay pool</a>
-            <a href="/bridge/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
-            <a href="/btc/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7.6" cy="8" r="4.4"/><circle cx="16.4" cy="8" r="4.4"/><path d="M6.4 6h1.9a1 1 0 0 1 0 2H6.4m0 0h2.1a1 1 0 0 1 0 2H6.4M6.4 5.2V10.8"/><path d="M16.4 5.4l-1.5 2.5 1.5 2.7 1.5-2.7zM14.9 7.9h3"/><path d="M5 17.5h14m-2.2-2l2.2 2-2.2 2"/><path d="M19 21.5H5m2.2-2l-2.2 2 2.2 2"/></svg>BTC ⇄ ETH</a>
+            <p class="smg">Make</p>
             <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
             <a href="/shop/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 4h11L21 9l-9 11L3 9z"/><path d="M3 9h18"/><path d="M9.5 4L8 9l4 11 4-11-1.5-5"/></svg>Shop</a>
+            <a href="/face/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 20V10a6 6 0 0 1 12 0v10l-2-2-2 2-2-2-2 2-2-2z"/><path d="M9.5 11.5h1M13.5 11.5h1"/></svg>FACE</a>
+            <p class="smg">Help build</p>
             <a href="/prove/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Prove</a>
             <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
-            <a href="/face/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 20V10a6 6 0 0 1 12 0v10l-2-2-2 2-2-2-2 2-2-2z"/><path d="M9.5 11.5h1M13.5 11.5h1"/></svg>FACE</a>
+            <a href="/praxis/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15.5" r="4.5"/><path d="M11.2 12.3L20 3.5"/><path d="M17 6.5l2.5 2.5"/><path d="M14.5 9l2 2"/></svg>Praxis</a>
             </div>
           </details>
         </nav>
@@ -2712,7 +2731,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <p class="cpg-note"><span>Already have TAC notes on Bitcoin? Merge or split them, or follow notes that are still moving.</span><a href="/tac/?v=notes#bridge">Manage Bitcoin notes →</a></p>
   </section>
   <section class="hero" aria-labelledby="hero-h">
-    <a class="pxb" href="/praxis/" id="pxb"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>Tacit Praxis ceremony.</b> The cryptography for smart contracts on Bitcoin: help build its key, earn up to 5 TAC.</span><i aria-hidden="true">→</i></a>
+    <a class="pxb" href="/praxis/" id="pxb"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span class="pxb-c"><span><b>Tacit Praxis ceremony.</b><span class="pxb-w"> The cryptography for smart contracts on Bitcoin: help build its key, earn up to 5 TAC.</span><span class="pxb-m"> Help build Bitcoin’s contract key, earn up to 5 TAC.</span></span><span class="pxb-p" id="pxb-p" hidden><span class="pxb-bar" aria-hidden="true"><span id="pxb-fill"></span></span><span id="pxb-n"></span></span></span><i aria-hidden="true">→</i></a>
     <div class="hero-t">
       <h1 id="hero-h">Private <span class="hero-w2">DeFi</span><span class="sr"> on BTC and ETH</span><span class="hero-pair" aria-hidden="true"><svg class="tk"><use href="#tk-btc"/></svg><svg class="tk"><use href="#tk-eth"/></svg></span></h1>
       <p class="sub">One <b>tacit1</b>&nbsp;ID for both chains. Private inside the pool.</p>
@@ -2912,9 +2931,9 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <nav class="bn" aria-label="Sections">
     <a href="/#portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg><span>Portfolio</span></a>
-    <a href="/#/payments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Payments</span></a>
+    <a href="/#/payments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Pay</span></a>
     <a href="/#/defi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10l-3-3"/><path d="M17 17H7l3 3"/></svg><span>DeFi</span></a>
-    <a href="/#/chains"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Chains</span></a>
+    <a href="/#/chains"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Bridge</span></a>
     <a href="/#/menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg><span>More</span></a>
   </nav>
   <!-- chrome:foot:end -->
@@ -3061,6 +3080,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
 <div class="toasts" id="toast-container" popover="manual"></div>
 
-<script type="module" src="/front/main.js?cb=739ff324"></script>
+<script type="module" src="/front/main.js?cb=dfa17321"></script>
 </body>
 </html>

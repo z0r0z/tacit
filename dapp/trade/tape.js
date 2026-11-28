@@ -67,9 +67,21 @@ export function tradePrices(trades, decimals = 8) {
     const amount = Number(t.amount) / 10 ** decimals, sats = Number(t.price_sats);
     if (amount > 0 && sats > 0 && Number.isFinite(Number(t.ts))) pts.push({ t: Number(t.ts), price: sats / amount, vol: amount });
   }
-  if (pts.length < 3) return pts.sort((a, b) => a.t - b.t);
-  const sorted = [...pts].map((x) => x.price).sort((a, b) => a - b), med = sorted[Math.floor(sorted.length / 2)];
-  return pts.filter((x) => x.price >= med * 0.2 && x.price <= med * 5).sort((a, b) => a.t - b.t);
+  pts.sort((a, b) => a.t - b.t);
+  if (pts.length < 3) return pts;
+  // An off-market fill is judged against the trades around it in time, not the whole ring: TAC has repriced about fivefold, so the ring's overall median sits at its old price
+  // and would throw out every fill at today's.
+  return pts.filter((x, i) => {
+    const near = pts.slice(Math.max(0, i - OUTLIER_NEIGHBOURS), i + OUTLIER_NEIGHBOURS + 1).map((y) => y.price).sort((a, b) => a - b), med = near[near.length >> 1];
+    return x.price >= med * 0.2 && x.price <= med * 5;
+  });
+}
+const OUTLIER_NEIGHBOURS = 5;
+
+// The newest fill that is drawn, as { price (sats per TAC), t }, or null: the page's "last trade" is this, so it is always a point on the chart.
+export function lastTrade(trades, decimals = 8) {
+  const pts = tradePrices(trades, decimals);
+  return pts.length ? { price: pts[pts.length - 1].price, t: pts[pts.length - 1].t } : null;
 }
 
 export function candlesFromTrades(trades, period, decimals = 8) {

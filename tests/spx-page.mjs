@@ -397,7 +397,7 @@ for (const w of [820, 390]) {
   ok(/Shield ETH/i.test(t) && !/SPX/.test(t), 'the front page still opens on Shield ETH');
   ok(JSON.stringify(await p.evaluate(() => [...document.querySelectorAll('#hx .hx-where .w')].map((e) => e.textContent.trim()))) === JSON.stringify(['From wallet', 'From Bitcoin']), 'and its Shield ways in still read From wallet and From Bitcoin');
   ok(await p.evaluate(() => !document.querySelector('.spx-top, #spx-below') && !document.documentElement.dataset.page), 'and has none of this page’s parts');
-  ok(await p.evaluate(() => { const a = document.querySelector('#spx-news'), i = a?.querySelector('img.tk'); return !!a && a.getAttribute('href') === '/spx/' && !!a.offsetParent && !!i && i.complete && i.naturalWidth > 0 && /SPX6900/.test(a.textContent); }), 'but its landing strip has a pill with the SPX logo that links to /spx/');
+  ok(await p.evaluate(() => { const a = document.querySelector('#spx-news'); return !a || !a.offsetParent; }), 'and its landing shows no strip of pills under the count');
   await p.click('#hx-tab-send'); await p.waitForTimeout(1500);
   ok(await p.evaluate(() => ![...(document.querySelector('#hx-sa')?.options || [])].some((o) => /^x[bp]0x/.test(o.value))), 'and its Send list has no SPX rows (they are this page’s)');
   ok(bad.length === 0, `no script error and no CSP violation on the front page${bad.length ? ': ' + bad.join(' | ') : ''}`);

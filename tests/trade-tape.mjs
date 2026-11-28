@@ -4,7 +4,7 @@
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import {
-  TAPE_FINE, TAPE_COARSE, unpackFloat, decodeBar, decodeTape, invert, scale, rollup, chartBars, continuous, tradePrices, candlesFromTrades, ethLaneUsd, btcLaneUsd, gap, closeAt, volumeSince, ageWords, lastTradeView, LAST_FRESH_SEC,
+  TAPE_FINE, TAPE_COARSE, unpackFloat, decodeBar, decodeTape, invert, scale, rollup, chartBars, continuous, tradePrices, lastTrade, candlesFromTrades, ethLaneUsd, btcLaneUsd, gap, closeAt, volumeSince, ageWords, lastTradeView, LAST_FRESH_SEC,
 } from '../dapp/trade/tape.js';
 import { cumulative } from '../dapp/trade/book.js';
 
@@ -116,6 +116,33 @@ const coarse = decodeTape(fx.coarse, TAPE_COARSE), fine = decodeTape(fx.fine, TA
   assert.equal(c.length, 2); assert.equal(c[1].open, 140); assert.equal(c[1].close, 200); assert.equal(c[1].high, 200); assert.equal(c[1].low, 140); assert.equal(c[1].n, 3); assert.equal(c[1].vol, 300);
   assert.equal(candlesFromTrades([], 3600).length, 0); assert.equal(tradePrices([T(0, 5, 1), T(5, 0, 2), T(5, 5, 'x')]).length, 0);
   ok('trades into sats-per-TAC candles; fills far from the median, zero and malformed trades are left out');
+}
+
+// ── the Bitcoin lane after a repricing: the last trade is a fill on the tape, and fills at today's price are drawn ──
+{
+  const T = (price_sats, amount, ts) => ({ price_sats, amount: String(amount), ts, fill_count: 1 });
+  // 40 fills near 150 sats, then 12 near 1,000 (a fivefold repricing), one 900,000-sat spike among the new ones.
+  const old = Array.from({ length: 40 }, (_, i) => T(15000 + (i % 5) * 100, 10000000000, 1000 + i));
+  const fresh = Array.from({ length: 12 }, (_, i) => T(100000 + (i % 4) * 5000, 10000000000, 2000 + i * 10));
+  const spike = T(90000000, 10000000000, 2055);
+  const all = [...fresh, spike, ...old];
+  const kept = tradePrices(all);
+  assert.equal(kept.length, 52, 'every real fill is kept: the 12 at the new price as well as the 40 at the old, the spike alone dropped');
+  assert.ok(!kept.some((x) => x.price > 5000), 'the spike is not drawn');
+  assert.deepEqual(lastTrade(all), { price: 1150, t: 2110 }, 'the last trade is the newest drawn fill (the one at 2110), not the spike at 2055 nor an average of the ring');
+  assert.equal(lastTrade([]), null); assert.equal(lastTrade([T(0, 5, 1)]), null);
+
+  // The real ring (tests/fixtures/tac-btc-trades-2026-11-28.json): the API's mark said 223.8 sats (the median of five months of old fills) while the last fill was 910 sats;
+  // the old whole-ring band (0.2x-5x of the median, 45-1,125 sats) threw out 59 of the week's 124 fills, among them every fill at 1,200-1,460.
+  const real = JSON.parse(readFileSync(new URL('./fixtures/tac-btc-trades-2026-11-28.json', import.meta.url))).rows.map(([ts, price_sats, amount]) => T(price_sats, amount, ts));
+  const wk = 1795795206 - 7 * 86400, week = real.filter((x) => x.ts > wk);
+  const lt = lastTrade(real);
+  assert.equal(real.length, 618); assert.equal(week.length, 124);
+  assert.ok(lt.t === 1795795206 && Math.abs(lt.price - 910) < 0.01, `the last trade is the 11-27 fill at 910 sats a TAC, not the mark's 223.8 (got ${lt.price})`);
+  assert.equal(tradePrices(real).length, 618, 'no fill on the real tape is thrown out');
+  assert.equal(tradePrices(real).filter((x) => x.t > wk).length, 124, "the week's fills are all drawn");
+  assert.ok(Math.max(...tradePrices(real).map((x) => x.price)) > 1400, 'the fills at 1,200-1,460 sats are on the chart');
+  ok('after a repricing the fills at the new price are drawn and the last trade is the newest drawn fill, on the real tape too');
 }
 
 // ── comparing the lanes ──

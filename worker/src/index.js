@@ -15887,22 +15887,38 @@ function _computeWindowedPriceDeltas(ring, unitFn, markUnit, fallbackLatestU, no
 // Canonical mark-price selector shared by bulk /assets and single
 // /assets/:id. Last trade remains visible as last_trade/history, but it
 // should not always become the valuation mark in thin markets. Two guards:
-//   1. hard outlier: outside 0.2x–5x of the recent trade-ring median.
+//   1. hard outlier: outside 0.2x–5x of the recent-fills median.
 //   2. thin-liquidity: only one 24h trade and that print is outside
 //      0.5x–2x of the median. This catches "one lonely fill moved mark
 //      60%" without hiding the fill from history.
+// The median is of the market as it trades NOW: the fills of the last
+// MARK_REF_DAYS days, or, when fewer than MARK_REF_MIN fills are that
+// recent, the newest MARK_REF_FALLBACK fills whatever their age. It is not
+// the median of the whole ring: a full ring spans months and sits at the
+// price an asset had before it repriced, so after a repricing the only
+// print of a quiet day read as an outlier and the mark became that old
+// median (TAC on Bitcoin: a real 910-sat fill, a 224-sat mark).
+const MARK_REF_DAYS = 7;
+const MARK_REF_MIN = 5;
+const MARK_REF_FALLBACK = 20;
 function _computeMarkPriceFromTrades({ lastTrade, ring, unitFn, nowSec }) {
   const trades = Array.isArray(ring) ? ring : [];
-  const units = trades.map(t => unitFn(t.price_sats, t.amount))
-    .filter(u => Number.isFinite(u) && u > 0)
-    .sort((a, b) => a - b);
+  const now = Number(nowSec || Math.floor(Date.now() / 1000));
+  const fills = [];
+  for (const t of trades) {
+    const u = unitFn(t.price_sats, t.amount);
+    if (Number.isFinite(u) && u > 0) fills.push({ u, ts: Number(t?.ts) || 0 });
+  }
+  let ref = fills.filter(f => f.ts >= now - MARK_REF_DAYS * 86400);
+  if (ref.length < MARK_REF_MIN) ref = fills.slice().sort((a, b) => b.ts - a.ts).slice(0, MARK_REF_FALLBACK);
+  const units = ref.map(f => f.u).sort((a, b) => a - b);
   let median = null;
   if (units.length > 0) {
     const mid = units.length >> 1;
     median = (units.length % 2) ? units[mid] : (units[mid - 1] + units[mid]) / 2;
   }
   const sample = units.length;
-  const dayCutoff = Number(nowSec || Math.floor(Date.now() / 1000)) - 86400;
+  const dayCutoff = now - 86400;
   const trades24h = trades.reduce((n, t) => {
     const ts = Number(t?.ts) || 0;
     if (ts < dayCutoff) return n;
