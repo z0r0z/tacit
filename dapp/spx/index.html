@@ -7,7 +7,7 @@
 <!-- One page, one module: /front/main.js, which /tac/ and /spx/ load too (build/build.mjs keeps its ?cb= token). script-src
      allows same-origin files only, so no inline script runs on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com https://tacit-praxis-ceremony.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://tacit-fastbridge-pair-lp.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -37,7 +37,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /front/main.js /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /auto-claim.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js /rescan-gate.js /pub-address.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/front/main.js?cb=0ae09043">
+<link rel="modulepreload" href="/front/main.js?cb=3dca911e">
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/own-node.js?cb=ed1de110">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -399,14 +399,20 @@ main:focus { outline: none; }
 @media (prefers-reduced-motion: reduce) { .chb, .chb i, .news { transition: none; } }
 @media (max-width: 560px) { .chl .w { display: none; } .chb { gap: 4px 8px; padding: 6px 13px; } }
 /* the airdrop's pill goes when its chip does: once the airdrop closes, or signed in, where the Airdrop card in Your Tacit already shows it */
-.hero:has(~ #dash:not([hidden]) [data-dash-open="airdrop"]) #air-news { display: none; }
-/* one banner over the headline: the airdrop's while it is open (and not already a card in Your Tacit), the ceremony's after */
-.hero:not(:has(~ #dash:not([hidden]) [data-dash-open="airdrop"])) #air-news:not([hidden]) + #pxb { display: none; }
-.pxb .dot { width: 6px; height: 6px; margin-left: -4px; }
-.pxb .dot:not(.live) { display: none; }
-/* the front page under the card: the quick starts only when signed in (the two ways to what is held), no farm chips, no pills; the card's pool line waits for an
-   amount, and its Bitcoin and Ethereum switch is the Swap tab's (Shield has From Bitcoin) */
-:root:not([data-page]) .starts:not(:has(.own)), :root:not([data-page]) .fms, :root:not([data-page]) .says { display: none; }
+.newsl.below:not(:has(> .news:not([hidden]))), .hero:has(~ #dash:not([hidden]) [data-dash-open="airdrop"]) .newsl.below { display: none; }
+/* the banner over the headline is the ceremony's, with how much of its TAC pot is earned so far (the points service's figure, read once the page is up) */
+.pxb { border-color: color-mix(in srgb, var(--orange) 45%, var(--hair-2)); background: color-mix(in srgb, var(--orange) 5%, transparent); border-radius: 22px; }
+.pxb-c { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.pxb-p { display: flex; align-items: center; gap: 10px; font: 400 11px/1 var(--mono); color: var(--mute); }
+.pxb-p[hidden] { display: none; }
+.pxb-bar { flex: 1 1 auto; max-width: 240px; height: 4px; border-radius: 2px; background: var(--hair-2); overflow: hidden; }
+#pxb-fill { display: block; height: 100%; width: 0; background: var(--orange); border-radius: inherit; transition: width .6s ease; }
+@media (prefers-reduced-motion: reduce) { #pxb-fill { transition: none; } }
+.pxb-m { display: none; }
+@media (max-width: 560px) { .pxb-w { display: none; } .pxb-m { display: inline; } .pxb-p { flex-wrap: wrap; gap: 6px 10px; } .pxb-bar { flex: 1 0 100%; max-width: none; } }
+/* the front page under the card: the farms and their APR, the quick starts only when signed in (the two ways to what is held), and of the pills only the airdrop's;
+   the card's pool line waits for an amount, and its Bitcoin and Ethereum switch is the Swap tab's (Shield has From Bitcoin) */
+:root:not([data-page]) .hints:not(:has(> .own)), :root:not([data-page]) .says > .newsl:not(.below), :root:not([data-page]) .says > .chl { display: none; }
 :root:not([data-page]) #hx .swc:has(#amt:placeholder-shown) #homes:has(> .one) { display: none; }
 :root:not([data-page]) #hx-panel:has(> .hx-where) .swc:not(.atom):not(.btc) .mode { display: none; }
 /* The farms, the second row of the table under the card: a pair and its APR a chip, best first, each opening the card's Earn tab on that pool's ETH zap. The row's height is
@@ -2729,8 +2735,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <p class="cpg-note"><span>Already have TAC notes on Bitcoin? Merge or split them, or follow notes that are still moving.</span><a href="/tac/?v=notes#bridge">Manage Bitcoin notes →</a></p>
   </section>
   <section class="hero" aria-labelledby="hero-h">
-    <a class="pxb" href="/rewards/" id="air-news"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>TAC airdrop.</b> <span data-foot="tac">Is your wallet in it?</span></span><span class="dot" data-dot="tac" aria-hidden="true"></span><i aria-hidden="true">→</i></a>
-    <a class="pxb" href="/praxis/" id="pxb"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>Tacit Praxis ceremony.</b> The cryptography for smart contracts on Bitcoin: help build its key, earn up to 5 TAC.</span><i aria-hidden="true">→</i></a>
+    <a class="pxb" href="/praxis/" id="pxb"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span class="pxb-c"><span><b>Tacit Praxis ceremony.</b><span class="pxb-w"> The cryptography for smart contracts on Bitcoin: help build its key, earn up to 5 TAC.</span><span class="pxb-m"> Help build Bitcoin’s contract key, earn up to 5 TAC.</span></span><span class="pxb-p" id="pxb-p" hidden><span class="pxb-bar" aria-hidden="true"><span id="pxb-fill"></span></span><span id="pxb-n"></span></span></span><i aria-hidden="true">→</i></a>
     <div class="spx-top">
       <p class="spx-tick" aria-hidden="true"><span>PROXY.TERMINAL // V.6900</span><span>BLOCK.SYNC//OK</span><span>LUMINA.SIG&gt;&gt;STABLE</span><span>AEON.NET::ONLINE</span><span>TRADFI&gt;&gt;FLIPPING</span></p>
       <div class="spx-copy">
@@ -2773,6 +2778,9 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <div class="newsl"><a class="news" id="spx-news" href="/spx/" title="SPX6900 on Tacit"><img class="tk" src="/swap/logos/0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c.webp" alt="" width="16" height="16" decoding="async"><b>SPX6900</b><span>shield, send<span class="w"> and farm it privately</span></span><span class="go"><span class="w">SPX page </span>→</span></a></div>
       <div class="chl" id="chl">
         <a class="chb" id="chl-a" href="/tac/" title="The Tacit chain, live"><svg class="tk w" aria-hidden="true"><use href="#tk-tac"/></svg><b>Tacit chain</b><span class="dot" id="chl-dot" aria-hidden="true"></span><span>stake TAC, earn<span class="w"> from every payment</span>, pay<span class="w"> privately</span></span><i aria-hidden="true">→</i></a>
+      </div>
+      <div class="newsl below">
+        <a class="news" id="air-news" href="/rewards/"><span class="dot" data-dot="tac"></span><b>TAC airdrop</b><span data-foot="tac">Is your wallet in it?</span><span class="go"><span class="w">Check yours </span>→</span></a>
       </div>
     </div>
     <div class="tape" id="tape" role="region" aria-label="Recent activity on Tacit" hidden>
@@ -3133,6 +3141,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
 <div class="toasts" id="toast-container" popover="manual"></div>
 
-<script type="module" src="/front/main.js?cb=0ae09043"></script>
+<script type="module" src="/front/main.js?cb=3dca911e"></script>
 </body>
 </html>
