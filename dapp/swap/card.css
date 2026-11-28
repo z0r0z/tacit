@@ -471,6 +471,7 @@
 /* Shield and Withdraw: the To coin follows the From coin, so it is no picker */
 .swc.flow:not(.buy) #get-coin { cursor: default; pointer-events: none; }
 .swc.flow:not(.buy) #get-coin .car { display: none; }
+.swc.flow.xto #get-coin { cursor: pointer; pointer-events: auto; } .swc.flow.xto #get-coin .car { display: block; }
 .swc .flow-tip { margin: 10px 0 0; font: 11.5px/1.5 var(--mono); color: var(--mute); text-align: center; text-wrap: balance; }
 /* A text field under 16px makes iOS zoom the page in when it is focused, and leave it zoomed: on a touch screen they are 16px. */
 @media (pointer: coarse) { .swc .to input { font-size: 16px; } }
