@@ -155,12 +155,15 @@ async function readTapes({ coarse: wantCoarse = true } = {}) {
 }
 
 async function loadBitcoin({ lists = true } = {}) {
-  const [asset, sales, bidRows] = await Promise.all([api(`/assets/${TAC_BTC_ID}?network=mainnet`), lists ? api(`/assets/${TAC_BTC_ID}/preauth-sales?network=mainnet&view=book`) : null, lists ? api(`/assets/${TAC_BTC_ID}/bid-intents?network=mainnet`) : null]);
+  const [asset, sales, bidRows, market] = await Promise.all([api(`/assets/${TAC_BTC_ID}?network=mainnet`), lists ? api(`/assets/${TAC_BTC_ID}/preauth-sales?network=mainnet&view=book`) : null, lists ? api(`/assets/${TAC_BTC_ID}/bid-intents?network=mainnet`) : null, lists && btcOn() ? api('/market?network=mainnet') : null]);
   // The last trade is the newest fill on the tape, not the API's valuation mark: that mark falls back to the ring's median when a day has one fill, and the ring's median is months old.
   const lt = asset ? lastTrade(asset.trades) : null;
   if (asset) D.btc = { trades: asset.trades || [], mark: lt?.price ?? (Number(asset.mark_price?.unit) || null), lastTs: lt?.t ?? (Number(asset.last_trade?.ts || asset.mark_price?.ts) || null), last: asset.last_trade || null, change24: asset.price_24h_change_pct, vol24: Number(asset.volume_24h_sats) || 0, holders: asset.holder_count ?? null, firstTrade: asset.price_first_trade_ts || null, tradesCap: asset.trades_cap };
   D.btcFailed = !asset && !D.btc; D.bookFailed = lists && !Array.isArray(sales?.sales) && !D.book;
   if (asset && D.book) { D.btc.ask = D.book.bestAsk; D.btc.bid = D.book.bestBid; }
+  // The offers a seller confirms (the market's `intent` listings of TAC) are not in the sales list: the Buy sheet quotes them, so the book here holds them too. A market read that
+  // fails keeps the offers last read.
+  if (Array.isArray(market?.listings)) D.makers = market.listings.filter((l) => l && l.kind === 'intent' && l.asset_id === TAC_BTC_ID);
   if (Array.isArray(sales?.sales)) {
     D.bidsRead = Array.isArray(bidRows?.intents);
     D.raw = { listings: sales.sales.map((x) => ({ ...x, kind: 'preauth' })), bids: D.bidsRead ? bidRows.intents : [] };
@@ -168,9 +171,12 @@ async function loadBitcoin({ lists = true } = {}) {
     rebuildBook();
   }
 }
+// The Buy sheet counts the offers a seller confirms unless this browser turned them off there; the book here follows that choice (read again at each build).
+const MARKET_PREF = `tacit-btc-market-v1:${TAC_BTC_ID}`;
+const makerOn = () => { try { return JSON.parse(localStorage.getItem(MARKET_PREF) || '{}').includeMaker !== false; } catch { return true; } };
 function rebuildBook() {
   if (!D.raw) return;
-  D.book = buildBook({ assetId: TAC_BTC_ID, decimals: 8, ...D.raw, myPubHex: ME.pub });
+  D.book = buildBook({ assetId: TAC_BTC_ID, decimals: 8, listings: makerOn() && D.makers?.length ? [...D.raw.listings, ...D.makers] : D.raw.listings, bids: D.raw.bids, myPubHex: ME.pub });
   if (D.btc) { D.btc.ask = D.book.bestAsk; D.btc.bid = D.book.bestBid; }
 }
 
@@ -598,7 +604,7 @@ function renderBtcAlt(q = S.quote) {
   // how the Bitcoin side compares with what the ticket's route pays, for the same money
   const here = q && bk && routeOf(q) ? planOf(q).out : null;
   const vs = (d) => (d == null || !Number.isFinite(d) ? '' : Math.abs(d) < 0.005 ? ', about the same' : d > 0 ? html`, <b class="up">${pct(d, 1).slice(1)} more</b>` : `, ${pct(d, 1).slice(1)} less`);
-  if (buy && bk?.out) { text = html`Or pay <b>${satsFmt(bk.sats)} sats</b>${worth(bk.sats)} on Bitcoin for about <b>${tacFmt(Number(bk.out) / 1e18)} TAC</b>${vs(here ? Number(bk.out - here) / Number(here) : null)}.`; act = 'buy'; }
+  if (buy && bk?.out) { text = html`Or pay <b>${satsFmt(bk.sats)} sats</b>${worth(bk.sats)} on Bitcoin for about <b>${tacFmt(Number(bk.out) / 1e18)} TAC</b>${vs(here ? Number(bk.out - here) / Number(here) : null)}${bk.plan?.fills.some((f) => !f.ask.instant) ? ' (a seller confirms part of it)' : ''}.`; act = 'buy'; }
   else if (!buy && bk?.sell?.fills.length) {
     // The bids can be fewer than the amount: say how much of it they take, or the sats read as the price of all of it.
     const part = bk.sell.leftoverBase > 0n;
@@ -619,7 +625,8 @@ function topOfBook() {
   const b = D.book;
   if (!b) return null;
   const asks = ladderLevels(b.asks, 'ask'), bids = ladderLevels(b.bids, 'bid'), bl = bids[0];
-  const a = b.bestAsk != null ? { unit: b.bestAsk, tac: Number((asks.find((l) => l.unit === b.bestAsk) || asks[0] || {}).amount || 0) / 1e8 } : null;
+  const al = asks.find((l) => l.unit === b.bestAsk) || asks[0] || {};   // (at one price a pre-signed lot sorts before an offer a seller confirms)
+  const a = b.bestAsk != null ? { unit: b.bestAsk, tac: Number(al.amount || 0) / 1e8, maker: al.flag === 'maker' } : null;
   const d = b.bestBid != null && bl ? { unit: bl.unit, tac: Number(bl.amount) / 1e8, manual: bl.flag === 'manual' } : null;
   return { a, d };
 }
@@ -660,7 +667,7 @@ function renderBtcTicket() {
   if (!b) {
     body = `<p class="bt-hint">${D.bookFailed ? 'Could not read the Bitcoin order book. It is read again in a minute.' : 'Reading the Bitcoin order book…'}</p>`; go = '';
   } else {
-    body = html`<dl class="bt">${row('Cheapest ask', a && a.unit, a ? `${satsFmt(a.unit)} sats · ${tacFmt(a.tac)} TAC` : 'nothing for sale')}${row('Best bid', d && d.unit, d ? `${satsFmt(d.unit)} sats · ${tacFmt(d.tac)} TAC${d.manual ? ' · settles when the bidder is online' : ''}` : 'no bids')}${last}</dl>`;
+    body = html`<dl class="bt">${row('Cheapest ask', a && a.unit, a ? `${satsFmt(a.unit)} sats · ${tacFmt(a.tac)} TAC${a.maker ? ' · the seller confirms, usually in seconds' : ''}` : 'nothing for sale')}${row('Best bid', d && d.unit, d ? `${satsFmt(d.unit)} sats · ${tacFmt(d.tac)} TAC${d.manual ? ' · settles when the bidder is online' : ''}` : 'no bids')}${last}</dl>`;
     const act = buy ? (a ? 'buy' : 'bid') : (d ? 'sell' : 'list');
     const label = { buy: 'Buy TAC on Bitcoin', bid: 'Place a bid on Bitcoin', sell: 'Sell TAC on Bitcoin', list: 'List TAC for sale on Bitcoin' }[act];
     const hint = act === 'bid' ? 'Nothing is for sale on Bitcoin right now: say what you would pay.' : act === 'list' ? 'No bids right now: list it at your price.' : '';
@@ -787,7 +794,7 @@ function renderVenues(q) {
   if (bk) {
     const to = (act, text) => (btcOn() ? { act, actText: text } : {});
     const sw = (n) => (D.btcUsd ? ` (about ${usd(n / 1e8 * D.btcUsd)})` : '');
-    if (buy) add({ name: 'Bitcoin order book', note: `pay ${satsFmt(bk.sats)} sats${sw(bk.sats)} instead`, out: bk.out, why: bk.out ? null : bk.sats < 546 ? 'too small for Bitcoin' : 'no listing that small', btc: true, ...(bk.out ? to('buy', 'Buy on Bitcoin →') : {}) });
+    if (buy) add({ name: 'Bitcoin order book', note: `pay ${satsFmt(bk.sats)} sats${sw(bk.sats)} instead${bk.plan?.fills.some((f) => !f.ask.instant) ? ' · a seller confirms part of it' : ''}`, out: bk.out, why: bk.out ? null : bk.sats < 546 ? 'too small for Bitcoin' : 'no listing that small', btc: true, ...(bk.out ? to('buy', 'Buy on Bitcoin →') : {}) });
     else if (bk.sell?.fills.length) {
       const sp = bk.sell, manual = sp.fills.filter((f) => !f.bid.auto).length;
       add({ name: 'Bitcoin order book', show: `${satsFmt(bk.sats)} sats`, btc: true, sats: sp.leftoverBase ? null : bk.sats,
@@ -948,7 +955,7 @@ function peekText(kind, i) {
   const p = buy ? planBuy(b, { receiveBase: want.receiveBase }) : planBtcSell(b, { sellBase: want.sellBase, includeManual: true });
   if (!p.fills.length) return '';
   const sats = p.sats, avg = p.avgUnit ? btcPxFmt(btcPx(p.avgUnit)) : '';
-  return [`${buy ? 'Buy' : 'Sell'} ${tacFmt(Number(p.amount) / 1e8)} TAC for ${satsFmt(sats)} sats`, D.btcUsd ? `about ${usd(sats / 1e8 * D.btcUsd)}` : '', avg ? `${avg} each` : '', p.fills.length > 1 ? `${p.fills.length} ${buy ? 'listings' : 'bids'}` : ''].filter(Boolean).join(' · ');
+  return [`${buy ? 'Buy' : 'Sell'} ${tacFmt(Number(p.amount) / 1e8)} TAC for ${satsFmt(sats)} sats`, D.btcUsd ? `about ${usd(sats / 1e8 * D.btcUsd)}` : '', avg ? `${avg} each` : '', p.fills.length > 1 ? `${p.fills.length} ${buy ? 'listings' : 'bids'}` : '', buy && p.fills.some((f) => !f.ask.instant) ? 'a seller confirms' : ''].filter(Boolean).join(' · ');
 }
 
 const depth = mountDepth($('#depthchart'), { onPick: (e, side) => {
@@ -1076,7 +1083,7 @@ function lastSpan() {
 function btcStack(b, live) {
   const lvs = (rows, ask) => { let upTo = 0; return ladderLevels(rows, ask ? 'ask' : 'bid').map((l, i) => {
     const amt = Number(l.amount) / 1e8, px = btcPxFmt(btcPx(l.unit)), ends = ask ? Math.min(...l.rows.map((r) => r.expiry).filter(Boolean)) : 0;
-    const why = ask ? (l.count > 1 ? `${l.count} listings, each taken whole` : 'one listing, taken whole') : l.flag === 'auto' ? 'settles within minutes' : 'settles when the bidder is online';
+    const why = ask ? (l.flag === 'maker' ? `${l.count > 1 ? `${l.count} offers` : 'one offer'}, each taken whole once its seller confirms (usually seconds)` : l.count > 1 ? `${l.count} listings, each taken whole` : 'one listing, taken whole') : l.flag === 'auto' ? 'settles within minutes' : 'settles when the bidder is online';
     if (l.flag !== 'mine') upTo += amt;
     return { price: px, small: [D.btcUsd ? `${satsFmt(l.unit)} sats` : '', l.count > 1 ? `${l.count} listings` : ''].filter(Boolean).join(' · '), amount: tacFmt(amt), total: satsFmt(l.sats), depth: l.sats, mine: l.flag === 'mine',
       attrs: live ? `data-btc="${ask ? 'buy' : 'sell'}" data-i="${i}"` : '', title: `${why}${Number.isFinite(ends) && ends ? ` · ends in ${left(ends)}` : ''}.${live ? ` Click to ${ask ? 'buy' : 'sell'} up to this price.` : ''}`,

@@ -37,6 +37,9 @@ bids.intents = bids.intents.map((x) => ({ ...x, expiry: soon }));
 // The API serves the page's listings and the sheet's feed from one book: the market feed's listings are the same sales (with the maker-confirm offers it adds).
 market.listings = [...sales.sales.map((x) => ({ asset_id: AID, kind: 'preauth', ...x })), ...market.listings.filter((x) => x.kind !== 'preauth').map((x) => ({ ...x, expiry: soon, expired: false }))];
 
+// The same feed with its maker offers made fresh (the fixture's are months old, so the book leaves them out as stale) and cheaper than the cheapest listing: 140 sats a TAC.
+const marketFresh = { ...market, listings: market.listings.map((x) => (x.kind === 'intent' ? { ...x, created_at: Math.floor(Date.now() / 1000), price_sats: Math.round(140 * Number(x.amount) / 1e8) } : x)) };
+
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 const text = (page, sel) => page.evaluate((s) => document.querySelector(s)?.textContent || '', sel);
@@ -61,7 +64,7 @@ async function stubWallet(ctx) {
 // The page reads its last trade from the newest fill on the tape, so a "trade a minute old" is the ring's newest fill moved to now.
 const freshTrades = (t) => { const ts = asset.trades.map((x) => x.ts), newest = Math.max(...ts); return asset.trades.map((x) => (x.ts === newest ? { ...x, ts: t } : x)); };
 
-async function openPage(viewport, { wallet = false, hash = '#btc=on', query = '', utxos = [], delay = 0, utxoHold = 0, taprootCoin = false, stored = null, live = false, fresh = false, empty = false } = {}) {
+async function openPage(viewport, { wallet = false, hash = '#btc=on', query = '', utxos = [], delay = 0, utxoHold = 0, taprootCoin = false, stored = null, live = false, fresh = false, empty = false, makers = false, noMakers = false } = {}) {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport, colorScheme: 'light' });
   const walletLog = wallet ? await stubWallet(ctx) : null;
@@ -75,7 +78,7 @@ async function openPage(viewport, { wallet = false, hash = '#btc=on', query = ''
     if (route.request().method() !== 'GET') { seen.posts.push(`${path}`); return route.fulfill(ok200({ error: 'not served in this test' })); }
     if (/preauth-sales$/.test(path)) return route.fulfill(ok200(empty ? { ...sales, sales: [] } : sales));
     if (/bid-intents$/.test(path)) return route.fulfill(ok200(empty ? { ...bids, intents: [] } : bids));
-    if (path === '/market') return route.fulfill(ok200(market));
+    if (path === '/market') return route.fulfill(ok200(makers ? marketFresh : market));
     if (path === '/petch-assets') return route.fulfill(ok200(petch));
     if (path === `/assets/${AID}`) { const t = Math.floor(Date.now() / 1000) - 90; return route.fulfill(ok200(fresh ? { ...asset, last_trade: { ...(asset.last_trade || {}), ts: t }, mark_price: { ...(asset.mark_price || {}), ts: t }, trades: freshTrades(t) } : asset)); }
     seen.unmatched.add(`api ${path}`);
@@ -104,6 +107,7 @@ async function openPage(viewport, { wallet = false, hash = '#btc=on', query = ''
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
   page.on('console', (m) => { if (m.type() === 'error') { const t = m.text(); if (/Content Security Policy|Refused to/i.test(t)) blocked.push(t); else if (!/Failed to load resource/.test(t)) errors.push(t); } });
   // what this browser chose last, set before the page runs (a link must win over it)
+  if (noMakers) await ctx.addInitScript((k) => { try { localStorage.setItem(k, JSON.stringify({ includeMaker: false })); } catch { } }, `tacit-btc-market-v1:${AID}`);   // the sheet's 'include offers the seller confirms', turned off
   if (stored) await ctx.addInitScript((v) => { try { localStorage.setItem('tacit-trade-chart-v1', JSON.stringify(v)); } catch { } }, stored);
   // the page's beacons go to the API: they are caught here and kept, so what a visit counts can be read
   const beacons = [];
@@ -163,6 +167,30 @@ try {
   await p.click('[data-btc-eth]');
   const back = await p.evaluate(() => ({ title: document.querySelector('#tk-title').textContent, eth: getComputedStyle(document.querySelector('#side-seg')).display, lane: document.querySelector('#lane-seg [aria-pressed="true"]')?.dataset.lane }));
   ok(back.title === 'Trade TAC' && back.eth !== 'none' && back.lane === 'eth', 'Trade on Ethereum instead brings the Ethereum ticket and the Ethereum chart back');
+  await r.browser.close();
+
+  // The offers a seller confirms are in the book here too, as the Buy sheet counts them: the ticket's cheapest ask is the sheet's best price and says a seller confirms it; the
+  // price ladder names such a level; and the sheet's own switch for them (off) takes them out of both.
+  const ticketText = (p) => p.evaluate(() => document.querySelector('#btc-ticket').innerText.replace(/\s+/g, ' '));
+  r = await openPage({ width: 1280, height: 900 }, { hash: '', makers: true });
+  p = r.page;
+  await ladderReady(p);
+  await p.click('[data-lane="btc"]');
+  await until(p, () => /Cheapest ask/.test(document.querySelector('#btc-ticket')?.textContent || ''), null, 5000);
+  const withMakers = await ticketText(p);
+  ok(/Cheapest ask .*?140 sats · [\d.,]+ TAC · the seller confirms, usually in seconds/.test(withMakers), `with fresh maker offers cheaper than every listing, the ticket's cheapest ask is theirs, 140 sats, and says a seller confirms it (${withMakers.slice(0, 150)})`);
+  await p.click('[data-book="btc"]').catch(() => {});
+  await ladderReady(p);
+  const rowTitles = await p.$$eval('#ladders [title]', (els) => els.map((e) => e.getAttribute('title')).join(' | '));
+  ok(/each taken whole once its seller confirms/.test(rowTitles), 'the ladder names a level of those offers: taken whole once its seller confirms');
+  await r.browser.close();
+  r = await openPage({ width: 1280, height: 900 }, { hash: '', makers: true, noMakers: true });
+  p = r.page;
+  await ladderReady(p);
+  await p.click('[data-lane="btc"]');
+  await until(p, () => /Cheapest ask/.test(document.querySelector('#btc-ticket')?.textContent || ''), null, 5000);
+  const noMk = await ticketText(p);
+  ok(/Cheapest ask .*?157 sats · 319 TAC/.test(noMk) && !/seller confirms/.test(noMk), `with the sheet's switch for them off, the ticket is the listings' again (${noMk.slice(0, 120)})`);
   await r.browser.close();
 
   r = await openPage({ width: 1280, height: 900 }, { wallet: true });
