@@ -153,7 +153,7 @@ export function makeEthereumLocker(ctx) {
     const note = sats ? null : await btc.resolveNote(offer.btc.txid, offer.btc.vout);
     if (policy.screen && !sats) {
       let s;
-      try { s = await policy.screen(tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout }))); } catch { return reject('the history of the notes could not be read just now', true); }
+      try { s = await policy.screen(tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout })), quote); } catch { return reject('the history of the notes could not be read just now', true); }
       if (s) return reject(s.why, s.retry === true);
     }
     const chain = {
