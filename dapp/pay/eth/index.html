@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5xZrftl0jRfSRvPFW8NwyEGrP0HtS0LqN3yCbd8uEJA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-bbzqwEFPhnRTqb8j8/Hg6qSBo+iUOTb2BEWwTpvOCGk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin fetchpriority="low">
@@ -1201,7 +1201,7 @@ const OPEN_RELAYS = new Map();
 const openRelaysFor = (c) => {
   if (!OPEN_RELAYS.has(c.chainId)) OPEN_RELAYS.set(c.chainId, (async () => {
     try {
-      const o = await import('/evm-pool-open-relays.js?cb=2ecb4ba9'), rpc = await rpcRegistry(CHAINS[0]);
+      const o = await import('/evm-pool-open-relays.js?cb=69f7bd54'), rpc = await rpcRegistry(CHAINS[0]);
       const real = !!location.hostname && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
       c.keepers = await Promise.race([
         o.openRelays({ call: (to, data) => rpc('eth_call', [{ to, data }, 'latest']), chainId: c.chainId, own: chainKeeper(c), pinned: real }),
@@ -3272,7 +3272,7 @@ function formDeposit(f) {
       <p class="more"><button class="link" type="button" id="f-check">Check for arrivals</button></p>`);
     $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy, 'Deposit address copied'));
     const dq = $('#f-dqr');
-    if (dq && W) mount(dq, qrSvg(W.receiveBox, Math.min(dq.clientWidth || 220, 220), 'QR code of your deposit address'));
+    if (dq && W) mount(dq, qrSvg(`ethereum:${W.receiveBox}@${c.chainId}`, Math.min(dq.clientWidth || 220, 220), 'QR code of your deposit address'));      // an EIP-681 URI, so a wallet app that scans it pays on this chain
     $('#f-check').onclick = async () => { try { watchBox(c, 0, true); for (const i of linkRange()) watchBox(c, i); await syncChain(c, true); if (S.chain !== c || S.tok) return; say($('#status'), cur().waiting > 0n ? `${fmt(cur().waiting, 18, 6)} ETH is on its way in.` : cur().err || cur().waiting == null ? 'Could not check just now. Try again in a moment.' : 'Nothing waiting at the deposit address.'); } catch (e) { if (S.chain === c && !S.tok) sayErr($('#status'), e); } };
     $$('[data-sweep]', f).forEach((sw) => sw.onclick = () => act(sw, async (step) => {
       const W2 = await walletOn(c);
@@ -3389,6 +3389,26 @@ function shownAddress() {
   } catch { return unifiedAddress(); }
 }
 const getNames = lazy(async () => { const n = await import('/confidential-names.js'); return n.makeConfidentialNames({ call: n.makeMainnetCall(), secp, keccak256: keccak_256 }); });
+// A name (.wei, .gwei or .eth) in a withdrawal's To: read once to its Ethereum address, which is where the withdrawal goes (the receipt says both).
+// wto(field) is that address once read, else the text as typed; a read in flight calls back so the form is checked again.
+const WTO = new Map();
+const isWName = (s) => /^[^\s/]+\.(g?wei|eth)$/i.test(String(s || '').trim());
+function wto(field, again = () => FORM.check?.()) {
+  const raw = (field?.value || '').trim();
+  if (!isWName(raw)) return raw;
+  const k = raw.toLowerCase(), v = WTO.get(k);
+  if (v?.addr) return v.addr;
+  if (!v) {
+    WTO.set(k, { busy: true });
+    getNames().then((n) => n.resolveAddress(k)).then(
+      (r) => WTO.set(k, r?.address ? { addr: '0x' + String(r.address).replace(/^0x/i, '').toLowerCase() } : { err: `${k} has no Ethereum address set. Ask them for a 0x address.` }),
+      (e) => WTO.set(k, { err: `${k} could not be read: ${errText(e)}` })).finally(again);
+  }
+  return raw;
+}
+// what check() says for a name still being read, or one that cannot be used; null once it is an address
+const wtoSay = (field) => { const raw = (field?.value || '').trim(); if (!isWName(raw)) return null; const v = WTO.get(raw.toLowerCase()); return v?.addr ? null : v?.err ? { err: v.err } : { wait: `Reading ${raw}…` }; };
+const wtoName = (field) => { const raw = (field?.value || '').trim(); return isWName(raw) && WTO.get(raw.toLowerCase())?.addr ? raw.toLowerCase() : null; };
 // the lookups made for the wallet's own address (its primary name, a name upgrade) go to the one node apart from the node that reads this key's pool and boxes, as the page's other wallet reads do
 const getWalletNames = lazy(async () => { const n = await import('/confidential-names.js'), rpc = await rpcApart(CHAINS[0]); return n.makeConfidentialNames({ call: ({ to, data, from }) => rpc('eth_call', [{ to: String(to).toLowerCase(), data, ...(from ? { from: String(from).toLowerCase() } : {}) }, 'latest']), secp, keccak256: keccak_256 }); });
 const OLD_TACIT = 'is from before pool payments, so it cannot receive here yet';
@@ -3908,7 +3928,7 @@ function formWithdraw(f) {
       ${chainShown(CHAINS[2]) ? html`<button type="button" role="tab" id="dest-4663" data-dest="4663" aria-selected="${l2?.chainId === 4663 ? 'true' : 'false'}" tabindex="${l2?.chainId === 4663 ? '0' : '-1'}" aria-label="Your Robinhood Chain balance" title="Your Robinhood Chain balance">${cname(CHAINS[2], true)}</button>` : ''}
     </div>` : ''}
     ${l2 ? '' : html`<div class="lbl"><span>To</span>${S.wallet ? html`<button type="button" id="f-me">My wallet</button>` : ''}</div>
-      <div class="amt text"><input id="f-wto" placeholder="0x… a fresh address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Recipient address"></div>`}
+      <div class="amt text"><input id="f-wto" placeholder="0x… or name.wei, a fresh address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Recipient address"></div>`}
     ${amountField('f-wamt', 'Amount', html`<button type="button" id="f-max">Max</button>`)}
     ${l2 ? '' : routeSeg(tab, quoteFee(c))}
     <div class="rcpt" id="f-rcpt" role="status" hidden></div>
@@ -3937,10 +3957,12 @@ function formWithdraw(f) {
   });
   FORM.check = () => { check(); R.done(); };
   const check = () => {
-    const a = parseUnits(amt.value), fee = feeNow(), bal = cur().bal, raw = to?.value.trim() || '';
+    const a = parseUnits(amt.value), fee = feeNow(), bal = cur().bal, raw = wto(to);
     maxOff($('#f-max'), l2 && fee == null ? 'Max fills in once the relay’s fee for the move is read' : maxWhy(fee, bal));
     go.disabled = true; go.textContent = l2 ? `Move to ${l2.full}` : 'Withdraw';
     const bad = (t) => R.set(html`<p class="note err" role="alert">${t}</p>`);
+    const nm = !l2 ? wtoSay(to) : null;
+    if (nm) return nm.err ? bad(nm.err) : R.set(html`<p class="note">${nm.wait}</p>`);
     if (!l2 && raw && !isAddr(raw)) return /^0x[0-9a-fA-F]{0,39}$/.test(raw) ? R.set(html`<p class="note">An address is 0x and 40 more characters.</p>`) : bad(/^bp1/i.test(raw) ? 'That is a pool address. Use Send to pay it privately.' : /^0x/i.test(raw) ? NOT_ADDR : 'Withdraw takes a 0x address. To pay a Tacit address or a name, use Send.');
     if (!l2 && raw && badSum(raw)) return bad(SUM_MSG);
     if (!l2 && raw && (BigInt(raw) === 0n || [lc(POOL), lc(ROUTER)].includes(lc(raw)))) return bad('That address cannot receive a withdrawal.');
@@ -3978,7 +4000,7 @@ function formWithdraw(f) {
     if (bal != null && !plan) return bad(tooSpread(a + prepay(), cap) ? spreadText(c, cur(), maxSpend(cap, prepay()), l2 ? 'Move up to' : 'Withdraw up to') : 'More than your private balance covers with the fee.');
     const change = bal != null && plan ? bal - plan.total : null;
     const whole = !l2 && !self && fee > 0n && maxed(amt);
-    R.set(html`${kvRow(l2 ? html`Arrives on ${cname(l2)}` : 'Arrives', html`${whole ? 'at least ' : ''}${fmt(a, 18, 6)} ETH${l2 ? ', less its sweep fee there' : html` on ${cname(c)}`}`)}
+    R.set(html`${!l2 && wtoName(to) ? kvRow('To', html`${wtoName(to)} <span class="mute">${short(raw)}</span>`) : ''}${kvRow(l2 ? html`Arrives on ${cname(l2)}` : 'Arrives', html`${whole ? 'at least ' : ''}${fmt(a, 18, 6)} ETH${l2 ? ', less its sweep fee there' : html` on ${cname(c)}`}`)}
       ${feeRow(fee, self)}
       ${prepay() ? kvRow('Bridge network fee prepaid, up to', `${fmt(prepay(), 18, 6)} ETH, the unused part joins your balance there`) : ''}
       ${mergeRow(fee, plan?.merges, self)}
@@ -3993,7 +4015,7 @@ function formWithdraw(f) {
     if (!a) throw new Error('Enter an amount.');
     const px = notesFor(a);
     if (px?.total) {
-      const raw = to.value.trim(), rest = a - px.total;
+      const raw = wto(to), rest = a - px.total;
       if (badSum(raw)) throw new Error(SUM_MSG);
       const outs = await wd.exit(step, c, px.picks.map((i) => wdList[i]), raw), got = outs.reduce((t, o) => t + o.receive, 0n);
       const many = outs.length === 1 ? 'note' : 'notes';
@@ -4028,7 +4050,7 @@ function formWithdraw(f) {
       setTimeout(() => syncChain(l2, true), 90_000);
       return;
     }
-    const raw = to.value.trim(), via = viaFor(tab);
+    const raw = wto(to), via = viaFor(tab);
     if (badSum(raw)) throw new Error(SUM_MSG);
     if (via) await signerFor(c).ready();
     const whole = !via && !!maxFee && maxed(amt, W);
@@ -4945,7 +4967,7 @@ async function tokPull(t, amount, step) {
 
 // A token pool's chain as its wallet takes it. A chain's registered multi-keeper is projected to this pool's route and pinned to the same relayer address.
 const tokChain = async (t) => {
-  const [rpc, o] = await Promise.all([rpcOn(t.chain), openRelaysFor(t.chain).then(() => import('/evm-pool-open-relays.js?cb=2ecb4ba9'))]);
+  const [rpc, o] = await Promise.all([rpcOn(t.chain), openRelaysFor(t.chain).then(() => import('/evm-pool-open-relays.js?cb=69f7bd54'))]);
   const keepers = o.keepersForPool(t.chain.keepers, t.chainId, t.id);
   listRelays(t.chainId, keepers);      // the sealed community route takes the projected URL too, not only the native pool's
   return { chainId: t.chainId, pool: t.pool, router: t.router, token: t.token, rpc, deployBlock: t.from, confirmations: t.chain.confirmations, logChunk: t.chain.logChunk, maxRelayFee: t.maxRelayFee, keepers };
@@ -5197,8 +5219,10 @@ function tokWithdraw(f, t) {
   const to = $('#f-to'), amt = $('#f-amt'), go = $('#f-go'), rc = $('#f-rcpt');
   const ok = (a) => isAddr(a) && !badSum(a) && payable(a) && ![lc(t.pool), lc(t.router), lc(t.token)].includes(lc(a));
   FORM.check = () => {
-    const a = parseUnits(amt.value, t.dec), raw = to.value.trim();
+    const a = parseUnits(amt.value, t.dec), raw = wto(to);
     go.disabled = true; rc.hidden = true; tokMaxOn(t);
+    const nm = wtoSay(to);
+    if (nm) { mount(rc, html`<p class="note${nm.err ? ' err" role="alert' : ''}">${nm.err || nm.wait}</p>`); rc.hidden = false; return; }
     if (raw && !isAddr(raw) && !/^0x[0-9a-fA-F]{0,39}$/.test(raw)) { mount(rc, html`<p class="note err" role="alert">${/^bp1/i.test(raw) ? 'That is a pool address. Use Send to pay it privately.' : /^0x/i.test(raw) ? NOT_ADDR : 'Withdraw takes a 0x address. To pay a Tacit address or a name, use Send.'}</p>`); rc.hidden = false; return; }
     if (raw && !ok(raw) && isAddr(raw)) { mount(rc, html`<p class="note err" role="alert">${badSum(raw) ? SUM_MSG : 'Not an address to pay.'}</p>`); rc.hidden = false; return; }
     if (!raw || !a || !ok(raw)) return;
@@ -5209,7 +5233,7 @@ function tokWithdraw(f, t) {
   $('#f-me')?.addEventListener('click', () => { to.value = S.wallet; to.dispatchEvent(new Event('input')); });
   $('#f-max')?.addEventListener('click', () => { const v = tokMax(t); amt.value = v ? plainOf(v, t.dec) : ''; amt.dispatchEvent(new Event('input')); });
   go.onclick = () => tokAct(go, async (step) => {
-    const amount = parseUnits(amt.value, t.dec), dest = to.value.trim();
+    const amount = parseUnits(amt.value, t.dec), dest = wto(to);
     if (!amount) throw new Error('Enter an amount.');
     if (!ok(dest)) throw new Error('Enter an Ethereum address to pay.');
     const W = await tokWallet(t), relay = tokRelay(t), fee = tokFee(t);

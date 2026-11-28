@@ -12,7 +12,7 @@ export const RELAY_REGISTRY = '0x00000000000299F48Fb844626ab96c6A20059a01';
 export const MAX_RELAYS_ASKED = 5;      // the relays a spend asks for a quote, the page's own among them
 export const MAX_PAGES = 6;             // calls to `list` for one chain (each looks at up to 500 places and returns up to 100 entries)
 export const MAX_ENTRIES = 300;         // entries kept from the list before the draw
-export const GRACE_MS = 1_500;          // once one relay has quoted, the others have this long more
+export const GRACE_MS = 4_000;          // once one relay has quoted, the others have this long more
 
 const SEL_LIST = '0xd4d25113';          // list(uint64,uint256,uint256) -- checked against the contract's ABI in the tests
 const word = (n) => BigInt(n).toString(16).padStart(64, '0');
