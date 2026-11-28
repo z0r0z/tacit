@@ -6,7 +6,7 @@ import {
 } from '/evm-trade-venues.js?cb=9aac0fac';
 import { DEPLOY_OVERRIDES } from '/confidential-deployments.generated.js';
 import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js';
-import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, lastTradeView, ageWords, TAPE_FINE, TAPE_COARSE, TAPE_WORDS } from '/trade/tape.js?cb=7b013b52';
+import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, lastTrade, closeAt, volumeSince, gap, lastTradeView, ageWords, TAPE_FINE, TAPE_COARSE, TAPE_WORDS } from '/trade/tape.js?cb=337da1f0';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
 import { mountDepth } from '/trade/depth.js?cb=4f87419e';
 import { precisionPool, tacitPool, poolBook, perLevel, roundDown, CHART_STEPS } from '/trade/pools.js?cb=8f983ea2';
@@ -156,7 +156,9 @@ async function readTapes({ coarse: wantCoarse = true } = {}) {
 
 async function loadBitcoin({ lists = true } = {}) {
   const [asset, sales, bidRows] = await Promise.all([api(`/assets/${TAC_BTC_ID}?network=mainnet`), lists ? api(`/assets/${TAC_BTC_ID}/preauth-sales?network=mainnet&view=book`) : null, lists ? api(`/assets/${TAC_BTC_ID}/bid-intents?network=mainnet`) : null]);
-  if (asset) D.btc = { trades: asset.trades || [], mark: Number(asset.mark_price?.unit) || null, lastTs: Number(asset.last_trade?.ts || asset.mark_price?.ts) || null, last: asset.last_trade || null, change24: asset.price_24h_change_pct, vol24: Number(asset.volume_24h_sats) || 0, holders: asset.holder_count ?? null, firstTrade: asset.price_first_trade_ts || null, tradesCap: asset.trades_cap };
+  // The last trade is the newest fill on the tape, not the API's valuation mark: that mark falls back to the ring's median when a day has one fill, and the ring's median is months old.
+  const lt = asset ? lastTrade(asset.trades) : null;
+  if (asset) D.btc = { trades: asset.trades || [], mark: lt?.price ?? (Number(asset.mark_price?.unit) || null), lastTs: lt?.t ?? (Number(asset.last_trade?.ts || asset.mark_price?.ts) || null), last: asset.last_trade || null, change24: asset.price_24h_change_pct, vol24: Number(asset.volume_24h_sats) || 0, holders: asset.holder_count ?? null, firstTrade: asset.price_first_trade_ts || null, tradesCap: asset.trades_cap };
   D.btcFailed = !asset && !D.btc; D.bookFailed = lists && !Array.isArray(sales?.sales) && !D.book;
   if (asset && D.book) { D.btc.ask = D.book.bestAsk; D.btc.bid = D.book.bestBid; }
   if (Array.isArray(sales?.sales)) {

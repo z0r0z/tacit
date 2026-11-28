@@ -58,6 +58,9 @@ async function stubWallet(ctx) {
   return log;
 }
 
+// The page reads its last trade from the newest fill on the tape, so a "trade a minute old" is the ring's newest fill moved to now.
+const freshTrades = (t) => { const ts = asset.trades.map((x) => x.ts), newest = Math.max(...ts); return asset.trades.map((x) => (x.ts === newest ? { ...x, ts: t } : x)); };
+
 async function openPage(viewport, { wallet = false, hash = '#btc=on', query = '', utxos = [], delay = 0, utxoHold = 0, taprootCoin = false, stored = null, live = false, fresh = false, empty = false } = {}) {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport, colorScheme: 'light' });
@@ -74,7 +77,7 @@ async function openPage(viewport, { wallet = false, hash = '#btc=on', query = ''
     if (/bid-intents$/.test(path)) return route.fulfill(ok200(empty ? { ...bids, intents: [] } : bids));
     if (path === '/market') return route.fulfill(ok200(market));
     if (path === '/petch-assets') return route.fulfill(ok200(petch));
-    if (path === `/assets/${AID}`) { const t = Math.floor(Date.now() / 1000) - 90; return route.fulfill(ok200(fresh ? { ...asset, last_trade: { ...(asset.last_trade || {}), ts: t }, mark_price: { ...(asset.mark_price || {}), ts: t } } : asset)); }
+    if (path === `/assets/${AID}`) { const t = Math.floor(Date.now() / 1000) - 90; return route.fulfill(ok200(fresh ? { ...asset, last_trade: { ...(asset.last_trade || {}), ts: t }, mark_price: { ...(asset.mark_price || {}), ts: t }, trades: freshTrades(t) } : asset)); }
     seen.unmatched.add(`api ${path}`);
     return route.fulfill({ status: 404, headers: { 'access-control-allow-origin': '*' }, body: '{"error":"not found"}' });
   });
@@ -349,13 +352,13 @@ try {
   p = r.page;
   await until(p, () => /Cheapest ask/.test(document.querySelector('#btc-ticket')?.textContent || '') && /TAC/.test(document.querySelector('#ch-read')?.textContent || ''), null, 120000);
   const fr = (await p.evaluate(() => document.querySelector('#ch-read').innerText)).replace(/\s+/g, ' ');
-  ok(/^150 sats \d(\.\d)?%/.test(fr) && !/cheapest ask now/.test(fr) && /ask 157 sats · 319 TAC/.test(fr) && /bid 210 sats · 154 TAC/.test(fr), `with a trade a minute old the headline is its price, with the book's ask and bid beside it (${fr.slice(0, 190)})`);
+  ok(/^150 sats (?:[▲▼] )?\d+(\.\d)?%/.test(fr) && !/cheapest ask now/.test(fr) && /ask 157 sats · 319 TAC/.test(fr) && /bid 210 sats · 154 TAC/.test(fr), `with a trade a minute old the headline is its price, with the book's ask and bid beside it (${fr.slice(0, 190)})`);
   await r.browser.close();
   r = await openPage({ width: 1280, height: 900 }, { query: '?lane=btc', hash: '', empty: true });
   p = r.page;
   await until(p, () => /nothing for sale/.test(document.querySelector('#btc-ticket')?.textContent || '') && /last trade/.test(document.querySelector('#ch-read')?.textContent || ''), null, 120000);
   const em = (await p.evaluate(() => document.querySelector('#ch-read').innerText)).replace(/\s+/g, ' ');
-  ok(/^150 sats/.test(em) && /last trade 42 days ago/.test(em) && /nothing for sale/.test(em) && /no bids/.test(em) && !/cheapest ask now/.test(em) && !/%/.test(em), `with an empty book the old last trade stays the headline, dated, with no change chip (${em.slice(0, 190)})`);
+  ok(/^150 sats/.test(em) && new RegExp(`last trade ${Math.round((Date.now() / 1000 - asset.last_trade.ts) / 86400)} days ago`).test(em) && /nothing for sale/.test(em) && /no bids/.test(em) && !/cheapest ask now/.test(em) && !/%/.test(em), `with an empty book the old last trade stays the headline, dated, with no change chip (${em.slice(0, 190)})`);
   await r.browser.close();
   // the other link forms, and a link that names nothing known
   for (const [q, h, want] of [['', '#lane=btc', 'btc'], ['?lane=bitcoin', '', 'btc'], ['?lane=cmp', '', 'cmp'], ['?lane=nonsense', '', 'eth'], ['', '', 'eth']]) {
