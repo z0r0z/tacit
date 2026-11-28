@@ -7,6 +7,8 @@
 <meta name="color-scheme" content="light dark">
 <meta name="robots" content="noindex">
 <title>tacit fast</title>
+<link rel="preload" href="/fonts/newsreader-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <meta name="description" content="TAC from Bitcoin to your private balance in minutes, through a liquidity provider.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
@@ -24,7 +26,7 @@
 <link rel="preconnect" href="https://tacit-fast-board.onrender.com" crossorigin>
 <!-- preload-roots: /fast/app.js | | /fast/wire.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/fast/app.js?cb=a2bb6402">
+<link rel="modulepreload" href="/fast/app.js?cb=3a9d7657">
 <link rel="modulepreload" href="/trade/btc-session.js?cb=0d7428fe">
 <link rel="modulepreload" href="/tab-key.js?cb=e90d6a31">
 <link rel="modulepreload" href="/prf-wallet.js">
@@ -260,6 +262,11 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .fx-steps li.on { border-top-color: var(--ok); color: var(--ink); }
 .fx-steps li.at { border-top-color: var(--orange); color: var(--ink); }
 @media (max-width: 480px) { .fx-steps { font-size: 11px; gap: 4px; } }
+@font-face { font-family: 'Newsreader'; font-weight: 400; font-display: swap; src: url('/fonts/newsreader-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Newsreader'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/newsreader-400i-latin.woff2') format('woff2'); }
+/* the Bridge section's look, as its other tabs (the front page's views) wear it: Newsreader for heads, the grotesk for words; figures keep the mono they name */
+:root { --serif: 'Newsreader', 'Newsreader Fallback', 'Newsreader Fallback T', Georgia, serif; }
+body { font-family: var(--sans, var(--mono)); }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -536,7 +543,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 <div class="shell">
 
   <header class="top">
-    <a class="brand" href="/" aria-label="tacit fast"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>fast</i></a>
+    <a class="brand" href="/" aria-label="tacit v1"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>v1</i></a>
     <div class="top-r">
       <!-- chrome:nav:begin -->
       <nav class="sn" aria-label="Sections">
@@ -569,6 +576,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
           </details>
         </nav>
       <!-- chrome:nav:end -->
+      <button class="chip" id="wallet" type="button"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Sign in</span></button>
     </div>
   </header>
 
@@ -642,6 +650,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/fast/app.js?cb=a2bb6402"></script>
+<script type="module" src="/fast/app.js?cb=3a9d7657"></script>
 </body>
 </html>

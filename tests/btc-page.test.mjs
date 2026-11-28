@@ -316,7 +316,7 @@ console.log('the page: the marks, the line, the lane');
   const marks = await page.$$eval('.hero .mk use', (us) => us.map((u) => u.getAttribute('href')));
   const size = await page.$eval('.hero .mk .tk', (e) => e.getBoundingClientRect().width);
   ok(JSON.stringify(marks) === JSON.stringify(['#tk-btc', '#tk-eth']) && size >= 64, `the hero has the front page's BTC and ETH marks, large (${JSON.stringify(marks)}, ${Math.round(size)} px)`);
-  ok(/Bridge/.test(await text(page, '#sec-head h1')) && /BTC\s*⇄\s*ETH/.test(await text(page, '#sec-head [aria-current="page"]')) && /Swap Bitcoin and ETH directly/.test(await text(page, '#sec-head .sh-n')) && !(await page.$eval('.hero h1', (e) => e.offsetParent !== null)), 'the Bridge head names this page; the page keeps one heading, not two');
+  ok(/Bridge/.test(await text(page, '#sec-head h1')) && /BTC\s*⇄\s*ETH/.test(await text(page, '#sec-head [aria-current="page"]')) && /Swap Bitcoin for ETH or back/.test(await text(page, '#sec-head .sh-n')) && !(await page.$eval('.hero h1', (e) => e.offsetParent !== null)), 'the Bridge head names this page; the page keeps one heading, not two');
   ok(await page.isVisible('#atomic #a-go') && /Sign in to swap/.test(await text(page, '#a-go')) && /From.*Bitcoin/.test(await text(page, '#a-pay')) && /To.*Ethereum, private/.test(await text(page, '#a-get')), 'the lane is mounted, BTC to ETH, and asks for the wallet');
 
   console.log('providers, read with no wallet open');

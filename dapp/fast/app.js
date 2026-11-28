@@ -92,6 +92,12 @@ const notify = (text) => {
 // /fast/#with=<id>: a provider's pairing link (fast/fmt.js pairId), kept for this visit
 const PIN = (/^#with=([0-9a-f]{16})$/i.exec(location.hash) || [])[1]?.toLowerCase() || null;
 const signIn = () => signInSheet(keyS, { why: 'Open your Tacit wallet to bridge or provide TAC.' });
+// the header's chip, as on the section's other tabs: Sign in opens the wallet; signed in, it says so and a press signs out
+{
+  const chip = document.getElementById('wallet'), label = document.getElementById('wallet-label'), dot = document.getElementById('wallet-dot');
+  const paint = () => { const on = !!keyS.unlocked; label.textContent = on ? 'Signed in' : 'Sign in'; dot.className = `dot${on ? ' on' : ''}`; chip.title = on ? 'Sign out' : 'Open your Tacit wallet'; };
+  if (chip) { chip.addEventListener('click', () => { if (keyS.unlocked) keyS.lock(); else signIn().catch?.(() => {}); }); keyS.onChange(paint); paint(); }
+}
 const faces = new Map();
 const face = (id) => {
   try {
