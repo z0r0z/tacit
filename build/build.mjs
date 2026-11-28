@@ -167,10 +167,10 @@ function updateCacheBust(htmlBytes, appJsBytes, prebootBytes) {
 }
 
 // dapp/sats/ is its own page with its own module graph. Every `"/<path>.js?cb=<token>"` it references
-// carries a sha256 prefix of the file it names, rewritten importer-last (the join worker, mix.js and secret.js,
+// carries a sha256 prefix of the file it names, rewritten importer-last (secret.js and eth.js,
 // then app.js, then the page that loads app.js) so each token covers bytes already final. Returns the drift it found; writes only
 // when asked, so --verify-only reuses the same walk.
-const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', 'sats/eth.js', 'sats/app.js', 'sats/index.html'];
+const SATS_CB_FILES = ['sats/secret.js', 'sats/eth.js', 'sats/app.js', 'sats/index.html'];
 // Weld's stats and keeper pages keep their imports in their inline module, so their tokens are rewritten before those modules' CSP hashes are
 // taken (updatePinnedCsp below). The front page's module is front/main.js, hashed before dapp/index.html (and /tac/ and /spx/) that load it.
 // (TAC's Bitcoin pool, tac/pool.js and what it loads, the sheets, front/sheets.js, and TAC's page, front/tac.js, are hashed before the front page that loads them)

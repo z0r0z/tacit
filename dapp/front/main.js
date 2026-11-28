@@ -1975,7 +1975,7 @@ function pqNudge(privHex, pubHex) {
 const CHAIN_HOP_WAIT = 5 * 60e3;
 const chainHopsStuck = () => (chainOn() && S.key && CH.pub === S.key.pubHex ? CH.hops.filter((h) => Date.now() - h.at > CHAIN_HOP_WAIT) : []);
 function chainLaneOf(privHex) { try { return LANE && chainOn() ? LANE.chainLane(privHex) : undefined; } catch { return undefined; } }
-const chainMods = lazy(() => Promise.all([import('/tacit-chain-config.js?cb=74171404'), import('/tacit-chain-client.js?cb=30dc7995'), import('/btc-pool-client.js?cb=7e328710'), import('/tacit-chain-route.js?cb=518fd1f3')]));
+const chainMods = lazy(() => Promise.all([import('/tacit-chain-config.js?cb=74171404'), import('/tacit-chain-client.js?cb=30dc7995'), import('/btc-pool-client.js?cb=59199aee'), import('/tacit-chain-route.js?cb=518fd1f3')]));
 function chainClient() {
   if (!chainOn() || !S.key) return Promise.reject(Object.assign(new Error('Open your Tacit wallet first.'), { said: true }));
   if (CH.pub !== S.key.pubHex) chainReset(S.key.pubHex);

@@ -1,5 +1,5 @@
 // Client for the Bitcoin shielded pool: the proving artifacts, the proof system, and the replay service and
-// relayer APIs. Used by the browser (dapp/sats) and by Node drivers (tests/secret-sats-e2e-signet.mjs).
+// relayer APIs. Used by the browser (dapp/sats) and by Node drivers.
 //
 // Artifacts: /btc-pool/pin.json names the prover wasm, the params and the verification key with their SHA-256,
 // and the key's BLAKE2b-512 (vk_hash). They are fetched once, checked against the pin, and kept in the Cache
