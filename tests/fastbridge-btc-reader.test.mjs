@@ -288,6 +288,16 @@ test('the next block\'s rate is read from the explorers\' target 1, apart from t
   assert.equal(await btc.nextFeeRate(), 10, 'the next block (target 1), rounded up');
 });
 
+test('a quick look for a transaction stops at two that agree it is not there, and a full read under way at the same time still asks every explorer', async () => {
+  const q = chainOf(['a.test', 'b.test', 'c.test', 'd.test'], () => gone());
+  assert.equal(await q.btc.fetchTx(tid(11), { quick: true }), null);
+  assert.equal(q.seen.length, 2, 'the quick look asked two');
+  const both = chainOf(['a.test', 'b.test', 'c.test', 'd.test'], (u) => (u.hostname === 'd.test' ? json({ txid: tid(12), status: { confirmed: false } }) : gone()));
+  const [quick, full] = await Promise.all([both.btc.fetchTx(tid(12), { quick: true }), both.btc.fetchTx(tid(12))]);
+  assert.ok(full && full.txid === tid(12), 'the full read found it at the last explorer, not sharing the quick look\'s answer');
+  assert.ok(quick === null || quick.txid === tid(12));
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }

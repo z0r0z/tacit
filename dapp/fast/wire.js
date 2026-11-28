@@ -13,11 +13,11 @@
 
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
-import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=2dd2aac7';
+import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=1caa2246';
 import * as EN from '/eth-nodes.js';   // (a namespace: eth-nodes.js has no cache token)
 import { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=de77400c';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeFastBridgeClient, makeLocalStore } from '/fastbridge-client.js?cb=09a13249';
+import { makeFastBridgeMarket, makeFastBridgeClient, makeLocalStore } from '/fastbridge-client.js?cb=efcb17bc';
 import { makeLpService } from '/fastbridge-provider.js?cb=52e95d32';
 import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=4c2ccb36';
 import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=ab82771e';
@@ -27,9 +27,9 @@ import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=63153972';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=a3e99ef5';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=2b503470';
 import { splitAmount, assignNotes } from '/fast/sweep.js';   // the same URL ui.js, route.js and ladder.js reach: one instance
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=a3e99ef5';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=2b503470';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 // four explorers, tried in turn: one busy or rate-limited explorer does not stop a swap (every page that uses this allows all four)

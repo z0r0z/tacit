@@ -293,7 +293,7 @@ export function makeBitcoinLocker(ctx) {
       case 'built': {
         // A lock already on the network moves on, whatever an earlier send was told. One that never went out is not sent once its quote has
         // run out (and a few minutes more), since the counterparty no longer holds the payout for it; its notes stay where they are.
-        const seen = (await btc.status(rec.lock.txid)).confirmations > 0 || (btc.fetchTx ? !!(await btc.fetchTx(rec.lock.txid)) : false);
+        const seen = (await btc.status(rec.lock.txid)).confirmations > 0 || (btc.fetchTx ? !!(await btc.fetchTx(rec.lock.txid, { quick: true })) : false);
         if (!seen) {
           if (rec.validUntil && ctx.now() > Number(rec.validUntil) + 600) return save(rec, { phase: 'aborted', why: 'the lock was not sent before the quote ran out' });
           await btc.broadcast(rec.lock, null);

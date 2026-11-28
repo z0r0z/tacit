@@ -176,9 +176,13 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
   // by the swap id from where it was published (counter.getEvmOffer). The 'offered' step checks it as always (it is on this key's T, pays this key, the lock is in the
   // pool, time is left: tooLate) before t is used; with no offer by its deadline the swap falls to the refund as before.
   async function recover({ pages = 12, providerFor = null } = {}) {
-    const known = new Set((await store.list()).map((r) => r.id)), found = [];
+    // (a swap is known by its id, and also by its lock's output: one started as a leg of a split is kept under the leg's id, which the lone lock's id read from
+    // the chain is not, and was found again a second time with no ETH amount, 2026-11-28)
+    const kept = await store.list(), known = new Set(kept.map((r) => r.id)), held = new Set(kept.filter((r) => r.lock && r.lock.txid).map((r) => `${r.lock.txid}:${r.lock.vout}`)), found = [];
     for (const tx of await btc.history(btc.address, pages)) {
       if (!tx.vin || !tx.vin.length || !tx.status?.confirmed) continue;
+      // (a swap found again is dated by its lock's block, not by the moment it was found: an old swap is not listed as one just made)
+      const when = Number(tx.status.block_time) > 0 ? Math.min(Number(tx.status.block_time), now()) : now();
       // A lock of a Tacit note spends the note as its second input (the first is its commit); a lock of plain sats has no commit and is named
       // by its first input. Either is found only when the hint opens under this key and the output it names is in the transaction.
       for (const sats of [false, true]) {
@@ -189,6 +193,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
         if (known.has(id)) continue;
         const lock = X.recoverBtcLock({ prims: btc.prims, seed, swapId, lockerXonly: btc.wallet.xonly, outputs: tx.vout });
         if (!lock) continue;
+        if (held.has(`${tx.txid}:${lock.vout}`)) break;
         // a take locked with the lock (an output of the lock's own script besides the lock) is found with it, so the refund brings it home too
         const lockSpk = String(tx.vout[lock.vout].scriptpubkey || '').toLowerCase();
         const takeAt = sats ? -1 : tx.vout.findIndex((o, k) => k !== lock.vout && String(o.scriptpubkey || '').toLowerCase() === lockSpk && o.value > 546);
@@ -196,7 +201,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
         const rec = {
           ...(ref ? { provider: ref, claimFromKey: true, checking: true } : {}),
           ...(takeAt >= 0 ? { takeInLock: true, takeVout: takeAt, takeValue: tx.vout[takeAt].value } : {}),
-          v: 1, role: 'bl', id, phase: ref ? 'offered' : 'refund-wait', ...(ref ? { offeredAt: now() } : {}), why: 'found from the key', created: now(), updated: now(), quoteId: null,
+          v: 1, role: 'bl', id, phase: ref ? 'offered' : 'refund-wait', ...(ref ? { offeredAt: now() } : {}), why: 'found from the key', created: when, updated: now(), quoteId: null,
           asset: sats ? X.SATS_ASSET : pinned('btcAsset') || '', amount: String(lock.value), evmAsset: pinned('evmAsset') || '', evmAmount: '0',
           counterClaimPub: lock.claimerPub, csvBlocks: lock.csvBlocks, lock: { txid: tx.txid, vout: lock.vout, value: tx.vout[lock.vout].value },
           noteInputs: sats ? [] : tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout })),

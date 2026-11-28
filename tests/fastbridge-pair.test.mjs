@@ -5,7 +5,7 @@
 //   node tests/fastbridge-pair.test.mjs        (Node 22)
 
 import assert from 'node:assert/strict';
-import { makePairClient, SATS_ASSET, ETH_ASSET, rateOf, describeFwd, describeRev, busyLine } from '../dapp/fastbridge-pair.js';
+import { makePairClient, SATS_ASSET, ETH_ASSET, rateOf, describeFwd, describeRev, busyLine, missedLine } from '../dapp/fastbridge-pair.js';
 import { saveCopy, loadCopy, signed } from '../dapp/fast/pair-keep.js';
 import { makeLocalStore } from '../dapp/fastbridge-client.js';
 import { secp, hmac, sha256 as sha256h } from '../dapp/vendor/tacit-deps.min.js';
@@ -724,7 +724,8 @@ test('the lane\'s words for an ETH-for-Bitcoin swap: the wait for the provider\'
   assert.equal(seen.etaSecs, 1650, 'counted from when the lock was seen');
   w.clock.advance(3600);
   const late = (await w.pair.records()).find((r) => r.id === id);
-  assert.equal(late.etaSecs, 1650, 'a block that is late is still about ten minutes away: the time left does not freeze at a minute, it stays honest');
+  assert.equal(late.etaSecs, 0, 'an hour without the block: no countdown (one that sat at the same minutes for an hour read as frozen beside the slow-block line, 2026-11-28); the card says why');
+  assert.match(late.detail, /No Bitcoin block for|A block came without/, 'and the card says why');
   assert.match(late.detail, /No Bitcoin block for \d+ min\. Blocks come.*Your swap is safe: nothing of yours moves until the provider’s BTC is confirmed\./, 'a slow block is said, and that the swap is safe');
   assert.equal(describeRev({ id, phase: 'taking', phaseAt: 0, offer: { evm: { amount: '1' }, btc: { value: '1' } } }, () => 120).title, 'Your BTC is on its way');
 });
@@ -846,6 +847,24 @@ test('a busy Bitcoin is said on a card that waits for a confirmation, and is not
   const rec = { id: 'a'.repeat(72), role: 'bl', phase: 'broadcast', phaseAt: 0, amount: '26000', provider: 'p', created: 0 };
   assert.match(describeFwd(rec, () => 100, { height: 1, at: 90, fee: 9 }).detail, /Bitcoin is busy/);
   assert.doesNotMatch(describeFwd(rec, () => 100, { height: 1, at: 90, fee: 2 }).detail, /busy/);
+});
+
+test('a long wait for a block gives no countdown (the card says why): a slow block, or a block that came without the payment', () => {
+  const t0 = 1_000_000, rec = { id: 'a'.repeat(72), role: 'bl', phase: 'broadcast', phaseAt: t0, broadcastAt: t0, amount: '26000', evmAmount: '900000', provider: 'p', created: t0, csvBlocks: 96 };
+  const fresh = describeFwd(rec, () => t0 + 120, { height: 10, at: t0 - 60, fee: 2 });
+  assert.ok(fresh.etaSecs > 0 && !/block came without/.test(fresh.detail), 'just sent, a normal block time: a countdown, nothing else said');
+  const slow = describeFwd(rec, () => t0 + 1800, { height: 10, at: t0 - 60, fee: 2 });
+  assert.equal(slow.etaSecs, 0, 'no block for half an hour: the countdown is gone (it said "about 8 min" for 45 minutes on 2026-11-28)');
+  assert.match(slow.detail, /No Bitcoin block for 31 min/);
+  const missed = describeFwd(rec, () => t0 + 1500, { height: 11, at: t0 + 1200, fee: 4 });
+  assert.equal(missed.etaSecs, 0, 'a block came without the payment: no countdown either');
+  assert.match(missed.detail, /A block came without your BTC payment: Bitcoin is busy.*This page raises its fee by itself/);
+  assert.equal(missedLine({ height: 11, at: t0 + 60 }, t0, 'you'), '', 'a block within two minutes of the send is not counted (block times run off the clock)');
+  const rev = { id: 'b'.repeat(72), role: 'el', phase: 'accepted', phaseAt: t0, created: t0, offer: { btc: { value: '22000' }, evm: { amount: '800000' } }, lockConfs: 0 };
+  const rm = describeRev(rev, () => t0 + 1500, { height: 11, at: t0 + 1200, fee: 4 });
+  assert.equal(rm.etaSecs, 0, 'the provider\'s lock missed a block: no countdown');
+  assert.match(rm.detail, /A block came without the provider’s BTC.*The provider raises its fee by itself/);
+  assert.ok(describeRev({ ...rev, lockConfs: 1 }, () => t0 + 1500, { height: 11, at: t0 + 1200, fee: 4 }).etaSecs > 0, 'once confirmed, the countdown is back for what follows');
 });
 
 let passed = 0;

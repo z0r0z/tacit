@@ -104,7 +104,7 @@ export function makeBitcoinSim(clock, { baseHeight = 800_000 } = {}) {
   // the seam both machines use; `builder` is a makeAdaptorBtcTx whose pairs the sim records, `sats()` the wallet's plain coins
   sim.adapter = ({ prims, builder, sats }) => ({
     prims, wallet: { pub: prims.wallet.pub, priv: prims.wallet.priv, xonly: prims.wallet.pub.slice(1) }, address: prims.wallet.address(), tx: recordingBuilder(builder),
-    history: async () => [...sim.txs.entries()].reverse().map(([txid, e]) => ({ ...e.esplora, txid, status: { confirmed: e.height != null, block_height: e.height ?? undefined } })),
+    history: async () => [...sim.txs.entries()].reverse().map(([txid, e]) => ({ ...e.esplora, txid, status: { confirmed: e.height != null, block_height: e.height ?? undefined, block_time: e.height != null ? sim.blockTimes.get(e.height) : undefined } })),
     satsUtxos: async () => sats(), feeRate: async () => 3,
     // the plain-sat coins a confirmed transaction paid to this wallet that are still unspent (what a lock leaves for the take of it)
     coinsIn: async (txid) => {

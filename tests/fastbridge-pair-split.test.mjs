@@ -255,6 +255,26 @@ test('one provider pinned over HTTP and one that is board-only: an amount above 
   assert.equal(d.btc.broadcasts.length, 0);
 });
 
+test('a page that looks again from the key finds nothing it already holds (a lock\'s output a swap keeps is that swap), and a swap found on a new page is dated by its block', async () => {
+  const w = multiWorld();
+  await w.ready(); ample(w);
+  const q = await w.pair.quote({ dir: 'b2e', amount: 400_000n });
+  fundLegs(w, q);
+  for (const n of NAMES) w.ctl[n].stallOffers = true;
+  await w.pair.start(q);
+  w.btc.mine(1);
+  const before = (await w.pair.records()).length;
+  assert.equal(await w.pair.recover(), 0, 'the same page finds no swap again: each lock output is held by a swap it keeps');
+  assert.equal((await w.pair.records()).length, before, 'and lists no second card');
+  w.clock.advance(3 * 86400);
+  const ms = () => new Map(), mem = (m) => ({ get: async (k) => m.get(k) ?? null, put: async (r) => { m.set(r.id, r); }, list: async () => [...m.values()], delete: async (k) => { m.delete(k); } });
+  const named = new Map(), nm = (n) => { if (!named.has(n)) named.set(n, mem(ms())); return named.get(n); };
+  const fresh = w.makePair({ stores: { fwd: mem(ms()), index: mem(ms()), swaps: (id) => nm('s' + id), quotes: (id) => nm('q' + id) } });
+  await fresh.recover();
+  const card = (await fresh.records())[0];
+  assert.ok(card.at <= w.clock.now() - 2 * 86400, `found three days later, it is dated by its block, not by the finding (${w.clock.now() - card.at} s ago)`);
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   const t0 = Date.now();

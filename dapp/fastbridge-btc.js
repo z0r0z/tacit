@@ -68,9 +68,10 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   }
   async function req(path, init, quick = false) {
     if (init) { await takeSlot(); try { return await ask(path, init); } finally { giveSlot(); } }
-    if (underWay.has(path)) return underWay.get(path);
-    const p = (async () => { await takeSlot(); try { return await ask(path, init, quick); } finally { giveSlot(); } })().finally(() => underWay.delete(path));
-    underWay.set(path, p);
+    const k = quick ? `${path}#quick` : path;                // (a read that must ask every explorer never joins a quick one under way)
+    if (underWay.has(k)) return underWay.get(k);
+    const p = (async () => { await takeSlot(); try { return await ask(path, init, quick); } finally { giveSlot(); } })().finally(() => underWay.delete(k));
+    underWay.set(k, p);
     return p;
   }
   const getJson = async (path) => JSON.parse(await req(path));
@@ -81,10 +82,12 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   const need = (txid) => { if (!isTxid(txid)) throw new Error('not a transaction id'); return txid; };
   // confirmed transactions never change: the last few hundred are kept
   const txs = new Map();
-  async function fetchTx(txid) {
+  // (`quick`: two explorers that agree it is not there end the look, for a check whose miss costs nothing, such as whether a transaction about to be sent is out
+  // already: a repeat send is refused as known. A read whose answer decides anything asks every explorer)
+  async function fetchTx(txid, { quick = false } = {}) {
     need(txid);
     if (txs.has(txid)) return txs.get(txid);
-    const tx = await orNull(() => getJson(`/tx/${txid}`));
+    const tx = await orNull(async () => JSON.parse(await req(`/tx/${txid}`, undefined, quick)));
     if (tx && tx.status && tx.status.confirmed) { txs.set(txid, tx); if (txs.size > 400) txs.delete(txs.keys().next().value); }
     return tx;
   }

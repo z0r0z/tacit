@@ -151,6 +151,14 @@ export function busyLine(tip) {
   if (!(f >= BUSY_FEE)) return '';
   return `Bitcoin is busy: the next block takes about ${Math.round(f)} sat/vB or more, and a payment below that waits for a few blocks. This page raises the fee of its own payments by itself, within a small limit.`;
 }
+// A block that came after a payment went out, without it: a backlog after a slow block takes the higher fees first. `sentAt` is when it went out (seconds); a
+// block's time can run a minute or two off the clock, so a block within two minutes of the send is not counted. `who` is whose fee is raised, by whom.
+export function missedLine(tip, sentAt, who) {
+  if (!tip || !(Number(tip.at) > 0) || !(Number(sentAt) > 0) || Number(tip.at) < Number(sentAt) + 120) return '';
+  return `A block came without ${who === 'provider' ? 'the provider’s BTC' : 'your BTC payment'}: Bitcoin is busy and that block took higher fees first. ${who === 'provider' ? 'The provider raises its fee by itself' : 'This page raises its fee by itself'}, so it should be in one of the next blocks.`;
+}
+// While a wait for a block runs long (the newest block is slow, or a block came without the payment) no countdown is given: the card says why instead
+const longWait = (tip, sentAt, nowSecs) => !!(slowBlockLine(tip, nowSecs, '') || missedLine(tip, sentAt, ''));
 const SAFE_FWD = 'Your swap is safe: if it does not finish, your BTC returns to your address.';
 const SAFE_REV = 'Your swap is safe: nothing of yours moves until the provider’s BTC is confirmed.';
 const SAFE_TAKE = 'The BTC is yours: it only has to confirm, with hours to spare.';
@@ -164,7 +172,8 @@ export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000), tip 
   // (a lock found again from the key says nothing of the provider sending ETH until an offer was seen: fastbridge-bl.js 'offered')
   if (rec.claimFromKey && rec.phase === 'offered' && !rec.offerSeen) return { ...checking('b2e', rec, rec.providerName || null), title: 'Checking your swap…', detail: 'Found again from your key. The provider has not shown an offer for it yet. If none comes, your BTC returns to your Bitcoin address.', checking: false };
   const [at, title, detail0, eta] = FWD_SAYS[rec.phase] || [0, rec.phase, '', null];
-  const detail = rec.phase === 'broadcast' ? join(detail0, busyLine(tip), slowBlockLine(tip, now(), SAFE_FWD)) : detail0;
+  const detail = rec.phase === 'broadcast' ? join(detail0, missedLine(tip, rec.broadcastAt, 'you') || busyLine(tip), slowBlockLine(tip, now(), SAFE_FWD)) : detail0;
+  const late = rec.phase === 'broadcast' && longWait(tip, rec.broadcastAt, now());
   const state = FWD_DONE.has(rec.phase) ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' ? 'stopped' : 'working';
   const lockAt = rec.lockAt || rec.confirmedAt || null;
   // a claim the relay could not prove (it proves a claim only with a private input) is sent again while there is time, and the page says so
@@ -172,7 +181,7 @@ export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000), tip 
   return {
     id: rec.id, dir: 'b2e', state, title, detail: andNodes(text, rec, now()),
     // (what is left, to the ETH in the private balance: the wait for the lock's block counts down from its send, and never says less than a minute plus what follows)
-    pay: BigInt(rec.amount), get: BigInt(rec.evmAmount || 0), steps: stepsOf('b2e', at, state), etaSecs: state !== 'working' || eta == null ? 0 : rec.phase === 'broadcast' && rec.broadcastAt ? 420 + Math.max(60, 600 - Math.max(0, now() - Number(rec.broadcastAt))) : eta, at: rec.created,
+    pay: BigInt(rec.amount), get: BigInt(rec.evmAmount || 0), steps: stepsOf('b2e', at, state), etaSecs: state !== 'working' || eta == null || late ? 0 : rec.phase === 'broadcast' && rec.broadcastAt ? 420 + Math.max(60, 600 - Math.max(0, now() - Number(rec.broadcastAt))) : eta, at: rec.created,
     refundAt: state === 'working' && lockAt ? lockAt + rec.csvBlocks * 600 : null, lockTxid: rec.lock ? rec.lock.txid : null, error: rec.lastError || null, provider: rec.providerName || null,
     batch: rec.batch ? { id: rec.batch.id, n: rec.batch.n, k: rec.batch.k } : null,
     // the ETH has to be claimed by the pool deadline of the provider's lock; missed, nothing is lost, and the BTC returns at refundAt
@@ -202,7 +211,7 @@ export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip 
   if (rec.phase === 'accepted' && rec.offer) {
     const need = confsForSats(rec.offer.btc.value), confs = Number(rec.lockConfs) || 0;
     title = 'Provider sent BTC';
-    detail = join(`Waiting for ${waitWords(need)}${confs > 0 ? ` (${confs} so far)` : ''}. A block takes about 10 min, sometimes more. Your ETH goes in after that${rec.pre ? ' and is made ready meanwhile' : ''}.`, busyLine(tip), slowBlockLine(tip, now(), SAFE_REV));
+    detail = join(`Waiting for ${waitWords(need)}${confs > 0 ? ` (${confs} so far)` : ''}. A block takes about 10 min, sometimes more. Your ETH goes in after that${rec.pre ? ' and is made ready meanwhile' : ''}.`, (!confs && missedLine(tip, rec.phaseAt, 'provider')) || busyLine(tip), slowBlockLine(tip, now(), SAFE_REV));
   } else if (rec.phase === 'locking') detail = lockingWords(rec, detail);
   else if (rec.phase === 'taking') detail = join(detail, slowBlockLine(tip, now(), SAFE_TAKE));
   // (a swap found again from the key whose provider has not yet taken its pool offer is said as being told, not as waiting for a claim: tellRecovered)
@@ -218,7 +227,7 @@ export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip 
   return {
     id: rec.id, dir: 'e2b', state, title, detail: andNodes(rec.phase === 'aborted' ? withWhy(detail, rec.why) : detail, rec, now()),
     pay: rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: rec.offer ? BigInt(rec.offer.btc.value) : 0n, got, steps: stepsOf('e2b', at, state),
-    etaSecs: state !== 'working' ? 0 : rec.phase === 'accepted' && rec.offer ? confsLeft(confsForSats(rec.offer.btc.value), rec.lockConfs) + REV_AFTER.accepted : revLeft(rec, eta, now()), at: rec.created,
+    etaSecs: state !== 'working' ? 0 : rec.phase === 'accepted' && rec.offer ? (!Number(rec.lockConfs) && longWait(tip, rec.phaseAt, now()) ? 0 : confsLeft(confsForSats(rec.offer.btc.value), rec.lockConfs) + REV_AFTER.accepted) : revLeft(rec, eta, now()), at: rec.created,
     // (the take of the BTC was signed ahead and published where a watcher reads it: said only when that publish was answered, dapp/fastbridge-el.js protect)
     watched: state === 'working' && !!(rec.presig && rec.presig.published),
     // (once the provider has claimed, the ETH is not coming back: the BTC is taken instead, so no return time is given)
@@ -771,10 +780,10 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       out.push({
         id: q.swapId, dir: 'e2b', state: q.gaveUp ? 'stopped' : 'working', title: q.gaveUp ? 'Stopped' : seen ? 'The provider locked BTC for you' : 'The provider is locking BTC for you',
         detail: q.gaveUp ? `${String(q.gaveUp).replace(/\.$/, '')}. Nothing of yours was locked.`
-          : seen ? join(`Waiting for ${waitFor}${confs > 0 ? ` (${confs} so far)` : ''}. A block comes about every ten minutes, some sooner, some later. Your ETH is locked after that.`, slowBlockLine(tipSeen, now(), SAFE_REV))
+          : seen ? join(`Waiting for ${waitFor}${confs > 0 ? ` (${confs} so far)` : ''}. A block comes about every ten minutes, some sooner, some later. Your ETH is locked after that.`, !confs ? missedLine(tipSeen, q.startedAt, 'provider') : '', slowBlockLine(tipSeen, now(), SAFE_REV))
             : `Its lock goes out first and waits for ${waitFor}, about ten minutes. Your ETH is locked only after that.`,
         pay: BigInt(q.evmAmount ?? 0), get: BigInt(q.btcValue ?? 0), steps: stepsOf('e2b', 0, q.gaveUp ? 'returned' : 'working'),
-        etaSecs: q.gaveUp ? 0 : seen ? confsLeft(need, confs) + REV_AFTER.accepted : revLeft({ phase: 'accepted', phaseAt: q.startedAt }, REV_SAYS.accepted[3] + 60, now()),
+        etaSecs: q.gaveUp ? 0 : seen && !confs && longWait(tipSeen, q.startedAt, now()) ? 0 : seen ? confsLeft(need, confs) + REV_AFTER.accepted : revLeft({ phase: 'accepted', phaseAt: q.startedAt }, REV_SAYS.accepted[3] + 60, now()),
         at: q.startedAt || 0, refundAt: null, lockTxid: seen ? strip(q.lockTxid) : null, error: null, provider: p.name,
       });
     }
@@ -907,18 +916,20 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   }
   async function recoverBatches(pages = 12) {
     if (typeof btc.history !== 'function') return 0;
-    const known = new Set((await stores.fwd.list()).map((r) => r.id)), keys = await candidateKeys(), found = [];
+    const kept = await stores.fwd.list(), known = new Set(kept.map((r) => r.id)), held = new Set(kept.filter((r) => r.lock && r.lock.txid).map((r) => `${r.lock.txid}:${r.lock.vout}`));
+    const keys = await candidateKeys(), found = [];
     for (const tx of await btc.history(btc.address, pages)) {
       if (!tx.vin || !tx.vin.length || !tx.status || !tx.status.confirmed) continue;
+      const when = Number(tx.status.block_time) > 0 ? Math.min(Number(tx.status.block_time), now()) : now();
       const first = { txid: tx.vin[0].txid, vout: tx.vin[0].vout };
       let b;
       try { b = X.recoverBtcBatch({ prims: btc.prims, seed, first, lockerXonly: btc.wallet.xonly, outputs: tx.vout, claimerKeys: keys }); } catch { continue; }
       if (!b) continue;
       const batch = { id: bytesToHex(X.legSwapId(first.txid, first.vout, 0)), n: b.legs.length + b.unknown.length };
       for (const leg of b.legs) {
-        if (known.has(leg.swapId)) continue;
+        if (known.has(leg.swapId) || held.has(`${tx.txid}:${leg.vout}`)) continue;
         const rec = {
-          v: 1, role: 'bl', id: leg.swapId, phase: 'refund-wait', why: 'found from the key', created: now(), updated: now(), quoteId: null,
+          v: 1, role: 'bl', id: leg.swapId, phase: 'refund-wait', why: 'found from the key', created: when, updated: now(), quoteId: null,
           asset: SATS_ASSET, amount: String(leg.value), evmAsset: ETH, evmAmount: '0', counterClaimPub: leg.claimerPub, csvBlocks: leg.csvBlocks, takeSats: 0,
           lock: { txid: tx.txid, vout: leg.vout, value: Number(tx.vout[leg.vout].value) }, noteInputs: [], feeInputs: tx.vin.map((i) => ({ txid: i.txid, vout: i.vout })),
           recovered: true, batch: { ...batch, k: leg.vout },
