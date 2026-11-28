@@ -21,9 +21,22 @@ if (process.argv[2] === 'panel') {
   console.error('Missing required env vars: DISCORD_TOKEN, DISCORD_CLIENT_ID');
   process.exit(1);
 } else {
+  // PUT replaces the app's whole command list, so every command it should keep is here. /improve and the "Prepare a PR" message command start tacit-bot's code agent
+  // (worker/src/pr-agent.js); default_member_permissions "0" hides them from everyone but administrators until a server admin opens them up under Server Settings > Integrations.
   const commands = [{
     name: 'verify',
     description: 'Prove you hold at least 100 TAC in your wallet or Precision farm',
+  }, {
+    name: 'improve',
+    description: 'Ask tacit-bot to try a small code change (a draft PR a person will review)',
+    default_member_permissions: '0',
+    dm_permission: false,
+    options: [{ type: 3, name: 'text', description: 'What should change?', required: true, min_length: 12, max_length: 1500 }],
+  }, {
+    name: 'Prepare a PR',
+    type: 3,   // a message command: right-click a message, Apps > Prepare a PR
+    default_member_permissions: '0',
+    dm_permission: false,
   }];
   const res = await fetch(`https://discord.com/api/v10/applications/${DISCORD_CLIENT_ID}/commands`, {
     method: 'PUT',
