@@ -46,9 +46,9 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
         <p class="note" id="fx-price-note"></p>
       </div>
     </div>
-    <button class="btn" id="fx-go" type="button" hidden>Open wallet</button>
+    <button class="btn" id="fx-go" type="button" hidden>Sign in</button>
     <p class="status" id="fx-st" role="status" aria-live="polite"></p>
-    <p class="alt" id="fx-alt">No provider fee? The <a href="/#card=bridge">regular bridge</a>, about 4 hours. Or <a href="#provide">provide liquidity</a> and earn the fee.</p>
+    <p class="alt" id="fx-alt">No provider fee? The <a href="/#card=bridge">regular bridge</a> takes hours, not minutes. Or <a href="#provide">provide liquidity</a> and earn the fee.</p>
     <details class="fx-how fx-depth" id="fx-depth" hidden><summary>Cost by size, and who is waiting</summary><div id="fx-depth-in"></div></details>
     <details class="fx-how" id="fx-how"><summary>New to the fast bridge?</summary>
       <p class="note">You lock TAC on Bitcoin. A liquidity provider pays you the same TAC, less its fee, into your private balance on Tacit (Ethereum’s private pool). It takes minutes; the quote says how many.</p>
@@ -125,7 +125,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     const dear = !wt.hidden ? pricedOut() : '';
     $('fx-wait-note').hidden = !dear; $('fx-wait-note').textContent = dear;
     $('fx-price').hidden = true;
-    if (!signed) { go.textContent = 'Open wallet'; go.disabled = S.busy; recv.hidden = true; out.hidden = true; return; }
+    if (!signed) { go.textContent = 'Sign in'; go.disabled = S.busy; recv.hidden = true; out.hidden = true; return; }
     const units = parseTac(S.amt), bad = problem(units), q = S.quote, wait = waitable(units);
     // a bridge split across providers has its own offer: a receipt of its parts, in place of a single quote's
     const sp = !q && S.split && units != null && S.split.amount === units ? S.split : null, short = !!(sp ? sp.cost && sp.cost.short : S.cost && S.cost.short);

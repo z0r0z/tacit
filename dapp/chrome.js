@@ -158,13 +158,12 @@
       ["swap", "Swap", "/#/defi/swap", "Public or private swaps at the best route."],
       ["farm", "Farm", "/farm/", "Pick a farm, put ETH in, earn TAC."],
       ["stake", "Stake", "/tac/?v=stake#private", "Stake TAC on the Tacit chain: it earns a share of every payment, with no lock."]]],
-    "chains": ["Bridge", "Choose where your money starts and where you want it to arrive.", [
-      ["overview", "Overview", "/#/chains/overview", "Start here: compare every route by asset, destination, speed and privacy."],
-      ["move", "Private balance", "/#/chains/move", "Move between a public wallet and your private Tacit balance."],
-      ["btc", "BTC ⇄ ETH", "/btc/", "Swap Bitcoin and ETH directly. Your ETH arrives private."],
-      ["bridge", "TAC bridge", "/#/chains/bridge", "Move TAC between Bitcoin and Ethereum with the trustless standard route."],
-      ["fast", "Fast TAC", "/fast/", "Move TAC from Bitcoin in minutes through a provider for a quoted fee."],
-      ["notes", "Bitcoin notes", "/tac/?v=notes#bridge", "Manage, merge or split your TAC notes on Bitcoin."]]],
+    "chains": ["Bridge", "Move money between Bitcoin and Ethereum.", [
+      ["overview", "Overview", "/#/chains/overview", "Pick what you have and where it should go. Each route shows its time and fee."],
+      ["bridge", "Bitcoin ⇄ Ethereum", "/#/chains/bridge", "TAC, tETH, cBTC, cUSD or USDT between the chains, both ways, with no provider fee. TAC from Bitcoin can also go fast."],
+      ["btc", "BTC ⇄ ETH swap", "/btc/", "Swap Bitcoin for ETH or back, with a provider. Your ETH arrives private."],
+      ["notes", "Bitcoin notes", "/tac/?v=notes#bridge", "Your TAC on Bitcoin, note by note: bring it over, merge or split it, or follow notes still moving."],
+      ["fast", "Fast TAC", "/fast/", "TAC from Bitcoin in minutes, through a provider, for a quoted fee.", "bridge"]]],
     "borrow": ["Borrow", "Borrow without selling your BTC or TAC.", [
       ["btc", "Against BTC", "/vault/#btc", "Lock BTC (you keep the key), mint cBTC, borrow cUSD."],
       ["tac", "Against TAC", "/vault/", "Keep your TAC, borrow TACD or TACE. No interest; one fee when you borrow."]]],
@@ -229,6 +228,8 @@
     if (!slide) ind.style.transition = 'none';
     ind.style.width = on.offsetWidth + 'px'; ind.style.transform = `translateX(${on.offsetLeft}px)`;
     nav.classList.add('pill');
+    // a row that scrolls (Bridge's, on a phone) keeps the current tab in sight
+    if (nav.scrollWidth > nav.clientWidth) { const l = on.offsetLeft, r = l + on.offsetWidth; if (l < nav.scrollLeft || r > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = Math.max(0, l - 16); }
     if (!slide) { ind.offsetWidth; ind.style.transition = ''; }
   };
   addEventListener('resize', () => place(false));
@@ -263,18 +264,19 @@
       head.innerHTML = `<h1 tabindex="-1">More</h1><ul class="sh-more">${row('/vault/', 'Borrow', 'against BTC or TAC')}${row('/rewards/', 'Rewards', 'airdrop, points, leaderboard')}${rest.join('')}</ul>`;
       head.dataset.of = 'menu';
     } else {
-      const [name, line, views] = SEC[a[0]], note = views.find((v) => v[0] === a[1])?.[3] || '';
+      // a view with a fifth entry has no tab of its own (/fast/ is a way of the bridge): it lights the tab it names
+      const [name, line, views] = SEC[a[0]], note = views.find((v) => v[0] === a[1])?.[3] || '', lit = views.find((v) => v[0] === a[1])?.[4] || a[1], tabs = views.filter((v) => !v[4]);
       if (head.dataset.of === a[0] && head.isConnected) {
         // another view of the same section, in the same document (or the head the build stamped): the head stays, so the tab pressed keeps focus
         // and nothing under it moves; only what differs changes
-        for (const l of head.querySelectorAll('.sh-t a')) { if (l.dataset.v === a[1]) l.setAttribute('aria-current', 'page'); else l.removeAttribute('aria-current'); }
+        for (const l of head.querySelectorAll('.sh-t a')) { if (l.dataset.v === lit) l.setAttribute('aria-current', 'page'); else l.removeAttribute('aria-current'); }
         place(!first); slid = true;
         if (pressed && !head.contains(document.activeElement)) head.querySelector('.sh-t a[aria-current="page"]')?.focus({ preventScroll: true });      // the page it opened took focus for its own heading: the tab pressed keeps it
         const n = head.querySelector('.sh-n');
         if (n && n.textContent !== note) { n.textContent = note; if (!first && !calm()) n.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'ease' }); }
       } else {
         // (the vault's two views are its two sides: a tab marked data-side is turned by the page's own switch, vault/app.js, with no reload)
-        head.innerHTML = `<h1 tabindex="-1">${esc(name)}</h1><p>${esc(line)}</p>${views.length > 1 ? `<nav class="sh-t" aria-label="${esc(name)}"><i class="sh-i" aria-hidden="true"></i>${views.map(([k, label, href]) => `<a href="${esc(href)}" data-v="${k}"${a[0] === 'borrow' ? ` data-side="${k}"` : ''}${k === a[1] ? ' aria-current="page"' : ''}>${esc(label)}</a>`).join('')}</nav>` : ''}${views.length ? `<p class="sh-n">${esc(note)}</p>` : ''}`;
+        head.innerHTML = `<h1 tabindex="-1">${esc(name)}</h1><p>${esc(line)}</p>${tabs.length > 1 ? `<nav class="sh-t" aria-label="${esc(name)}"><i class="sh-i" aria-hidden="true"></i>${tabs.map(([k, label, href]) => `<a href="${esc(href)}" data-v="${k}"${a[0] === 'borrow' ? ` data-side="${k}"` : ''}${k === lit ? ' aria-current="page"' : ''}>${esc(label)}</a>`).join('')}</nav>` : ''}${views.length ? `<p class="sh-n">${esc(note)}</p>` : ''}`;
         head.dataset.of = a[0];
       }
     }

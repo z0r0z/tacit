@@ -114,7 +114,7 @@ test('the pages that link to the trade page name where the link is', () => {
   assert.match(read('build/chrome.mjs'), /'\/trade\/tac\/\?src=menu', 'Trade'/);
   assert.match(read('dapp/chrome.js'), /'\/trade\/tac\/\?src=menu':/, 'the More page has a line for it');
   const lander = read('dapp/index.html');
-  assert.match(lander, /href="\/trade\/tac\/\?src=lander"/); assert.match(lander, /\/trade\/tac\/\?lane=btc&src=chip/); assert.match(lander, /\/trade\/tac\/\?src=chip/);
+  assert.match(lander, /href="\/trade\/tac\/\?src=lander"/); assert.match(lander, /\/trade\/tac\/\?src=chip/, 'the Trade TAC hint says where it was followed from');   // (the Bitcoin-lane trade pill is gone)
   assert.match(read('dapp/assets/index.html'), /href="\/trade\/tac\/\?src=assets"/);
   for (const f of ['dapp/index.html', 'dapp/assets/index.html']) for (const m of read(f).matchAll(/\/trade\/tac\/\?[^"'`\s)]*src=([a-z]+)/g)) assert.ok(SOURCES.includes(m[1]), `${f}: ${m[1]}`);
 });

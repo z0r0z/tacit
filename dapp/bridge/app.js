@@ -1,5 +1,5 @@
 import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol, NO_LIMITS } from '/bridge/runtime.js?cb=643fbc26';
-import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=d2e81a08';
+import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=960a3b4b';
 import { bodyType } from '/rpc-body.js';
 import { isAddr, norm, shortAddr, tokenHash, parseTokenHash, readToken, tokenRoute, safeSymbol } from '/bridge/token-pick.js?cb=72a4ae9a';
 import { floorFromBlocks, priorityRate } from '/fee-floor.js?cb=5d6104ed';
@@ -434,7 +434,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=7b1e4690').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=4652807b').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });

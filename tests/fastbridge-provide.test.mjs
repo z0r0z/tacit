@@ -47,12 +47,12 @@ function mount(over = {}) {
 }
 const text = (e) => { const out = [], w = e.ownerDocument.createTreeWalker(e, 4); for (let n = w.nextNode(); n; n = w.nextNode()) if (n.nodeValue.trim()) out.push(n.nodeValue.trim()); return out.join(' '); };
 
-test('with a way to open the key, the panel is there before a key too: Open wallet, then what the key can provide', async () => {
+test('with a way to open the key, the panel is there before a key too: Sign in, then what the key can provide', async () => {
   let asked = 0;
   const key = keyStub();
   const m = mount({ key, signIn: async () => { asked++; key.open(); } });
   assert.equal(m.root.hidden, false, 'a visitor finds that anyone can provide');
-  assert.equal(m.$('pv-go').hidden, false); assert.equal(m.$('pv-go').textContent, 'Open wallet'); assert.equal(m.$('pv-go').disabled, false);
+  assert.equal(m.$('pv-go').hidden, false); assert.equal(m.$('pv-go').textContent, 'Sign in'); assert.equal(m.$('pv-go').disabled, false);
   assert.equal(m.$('pv-set').hidden, true, 'no fee or size before a key');
   m.root.open = true; m.root.dispatchEvent(new m.dom.window.Event('toggle'));
   assert.equal(m.state.opens, 0, 'nothing is read before a key');
@@ -61,7 +61,7 @@ test('with a way to open the key, the panel is there before a key too: Open wall
   assert.equal(asked, 1); assert.equal(m.$('pv-go').textContent, 'Start providing');
   assert.equal(m.stub.calls.starts.length, 0, 'opening the key starts nothing');
   key.lock();
-  assert.equal(m.root.hidden, false); assert.equal(m.$('pv-go').textContent, 'Open wallet');
+  assert.equal(m.root.hidden, false); assert.equal(m.$('pv-go').textContent, 'Sign in');
   // the sheet closed without a key: nothing said, nothing read
   const n = mount({ signIn: async () => { throw Object.assign(new Error('Cancelled.'), { unlockCancelled: true }); } });
   n.$('pv-go').click(); await new Promise((r) => setTimeout(r, 10));

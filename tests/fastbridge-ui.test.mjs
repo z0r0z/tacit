@@ -99,7 +99,7 @@ test('no provider listed, or none answering: the page says none is online and th
     await until(() => /No provider is online/.test(text(m.$('fx-lp'))), 'the offline line');
     assert.match(text(m.$('fx-lp')), /Open your wallet to wait for one, or to provide/);
     assert.equal(m.$('fx-go').hidden, false, 'with nobody providing, the wallet still opens: it is how the first provider starts');
-    assert.equal(m.$('fx-go').textContent, 'Open wallet');
+    assert.equal(m.$('fx-go').textContent, 'Sign in');
     assert.equal(m.$('fx-form').hidden, true);
     m.ui.destroy();
   }
@@ -163,7 +163,7 @@ test('a provider\'s terms are shown, and its name is text, not markup', async ()
   assert.match(text(m.$('fx-lp')), /<img src=x/);
   assert.match(text(m.$('fx-lp')), /0\.30% \+ 1 TAC fee/);
   assert.match(text(m.$('fx-lp')), /10 to 1,000 TAC/);
-  assert.equal(m.$('fx-go').textContent, 'Open wallet');
+  assert.equal(m.$('fx-go').textContent, 'Sign in');
   assert.equal(m.$('fx-form').hidden, true, 'no form before a key');
 });
 
@@ -248,7 +248,7 @@ test('the key\'s own provider is not one to bridge with: it is left out of the s
   assert.deepEqual(m.st.calls.asked[0].names, ['Other']);
 });
 
-test('Open wallet: the key sheet, then the TAC on Bitcoin and an amount field', async () => {
+test('Sign in: the key sheet, then the TAC on Bitcoin and an amount field', async () => {
   const m = mount();
   await signIn(m);
   await until(() => /12,345 TAC on Bitcoin/.test(text(m.$('fx-bal'))), 'the balance');
@@ -442,7 +442,7 @@ test('a key that locks or changes drops the session: the form closes, the timer 
   await signIn(m);
   typeIn(m, '50'); await until(() => !m.$('fx-recv').hidden, 'a quote');
   m.key.lock(); await tick(5);
-  assert.equal(m.$('fx-form').hidden, true); assert.equal(m.$('fx-go').textContent, 'Open wallet'); assert.match(m.$('fx-st').textContent, /locked/);
+  assert.equal(m.$('fx-form').hidden, true); assert.equal(m.$('fx-go').textContent, 'Sign in'); assert.match(m.$('fx-st').textContent, /locked/);
   assert.equal(m.st.calls.stops, 1); assert.equal(m.$('fx-amt').value, '');
   assert.equal(m.$('fx-go').hidden, false); m.$('fx-go').click(); await until(() => !m.$('fx-form').hidden, 'the form after a new key');
   assert.equal(m.state.opens, 2, 'one read for the key opened by the press');
@@ -457,11 +457,11 @@ test('a key that locks or changes drops the session: the form closes, the timer 
 
 test('a key opened elsewhere on the page (the provider panel) is read here too: the card never asks to open a wallet that is open', async () => {
   const m = mount();
-  await until(() => m.$('fx-go').textContent === 'Open wallet', 'the button');
+  await until(() => m.$('fx-go').textContent === 'Sign in', 'the button');
   m.key.open();
   await until(() => !m.$('fx-form').hidden, 'the form');
   assert.equal(m.state.signIns, 0); assert.equal(m.state.opens, 1);
-  assert.notEqual(m.$('fx-go').textContent, 'Open wallet');
+  assert.notEqual(m.$('fx-go').textContent, 'Sign in');
   m.ui.destroy();
 });
 

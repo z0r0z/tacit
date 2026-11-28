@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// The Chains entry point is a choice page, not an arbitrary tool. Exercise its
-// routing, language and narrow-screen layout with the real built page offline.
+// The Bridge section's overview: every way between the chains by direction, each coin with its routes. Exercise its
+// routing, tabs and narrow-screen layout with the real built page offline.
 
 import http from 'node:http';
 import { readFileSync, existsSync, statSync, mkdirSync } from 'node:fs';
@@ -40,7 +40,7 @@ async function check(width, name) {
   const state = await page.evaluate(() => {
     const visible = (s) => { const e = document.querySelector(s); return !!e && getComputedStyle(e).display !== 'none'; };
     const tabs = [...document.querySelectorAll('#sec-head .sh-t a')];
-    const cards = [...document.querySelectorAll('#page-chains .cpg-card')];
+    const dirs = [...document.querySelectorAll('#page-chains .cpg-dir')];
     const tabTops = tabs.map((e) => Math.round(e.getBoundingClientRect().top));
     return {
       sec: document.documentElement.dataset.sec,
@@ -49,37 +49,37 @@ async function check(width, name) {
       active: document.querySelector('#sec-head .sh-t a[aria-current="page"]')?.textContent.trim(),
       tabs: tabs.map((e) => e.textContent.trim()),
       tabRows: new Set(tabTops).size,
-      cards: cards.map((a) => [a.querySelector('h3')?.textContent.trim(), a.getAttribute('href')]),
-      cardColumns: new Set(cards.map((a) => Math.round(a.getBoundingClientRect().left))).size,
-      compare: document.querySelector('.cpg-compare')?.textContent.replace(/\s+/g, ' ').trim(),
+      dirs: dirs.map((d) => [d.querySelector('h2')?.textContent.replace('→', '').trim(), [...d.querySelectorAll('a')].map((a) => a.dataset.br ? `br:${a.dataset.br}` : a.getAttribute('href')).join(' ')]),
+      dirColumns: new Set(dirs.map((d) => Math.round(d.getBoundingClientRect().left))).size,
       notes: document.querySelector('.cpg-note a')?.getAttribute('href'),
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
     };
   });
   ok(state.sec === 'chains/overview' && state.hash === '#/chains/overview', `${name}: /#/chains resolves to the overview`);
-  ok(state.overview && !state.hero, `${name}: choice page is visible without the default tool`);
+  ok(state.overview && !state.hero, `${name}: the overview shows without the default tool`);
   ok(state.active === 'Overview', `${name}: Overview is marked active`);
-  ok(state.tabs.join('|') === 'Overview|Private balance|BTC ⇄ ETH|TAC bridge|Fast TAC|Bitcoin notes', `${name}: task-based navigation is complete`);
-  ok(JSON.stringify(state.cards) === JSON.stringify([
-    ['Use a private balance', '/#/chains/move'], ['Swap BTC and ETH', '/btc/'],
-    ['Move TAC across chains', '/#/chains/bridge'], ['Move TAC faster', '/fast/']
-  ]), `${name}: four outcome cards preserve their destinations`);
-  ok(/Trustless.+both directions.+Takes longer/i.test(state.compare) && /minutes.+Bitcoin → Ethereum only.+fee and limit/i.test(state.compare), `${name}: standard and fast routes explain their tradeoffs`);
+  ok(state.tabs.join('|') === 'Overview|Bitcoin ⇄ Ethereum|BTC ⇄ ETH swap|Bitcoin notes', `${name}: four tabs (${state.tabs.join('|')})`);
+  ok(JSON.stringify(state.dirs) === JSON.stringify([
+    ['Bitcoin to Ethereum', '/btc/ br:btc /fast/ br:tb br:kb br:ub br:ut'],
+    ['Ethereum to Bitcoin', '/btc/?dir=e2b br:tac br:eth br:cbtc br:cusd br:cusdt']
+  ]), `${name}: two directions, each coin with its routes (${JSON.stringify(state.dirs)})`);
   ok(state.notes === '/tac/?v=notes#bridge', `${name}: note management remains one click away`);
   ok(state.overflow <= 0, `${name}: no horizontal overflow`);
   if (width < 640) {
-    ok(state.tabRows === 2, `${name}: six navigation choices form two readable rows`);
-    ok(state.cardColumns === 1, `${name}: outcome cards stack in one column`);
+    ok(state.tabRows === 1, `${name}: the tabs are one row (it scrolls sideways)`);
+    ok(state.dirColumns === 1, `${name}: the two directions stack`);
   } else {
-    ok(state.cardColumns === 2, `${name}: outcome cards use a scannable two-column grid`);
+    ok(state.dirColumns === 2, `${name}: the two directions sit side by side`);
   }
   ok(errors.length === 0, `${name}: no page or CSP errors${errors.length ? ` (${errors.join(' | ')})` : ''}`);
 
   if (SHOTS) { mkdirSync(SHOTS, { recursive: true }); await page.screenshot({ path: join(SHOTS, `chains-${name}.png`), fullPage: true }); }
-  await page.click('#sec-head .sh-t a[href="/#/chains/move"]');
-  await page.waitForFunction(() => document.documentElement.dataset.sec === 'chains/move');
-  const moved = await page.evaluate(() => ({ hash: location.hash, active: document.querySelector('#sec-head .sh-t a[aria-current="page"]')?.textContent.trim(), overview: getComputedStyle(document.querySelector('#page-chains')).display }));
-  ok(moved.hash === '#/chains/move' && moved.active === 'Private balance' && moved.overview === 'none', `${name}: a choice opens its existing tool and updates navigation`);
+  // a coin's row opens the Bitcoin ⇄ Ethereum view on that coin
+  await page.click('#page-chains .cpg-chip[data-br="tb"]');
+  await page.waitForFunction(() => document.documentElement.dataset.sec === 'chains/bridge');
+  await page.waitForFunction(() => document.querySelector('#hx-from')?.value === 'tb', null, { timeout: 15000 }).catch(() => {});
+  const moved = await page.evaluate(() => ({ hash: location.hash, active: document.querySelector('#sec-head .sh-t a[aria-current="page"]')?.textContent.trim(), overview: getComputedStyle(document.querySelector('#page-chains')).display, from: document.querySelector('#hx-from')?.value }));
+  ok(moved.hash === '#/chains/bridge' && moved.active === 'Bitcoin ⇄ Ethereum' && moved.overview === 'none' && moved.from === 'tb', `${name}: tETH from Bitcoin opens the bridge on tETH from Bitcoin (${JSON.stringify(moved)})`);
   await ctx.close();
 }
 

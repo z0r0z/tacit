@@ -154,7 +154,8 @@ const escHtml = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<'
 // the head as chrome.js draws it (its sync())
 export function secHtml(dapp, key) {
   const [sec, view] = key.split('/'), [name, line, views] = secTable(dapp)[sec], cur = view || views[0]?.[0], note = views.find((v) => v[0] === cur)?.[3] || '';
-  return `<div class="sh" id="sec-head" data-of="${sec}"><h1 tabindex="-1">${escHtml(name)}</h1><p>${escHtml(line)}</p>${views.length > 1 ? `<nav class="sh-t" aria-label="${escHtml(name)}"><i class="sh-i" aria-hidden="true"></i>${views.map(([k, label, href]) => `<a href="${escHtml(href)}" data-v="${k}"${sec === 'borrow' ? ` data-side="${k}"` : ''}${k === cur ? ' aria-current="page"' : ''}>${escHtml(label)}</a>`).join('')}</nav>` : ''}${views.length ? `<p class="sh-n">${escHtml(note)}</p>` : ''}</div>`;
+  const lit = views.find((v) => v[0] === cur)?.[4] || cur, tabs = views.filter((v) => !v[4]);      // a view with a fifth entry has no tab: it lights the one it names
+  return `<div class="sh" id="sec-head" data-of="${sec}"><h1 tabindex="-1">${escHtml(name)}</h1><p>${escHtml(line)}</p>${tabs.length > 1 ? `<nav class="sh-t" aria-label="${escHtml(name)}"><i class="sh-i" aria-hidden="true"></i>${tabs.map(([k, label, href]) => `<a href="${escHtml(href)}" data-v="${k}"${sec === 'borrow' ? ` data-side="${k}"` : ''}${k === lit ? ' aria-current="page"' : ''}>${escHtml(label)}</a>`).join('')}</nav>` : ''}${views.length ? `<p class="sh-n">${escHtml(note)}</p>` : ''}</div>`;
 }
 
 // a block is the begin marker's line, what is stamped (indented as the marker is) and the end marker's line

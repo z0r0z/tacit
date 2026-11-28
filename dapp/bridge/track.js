@@ -91,6 +91,7 @@ export function inDue(r, now = Date.now(), plan = null) {
     return 'Mint now';
   }
   if (r.stage === 'stopped') return 'Move it back';
+  if (r.stage === 'reclaim-sent' && err && tries >= 3) return 'Move it back again';
   if (r.stage === 'burn-signed' && err && tries >= 3) return 'Move it back';
   if (r.stage === 'burn-submitted' && now - Number(r.submittedAt || r.updatedAt || now) > MINER_WAIT) return 'Move it back';
   if ((r.stage === 'migrate-confirmed' || r.stage === 'traced') && err && tries >= 3) return 'Move it back';
@@ -119,6 +120,7 @@ export function inActs(r, due, now = Date.now()) {
   if (due === 'Burn it') acts.push({ kind: 'burn', label: 'Burn it', main: true });
   else if (due === 'Mint now') acts.push({ kind: 'mint', label: 'Mint now', main: true });
   else if (due === 'Move it back') acts.push({ kind: 'reclaim', label: 'Move it back', main: true });
+  else if (due === 'Move it back again') acts.push({ kind: 'reclaim', label: 'Move it back again', main: true }, { kind: 'poll', label: 'Try again' });
   else if (due === 'Recover') acts.push({ kind: 'recover', label: 'Recover', main: true }, { kind: 'recheck', label: 'Check again' });
   else if (due === 'Try again or cancel') acts.push({ kind: 'poll', label: 'Try again', main: true }, { kind: 'cancel', label: 'Cancel this bridge' });
   else if (failing) acts.push({ kind: 'poll', label: 'Try again' });
@@ -158,6 +160,7 @@ export function rowNote(row) {
   else if (row.err) parts.push(`${String(row.err).replace(/^(crossout-ux|burndep-ux):\s*/, '')}${row.tries > 1 ? ` (${row.tries} tries)` : ''}`);
   const acts = (row.acts || []).map((a) => a.kind);
   if (row.coinWait) parts.push('Its burn goes on its own once another burn’s change comes back, or sooner with a little bitcoin added to this key’s Bitcoin address.');
+  if (row.dir === 'in' && row.stage === 'reclaim-sent' && acts.includes('reclaim')) parts.push('Your TAC has not moved. Move it back again signs a fresh move at today’s fee; it is only offered while Bitcoin has neither of the move’s transactions.');
   if (row.dir === 'in' && row.stage === 'stopped') parts.push('This bridge paused before its burn, and your TAC is untouched. Move it back to your wallet, then bridge it again: it goes in one step.');
   if (row.dir === 'in' && row.stage === 'not-recorded' && acts.includes('recover')) parts.push('This bridge did not complete. Recover returns your TAC to your Bitcoin address so you can try again.');
   if (row.dir === 'in' && row.stage === 'not-recorded' && !acts.includes('recover')) parts.push('Bitcoin’s proof on Ethereum passed the burn without recording it, so it cannot be minted. Keep this row and its transaction ids, and ask for help with them.');
