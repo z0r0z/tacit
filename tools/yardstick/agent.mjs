@@ -200,7 +200,7 @@ async function attempt(item, k) {
     messages = [{ role: 'system', content: SYSTEM }, { role: 'user', content: taskText(item) }];
     log = [...messages];                                       // the full conversation, for the transcript; `messages` is what is sent and may be compacted
     const push = (m) => { messages.push(m); log.push(m); };
-    let plain = 0; const seen = new Set();
+    let plain = 0, epoch = 0; const seen = new Set();   // epoch counts edits: after one, a read, search or test run can answer differently, so repeating it is not a repeat
     while (rec.turns < MAX_TURNS) {
       if (Date.now() - t0 > WALL_MS) { rec.finish = 'wall'; break; }
       let res; try { res = await chat(messages, 1000 * k + rec.turns + 1); } catch (e) { rec.finish = 'error'; rec.error = String(e.message).slice(0, 200); break; }
@@ -222,10 +222,10 @@ async function attempt(item, k) {
         try {
           const args = typeof call.function?.arguments === 'string' ? JSON.parse(call.function.arguments || '{}') : (call.function?.arguments || {});
           if (!tools[name]) throw new Error(`unknown tool ${name}`);
-          const key = name === 'replace' || name === 'finish' ? '' : `${name}:${JSON.stringify(args)}`;   // edits may repeat; reads and searches may not
+          const key = name === 'replace' || name === 'finish' ? '' : `${name}:${epoch}:${JSON.stringify(args)}`;   // edits may repeat; reads, searches and test runs may not, until something has been edited
           if (key && seen.has(key)) { rec.repeats++; throw new Error('you already made this exact call and its result has not changed: try a different search or file, make the edit, or call finish'); }
           if (key) seen.add(key);
-          const r = tools[name](args); rec.calls[name] = (rec.calls[name] || 0) + 1;
+          const r = tools[name](args); rec.calls[name] = (rec.calls[name] || 0) + 1; if (name === 'replace') epoch++;
           if (r && r.done) { finished = true; rec.summary = r.summary; out = 'ok'; } else out = String(r);
         } catch (e) { rec.toolErrors++; out = `error: ${e.message}`; }
         const left = MAX_TURNS - rec.turns;
