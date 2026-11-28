@@ -1,0 +1,14 @@
+[package]
+name = "provenance-anchor"
+version = "0.1.0"
+edition = "2021"
+
+# Provenance anchors for the burn-deposit fold (docs/STUCK-TAC-POOL-BACKING.md).
+#
+# Its own crate for the same reason btc-pool-core is one: a guest that does not fold pool exits never
+# compiles it, so the deployed reflection and settle ELFs are unchanged by this entry. Nothing here is
+# wired into a live verifying key — this is a design with tests, which is what option D asks for.
+
+[dependencies]
+cxfer-core = { path = "../cxfer-core" }
+btc-pool-zk-core = { path = "../btc-pool-zk-core" }
