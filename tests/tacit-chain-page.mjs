@@ -333,7 +333,7 @@ try {
     await page.waitForFunction(() => /1,234/.test(document.querySelector('#tpg-nets')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
     const r = await cells(page);
     ok(r.Blocks === '1,234' && /^[4-8]\d s ago$/.test(r['Last block']) && r['Share price'] === sharePrice(RATE.pool, RATE.shares, 5) && r['Pool, TAC'] === fmtTac(RATE.pool, 2)
-      && r['Leader fee, TAC'] === '0.015' && r['Shield cap, TAC'] === '1,000', `the chain's figures (${JSON.stringify(r)})`);
+      && r['Leader fee, TAC'] === '0.015' && !('Shield cap, TAC' in r), `the chain's figures (${JSON.stringify(r)})`);
     // what holders earn, and what the chain has landed, are figures in the chain panel (a share's worth is in the networks fold above); the pool's notes
     // are drawn under them, a dot each
     await page.waitForFunction((want) => [...document.querySelectorAll('#tpg-mid .cl-stats > div .v')].some((e) => e.textContent === want), `${apyText(WK.apy)}APY`, { timeout: 20000 }).catch(() => {});

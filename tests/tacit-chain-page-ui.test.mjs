@@ -48,14 +48,13 @@ test('live: the status rows, read from Ethereum and the leader', () => {
   assert.match(root.querySelector('#status').textContent, /Reading…/);
   ui.render({ on: true, status: STATUS, now: NOW, key: null });
   const r = rows('#status');
-  assert.deepEqual(Object.keys(r), ['Status', 'Blocks', 'Last block', 'Share price', 'Pool', 'Leader fee', 'Shield cap']);
+  assert.deepEqual(Object.keys(r), ['Status', 'Blocks', 'Last block', 'Share price', 'Pool', 'Leader fee']);
   assert.equal(r.Status, 'Live');
   assert.equal(r.Blocks, '1,234');
   assert.equal(r['Last block'], '42 s ago');
   assert.equal(r['Share price'], sharePrice(STATUS.pool, STATUS.shares));
   assert.equal(r.Pool, '12,345.067 TAC');
   assert.equal(r['Leader fee'], '0.015 TAC a move');
-  assert.equal(r['Shield cap'], 'up to 1,000 TAC');
   assert.match(root.querySelector('#status [title]').getAttribute('title'), /What 1 TAC of shares from the start is worth now/);
   // the three ways into the tile, whatever the key
   assert.deepEqual([...root.querySelectorAll('#acts a')].map((a) => [a.textContent, a.getAttribute('href')]),
@@ -68,11 +67,9 @@ test('live: no blocks yet, no fee or cap, and a leader that does not answer', ()
   let r = rows('#status');
   assert.equal(r['Last block'], 'none yet');
   assert.equal(r['Leader fee'], 'none');
-  assert.equal(r['Shield cap'], 'none');
   ui.render({ on: true, status: { ...STATUS, leader: null }, now: NOW, key: null });
   r = rows('#status');
   assert.equal(r['Leader fee'], 'not answering');
-  assert.equal(r['Shield cap'], 'not answering');
   assert.equal(r.Pool, '12,345.067 TAC');
 });
 

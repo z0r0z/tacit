@@ -103,7 +103,6 @@ function statusHtml(st, now) {
     ${row('Share price', `<span class="num">${esc(sharePrice(st.pool, st.shares))}</span>`, 'What 1 TAC of shares from the start is worth now, in TAC')}
     ${row('Pool', `<span class="num">${esc(fmtTac(st.pool))}</span> TAC`)}
     ${row('Leader fee', L ? (L.fee > 0n ? `<span class="num">${esc(fmtTac(L.fee))}</span> TAC a move` : 'none') : off)}
-    ${row('Shield cap', L ? (L.shieldCap != null ? `up to <span class="num">${esc(fmtTac(L.shieldCap))}</span> TAC` : 'none') : off)}
   </div>`;
 }
 

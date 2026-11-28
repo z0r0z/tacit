@@ -1795,7 +1795,7 @@ const render = {}, load = {};
 const tacCtx = () => ({ $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TK, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brHolds, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getDeviceMods, getUx, hexToBytes, html, hxChainEth, hxDevAny, hxLive, hxPreset, hxUsd, hxWalletBal, hxWalletBals, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, payingAccount, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, heldParts, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tokOutNow, tokenSync, tokenWallet, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your, get CH() { return CH; }, get T() { return T; }, get TACP() { return TACP; }, get TCARD() { return TCARD; }, get TCO() { return TCO; }, get TPOOL() { return TPOOL; }, get TREQ() { return TREQ; }, get brLooking() { return brLooking; } });
 // front-tac:end
 let TAC_CODE = null;
-const tacReady = lazy(() => import('/front/tac.js?cb=da4f6332').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
+const tacReady = lazy(() => import('/front/tac.js?cb=2e9613c2').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
 const withTac = (f) => (TAC_CODE ? f() : tacReady().then(f, () => {}));
 for (const k of ["tac"]) render[k] = () => { if (!TAC_CODE) withTac(() => rerender(k)); };
 for (const k of ["tac"]) load[k] = () => tacReady().then(() => load[k]());
@@ -1975,7 +1975,7 @@ function pqNudge(privHex, pubHex) {
 const CHAIN_HOP_WAIT = 5 * 60e3;
 const chainHopsStuck = () => (chainOn() && S.key && CH.pub === S.key.pubHex ? CH.hops.filter((h) => Date.now() - h.at > CHAIN_HOP_WAIT) : []);
 function chainLaneOf(privHex) { try { return LANE && chainOn() ? LANE.chainLane(privHex) : undefined; } catch { return undefined; } }
-const chainMods = lazy(() => Promise.all([import('/tacit-chain-config.js?cb=74171404'), import('/tacit-chain-client.js?cb=cf0b8b9e'), import('/btc-pool-client.js?cb=7e328710'), import('/tacit-chain-route.js?cb=518fd1f3')]));
+const chainMods = lazy(() => Promise.all([import('/tacit-chain-config.js?cb=74171404'), import('/tacit-chain-client.js?cb=30dc7995'), import('/btc-pool-client.js?cb=7e328710'), import('/tacit-chain-route.js?cb=518fd1f3')]));
 function chainClient() {
   if (!chainOn() || !S.key) return Promise.reject(Object.assign(new Error('Open your Tacit wallet first.'), { said: true }));
   if (CH.pub !== S.key.pubHex) chainReset(S.key.pubHex);
@@ -13108,7 +13108,7 @@ function chainSweepFee(fresh = false) {
       const f = c?.f;
       if (!f) { CHAIN_SWEEP.failAt = Date.now(); return CHAIN_SWEEP.v ?? 0n; }
       const v = /^\d+$/.test(String(f.sweepFee ?? '')) ? BigInt(f.sweepFee) : 0n;
-      CHAIN_SWEEP.cap = /^\d+$/.test(String(f.shieldCap ?? '')) && BigInt(f.shieldCap) > 0n ? BigInt(f.shieldCap) : null;
+      CHAIN_SWEEP.cap = null;      // no cap on a shield
       CHAIN_SWEEP.v = v; CHAIN_SWEEP.at = Date.now(); return v;
     }, () => { CHAIN_SWEEP.failAt = Date.now(); return CHAIN_SWEEP.v ?? 0n; })
     .finally(() => { CHAIN_SWEEP.p = null; }));

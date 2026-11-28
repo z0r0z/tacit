@@ -91,13 +91,11 @@ try {
   const alice = makeChainClient({ cfg, rpcCall, priv: PRIV, system, storage: aliceStore });
   await alice.ready();
 
-  // the leader's launch cap on a shield (GET /fee shieldCap): published, quoted, and a shield over it refused before anything is proved
+  // a shield has no cap on the page: a cap a leader publishes (GET /fee shieldCap) is not applied, and none is quoted
   assert.ok((await api('POST', '/fee', { fee: '0', shieldCap: String(500n * T) })).ok);
-  assert.equal(await alice.shieldCap(), 500n * T);
-  assert.equal((await alice.quote('shield', 600n * T)).cap, 500n * T);
-  await assert.rejects(alice.shield(600n * T), (e) => e.overCap && /^For now the Tacit chain takes up to 500 TAC a shield\.$/.test(e.message));
+  assert.equal(await alice.shieldCap(), null, 'a published cap is not one the page applies');
   assert.ok((await api('POST', '/fee', { fee: '0', shieldCap: '0' })).ok);
-  assert.equal(await alice.shieldCap(), null, '"0" is no cap');
+  assert.equal(await alice.shieldCap(), null);
 
   // ── private TAC onto the chain. 1,000 TAC leaves the pool; the relay's unwrap fee (fixed before anything is proved) is 2 TAC, so the
   // unwrap pays the inbox exactly 998 TAC and the shield deposits exactly that

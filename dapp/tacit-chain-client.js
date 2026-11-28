@@ -51,8 +51,7 @@ export function forcedBytes(submission, hints) {
 
 export function leaderTerms(f) {
   const n = (v) => (/^\d+$/.test(String(v ?? '')) ? BigInt(v) : 0n);
-  const cap = n(f?.shieldCap);
-  return { fee: n(f?.fee), shieldCap: cap > 0n ? cap : null, sweepFee: n(f?.sweepFee) };
+  return { fee: n(f?.fee), shieldCap: null, sweepFee: n(f?.sweepFee) };      // no cap on a shield: the contract has none, and the page sets none
 }
 
 export const FEE_CEILING = 2n * 10n ** 8n;

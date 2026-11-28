@@ -14911,14 +14911,6 @@ await step('chaintile', async () => {
       const POOL_ADDR_LIVE = '0x000000000Ed1eabD231Be41d93b719056F7febFC', depStatus = async (id) => BigInt((await rpc('eth_call', [{ to: POOL_ADDR_LIVE, data: '0x7da9874f' + String(id).replace(/^0x/, '') }, 'latest'])).slice(0, 66));
       try {
         await p2.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
-        // the leader's launch cap (60 TAC here): a shield over it is refused in one line, before anything is proved, and Max stops at it
-        await move(p2, 'shield:wtac:chain', '70');
-        await until(p2, () => /For now the Tacit chain takes up to/.test(document.querySelector('#hx-swap #q')?.textContent || ''), null, 240000).catch(() => {});
-        const capSaid = await said(p2);
-        await p2.click(MV.max).catch(() => {});
-        await until(p2, () => document.querySelector('#hx-swap #amt')?.value === '60', null, 60000).catch(() => {});
-        ok(/^For now the Tacit chain takes up to 60 TAC a shield\./.test(capSaid) && (await p2.$eval('#hx-swap #amt', (a) => a.value)) === '60',
-          `chaintile: a shield over the leader's cap is refused in one line, and Max stops at the cap (${capSaid.slice(0, 90)}; Max ${await p2.$eval('#hx-swap #amt', (a) => a.value)}; under the amount: ${await text(p2, '#hx-swap #pay-side')})`);
         // Withdraw from the chain names both places it can go
         await move(p2, 'shield:ctac:defi', '3');
         await until(p2, () => document.querySelector('#hx-swap #go')?.textContent === 'Move to the private pool' && !document.querySelector('#hx-swap #go').disabled, null, 240000)
