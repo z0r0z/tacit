@@ -106,7 +106,7 @@ export function governanceApi() { return {
   createProposal: async (c) => window.__btcPropose(JSON.stringify(c), hex(wallet.pub)),
 }; }`;
 const btcCalls = [];
-async function open(holder, hash = '', { viewport = { width: 1280, height: 900 }, scheme = 'light', tacitKey = null } = {}) {
+async function open(holder, hash = '', { viewport = { width: 1280, height: 900 }, scheme = 'light', tacitKey = null, noDelegation = false } = {}) {
   const ctx = await b.newContext({ viewport, colorScheme: scheme });
   const page = await ctx.newPage();
   const errs = [], csp = [], signed = [];
@@ -125,6 +125,7 @@ async function open(holder, hash = '', { viewport = { width: 1280, height: 900 }
     if (q.method() === 'POST' && /"method":"eth_/.test(body)) return route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: ethAnswer(JSON.parse(body)) });
     return route.abort();
   });
+  if (noDelegation) await page.route(/^https:\/\/api\.tacit\.finance\/governance\/delegation/, (route) => route.fulfill({ status: 404, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: '{"error":"not found"}' }));
   await page.exposeFunction('__sign', async (hexMsg, account) => {
     const text = Buffer.from(hexMsg.slice(2), 'hex').toString('utf8');
     signed.push({ text, account });
@@ -352,6 +353,22 @@ let id2;
   const after = await env.REGISTRY_KV.get(key, 'json');
   ok(after.history.length === 2 && after.history[1].to === null, 'the worker recorded it');
   ok(/not delegated/.test(await text(page, '.sec .note')) && !(await page.$('#dg-off')), 'and the page says nothing is delegated');
+  ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
+  await page.context().close();
+}
+
+// 2c. an API without delegation: the page leaves it out, with or without a wallet
+{
+  const { page, errs, csp } = await open(poor, '', { noDelegation: true });
+  await page.waitForSelector('.blank, .prop');
+  await page.waitForFunction(() => !document.querySelector('#to-delegate') && !document.querySelector('#dg-side'));
+  ok(true, 'no Delegate button or side row where the API has no delegation');
+  await connect(page);
+  await page.waitForFunction(() => /99 TAC/.test(document.querySelector('#side')?.textContent || ''));
+  ok(!(await page.$('#to-delegate')) && !(await page.$('#dg-side')), 'and none once a wallet is connected');
+  await page.evaluate(() => { location.hash = 'delegate'; });
+  await page.waitForSelector('.ptitle');
+  ok(/not available yet/.test(await text(page, '.lede')), 'a link straight to the delegate page says it is not available yet');
   ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
   await page.context().close();
 }

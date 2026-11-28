@@ -103,6 +103,12 @@ async function readDelegation() {
     if (who === W.account) { S.dg.avail = true; S.dg.me = j.delegate || null; S.dg.toYou = j.delegated_to_you || null; render(); }
   } catch (e) { if (e.status === 404 || e.status === 405) { S.dg.avail = false; render(); } }
 }
+// whether the API has delegation at all, asked once on load so the page offers it only where it works (a wallet is not needed for that)
+async function probeDelegation() {
+  try { await getJson('/delegation?address=0x0000000000000000000000000000000000000001'); S.dg.avail = true; }
+  catch (e) { if (e.status === 404 || e.status === 405) S.dg.avail = false; }
+  render();
+}
 // the TAC the open Tacit wallet holds on Bitcoin (a scan of its coins, done by tacit.js)
 let btcSeq = 0;
 async function readBtc() {
@@ -520,4 +526,5 @@ setInterval(() => {
   else if (S.route.name === 'detail' && S.p?.status === 'active') loadProposal(S.route.id, { quiet: true });
 }, 60e3);
 route();
+probeDelegation();
 if (tacitOn()) readBtc();      // a Tacit wallet this tab already opened on another page of the site
