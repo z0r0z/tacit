@@ -80,6 +80,16 @@ export function govEthProposeMessage(c) {
   return `Tacit governance proposal\nNetwork: ${c.network}\nTitle: ${c.title}\nVoting ends: ${c.voting_ends_at | 0}\nContent: ${h}\nThis opens a signalling proposal for TAC holders. No funds move.`;
 }
 
+// What an Ethereum wallet signs to hand its TAC voting power to another address, or to take it back (an empty delegate). Mirrored in
+// dapp/govern/message.js. `rights` is 'vote' or 'all' (vote and open proposals).
+export const GOV_DELEGATE_RIGHTS = ['vote', 'all'];
+export function govDelegateMessage(c) {
+  const to = c.delegate ? String(c.delegate).toLowerCase() : '';
+  if (!to) return `Tacit governance delegation\nNetwork: ${c.network}\nDelegate: none\nIssued: ${c.issued | 0}\nThis takes your delegation back. No funds move.`;
+  const all = c.rights === 'all';
+  return `Tacit governance delegation\nNetwork: ${c.network}\nDelegate: ${to}\nRights: ${all ? 'vote and propose' : 'vote'}\nIssued: ${c.issued | 0}\nThis lets the delegate vote${all ? ' and open proposals' : ''} with your TAC. You can vote yourself on any proposal, or take it back, at any time. No funds move.`;
+}
+
 export function buildGovernance(deps) {
   const {
     jsonResponse, safeInt,
@@ -124,6 +134,14 @@ export function buildGovernance(deps) {
   const GOV_EXEC_MULTISIG_DEFAULT = '0x006cd14f36f65ecbb29b2519ccbe63a0dc8549f2';
   // Ethereum snapshot block: this many blocks behind head at creation, so it is settled before anyone votes.
   const GOV_ETH_SNAPSHOT_LAG = 12;
+  // Delegation. One hop (a delegate's own delegation is not followed), fixed at the moment a proposal opened, and a delegator who votes
+  // takes their TAC back from the delegate on that proposal.
+  const GOV_DELEG_MAX_HISTORY = 64;             // changes kept per delegator
+  const GOV_DELEG_MIN_GAP_S = 300;              // between one delegator's changes
+  const GOV_DELEG_SKEW_S = 600;                 // how far a signed issue time may be from now
+  const GOV_DELEG_MIN_BASE = TAC;               // TAC held now to point at someone (1 TAC)
+  const GOV_DELEG_SCAN = 250;                   // delegators looked at for one delegate on one proposal
+  const GOV_MAX_DELEGATORS = 100;               // the largest of those that one vote counts
   const _SEL_NEXT_LEAF_INDEX = keccak256 ? bytesToHex(keccak256(enc('nextLeafIndex()'))).slice(0, 8) : null;
 
   // ---- KV key helpers (network-scoped) ----
@@ -131,6 +149,11 @@ export function buildGovernance(deps) {
   const pPrefix = (net) => `gov:p:${net}:`;
   const vKey = (net, id, voterKey) => `gov:v:${net}:${id}:${voterKey}`;
   const vPrefix = (net, id) => `gov:v:${net}:${id}:`;
+  // delegation: the delegator's own record (its whole history, newest last), an index from a delegate to everyone who ever pointed at
+  // it, and a proposal's cache of what each delegator held at its snapshot block (that never changes once read)
+  const dKey = (net, a) => `gov:d:${net}:${a}`;
+  const drPrefix = (net, to) => `gov:dr:${net}:${to}:`;
+  const dbKey = (net, id, a) => `gov:db:${net}:${id}:${a}`;
 
   function nowS() { return Math.floor(Date.now() / 1000); }
 
@@ -446,8 +469,63 @@ export function buildGovernance(deps) {
     return { ok: false, status: 403, reason: `${addr} holds less than the TAC required in its wallet or eligible farm` };
   }
 
+  // ---- delegation ------------------------------------------------------------
+  const big = (x) => { try { return BigInt(x || '0'); } catch { return 0n; } };
+  const ZERO_ADDR = '0x' + '0'.repeat(40);
+  // the delegation a holder had in force at `t` (seconds): the last change made by then, none when it was a take-back
+  function delegationAt(rec, t) {
+    let eff = null;
+    for (const h of (rec && rec.history) || []) { if (h.at <= t) eff = h; else break; }
+    return eff && eff.to ? eff : null;
+  }
+  // Who had pointed their TAC at `delegate` at time `t`, and what each held at the proposal's Ethereum snapshot block. `rights` 'all' counts
+  // only those who also handed over the right to open proposals. With a proposal id each balance is read once and kept; `stopAt` ends the
+  // look early when that much is already found (the floor to open a proposal). A balance that cannot be read fails the whole read: counting
+  // some of a delegate's holders and not others would be a wrong answer.
+  async function delegatorsOf(env, network, snap, delegate, t, rights, { id = null, stopAt = null } = {}) {
+    const token = govTacErc20(env, network);
+    const none = { ok: true, list: [], total: 0n, truncated: false };
+    if (!token || !Number.isInteger(snap.eth_snapshot_block)) return none;
+    const pre = drPrefix(network, delegate);
+    const keys = await listAllKeys(env.REGISTRY_KV, pre, GOV_DELEG_SCAN + 1);
+    const cands = keys.slice(0, GOV_DELEG_SCAN).map((k) => k.name.slice(pre.length));
+    let found = [], sum = 0n;
+    for (let i = 0; i < cands.length; i += 8) {
+      const got = await Promise.all(cands.slice(i, i + 8).map(async (a) => {
+        const eff = delegationAt(await env.REGISTRY_KV.get(dKey(network, a), 'json'), t);
+        if (!eff || eff.to !== delegate || (rights === 'all' && eff.rights !== 'all')) return null;
+        let w = null;
+        if (id) { const c = await env.REGISTRY_KV.get(dbKey(network, id, a)); if (c !== null) { try { w = BigInt(c); } catch { w = null; } } }
+        if (w === null) {
+          const bal = await readErc20Balance(env, network, token, a, snap.eth_snapshot_block);
+          if (bal === null) return { fail: true };
+          w = bal / GOV_ERC20_TO_BASE;
+          if (id) await env.REGISTRY_KV.put(dbKey(network, id, a), w.toString());
+        }
+        return w > 0n ? { a, w } : null;
+      }));
+      if (got.some((g) => g && g.fail)) return { ok: false, status: 502, reason: "a delegator's TAC balance at the snapshot could not be read, try again" };
+      for (const g of got) if (g) { found.push(g); sum += g.w; }
+      if (stopAt !== null && sum >= stopAt) break;
+    }
+    found.sort((x, y) => (y.w > x.w ? 1 : y.w < x.w ? -1 : 0));
+    const list = found.slice(0, GOV_MAX_DELEGATORS);
+    return { ok: true, list, total: list.reduce((a, d) => a + d.w, 0n), truncated: keys.length > GOV_DELEG_SCAN || found.length > list.length };
+  }
+  // A vote record holds the holder's own weight and the delegators its delegate was counting; a delegator who has voted on the proposal
+  // since is left out, so the same TAC is never counted twice. The weight of the result is own plus the delegators still counted.
+  function effectiveVotes(records) {
+    const voted = new Set(records.filter((r) => r.kind === 'public').map((r) => String(r.voter || '').toLowerCase()));
+    return records.map((r) => {
+      if (!r.delegators || !r.delegators.length) return r;
+      const ds = r.delegators.map((d) => ({ a: d.a, w: d.w, counted: !voted.has(d.a) }));
+      const dw = ds.reduce((a, d) => (d.counted ? a + big(d.w) : a), 0n);
+      return { ...r, own_weight: r.weight, delegated_weight: dw.toString(), delegators: ds, weight: (big(r.weight) + dw).toString() };
+    });
+  }
+
   // ---- tally / proposal lifecycle helpers -----------------------------------
-  function emptyTally(n) { return { totals: new Array(n).fill('0'), voters: 0, total_weight: '0', public_voters: 0, private_voters: 0 }; }
+  function emptyTally(n) { return { totals: new Array(n).fill('0'), voters: 0, total_weight: '0', public_voters: 0, private_voters: 0, delegated_weight: '0' }; }
   function statusOf(p) { return p.finalized ? 'closed' : (nowS() >= p.voting_ends_at ? 'ended' : 'active'); }
 
   function proposalPublicView(p, includeVotes, votes) {
@@ -507,6 +585,7 @@ export function buildGovernance(deps) {
       votes = [];
       const vl = await env.REGISTRY_KV.list({ prefix: vPrefix(network, idHex), limit: 1000 });
       for (const k of vl.keys) { const rec = await env.REGISTRY_KV.get(k.name, 'json'); if (rec) votes.push(rec); }
+      votes = effectiveVotes(votes);
       votes.sort((a, b) => (b.voted_at || 0) - (a.voted_at || 0));
     }
     return jsonResponse({ proposal: proposalPublicView(p, votes !== null, votes) }, 200, cors);
@@ -568,7 +647,14 @@ export function buildGovernance(deps) {
       const bal = await readErc20Balance(env, network, token, ethProposer, ethSnapEarly.eth_snapshot_block);
       if (bal === null) return jsonResponse({ error: 'balance read at the snapshot block failed (needs an archive RPC: GOV_ETH_ARCHIVE_RPC)' }, 502, cors);
       const floorBase = (() => { try { const t = BigInt(env.GOV_PROPOSE_MIN_BASE || '0'); return t > 0n ? t : GOV_PROPOSE_MIN_DEFAULT; } catch { return GOV_PROPOSE_MIN_DEFAULT; } })();
-      if (bal / GOV_ERC20_TO_BASE < floorBase) return jsonResponse({ error: `opening a proposal needs ${floorBase / TAC} TAC held at the snapshot` }, 403, cors);
+      // TAC that holders have handed over together with the right to open proposals counts toward the floor
+      let held = bal / GOV_ERC20_TO_BASE;
+      if (held < floorBase) {
+        const dres = await delegatorsOf(env, network, ethSnapEarly, ethProposer, nowS(), 'all', { stopAt: floorBase - held });
+        if (!dres.ok) return jsonResponse({ error: dres.reason }, dres.status, cors);
+        held += dres.total;
+      }
+      if (held < floorBase) return jsonResponse({ error: `opening a proposal needs ${floorBase / TAC} TAC held at the snapshot, or handed to you with the right to open proposals` }, 403, cors);
     }
 
     // Weight is judged at the snapshot, so it must be now: a proposal cannot pick a past height where some
@@ -637,7 +723,7 @@ export function buildGovernance(deps) {
     if (choice < 0 || choice >= p.choices.length) return jsonResponse({ error: 'choice out of range' }, 400, cors);
     const kind = body.kind === 'public' ? 'public' : (body.kind === 'private-eth' ? 'private-eth' : 'private');
 
-    let voterKey, voterId, weight, tier = null, outpoints = null;
+    let voterKey, voterId, weight, tier = null, outpoints = null, delegators = null;
 
     if (kind === 'private-eth') {
       const envelopeHex = String(body.weight_envelope || '').toLowerCase();
@@ -680,7 +766,11 @@ export function buildGovernance(deps) {
       if (bal === null) return jsonResponse({ error: 'balance read at the snapshot block failed (needs an archive RPC: GOV_ETH_ARCHIVE_RPC)' }, 502, cors);
       // The ERC-20 has 18 decimals; weights are in TAC base units (8 decimals), the same as the private tiers.
       const w = bal / GOV_ERC20_TO_BASE;
-      if (w <= 0n) return jsonResponse({ error: 'address held no TAC at the snapshot' }, 403, cors);
+      // TAC that holders pointed at this address when the proposal opened votes with it
+      const dres = await delegatorsOf(env, network, p, addr, p.created_at || 0, 'vote', { id: idHex });
+      if (!dres.ok) return jsonResponse({ error: dres.reason }, dres.status, cors);
+      if (w <= 0n && dres.list.length === 0) return jsonResponse({ error: 'address held no TAC at the snapshot' }, 403, cors);
+      delegators = dres.list.map((d) => ({ a: d.a, w: d.w.toString() }));
       voterId = addr;
       voterKey = 'eth-' + addr.replace(/^0x/, '');
       weight = w;
@@ -692,36 +782,45 @@ export function buildGovernance(deps) {
       tier: tier !== null ? tier.toString() : null, voter: voterId, outpoints,
       voted_at: nowS(), revote: !!existing,
     };
+    if (delegators && delegators.length) record.delegators = delegators;
     await env.REGISTRY_KV.put(vKey(network, idHex, voterKey), JSON.stringify(record));
 
     // running tally — recompute from the live vote set (authoritative, immune
     // to lost read-modify-write races; bounded by GOV_MAX_VOTES_SNAPSHOT).
-    const tally = await recomputeTally(env, network, idHex, p.choices.length);
+    const { tally, votes } = await tallyOf(env, network, idHex, p.choices.length);
     p.tally = tally;
     await env.REGISTRY_KV.put(pKey(network, idHex), JSON.stringify(p));
 
-    return jsonResponse({ ok: true, weight: weight.toString(), tier: tier !== null ? tier.toString() : null, revote: !!existing, tally }, 200, cors);
+    // what this vote counts for now: its own TAC and the delegators it carries who have not voted themselves
+    const mine = votes.find((v) => v.voter === voterId && v.kind === record.kind);
+    const counted = mine ? big(mine.weight) : weight;
+    const extra = mine && mine.delegators ? { own_weight: weight.toString(), delegated_weight: mine.delegated_weight, delegators: mine.delegators.length } : {};
+    return jsonResponse({ ok: true, weight: counted.toString(), tier: tier !== null ? tier.toString() : null, revote: !!existing, tally, ...extra }, 200, cors);
   }
 
-  async function recomputeTally(env, network, idHex, nChoices) {
+  // The tally and the votes it came from (a delegate's carrying the TAC pointed at it that has not voted on its own).
+  async function tallyOf(env, network, idHex, nChoices) {
     const t = emptyTally(nChoices);
     const totals = new Array(nChoices).fill(0n);
-    let total = 0n, pub = 0, priv = 0, voters = 0;
+    let total = 0n, pub = 0, priv = 0, voters = 0, deleg = 0n;
     const keys = await listAllKeys(env.REGISTRY_KV, vPrefix(network, idHex), GOV_MAX_VOTES_SNAPSHOT);
-    for (const k of keys) {
-      const rec = await env.REGISTRY_KV.get(k.name, 'json');
-      if (!rec) continue;
-      let w = 0n; try { w = BigInt(rec.weight); } catch {}
+    const recs = [];
+    for (const k of keys) { const rec = await env.REGISTRY_KV.get(k.name, 'json'); if (rec) recs.push(rec); }
+    const votes = effectiveVotes(recs);
+    for (const rec of votes) {
+      const w = big(rec.weight);
       const ci = rec.choice | 0;
       if (ci < 0 || ci >= nChoices) continue;
       totals[ci] += w; total += w; voters += 1;
+      if (rec.delegated_weight) deleg += big(rec.delegated_weight);
       if (rec.kind === 'public') pub += 1; else priv += 1;
     }
     t.totals = totals.map((x) => x.toString());
     t.total_weight = total.toString();
-    t.voters = voters; t.public_voters = pub; t.private_voters = priv;
-    return t;
+    t.voters = voters; t.public_voters = pub; t.private_voters = priv; t.delegated_weight = deleg.toString();
+    return { tally: t, votes };
   }
+  const recomputeTally = async (env, network, idHex, nChoices) => (await tallyOf(env, network, idHex, nChoices)).tally;
 
   async function finalize(env, network, idHex, cors) {
     if (!/^[0-9a-f]{64}$/.test(idHex)) return jsonResponse({ error: 'bad proposal id' }, 400, cors);
@@ -730,11 +829,8 @@ export function buildGovernance(deps) {
     if (nowS() < p.voting_ends_at) return jsonResponse({ error: 'voting window still open' }, 409, cors);
     if (p.finalized) return jsonResponse({ ok: true, already: true, result: p.result, result_cid: p.result_cid }, 200, cors);
 
-    const tally = await recomputeTally(env, network, idHex, p.choices.length);
-    // collect votes for the permanent snapshot
-    const votes = [];
-    const fkeys = await listAllKeys(env.REGISTRY_KV, vPrefix(network, idHex), GOV_MAX_VOTES_SNAPSHOT);
-    for (const k of fkeys) { const rec = await env.REGISTRY_KV.get(k.name, 'json'); if (rec) votes.push(rec); }
+    // the votes for the permanent snapshot are the ones the tally counted, a delegate's with the holders it carried
+    const { tally, votes } = await tallyOf(env, network, idHex, p.choices.length);
 
     const totals = tally.totals.map((x) => BigInt(x));
     let winner = -1, winnerW = -1n;
@@ -807,11 +903,89 @@ export function buildGovernance(deps) {
     return jsonResponse({ ok: true, execution: p.execution }, 200, cors);
   }
 
+  // ---- delegation routes -------------------------------------------------------
+  // POST /governance/delegate  { delegate: '0x…' | '', rights: 'vote' | 'all', issued, eth_sig }
+  // The signer hands the TAC in its wallet to `delegate`, or takes it back (an empty delegate). It counts on proposals that open after it.
+  async function setDelegation(req, env, network, cors) {
+    if (!govTacErc20(env, network)) return jsonResponse({ error: 'delegation is not enabled (TAC ERC20 not live on this network yet)' }, 501, cors);
+    let body;
+    try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
+    const delegate = String(body.delegate || '').toLowerCase();
+    const revoke = delegate === '';
+    if (!revoke && (!/^0x[0-9a-f]{40}$/.test(delegate) || delegate === ZERO_ADDR)) return jsonResponse({ error: 'delegate must be an Ethereum address' }, 400, cors);
+    const rights = revoke ? 'vote' : body.rights;
+    if (!GOV_DELEGATE_RIGHTS.includes(rights)) return jsonResponse({ error: `rights must be one of ${GOV_DELEGATE_RIGHTS.join(', ')}` }, 400, cors);
+    const issued = body.issued | 0, now = nowS();
+    if (Math.abs(now - issued) > GOV_DELEG_SKEW_S) return jsonResponse({ error: 'the signed time is too far from now, check your clock and sign again' }, 400, cors);
+    const ethSig = String(body.eth_sig || '');
+    if (!/^0x[0-9a-fA-F]{130}$/.test(ethSig)) return jsonResponse({ error: 'eth_sig (65-byte hex) required' }, 400, cors);
+    let addr;
+    try { addr = recoverEthAddr(govDelegateMessage({ network, delegate, rights, issued }), ethSig); }
+    catch (e) { return jsonResponse({ error: 'eth sig recover failed: ' + (e.message || 'unknown') }, 400, cors); }
+    if (addr === delegate) return jsonResponse({ error: 'you cannot delegate to your own address' }, 400, cors);
+
+    const rec = (await env.REGISTRY_KV.get(dKey(network, addr), 'json')) || { history: [] };
+    const last = rec.history[rec.history.length - 1] || null;
+    // a signature is good once: an older one cannot undo a newer choice
+    if (last && issued <= last.issued) return jsonResponse({ error: 'a newer delegation from this address is already recorded' }, 409, cors);
+    if (revoke && !(last && last.to)) return jsonResponse({ ok: true, delegation: null, unchanged: true }, 200, cors);
+    if (!revoke && last && last.to === delegate && last.rights === rights) return jsonResponse({ ok: true, delegation: { to: last.to, rights: last.rights, at: last.at }, unchanged: true }, 200, cors);
+    if (last && now - last.at < GOV_DELEG_MIN_GAP_S) {
+      return jsonResponse({ error: `wait ${Math.ceil((GOV_DELEG_MIN_GAP_S - (now - last.at)) / 60)} more minute(s) before changing your delegation again` }, 429, cors);
+    }
+    if (!revoke) {
+      // pointing at someone takes TAC held now, so an address with none cannot fill a delegate's list
+      const bal = await readErc20Balance(env, network, govTacErc20(env, network), addr);
+      if (bal === null) return jsonResponse({ error: 'the TAC balance could not be read, try again' }, 502, cors);
+      if (bal / GOV_ERC20_TO_BASE < GOV_DELEG_MIN_BASE) return jsonResponse({ error: `${addr} holds less than 1 TAC, so there is nothing to delegate` }, 403, cors);
+    }
+    rec.history.push({ to: revoke ? null : delegate, rights, at: now, issued });
+    if (rec.history.length > GOV_DELEG_MAX_HISTORY) rec.history.splice(0, rec.history.length - GOV_DELEG_MAX_HISTORY);
+    if (!revoke) await env.REGISTRY_KV.put(drPrefix(network, delegate) + addr, '1');
+    await env.REGISTRY_KV.put(dKey(network, addr), JSON.stringify(rec));
+    return jsonResponse({ ok: true, delegation: revoke ? null : { to: delegate, rights, at: now } }, 200, cors);
+  }
+
+  // GET /governance/delegation?address=0x…  who this address points at now, and who points at it (with what they hold now)
+  async function getDelegation(env, network, url, cors) {
+    const address = String(url.searchParams.get('address') || '').toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(address)) return jsonResponse({ error: 'address must be an Ethereum address' }, 400, cors);
+    const mine = await env.REGISTRY_KV.get(dKey(network, address), 'json');
+    const last = mine && mine.history[mine.history.length - 1];
+    const out = { address, delegate: last && last.to ? { to: last.to, rights: last.rights, at: last.at } : null, delegated_to_you: { count: 0, weight: '0', delegators: [], truncated: false } };
+    const token = govTacErc20(env, network);
+    if (token) {
+      const pre = drPrefix(network, address);
+      const keys = await listAllKeys(env.REGISTRY_KV, pre, GOV_DELEG_SCAN + 1);
+      const cands = keys.slice(0, GOV_DELEG_SCAN).map((k) => k.name.slice(pre.length));
+      const found = [];
+      for (let i = 0; i < cands.length; i += 8) {
+        const got = await Promise.all(cands.slice(i, i + 8).map(async (a) => {
+          const rec = await env.REGISTRY_KV.get(dKey(network, a), 'json');
+          const cur = rec && rec.history[rec.history.length - 1];
+          if (!cur || cur.to !== address) return null;
+          const bal = await readErc20Balance(env, network, token, a);
+          const w = bal === null ? 0n : bal / GOV_ERC20_TO_BASE;
+          return w > 0n ? { address: a, rights: cur.rights, weight: w } : null;
+        }));
+        for (const g of got) if (g) found.push(g);
+      }
+      found.sort((x, y) => (y.weight > x.weight ? 1 : y.weight < x.weight ? -1 : 0));
+      out.delegated_to_you = {
+        count: found.length, weight: found.reduce((a, d) => a + d.weight, 0n).toString(), truncated: keys.length > GOV_DELEG_SCAN,
+        delegators: found.slice(0, 25).map((d) => ({ address: d.address, rights: d.rights, weight: d.weight.toString() })),
+      };
+    }
+    return jsonResponse(out, 200, cors);
+  }
+
   // ---- public router ---------------------------------------------------------
   async function handle(req, env, url, network, cors, ctx) {
     const path = url.pathname;
     if (path === '/governance/proposals' && req.method === 'GET') return listProposals(env, network, url, cors);
     if (path === '/governance/proposals' && req.method === 'POST') return createProposal(req, env, network, cors);
+    if (path === '/governance/delegate' && req.method === 'POST') return setDelegation(req, env, network, cors);
+    if (path === '/governance/delegation' && req.method === 'GET') return getDelegation(env, network, url, cors);
     let m = path.match(/^\/governance\/proposal\/([0-9a-f]{64})$/);
     if (m && req.method === 'GET') return getProposal(env, network, m[1], url, cors);
     m = path.match(/^\/governance\/proposal\/([0-9a-f]{64})\/vote$/);

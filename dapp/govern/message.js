@@ -16,3 +16,12 @@ export async function proposeMessage(c) {
   const h = hex(await crypto.subtle.digest('SHA-256', bytes));
   return `Tacit governance proposal\nNetwork: ${c.network}\nTitle: ${c.title}\nVoting ends: ${c.voting_ends_at | 0}\nContent: ${h}\nThis opens a signalling proposal for TAC holders. No funds move.`;
 }
+
+// What the wallet signs to hand its TAC voting power to another address (rights: 'vote', or 'all' to open proposals too), or to take it back
+// (an empty delegate). Mirrors govDelegateMessage in the worker.
+export const delegateMessage = (c) => {
+  const to = c.delegate ? String(c.delegate).toLowerCase() : '';
+  if (!to) return `Tacit governance delegation\nNetwork: ${c.network}\nDelegate: none\nIssued: ${c.issued | 0}\nThis takes your delegation back. No funds move.`;
+  const all = c.rights === 'all';
+  return `Tacit governance delegation\nNetwork: ${c.network}\nDelegate: ${to}\nRights: ${all ? 'vote and propose' : 'vote'}\nIssued: ${c.issued | 0}\nThis lets the delegate vote${all ? ' and open proposals' : ''} with your TAC. You can vote yourself on any proposal, or take it back, at any time. No funds move.`;
+};

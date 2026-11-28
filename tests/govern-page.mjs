@@ -18,7 +18,7 @@ import { bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { createMemDriver } from '../server/driver-mem.mjs';
 import { createCacheStorage } from '../server/cache-mem.mjs';
 import { TAC as TAC_TOKEN } from '../dapp/trade/farm-read.js';
-import { voteMessage } from '../dapp/govern/message.js';
+import { voteMessage, delegateMessage } from '../dapp/govern/message.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || 'playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
@@ -269,6 +269,93 @@ const tacitKey = { mode: 'passkey', priv: tacitPriv, pubHex: tacitPub, label: 'T
   await page.context().close();
 }
 
+// 2b. delegation: a 99-TAC wallet hands its vote to the 250-TAC wallet, which then votes with both; the 99 votes for itself and takes it back; a take-back
+let id2;
+{
+  const { page, errs, csp, signed } = await open(poor, '#delegate');
+  await connect(page);
+  await page.waitForSelector('#dgform');
+  ok(await text(page, '.ptitle') === 'Delegate your vote' && /not delegated/.test(await text(page, '.sec .note')), 'the delegate page says nothing is delegated yet');
+  ok(/Delegation/.test(await text(page, '#dg-side')), 'and the side card links to it');
+  await shot(page, 'gov-delegate');
+  await page.fill('#dg-to', 'not an address');
+  await page.click('#dg-go');
+  ok(/starts with 0x/.test(await text(page, '#note')) && signed.length === 0, 'an address that is not one is refused before the wallet is asked');
+  await page.fill('#dg-to', rich.addr);
+  ok(await page.getAttribute('[data-rights="vote"]', 'aria-checked') === 'true' && await text(page, '#dg-go') === 'Sign and delegate', 'the vote right is the default, Sign and delegate is ready');
+  await page.click('#dg-go');
+  await page.waitForFunction(() => /Delegated\. It counts/.test(document.querySelector('#note')?.textContent || ''), null, { timeout: 30e3 });
+  const issued = +/Issued: (\d+)/.exec(signed[0]?.text || '')?.[1];
+  ok(signed.length === 1 && signed[0].text === delegateMessage({ network: 'mainnet', delegate: rich.addr, rights: 'vote', issued }), 'the wallet signed the delegation message');
+  const drec = await env.REGISTRY_KV.get(`gov:d:mainnet:${poor.addr}`, 'json');
+  ok(drec && drec.history.length === 1 && drec.history[0].to === rich.addr && drec.history[0].rights === 'vote', 'the worker recorded it under the signing account');
+  ok(new RegExp(rich.addr.slice(2, 8), 'i').test(await text(page, '.sec')) && await page.$('#dg-off'), 'the page shows the delegate and a way to take it back');
+  ok(/To 0x/i.test(await text(page, '#dg-side')), 'and the side card names them');
+  ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
+  await page.context().close();
+}
+{
+  // the delegate sees who handed theirs over, opens a new proposal (after the delegation) and votes with both
+  const { page, errs, csp } = await open(rich, '#delegate');
+  await connect(page);
+  await page.waitForFunction(() => /1 · 99 TAC/.test(document.querySelector('.eyebrow .who')?.textContent || ''));
+  ok(/99 TAC to you/.test(await text(page, '#dg-side')) && (await page.$$('.feed .vrow')).length === 1, 'the delegate sees one holder and 99 TAC handed to them');
+  await shot(page, 'gov-delegated-to-you');
+  await page.goto(`${BASE}/govern/#new`); await page.waitForSelector('#newform');
+  await page.fill('#f-title', 'A second question after the delegation');
+  await page.waitForFunction(() => !document.querySelector('#f-go')?.disabled);
+  await page.click('#f-go');
+  await page.waitForFunction(() => /^#[0-9a-f]{64}$/.test(location.hash) && document.querySelector('.ptitle'), null, { timeout: 30e3 });
+  id2 = (await page.evaluate(() => location.hash)).slice(1);
+  await page.waitForSelector('#ballot');
+  await page.waitForFunction(() => /delegated to this wallet/.test(document.querySelector('#ballot')?.textContent || ''));
+  ok(/Also carries TAC delegated to this wallet/.test(await text(page, '#ballot')), 'the ballot says delegated TAC votes with this wallet');
+  await page.click('.opt:has-text("Yes")');
+  await page.click('#vote');
+  await page.waitForFunction(() => /Voted with/.test(document.querySelector('#step-eth')?.textContent || ''), null, { timeout: 30e3 });
+  ok(/Voted with 349 TAC, 99 TAC of it delegated to you/.test(await text(page, '#step-eth')), `it voted with its own 250 and the 99 handed to it (${await text(page, '#step-eth')})`);
+  const rows = await page.$$eval('.vrow', (r) => r.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+  ok(rows.length === 1 && /349/.test(rows[0]) && /includes 99 TAC delegated by 1/.test(rows[0]), `the vote list says what it carries (${rows.join(' | ')})`);
+  ok(/Ethereum 349 TAC · 1/.test(await text(page, '#lane-e')), 'and the Ethereum side shows 349');
+  ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
+  await shot(page, 'gov-delegate-voted');
+  await page.context().close();
+}
+{
+  // the delegator opens it, is told, and votes for themselves: their 99 leave the delegate's vote
+  const { page, errs, csp } = await open(poor, `#${id2}`);
+  await connect(page);
+  await page.waitForFunction(() => /you delegated to/i.test(document.querySelector('#ballot')?.textContent || ''));
+  ok(/vote with your TAC here unless you vote yourself/.test(await text(page, '#ballot')), 'the delegator is told their delegate votes for them unless they do');
+  await page.click('.opt:has-text("No")');
+  await page.click('#vote');
+  await page.waitForFunction(() => /Voted with/.test(document.querySelector('#step-eth')?.textContent || ''), null, { timeout: 30e3 });
+  ok(/Voted with 99 TAC/.test(await text(page, '#step-eth')), 'the delegator’s own vote counts their 99');
+  const res = await page.$$eval('.res-h', (r) => r.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+  ok(/^Yes ?250 TAC/.test(res[0]) && /^No ?99 TAC/.test(res[1]), `the 99 moved from the delegate's vote to their own (${res.join(' | ')})`);
+  const p2 = await env.REGISTRY_KV.get(`gov:p:mainnet:${id2}`, 'json');
+  ok(p2.tally.total_weight === String(349n * 10n ** 8n) && p2.tally.delegated_weight === '0', 'the same 349 TAC, counted once');
+  ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
+  await page.context().close();
+}
+{
+  // taking it back (the worker waits five minutes between a wallet's changes, so move the last one back in time)
+  const key = `gov:d:mainnet:${poor.addr}`, rec = await env.REGISTRY_KV.get(key, 'json');
+  rec.history.forEach((h) => { h.at -= 900; h.issued -= 900; });
+  await env.REGISTRY_KV.put(key, JSON.stringify(rec));
+  const { page, errs, csp, signed } = await open(poor, '#delegate');
+  await connect(page);
+  await page.waitForSelector('#dg-off');
+  await page.click('#dg-off');
+  await page.waitForFunction(() => /taken back/.test(document.querySelector('#note')?.textContent || ''), null, { timeout: 30e3 });
+  ok(signed.length === 1 && /Delegate: none/.test(signed[0].text), 'the wallet signed a take-back');
+  const after = await env.REGISTRY_KV.get(key, 'json');
+  ok(after.history.length === 2 && after.history[1].to === null, 'the worker recorded it');
+  ok(/not delegated/.test(await text(page, '.sec .note')) && !(await page.$('#dg-off')), 'and the page says nothing is delegated');
+  ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
+  await page.context().close();
+}
+
 // 3. under the floor; a phone in dark
 {
   const { page, errs, csp, signed } = await open(poor, '#new', { viewport: { width: 390, height: 844 }, scheme: 'dark' });
@@ -280,6 +367,9 @@ const tacitKey = { mode: 'passkey', priv: tacitPriv, pubHex: tacitPub, label: 'T
   await shot(page, 'gov-phone-new');
   await page.goto(`${BASE}/govern/#${id}`); await page.waitForSelector('.vrow');
   ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'nor on a proposal');
+  await page.evaluate(() => { location.hash = 'delegate'; }); await page.waitForSelector('#dgform');
+  ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'nor on the delegate page');
+  await shot(page, 'gov-phone-delegate');
   await shot(page, 'gov-phone-detail');
   ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
   await page.context().close();

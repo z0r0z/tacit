@@ -94,6 +94,12 @@ its live on-chain values, who holds the role, and anything queued to change.
   wallet, and their exact balance counts.
 - **Snapshots.** Weight is fixed when a proposal opens: TAC counts only if it was held then and not yet
   spent, so TAC moved afterwards cannot vote again.
+- **Delegation.** A holder can sign, with their Ethereum wallet, to let another address vote with the TAC in
+  that wallet, and optionally open proposals with it. It is one hop (a delegate's own delegation is not followed)
+  and counts on proposals that open after it is signed. The holder can vote on any proposal themselves, which
+  takes their TAC back from the delegate on that proposal, or take the delegation back at any time. It covers
+  the Ethereum wallet's TAC; TAC on Bitcoin votes from its own key. `GET /governance/delegation?address=0x…`
+  lists who an address delegates to and who delegates to it.
 - **Execution.** Results are advisory. The ops multisig carries out passed proposals, and each one's page links
   the multisig transaction that did it, checked on-chain, or shows it as still awaiting execution.
 
