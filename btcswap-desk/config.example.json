@@ -10,7 +10,7 @@
   "poolAddress": "0x000000000Ed1eabD231Be41d93b719056F7febFC",
   "asset": "f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b",
   "quote": {
-    "minAmount": "100000000",
+    "minAmount": "100300903",
     "maxAmount": "100000000000",
     "feeBps": 30,
     "flatFee": "100000000",
