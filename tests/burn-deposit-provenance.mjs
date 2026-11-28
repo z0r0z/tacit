@@ -244,3 +244,60 @@ test('verifyProvenance composes inclusion + conservation + linkage', () => {
   bad.confirmedBlockRoot = 'ff'.repeat(32);
   assert.equal(bd.verifyProvenance('asset', c0Op, c0Ch, bOp, bCh, [bad]), false, 'unconfirmed inclusion rejected');
 });
+
+// ---- verifyProvenanceSegmented: the STUCK-TAC option-D rule (mirror of the Rust segmented_* KATs) ----
+const seg = makeBurnDepositProvenance({ outpointKey: (t, v) => `${t}:${v}` }).verifyProvenanceSegmented;
+const anchored = (t, ch) => [opk(t, 0), ch];
+
+test('segmented: two-segment lineage is real', () => {
+  const b = { txid: '0b', inputs: [['0a', 0, 'AA']], outputs: [[0, 'BB']] };
+  const anchors = [[C0_OP, C0_CH], anchored('0a', 'AA')];
+  assert.equal(seg(anchors, opk('0b', 0), 'BB', [[A()], [b]]), true);
+});
+
+test('segmented: pool-exit lineage is real (anchor only, no C_0)', () => {
+  // E:0 was onboarded by the pool-exit fold itself; its pre-pool history is unreachable by design.
+  const f = { txid: '0f', inputs: [['0e', 0, 'EE']], outputs: [[0, 'FF']] };
+  assert.equal(seg([anchored('0e', 'EE')], opk('0f', 0), 'FF', [[f]]), true);
+});
+
+test('segmented: unproven anchor rejected', () => {
+  const f = { txid: '0f', inputs: [['0e', 0, 'EE']], outputs: [[0, 'FF']] };
+  assert.equal(seg([], opk('0f', 0), 'FF', [[f]]), false);
+});
+
+test('segmented: an anchor alone cannot resolve the burn (self-inflation door)', () => {
+  // The prover anchors the burned outpoint but no segment PRODUCES it.
+  const anchors = [[C0_OP, C0_CH], anchored('0b', 'BB')];
+  assert.equal(seg(anchors, opk('0b', 0), 'BB', [[A()]]), false);
+});
+
+test('segmented: cross-segment value seam rejected', () => {
+  const b = { txid: '0b', inputs: [['0a', 0, 'FF']], outputs: [[0, 'BB']] };
+  const anchors = [[C0_OP, C0_CH], anchored('0a', 'AA')];
+  assert.equal(seg(anchors, opk('0b', 0), 'BB', [[A()], [b]]), false);
+});
+
+test('segmented: shared producer across segments rejected', () => {
+  const a1 = A();
+  const a2 = { txid: '0a', inputs: [['01', 0, '11']], outputs: [[0, 'AA']] };
+  const anchors = [[C0_OP, C0_CH], [opk('01', 0), '11']];
+  assert.equal(seg(anchors, opk('0a', 0), 'AA', [[a1], [a2]]), false);
+});
+
+test('segmented: double-spend across segments rejected', () => {
+  const b = { txid: '0b', inputs: [['00', 0, 'C0']], outputs: [[0, 'BB']] };
+  assert.equal(seg([[C0_OP, C0_CH]], opk('0b', 0), 'BB', [[A()], [b]]), false);
+});
+
+test('segmented: burned note consumed in lineage rejected', () => {
+  const b = { txid: '0b', inputs: [['0a', 0, 'AA']], outputs: [[0, 'BB']] };
+  assert.equal(seg([[C0_OP, C0_CH]], opk('0a', 0), 'AA', [[A()], [b]]), false);
+});
+
+test('segmented: empty segment / wrong commitment / island rejected', () => {
+  assert.equal(seg([[C0_OP, C0_CH]], opk('0a', 0), 'AA', [[A()], []]), false);
+  assert.equal(seg([[C0_OP, C0_CH]], opk('0a', 0), 'DD', [[A()]]), false);
+  const island = { txid: '0c', inputs: [['0d', 0, 'DE']], outputs: [[0, 'CC']] };
+  assert.equal(seg([[C0_OP, C0_CH]], opk('0a', 0), 'AA', [[A()], [island]]), false);
+});

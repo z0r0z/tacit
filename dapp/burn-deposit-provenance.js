@@ -164,10 +164,67 @@ export function makeBurnDepositProvenance({
     return [outpoint, commitmentHash(cx, cy)];
   }
 
+  // SEGMENTED provenance (STUCK-TAC option D): the JS mirror of cxfer-core's
+  // `verify_provenance_segmented`. A lineage too long for one 256-CXFER blob — or one that
+  // passes through a shielded-pool exit (a fact the etch-to-burn walk cannot express) — splits
+  // into segments at ANCHOR points the reflection itself has proven: the etch supply note `C_0`,
+  // a verified pool-membership leaf, or a DEPOSIT-LEAF anchor (an (outpoint, commitmentHash) pair
+  // proven against the fold's own depositLeavesRoot accumulator, which the reflection fills with
+  // every note it onboards). Same invariants as the single-DAG check, applied per segment plus
+  // across the shared produced/consumed index: one outpoint, one producer; every input resolves
+  // inside its segment or at a proven anchor; the burned note is PRODUCED (never merely anchored)
+  // and never consumed. Mirrors the Rust test suite (segmented_* in burn_deposit.rs).
+  function verifyProvenanceSegmented(anchors, burnedOutpoint, burnedCommitmentHash, segments) {
+    const norm = (x) => stripHex(x).toLowerCase();
+    const produced = new Map();
+    const consumed = new Set();
+    const reachable = anchors.map(([o, ch]) => [norm(o), norm(ch)]);
+    for (const segment of segments) {
+      if (!segment.length) return false;
+      for (const cx of segment) {
+        if (!cx.outputs.length || !cx.inputs.length) return false;
+        for (const [vout, ch] of cx.outputs) {
+          const op = norm(outpointKey(cx.txid, vout));
+          if (produced.has(op)) return false;
+          produced.set(op, norm(ch));
+        }
+        for (const [prevTxid, prevVout] of cx.inputs) {
+          const op = norm(outpointKey(prevTxid, prevVout));
+          if (consumed.has(op)) return false;
+          consumed.add(op);
+        }
+      }
+      const accepted = new Array(segment.length).fill(false);
+      let progress = true;
+      while (progress) {
+        progress = false;
+        segment.forEach((cx, i) => {
+          if (accepted[i]) return;
+          const allInputsReachable = cx.inputs.every(([prevTxid, prevVout, inCh]) => {
+            const op = norm(outpointKey(prevTxid, prevVout));
+            return reachable.some(([o, ch]) => o === op && ch === norm(inCh));
+          });
+          if (allInputsReachable) {
+            accepted[i] = true;
+            progress = true;
+            for (const [vout, ch] of cx.outputs) {
+              reachable.push([norm(outpointKey(cx.txid, vout)), norm(ch)]);
+            }
+          }
+        });
+      }
+      if (accepted.some((a) => !a)) return false;
+    }
+    if (consumed.has(norm(burnedOutpoint))) return false;
+    const producedCh = produced.get(norm(burnedOutpoint));
+    return producedCh !== undefined && producedCh === norm(burnedCommitmentHash);
+  }
+
   return {
     verifyMerklePath,
     verifyProvenanceDag,
     verifyProvenanceDagLeaves,
+    verifyProvenanceSegmented,
     verifyProvenance,
     verifyProvenanceLeaves,
     verifyCmintAuthorized,

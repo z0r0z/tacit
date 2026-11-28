@@ -3065,12 +3065,37 @@ pub fn imt_empty_root() -> [u8; 32] {
     keccak_merkle_root(&[imt_leaf(&zero, &zero)])
 }
 
+/// A Keccak Merkle path for `leaves[index]` in a tree padded with the zero leaves — the
+/// indexer's witness builder for the deposit-leaf accumulator (STUCK-TAC option D): the stateful
+/// ImtAccumulator holds the links, this turns them into the paths `imt_insert_transition` verifies.
+pub fn keccak_merkle_path(leaves: &[[u8; 32]], mut index: u64) -> Vec<[u8; 32]> {
+    let zeros = keccak_zeros();
+    let mut path = Vec::with_capacity(KECCAK_TREE_DEPTH);
+    let mut level: Vec<[u8; 32]> = leaves.to_vec();
+    for i in 0..KECCAK_TREE_DEPTH {
+        let sib_idx = (index ^ 1) as usize;
+        path.push(if sib_idx < level.len() { level[sib_idx] } else { zeros[i] });
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        let mut k = 0;
+        while k * 2 < level.len() {
+            let l = level[2 * k];
+            let r = if 2 * k + 1 < level.len() { level[2 * k + 1] } else { zeros[i] };
+            next.push(kn(&[&l, &r]));
+            k += 1;
+        }
+        level = next;
+        index >>= 1;
+    }
+    path
+}
+
 /// Stateful spent-set accumulator (the indexer / reflection-prover side): the sorted
 /// low-nullifier linked list seeded with the {0→0} sentinel, with incremental insert.
 /// `insert` splits the predecessor low-leaf (its `next` → nu) and appends {nu → old
 /// next} at a new index — leaf index = insertion order, so the root is order-dependent;
 /// fold spends in the SAME (chronological) order as the JS accumulator. Mirrors
 /// dapp/confidential-pool.js makeImtAccumulator.
+#[derive(Clone)]
 pub struct ImtAccumulator {
     links: Vec<([u8; 32], [u8; 32])>,
 }
@@ -4401,6 +4426,16 @@ pub struct ScanReflection {
     // across cycles. Sentinel-seeded like spent_root (count starts at 1).
     pub consumed_outpoints_root: [u8; 32],
     pub consumed_outpoints_count: u64,
+    // STUCK-TAC (option D): the Bitcoin shielded pool's own spent-set mirror — the pool-spent IMT
+    // (nullifier → next), fed by `fold_btc_pool_exit` in a successor generation. Sentinel-seeded
+    // (count 1). Committed in digest() so a resumed cycle can't replay a pool exit.
+    pub pool_spent_root: [u8; 32],
+    pub pool_spent_count: u64,
+    pub pool_spent_links: ImtAccumulator,
+    // STUCK-TAC (option D): the Bitcoin shielded pool's note-tree root (the Halo2 pool's R[H]),
+    // mirrored into the reflection so a T_BTC_SPEND's membership checks verify against the SAME
+    // root every indexer derives. Resumed like `pool_root`. [0;32] until a pool-aware generation.
+    pub btc_pool_root: [u8; 32],
     // Mode-B light-client anchor: the Ethereum sync committee the last Mode-B cycle ended on (the eth proof's
     // syncCommitteeRoot). The next Mode-B proof must start from it, so the trusted committee advances with
     // every cycle instead of staying at the pinned bootstrap, whose keys age out of the weak-subjectivity
@@ -4414,6 +4449,28 @@ pub struct ScanReflection {
     // the deposit's burnId in `burn_root` is the replay gate. Sentinel-seeded like `burn_root`.
     pub pending_deposit_root: [u8; 32],
     pub pending_deposit_count: u64,
+    // STUCK-TAC (option D): the DEPOSIT-LEAF accumulator — outpoint_key → commitment_hash for every
+    // note the reflection has itself onboarded (a conserving CXFER output, a cross-out mint, a
+    // verified burn-deposit deposit, or a shielded-pool exit). Written ONLY by the fold's own
+    // onboarding paths; read by `burn_deposit::verify_deposit_leaf`: a provenance SEGMENT may
+    // bottom out at any leaf proven a member here (burn_deposit::verify_provenance_segmented), so
+    // a lineage longer than one 256-CXFER blob splits at a fact this fold itself established, and
+    // a note born in the shielded pool (a T_BTC_SPEND exit, opcode 0x6D) starts its lineage at its
+    // exit's deposit leaf. This closes the gap reflect.rs notes at its `pool_memberships.is_empty()`
+    // refusal: `verify_pool_membership_leaf` proves only that (asset, cx, cy, owner) sits in the
+    // note tree — the OUTPOINT is an unbound witness field, so a dust UTXO could ride another
+    // note's leaf; here the outpoint is the IMT KEY (one UTXO, one insert, written by the fold's
+    // own append), so (outpoint, commitment_hash) membership IS the statement "the reflection
+    // onboarded this note at this outpoint". The live set carries the same keying but is
+    // spent-state, not provenance state (remove on spend); this accumulator is append-only, so an
+    // anchor stays valid for a note's whole history even after the note is spent. Sentinel-seeded
+    // (count 1). Committed in digest().
+    pub deposit_leaves_root: [u8; 32],
+    pub deposit_leaves_count: u64,
+    // The stateful mirror of the deposit-leaf IMT (indexer/tests): supplies insert witnesses for
+    // `fold_deposit_leaf_auto` and membership proofs. The guest never reads it (its witnesses ride
+    // stdin); the indexer keeps it in lockstep.
+    pub deposit_links: ImtAccumulator,
 }
 
 /// Domain for a pending burn-deposit record.
@@ -4462,6 +4519,13 @@ impl ScanReflection {
             eth_sync_committee: [0u8; 32],
             pending_deposit_root: UtxoAccumulator::new().root(),
             pending_deposit_count: 1,
+            pool_spent_root: imt_empty_root(),
+            pool_spent_count: 1,
+            pool_spent_links: ImtAccumulator::new(),
+            btc_pool_root: [0u8; 32],
+            deposit_leaves_root: imt_empty_root(),
+            deposit_leaves_count: 1,
+            deposit_links: ImtAccumulator::new(),
         }
     }
 
@@ -4520,6 +4584,12 @@ impl ScanReflection {
             &self.eth_sync_committee,
             // Burn-deposits awaiting their provenance — pinned so a resumed cycle can't drop one.
             &self.pending_deposit_root, &u64b(self.pending_deposit_count),
+            // STUCK-TAC: deposit-leaf anchors + the pool-spent mirror + the pool root — pinned so a
+            // resumed cycle can't roll back which outpoints the reflection has proven onboarded,
+            // replay a pool exit, or verify a T_BTC_SPEND against a forged pool tree.
+            &self.deposit_leaves_root, &u64b(self.deposit_leaves_count),
+            &self.pool_spent_root, &u64b(self.pool_spent_count),
+            &self.btc_pool_root,
         ])
     }
 
@@ -4693,7 +4763,164 @@ impl ScanReflection {
             .ok_or("note append witness invalid")?;
         self.note_count += 1;
         self.live.insert(outpoint, commitment_hash, asset, auth_key);
+        // STUCK-TAC: the onboarded note is a proven deposit leaf — a later provenance SEGMENT may
+        // bottom out here. The outpoint is the IMT key and the commitment hash the value, both
+        // derived from the fold's own verification (never witnessed).
+        self.fold_deposit_leaf_auto(outpoint, commitment_hash);
         Ok(())
+    }
+
+    /// Record `(outpoint -> commitment_hash)` in the deposit-leaf accumulator (STUCK-TAC option D).
+    /// The ONLY writer: every call site derives both fields from its own verified fold (a
+    /// conserving CXFER output, a proven cross-out mint, a verified burn-deposit deposit, or a
+    /// verified shielded-pool exit), so accumulator membership is exactly the reflection's own
+    /// onboarded-note record. STATEFUL form (the internal call sites / indexer): the state's own
+    /// `deposit_links` mirror supplies the insert witnesses, kept in lockstep with the witnessed
+    /// root. Panics on a duplicate key — a duplicate outpoint is a prover bug the live insert
+    /// would have panicked on first.
+    pub fn fold_deposit_leaf_auto(&mut self, outpoint: &[u8; 32], _commitment_hash: &[u8; 32]) {
+        let leaves_vec: Vec<[u8; 32]> = self
+            .deposit_links
+            .links()
+            .iter()
+            .map(|(v, n)| imt_leaf(v, n))
+            .collect();
+        let (low_i, low_v, low_n) = self
+            .deposit_links
+            .non_membership_low(outpoint)
+            .expect("deposit-leaf: outpoint already present (unreachable after live insert)");
+        self.deposit_links.insert(outpoint);
+        // The intermediate tree: the straddling low leaf rewired to point at the inserted key.
+        let mut interm = leaves_vec.clone();
+        interm[low_i] = imt_leaf(&low_v, outpoint);
+        let new_index = self.deposit_links.links().len() - 1;
+        self.deposit_leaves_root = imt_insert_transition(
+            &self.deposit_leaves_root,
+            outpoint,
+            &low_v,
+            &low_n,
+            low_i as u64,
+            &keccak_merkle_path(&leaves_vec, low_i as u64),
+            self.deposit_leaves_count,
+            &keccak_merkle_path(&interm, new_index as u64),
+        )
+        .expect("deposit-leaf insert: stateful witness must verify (same accumulator)");
+        self.deposit_leaves_count += 1;
+    }
+
+    /// Record `(outpoint -> commitment_hash)` in the deposit-leaf accumulator (STUCK-TAC option D).
+    /// The ONLY writer: every call site derives both fields from its own verified fold. WITNESSED
+    /// form (the guest): the insert witnesses ride the reflection's stdin, like `fold_spent`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_deposit_leaf(
+        &mut self,
+        outpoint: &[u8; 32],
+        dl_low_value: &[u8; 32],
+        dl_low_next: &[u8; 32],
+        dl_low_index: u64,
+        dl_low_path: &[[u8; 32]],
+        dl_new_path: &[[u8; 32]],
+    ) -> Result<(), &'static str> {
+        self.deposit_leaves_root = imt_insert_transition(
+            &self.deposit_leaves_root,
+            outpoint,
+            dl_low_value,
+            dl_low_next,
+            dl_low_index,
+            dl_low_path,
+            self.deposit_leaves_count,
+            dl_new_path,
+        )
+        .ok_or("deposit-leaf insert witness invalid")?;
+        self.deposit_leaves_count += 1;
+        Ok(())
+    }
+
+    /// STUCK-TAC (option D): fold one Bitcoin shielded-pool EXIT (`T_BTC_SPEND`, opcode 0x6D,
+    /// `has_exit = 1`) so the exited note becomes a bridged-home-able pool note. The GUEST
+    /// (reflect.rs, in a successor generation) does the proving this fold assumes:
+    ///   - the carrier tx is a confirmed block tx (the ordinary full-scan inclusion + witness
+    ///     commitment);
+    ///   - `verify_btc_pool_spend` (btc-pool-core, linked into the guest) verified the spend
+    ///     relation against the batch's resumed `btc_pool_root` — inputs are real tree members,
+    ///     conservation holds, and the body's exit names `(cx, cy)` at `exit_vout` with
+    ///     `dest_spk_hash` matching the carrier's output script;
+    ///   - the spend's nullifiers are FRESH against the guest's own pool-spent replay check.
+    /// This method then records the EXIT'S consequences for the transparent lane: the exit note at
+    /// `(carrier_txid, exit_vout)` — a transparent Tacit note per DESIGN-btc-shielded-pool.md §5
+    /// ("an output is a transparent note iff the pool recorded an accepted exit at it") — is
+    /// appended to the pool tree (witnessed), its outpoint goes LIVE, and it lands in the
+    /// deposit-leaf accumulator, so a later burn-deposit anchors its provenance segment there and
+    /// the note can bridge home. The nullifiers fold into `pool_spent_root` (the pool-spent
+    /// mirror) so the same pool note cannot exit twice. Returns the `(outpoint, ν, leaf)` triple
+    /// the caller folds for the burn path; `Err` (skip-not-panic) leaves everything unfolded.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
+    pub fn fold_btc_pool_exit(
+        &mut self,
+        asset: &[u8; 32],
+        carrier_txid: &[u8; 32],
+        exit_vout: u32,
+        cx: &[u8; 32],
+        cy: &[u8; 32],
+        // Nullifiers the spend consumed (verified against the pool root by the guest), with their
+        // witnessed pool-spent IMT inserts (low leaf + the two paths), in spend order.
+        pool_nullifiers: &[[u8; 32]],
+        ps_low_values: &[[u8; 32]],
+        ps_low_nexts: &[[u8; 32]],
+        ps_low_indexes: &[u64],
+        ps_low_paths: &[Vec<[u8; 32]>],
+        ps_new_paths: &[Vec<[u8; 32]>],
+        // The exit note's spend authority: the x-only key of the carrier's output at `exit_vout`.
+        auth_key: &[u8; 32],
+        // The exit note's append witness in the pool (note) tree.
+        note_path: &[[u8; 32]],
+    ) -> Result<([u8; 32], [u8; 32], [u8; 32]), &'static str> {
+        if pool_nullifiers.is_empty()
+            || pool_nullifiers.len() != ps_low_values.len()
+            || pool_nullifiers.len() != ps_low_nexts.len()
+            || pool_nullifiers.len() != ps_low_indexes.len()
+            || pool_nullifiers.len() != ps_low_paths.len()
+            || pool_nullifiers.len() != ps_new_paths.len()
+        {
+            return Err("pool-exit fold: nullifier witness length mismatch");
+        }
+        // The exit note's commitment must be a real curve point (a junk exit would strand its value).
+        from_affine_xy(cx, cy).ok_or("pool-exit fold: exit commitment not a curve point")?;
+        // 1. Nullify the consumed pool notes (a repeated pool nullifier is a double-exit — reject whole).
+        for k in 0..pool_nullifiers.len() {
+            let nf = &pool_nullifiers[k];
+            if pool_nullifiers[..k].contains(nf) {
+                return Err("pool-exit fold: repeated nullifier");
+            }
+            self.pool_spent_root = imt_insert_transition(
+                &self.pool_spent_root,
+                nf,
+                &ps_low_values[k],
+                &ps_low_nexts[k],
+                ps_low_indexes[k],
+                &ps_low_paths[k],
+                self.pool_spent_count,
+                &ps_new_paths[k],
+            )
+            .ok_or("pool-exit fold: pool-spent insert witness invalid")?;
+            self.pool_spent_count += 1;
+            // Keep the stateful mirror in lockstep (indexer parity; the replay gate's own check).
+            self.pool_spent_links.insert(nf);
+        }
+        // 2. Onboard the exit note: append its transparent leaf, mark the outpoint live, record the
+        //    deposit leaf (its provenance anchor for every later bridge).
+        let note_leaf = btc_note_leaf(asset, cx, cy, auth_key);
+        let ch = commitment_hash(cx, cy);
+        self.pool_root =
+            keccak_tree_append_transition(&self.pool_root, self.note_count, note_path, &note_leaf)
+                .ok_or("pool-exit fold: note append witness invalid")?;
+        self.note_count += 1;
+        let outpoint = outpoint_key(carrier_txid, exit_vout);
+        self.live.insert(&outpoint, &ch, asset, auth_key);
+        self.fold_deposit_leaf_auto(&outpoint, &ch);
+        let nu = nullifier(&note_leaf);
+        Ok((outpoint, nu, note_leaf))
     }
 
     /// Append a GENERATION-BOUND output note (onboarded via the bound CXFER opcode) and mark its outpoint live
@@ -4713,6 +4940,8 @@ impl ScanReflection {
             .ok_or("note append witness invalid")?;
         self.note_count += 1;
         self.live.insert_tagged(outpoint, commitment_hash, asset, auth_key, 1);
+        // STUCK-TAC: same deposit-leaf record as fold_output, for the bound domain.
+        self.fold_deposit_leaf_auto(outpoint, commitment_hash);
         Ok(())
     }
 
@@ -4875,6 +5104,8 @@ impl ScanReflection {
         self.pool_root = root;
         self.note_count += 1;
         self.live.insert(refund_outpoint, &ch, asset, refund_auth);
+        // STUCK-TAC: the refunded note is onboarded — record its deposit leaf.
+        self.fold_deposit_leaf_auto(refund_outpoint, &ch);
         Ok(())
     }
 
@@ -4924,6 +5155,9 @@ impl ScanReflection {
         self.note_count += 2;
         self.live.insert(outpoint_a, &ch_a, asset_a, auth_a);
         self.live.insert(outpoint_b, &ch_b, asset_b, auth_b);
+        // STUCK-TAC: both refunded notes are onboarded — record their deposit leaves.
+        self.fold_deposit_leaf_auto(outpoint_a, &ch_a);
+        self.fold_deposit_leaf_auto(outpoint_b, &ch_b);
         Ok(())
     }
 
@@ -4955,6 +5189,8 @@ impl ScanReflection {
         self.pool_root = root;
         self.note_count += 1;
         self.live.insert(outpoint, &ch, asset, auth);
+        // STUCK-TAC: the refunded note is onboarded — record its deposit leaf.
+        self.fold_deposit_leaf_auto(outpoint, &ch);
         Ok(())
     }
 
@@ -5892,7 +6128,6 @@ impl ScanReflection {
     /// deterministic farm_id — no treasury registered, caller must NOT register a reward schedule), and `Err`
     /// only when the funding itself is unproven (bad kernel / non-sentinel change / zero treasury) — a skip that
     /// strands nothing this fold funded.
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn fold_farm_init(
         &mut self,
@@ -8039,7 +8274,7 @@ mod tests {
     fn genesis_digest_matches_contract_constant() {
         assert_eq!(
             ScanReflection::genesis().digest(),
-            arr32("0x76cd653a3e997bc0fc0c36f6f678ca61438819ca0e34ed3e3125329350239ce5"),
+            arr32("0xb42ec3744795de08219e4d70bb39f183fd35e154e0c072f75fb7677d4107ff00"),
             "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
         );
     }
@@ -11186,7 +11421,7 @@ mod tests {
     #[test]
     fn scan_reflection_genesis_digest() {
         let g = ScanReflection::genesis();
-        assert_eq!(hex::encode(g.digest()), "76cd653a3e997bc0fc0c36f6f678ca61438819ca0e34ed3e3125329350239ce5", "full-scan genesis digest (JS indexer + contract must match)");
+        assert_eq!(hex::encode(g.digest()), "b42ec3744795de08219e4d70bb39f183fd35e154e0c072f75fb7677d4107ff00", "full-scan genesis digest (JS indexer + contract must match)");
         // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
         // keep the {0→0} sentinel roots.
         assert_eq!(g.live.root(), g.pool_root);
@@ -11504,7 +11739,150 @@ mod tests {
             assert_ne!(bpp_len, classic_len, "range-proof length collision at m={m}");
         }
     }
+    // ---- STUCK-TAC (option D): deposit-leaf accumulator + pool-exit fold ----
+
+    /// The deposit-leaf insert witness, built from the state's own mirror (`deposit_links`) the
+    /// way the indexer would: the pre-insert leaves, the straddling low leaf, the rewire, both paths.
+    fn deposit_leaf_w(
+        links: &ImtAccumulator,
+        key: &[u8; 32],
+    ) -> ([u8; 32], [u8; 32], u64, Vec<[u8; 32]>, Vec<[u8; 32]>) {
+        let leaves: Vec<[u8; 32]> = links.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
+        let (low_i, low_v, low_n) = links.non_membership_low(key).expect("deposit low");
+        let low_path = keccak_merkle_path(&leaves, low_i as u64);
+        let mut interm = leaves.clone();
+        interm[low_i] = imt_leaf(&low_v, key);
+        let new_path = keccak_merkle_path(&interm, leaves.len() as u64);
+        (low_v, low_n, low_i as u64, low_path, new_path)
+    }
+
+    /// Membership of `key` in the accumulator's committed tree (the indexer's proof check).
+    fn links_membership(links: &ImtAccumulator, root: &[u8; 32], key: &[u8; 32]) -> bool {
+        let leaves: Vec<[u8; 32]> = links.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
+        match links.links().iter().position(|(v, _)| v == key) {
+            None => false,
+            Some(i) => {
+                let next = links.links()[i].1;
+                imt_membership(root, key, &next, i as u64, &keccak_merkle_path(&leaves, i as u64))
+            }
+        }
+    }
+
+    #[test]
+    fn fold_output_records_deposit_leaf_anchor() {
+        let asset = [0x5e; 32];
+        let (cx, cy) = ([0x0a; 32], [0x1a; 32]);
+        let com = commitment_hash(&cx, &cy);
+        let op = outpoint_key(&[0xa0; 32], 0); // the accumulator's key: outpoint_key(txid, vout)
+        let mut st = ReflectionState::genesis();
+        let mut sc = ScanReflection::genesis();
+        let leaf: [u8; 32] = arr32(&format!("0x{:064x}", 0x1aa));
+        let ow = build_output_witness(&st.notes, &st.utxo, leaf, op, com);
+        st.notes.append(&leaf);
+        st.utxo.insert(&op, &com);
+        sc.fold_output(&leaf, &ow.note_path, &op, &com, &asset, &AUTH_DUMMY)
+            .expect("output");
+        // The onboarded note is a deposit leaf: a membership proof over the fold's own root verifies.
+        assert!(sc.deposit_leaves_count > 1, "the insert advanced the count");
+        assert!(
+            links_membership(&sc.deposit_links, &sc.deposit_leaves_root, &op),
+            "op is a member of deposit_leaves_root after fold_output"
+        );
+        // And a segmented provenance can anchor at it (the pool-exit lineage shape).
+        let anchors = vec![(op, com)];
+        let f = burn_deposit::VerifiedCxfer {
+            txid: [0x0F; 32],
+            inputs: vec![([0xa0; 32], 0, com)], // the RAW (txid, vout): keys to `op`
+            outputs: vec![(0, [0xBB; 32])],
+        };
+        let burned = outpoint_key(&[0x0F; 32], 0);
+        assert_eq!(
+            burn_deposit::verify_provenance_segmented(&anchors, &burned, &[0xBB; 32], &[&[f.clone()] as &[_]]),
+            Some([0xBB; 32]),
+            "the burned note descends from the deposit-leaf anchor through one segment"
+        );
+        // Without the anchor (an unproven "the reflection tracked this") the same lineage rejects.
+        assert_eq!(
+            burn_deposit::verify_provenance_segmented(&[], &burned, &[0xBB; 32], &[&[f]]),
+            None
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cloned_ref_to_slice_refs)]
+    fn fold_btc_pool_exit_onboards_the_exit_note_and_anchors_it() {
+        let asset = [0x5e; 32];
+        let mut sc = ScanReflection::genesis();
+        sc.btc_pool_root = [0x33; 32]; // a pool-aware generation's resumed pool root
+        // One pool note exits: its nullifier (already verified against the pool root by the guest)
+        // and the exit's commitment at the carrier's exit output.
+        let nf = [0x77; 32];
+        let blinding: [u8; 32] = arr32(&format!("0x{:064x}", 0x2c));
+        let (cx, cy) = pedersen_commit_xy(900, &blinding);
+        let carrier_txid = [0xAB; 32];
+        let exit_vout = 1u32;
+        let auth = [0x99; 32];
+        let ps = deposit_leaf_w(&ImtAccumulator::new(), &nf);
+        let note_leaf = btc_note_leaf(&asset, &cx, &cy, &auth);
+        let note_path = KeccakTreeAccumulator::new().append_path();
+        let dl_key = outpoint_key(&carrier_txid, exit_vout);
+        let (op, nu, leaf) = sc
+            .fold_btc_pool_exit(
+                &asset,
+                &carrier_txid,
+                exit_vout,
+                &cx,
+                &cy,
+                &[nf],
+                &[ps.0],
+                &[ps.1],
+                &[ps.2],
+                &[ps.3.clone()],
+                &[ps.4.clone()],
+                &auth,
+                &note_path,
+            )
+            .expect("pool exit folds");
+        assert_eq!(op, dl_key, "the exit note lives at (carrier, exit_vout)");
+        assert_eq!(
+            nu,
+            nullifier(&leaf),
+            "the note's ν is the transparent-domain one"
+        );
+        assert_eq!(leaf, note_leaf);
+        // The note is live, spendable on Bitcoin, and anchored as a deposit leaf.
+        assert_eq!(sc.live.get(&op), Some((commitment_hash(&cx, &cy), asset, auth)));
+        assert!(
+            links_membership(&sc.deposit_links, &sc.deposit_leaves_root, &op),
+            "the exit note is a deposit-leaf anchor"
+        );
+        // The consumed nullifier's own membership now holds — a SECOND exit spending nf would need
+        // a fresh insert witness (low leaf straddling nf), which no longer exists: the replay gate.
+        assert!(
+            links_membership(&sc.pool_spent_links, &sc.pool_spent_root, &nf),
+            "nf is a member of pool_spent_root — a second exit of the same pool note cannot insert again"
+        );
+        // A repeated nullifier within one spend is rejected whole.
+        assert!(sc
+            .fold_btc_pool_exit(
+                &asset,
+                &[0xCD; 32],
+                1,
+                &cx,
+                &cy,
+                &[nf, nf],
+                &[ps.0, ps.0],
+                &[ps.1, ps.1],
+                &[ps.2, ps.2],
+                &[ps.3.clone(), ps.3.clone()],
+                &[ps.4.clone(), ps.4.clone()],
+                &auth,
+                &note_path,
+            )
+            .is_err());
+    }
 }
+
 
 /// Cross-language parity vectors for the JS mirrors in `dapp/confidential-pool.js`
 /// (`nkToOwner` / `nativeNullifier`). The client derives a native note's published owner and its
