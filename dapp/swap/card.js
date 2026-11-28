@@ -2913,7 +2913,7 @@ function paintAtomic() {
   const mode = $('.mode'), after = $('#btc');
   if (!ATOM.avail || !mode || !after) return;
   if (!$('#atomic')) {
-    mode.insertAdjacentHTML('beforeend', '<button type="button" role="radio" data-mode="atomic" aria-checked="false" aria-label="Bitcoin and Ethereum" title="Bitcoin and Ethereum"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg></button>');
+    mode.insertAdjacentHTML('beforeend', '<button type="button" role="radio" data-mode="atomic" aria-checked="false" aria-label="Bitcoin and Ethereum" title="Bitcoin and Ethereum"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><span class="al">BTC ⇄ ETH</span></button>');
     after.insertAdjacentHTML('afterend', '<div id="atomic" hidden></div>');
   }
   ROOT.classList.add('ab');

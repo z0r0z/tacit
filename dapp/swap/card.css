@@ -47,6 +47,7 @@
 /* the Bitcoin and Ethereum lane (swap/atomic.js): a third switch with the two marks, made once the boards name a provider of the pair (the card gets .ab); in the front page's card, whose
    switch is otherwise out of sight, it shows with Ethereum alone, as the way in and back; the lane is drawn with the fields, receipt and list of the Bitcoin lane's */
 .swc .mode button[data-mode="atomic"] { gap: 0; padding: 2px 10px; } .swc .mode button[data-mode="atomic"] .tk + .tk { margin-left: -5px; }
+.swc .mode button[data-mode="atomic"] .al { margin-left: 6px; white-space: nowrap; } /* the pair named beside its marks, so the way in is seen */
 .swc.mv:not(.btc) .mode button[data-mode="bitcoin"], .swc.mv.btc .mode button[data-mode="atomic"] { display: none; }
 .swc.atom > :not(.mode):not(#atomic):not(.sr) { display: none; }
 .swc #atomic .coin { cursor: default; }
