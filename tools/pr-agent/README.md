@@ -33,22 +33,28 @@ Discord                                         GitHub Actions (this repo)      
 | the model endpoint and the turn lease | `helpdesk/server.mjs` (`/agent/chat`), `helpdesk/lease.mjs` (kind `agent`) |
 | a node that holds the model | `helpdesk/node/run-agent.sh`, `helpdesk/node/worker.mjs` |
 
-## Switching it on (in this order)
+## Switching it on
 
-1. **The gateway** (Render `tacit-helpdesk`): set `AGENT_SECRET` (64 hex characters) and `AGENT_MODELS=qwen3.6-35b-a3b`, then deploy (`node helpdesk/deploy/render.mjs deploy --send`). Check it:
-   `curl -H "Authorization: Bearer $AGENT_SECRET" https://tacit-helpdesk.onrender.com/agent/status` answers `{"ok":true,"nodes":0,…}` until a big node is up. Without those two settings the endpoint does not exist.
-2. **A big node.** On any machine with about 30 GB of memory and 26 GB of disk: `MINER=0x… bash helpdesk/node/run-agent.sh`. It downloads the 22 GB model (checked against a pinned SHA-256), starts it with the measured settings, and answers agent turns. `DRY_RUN=1` shows what it would do. A 6 GB GPU with 96 GB of RAM is the common case among the pool's big nodes; with no GPU it works but slowly.
-3. **GitHub secrets** (Settings > Secrets and variables > Actions): `AGENT_SECRET` (the same value as the gateway's), `NUDGER_SECRET` (the API's), and optionally `PR_AGENT_PUSH_TOKEN`, a fine-grained token with Contents and Pull requests write on this repo (without it the PR is opened with the job's own token, and GitHub does not run CI on such a PR).
-4. **The API** (Render `tacit-api`): set `GITHUB_DISPATCH_TOKEN` (a fine-grained token with **Actions: write** on this repo and nothing else), `IMPROVE_USER_IDS` (Discord user ids allowed to ask, comma-separated) and/or `IMPROVE_ROLE_IDS`, optionally `IMPROVE_MAX_DAY` (default 10); deploy it. With neither list set the commands answer "not enabled".
-5. **Register the commands:** `cd discord && node bot.js` (this replaces the app's command list: `/verify`, `/improve`, "Prepare a PR"). The new ones start admin-only; open them under Server Settings > Integrations when you want.
-6. **Try it:** Actions > "tacit-bot code agent" > Run workflow with the task left empty (an autonomous pass), then `/improve` in Discord.
+Merging this changes nothing by itself: the model endpoint does not exist without `AGENT_SECRET` and `AGENT_MODELS`, the Discord commands say "not enabled" without `IMPROVE_USER_IDS`/`IMPROVE_ROLE_IDS`, and the daily pass stays off until the repository variable `PR_AGENT_ON` is `true`.
 
-Turn it off: unset `IMPROVE_USER_IDS`/`IMPROVE_ROLE_IDS` (Discord), disable the workflow (Actions), or unset `AGENT_SECRET` (the model endpoint).
+**One command does most of it** (it shows its plan unless you add `--send`, and it refuses before this is on main):
+`node tools/pr-agent/ship.mjs --users <discord user ids> --send`
+It makes the gateway secret (kept in the keychain as `tacit-agent-secret`), sets `AGENT_SECRET`/`AGENT_MODELS` on `tacit-helpdesk` and `GITHUB_DISPATCH_TOKEN`/`IMPROVE_USER_IDS` on `tacit-api`, sets the GitHub secrets `AGENT_SECRET` and `NUDGER_SECRET` and the variable `PR_AGENT_ON`, and deploys both services.
+
+What only a person can do:
+1. **Before `ship.mjs`:** create a fine-grained GitHub token for this repo with **Actions: write** and nothing else (GitHub only lets a person make one) and keep it as `tacit-pragent-dispatch-token` in the keychain: `security add-generic-password -U -s tacit-pragent-dispatch-token -a $USER -w`. Optionally also a `PR_AGENT_PUSH_TOKEN` secret (Contents and Pull requests write): without it the PR is opened with the job's own token and GitHub does not run CI on such a PR.
+2. **After it:** register the commands: `cd discord && node bot.js` from the checkout that has `discord/.env` (this replaces the app's command list: `/verify`, `/improve`, "Prepare a PR"; the new two start admin-only, open them under Server Settings > Integrations when you want).
+3. **A big node.** On a machine with about 30 GB of memory and 26 GB of disk: `MINER=0x… bash helpdesk/node/run-agent.sh`. It downloads the 22 GB model (checked against a pinned SHA-256), starts it with the measured settings and answers agent turns (`DRY_RUN=1` shows what it would do). A 6 GB GPU with 96 GB of RAM is the common case among the pool's big nodes; with no GPU it works, slowly. `curl -H "Authorization: Bearer $AGENT_SECRET" https://tacit-helpdesk.onrender.com/agent/status` counts the nodes that can take a turn.
+4. **Try it:** Actions > "tacit-bot code agent" > Run workflow with the task left empty (an autonomous pass), then `/improve` in Discord.
+
+Turn it off: unset `IMPROVE_USER_IDS`/`IMPROVE_ROLE_IDS` (Discord), set `PR_AGENT_ON` to anything else (the daily pass), or unset `AGENT_SECRET` (the model endpoint).
 
 ## Reading how it is doing
 
 `GET /nudger/labels` (Bearer `NUDGER_SECRET`) now has an `agent` block next to the totals: how many reports the bot posted and how many were marked Useful / Noise / Already known. Every report has those buttons. That is the measure of whether it earns its keep, and what should decide whether to loosen or tighten the checks. Every run keeps its conversation, patch and result as a workflow artifact for 30 days.
 
-## Measured so far (2026-11-28)
+## What is and is not known about the model
 
-See `tools/yardstick/` for the yardstick these numbers come from (223 historical fixes, each with a test that fails before and passes after).
+The checks, the safety rules and the plumbing are tested (about 250 checks across the gateway, the node, the runner and the Discord side, including a real push to a remote and a draft PR through a stand-in for `gh`). **How often the open model gets a change right is not established.** Replaying 223 real historical fixes (each with a test that fails before and passes after), none of the 4B model the pool runs today, Qwen3.6-35B-A3B or Qwen3-Coder-Next solved one in the first runs; those runs had a setup mistake (the failing tests were shown to the model but not on disk, so it could not reproduce the failure), which was found and fixed, and the rerun was not finished when this was written. Qwen3.6 did reason its way to a real bug on one item and ran out of turns reading, which is why reads now return at least 100 lines and the budget is 45 turns.
+
+So expect most outcomes at first to be a suggestion or "nothing to change". That is by design: failing gates cost nothing but idle electricity, and the Useful / Noise / Already known labels on every report are what will say whether to loosen or tighten the checks. The yardstick itself (`tools/yardstick`) is on its own branch and not part of this change.
