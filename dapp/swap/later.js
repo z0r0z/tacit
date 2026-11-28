@@ -216,6 +216,10 @@ export async function depositFee(get = globalThis.fetch, keeper = CHAIN.keeper) 
   return BigInt(least);
 }
 
+// The circuit and key have gzip copies beside them (a third smaller): fetched first, opened here, and held to the same pinned hash as the plain file,
+// which is fetched instead when the copy is missing, cannot be opened, or does not match.
+const gzOf = (name) => /\.(wasm|zkey)$/.test(name) && typeof DecompressionStream === 'function';
+const gunzip = async (z) => (z[0] === 0x1f && z[1] === 0x8b ? new Uint8Array(await new Response(new Blob([z]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()) : z);
 export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, sendPrivate = null, store = globalThis.localStorage, chain = CHAIN, prove: proveWith = null, tokens = null, walletOf = null, routes = {}, knows = null, callRan = null, gasPrice: gasNow = null, now = Date.now }) {
   const rt = { routeOut, routeFrom, routeOutTac, ...routes };
   const secs = () => Math.floor(now() / 1000);
@@ -237,19 +241,26 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
   })().catch((e) => { modsP = null; throw e; }));
 
   async function artifact(name, sha) {
-    const url = '/evm-pool/' + name, key = `${url}?sha256=${sha}`;
+    const url = '/evm-pool/' + name, key = `${url}?sha256=${sha}`, want = lc(sha).replace(/^0x/, '');
     let cache = null; try { cache = await caches.open(ARTIFACT_CACHE); } catch { }
     const hit = cache ? await cache.match(key).catch(() => null) : null;
-    const res = hit || await fetch(url).then((r) => { if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`); return r; });
-    const size = Number(res.headers.get('content-length')) || 0;
-    prover.total += size;
-    let bytes;
-    if (!hit && size && res.body?.getReader) {
+    // a file read as it comes, so what has arrived can be said (prover.got of prover.total)
+    const download = async (u) => {
+      const res = await fetch(u); if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
+      const size = Number(res.headers.get('content-length')) || 0;
+      prover.total += size;
+      if (!size || !res.body?.getReader) { const x = new Uint8Array(await res.arrayBuffer()); if (!size) prover.total += x.length; prover.got += size || x.length; return x; }
       const rd = res.body.getReader(), parts = []; let n = 0;
       for (;;) { const { done, value } = await rd.read(); if (done) break; parts.push(value); n += value.length; prover.got += value.length; }
-      bytes = new Uint8Array(n); let o = 0; for (const p of parts) { bytes.set(p, o); o += p.length; }
-    } else { bytes = new Uint8Array(await res.arrayBuffer()); prover.got += size || bytes.length; }
-    if (hexOf(await crypto.subtle.digest('SHA-256', bytes)) !== lc(sha).replace(/^0x/, '')) { if (hit) await cache.delete(key).catch(() => {}); throw new Error(`${name} does not match the ceremony’s pinned hash`); }
+      const out = new Uint8Array(n); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
+      return out;
+    };
+    const sum = async (x) => hexOf(await crypto.subtle.digest('SHA-256', x));
+    let bytes = null;
+    if (hit) bytes = new Uint8Array(await hit.arrayBuffer());
+    else if (gzOf(name)) { try { const x = await gunzip(await download(url + '.gz')); if (await sum(x) === want) bytes = x; } catch { } }
+    if (!bytes) bytes = await download(url);
+    if (await sum(bytes) !== want) { if (hit) await cache.delete(key).catch(() => {}); throw new Error(`${name} does not match the ceremony’s pinned hash`); }
     if (!hit && cache) await cache.put(key, new Response(bytes)).catch(() => {});
     return bytes;
   }

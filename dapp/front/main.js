@@ -5583,13 +5583,28 @@ const getDeviceMods = lazy(async () => {
   return { zk: zkm.makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) }), ...wm, vkHash: pm.vkHash };
 });
 const hexOf = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, '0')).join('');
+// The circuit and key have gzip copies beside them (a third smaller): fetched first, opened here, and held to the same pinned hash as the plain file,
+// which is fetched instead when the copy is missing, cannot be opened, or does not match.
+const gzOf = (name) => /\.(wasm|zkey)$/.test(name) && typeof DecompressionStream === 'function';
+const gunzip = async (z) => (z[0] === 0x1f && z[1] === 0x8b ? new Uint8Array(await new Response(new Blob([z]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()) : z);
 async function artifact(name, sha, onProgress) {
-  const url = '/evm-pool/' + name, key = `${url}?sha256=${sha}`;
+  const url = '/evm-pool/' + name, key = `${url}?sha256=${sha}`, want = strip(sha).toLowerCase();
   let cache = null; try { cache = await caches.open('tacit-evm-pool-artifacts-v1'); } catch {}
   const hit = cache ? await cache.match(key).catch(() => null) : null;
-  let bytes;
+  let bytes = null;
   if (hit) bytes = new Uint8Array(await hit.arrayBuffer());
-  else {
+  else if (gzOf(name)) { try { const x = await gunzip(await download(url + '.gz', name, onProgress)); if (hexOf(await crypto.subtle.digest('SHA-256', x)) === want) bytes = x; } catch {} }
+  if (!bytes) bytes = await download(url, name, onProgress);
+  if (hexOf(await crypto.subtle.digest('SHA-256', bytes)) !== want) {
+    if (hit) await cache.delete(key).catch(() => {});
+    throw new Error(`${name} does not match the ceremony’s pinned hash`);
+  }
+  if (!hit && cache) await cache.put(key, new Response(bytes)).catch(() => {});
+  return bytes;
+}
+async function download(url, name, onProgress) {
+  let bytes;
+  {
     const ac = typeof AbortController === 'function' ? new AbortController() : null;
     let stall = null;
     const arm = () => { if (!ac) return; clearTimeout(stall); stall = setTimeout(() => ac.abort(), 60e3); };
@@ -5606,11 +5621,6 @@ async function artifact(name, sha, onProgress) {
       throw e;
     } finally { clearTimeout(stall); }
   }
-  if (hexOf(await crypto.subtle.digest('SHA-256', bytes)) !== strip(sha).toLowerCase()) {
-    if (hit) await cache.delete(key).catch(() => {});
-    throw new Error(`${name} does not match the ceremony’s pinned hash`);
-  }
-  if (!hit && cache) await cache.put(key, new Response(bytes)).catch(() => {});
   return bytes;
 }
 let proverP = null;
@@ -14158,7 +14168,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=5faf20ad').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=7dbf48c9').catch((e) => { SWC.p = null; throw e; }));
 // Intent on Shield or Swap is a useful head start: fetch both the card and the
 // private action engine, and warm the fee/log reads they need before submit.
 const hxActionWarm = () => { swcLoad().catch(() => {}); hxWarm(); hxWarmWrap(); };

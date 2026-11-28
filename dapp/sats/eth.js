@@ -78,15 +78,30 @@ const pin = () => (pinP ||= fetch(ARTIFACTS + 'pin.json', { cache: 'no-store' })
   .then((r) => { if (r.status === 404) return null; if (!r.ok) throw new Error(`pin.json: HTTP ${r.status}`); return r.json(); })
   .catch((e) => { pinP = null; throw e; }));
 
+// The circuit and key have gzip copies beside them (a third smaller): fetched first, opened here, and held to the same pinned hash as the plain file,
+// which is fetched instead when the copy is missing, cannot be opened, or does not match.
+const gzOf = (name) => /\.(wasm|zkey)$/.test(name) && typeof DecompressionStream === 'function';
+const gunzip = async (z) => (z[0] === 0x1f && z[1] === 0x8b ? new Uint8Array(await new Response(new Blob([z]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()) : z);
 async function artifact(name, sha, onProgress) {
   const url = ARTIFACTS + name;
-  const key = `${url}?sha256=${sha}`;
+  const key = `${url}?sha256=${sha}`, want = String(sha).replace(/^0x/, '').toLowerCase();
   let cache = null;
   try { cache = await caches.open(CACHE_NAME); } catch {}
   const hit = cache ? await cache.match(key).catch(() => null) : null;
-  let bytes;
+  let bytes = null;
   if (hit) bytes = new Uint8Array(await hit.arrayBuffer());
-  else {
+  else if (gzOf(name)) { try { const x = await gunzip(await download(url + '.gz', name, onProgress)); if (hexOf(await crypto.subtle.digest('SHA-256', x)) === want) bytes = x; } catch {} }
+  if (!bytes) bytes = await download(url, name, onProgress);
+  if (hexOf(await crypto.subtle.digest('SHA-256', bytes)) !== want) {
+    if (hit) await cache.delete(key).catch(() => {});
+    throw new Error(`${name} does not match the ceremony's pinned hash`);
+  }
+  if (!hit && cache) await cache.put(key, new Response(bytes)).catch(() => {});
+  return bytes;
+}
+async function download(url, name, onProgress) {
+  let bytes;
+  {
     const r = await fetch(url);
     if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
     const total = Number(r.headers.get('content-length')) || 0;
@@ -103,11 +118,6 @@ async function artifact(name, sha, onProgress) {
     let o = 0;
     for (const c of parts) { bytes.set(c, o); o += c.length; }
   }
-  if (hexOf(await crypto.subtle.digest('SHA-256', bytes)) !== String(sha).replace(/^0x/, '').toLowerCase()) {
-    if (hit) await cache.delete(key).catch(() => {});
-    throw new Error(`${name} does not match the ceremony's pinned hash`);
-  }
-  if (!hit && cache) await cache.put(key, new Response(bytes)).catch(() => {});
   return bytes;
 }
 
