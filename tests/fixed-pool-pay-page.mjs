@@ -172,6 +172,32 @@ export function makeEvmPoolWallet(o) {
   if (!o.chain?.token) return __realMakeEvmPoolWallet(o);
   return __realMakeEvmPoolWallet({ ...o, prove: async () => { globalThis.__proved = (globalThis.__proved || 0) + 1; return { proof: { pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['1', '2'] }, publicSignals: Array(11).fill('0') }; } });
 }`;
+// payWith: dapp/pay-with.js served with a fixed price (3,000 of a token a ETH; `__priceMove` added to every quote after the first) and a pull that finds an
+// allowance in place, and the wallet's deposits replaced by a spy that builds the call the page hands it (selfCall) on a stand-in proof and keeps it
+const PAYWITH_STUB = `export const ZAP = '0x0000008EbBF2323f95c4fBc18254f3D65C53998c';
+export const payTokens = (l) => l.filter((t) => t.c === 1 && ['USDC', 'DAI', 'WBTC'].includes(t.s));
+export const mostOf = (x) => (BigInt(x) * 101n + 99n) / 100n;
+export async function quoteDeposit({ token, dec, depositWei }) { const n = (globalThis.__quotes = (globalThis.__quotes || 0) + 1); return { amountIn: (BigInt(depositWei) * 3000n * 10n ** BigInt(dec)) / 10n ** 18n + (n > 1 ? BigInt(globalThis.__priceMove || 0) : 0n), callData: '0xfeed', min: BigInt(depositWei), out: BigInt(depositWei), name: 'Uniswap v3 0.05%' }; }
+export async function zapPullWith(o) { globalThis.__pulled = { token: o.token, amount: String(o.amount) }; return { kind: 'allowance' }; }
+export async function quoteOut({ token, amount, to }) { globalThis.__outQuotes = (globalThis.__outQuotes || 0) + 1; const out = BigInt(amount) * 3000n; return { r: { to, out, min: (out * 995n) / 1000n, callData: '0xbeef', deadline: 9999999999n, name: 'Uniswap v4 0.05%' }, gas: 900000 }; }
+export const outIntent = (gw, { r, amount, refund, nonce }) => gw.callIntent({ calls: [{ target: '0x000000000000FB114709235f1ccBFfb925F600e4', value: BigInt(amount), data: r.callData }], refund, deadline: r.deadline, nonce });`;
+const DEPOSIT_SPY = `
+export function makeEvmPoolWallet(o) {
+  const w = __realMakeEvmPoolWallet(o);
+  const tx = { pA: [1n, 2n], pB: [[1n, 2n], [3n, 4n]], pC: [1n, 2n], publicInputs: Array(11).fill(0n), recipient: '0x' + '00'.repeat(20), extAmount: 0n, relayer: '0x' + '00'.repeat(20), fee: 0n, memo0: '0x', memo1: '0x' };
+  const spy = (kind) => async (a) => { const c = a.selfCall ? a.selfCall({ ...tx, extAmount: BigInt(a.amount) }) : null; (globalThis.__deposits ||= []).push({ kind, amount: String(a.amount), to: a.to || null, call: c && { to: c.to, value: String(c.value), sel: c.data.slice(0, 10), before: !!c.before } }); return '0x' + 'cd'.repeat(32); };
+  w.deposit = spy('deposit'); w.depositTo = spy('depositTo');
+  const fake = globalThis.__fakeNotes;
+  if (fake) {
+    const sync = w.sync;
+    w.sync = async (...a) => { const s = await sync.apply(w, a); return { ...s, balance: fake.reduce((x, v) => x + BigInt(v), 0n), behind: false }; };
+    w.notes = () => fake.map((v) => ({ v: BigInt(v) }));
+  }
+  w.spendQuote = async (gas) => { (globalThis.__feeGas ||= []).push(gas); return { fee: String(5n * 10n ** 14n) }; };
+  w.refundBox = async () => '0x' + 'ee'.repeat(20);
+  w.withdrawAndCall = async (a) => { (globalThis.__calls ||= []).push({ amount: String(a.amount), gas: a.gas, maxFee: a.maxFee == null ? null : String(a.maxFee), via: a.via, calls: a.intent.calls.map((x) => ({ target: x.target, value: String(x.value), data: x.data })), refund: a.intent.refund }); return '0x' + 'ce'.repeat(32); };
+  return w;
+}`;
 // payWrap: the card module served with the parts that need a wallet's signatures and a prover replaced by recorders (the flags are set
 // on the page: __fakeRun makes the split's run place notes at once, __fakeExit makes a note withdrawal come back at once)
 const PAY_WRAP = `
@@ -198,7 +224,7 @@ export function attachWithdraw(env) {
 const POOL1 = FIXED_POOLS[1][1].address;
 let GAS_PRICE = '0x0';
 // route: the private route on, its forwarders answered by route.carry (sealedRoute below); tabKey: a Tacit key this tab holds already, opened with no sign-in
-async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, keeperCap = null, quotes = null, notes = null, payWrap = false, fixedNotes = null, depositLogs = [], registry = null, min = '1000000000000000000', gasPrice = '0x0', route = null, stubProve = false, tabKey = null } = {}) {
+async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, keeperCap = null, quotes = null, notes = null, payWrap = false, fixedNotes = null, depositLogs = [], registry = null, min = '1000000000000000000', gasPrice = '0x0', route = null, stubProve = false, tabKey = null, payWith = false } = {}) {
   REGISTRY_ENTRIES = registry; GAS_PRICE = gasPrice; WAITING.clear();
   const ctx = await browser.newContext({ viewport: { width: 560, height: 1100 } });
   const page = await ctx.newPage();
@@ -214,7 +240,13 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
   if (fixedNotes) {
     await page.addInitScript(([k, v]) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }, [`tacit-fixed-notes:1:${ADDR.toLowerCase()}`, fixedNotes]);
   }
-  if (notes || stubProve) {
+  if (payWith) {
+    await page.route(/\/pay-with\.js/, (r) => r.fulfill({ status: 200, contentType: 'text/javascript', body: PAYWITH_STUB }));
+    const real = readFileSync(join(DAPP, 'evm-pool-wallet.js'), 'utf8').replace('export function makeEvmPoolWallet(', 'function __realMakeEvmPoolWallet(');
+    await page.route(/\/evm-pool-wallet\.js/, (r) => r.fulfill({ status: 200, contentType: 'text/javascript', body: real + DEPOSIT_SPY }));
+  }
+  if (payWith && notes) await page.addInitScript((n) => { window.__fakeNotes = n; }, notes.map(String));
+  if (!payWith && (notes || stubProve)) {
     if (notes) await page.addInitScript((n) => { window.__fakeNotes = n; }, notes.map(String));
     const real = readFileSync(join(DAPP, 'evm-pool-wallet.js'), 'utf8').replace('export function makeEvmPoolWallet(', 'function __realMakeEvmPoolWallet(');
     assert.ok(real.includes('function __realMakeEvmPoolWallet('), 'the wallet module is wrapped');
@@ -1179,6 +1211,79 @@ await test('when network fees would be over 2% of a 0.1 ETH note, the default mo
   await page.selectOption('#lg-min', { label: '0.1 ETH' });
   await page.waitForFunction(() => document.querySelector('#lg-min').value === '100000000000000000');
   assert.equal(await page.evaluate(() => localStorage.getItem('tacit-fixed-min:1')), String(10n ** 17n));
+  await ctx.close();
+});
+
+await test('Pay with a token: the picker lists the tokens, the receipt says what it pays and through what, and the press deposits through the zap', async () => {
+  const { ctx, page, problems, sent } = await open({ search: '?fixed=0', payWith: true });
+  await unlock(page);
+  await page.waitForFunction(() => [...(document.querySelector('#f-pay')?.options || [])].some((o) => o.textContent === 'USDC'), null, { timeout: 30000 });
+  assert.deepEqual(await page.$$eval('#f-pay option', (os) => os.map((o) => o.textContent)), ['ETH', 'WBTC', 'USDC', 'DAI']);
+  await page.selectOption('#f-pay', { label: 'USDC' });
+  await page.fill('#f-damt', '0.05');
+  await page.waitForFunction(() => /Pays\s+about 150 USDC/.test(document.querySelector('#f-rcpt')?.innerText || ''), null, { timeout: 30000 });
+  const rc = await page.locator('#f-rcpt').innerText();
+  assert.match(rc, /Swapped through\s+Uniswap v3 0\.05%/);
+  assert.match(rc, /Into your private balance\s+0\.05 ETH/);
+  assert.match(await page.locator('#f-go').innerText(), /^Pay with USDC, deposit privately$/);
+  assert.equal(await page.locator('#f-max').isHidden(), true, 'Max is for ETH');
+  assert.equal(await page.evaluate(() => localStorage.length >= 0 && document.querySelector('#f-pay').value), '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48');
+  if (SHOTS) await page.locator('.card, main').first().screenshot({ path: join(SHOTS, 'paywith.png') });
+  await page.click('#f-go');
+  await page.waitForFunction(() => (globalThis.__deposits || []).length === 1, null, { timeout: 60000 });
+  const [d] = await page.evaluate(() => globalThis.__deposits);
+  assert.equal(d.kind, 'deposit'); assert.equal(d.amount, String(5n * 10n ** 16n));
+  assert.equal(d.call.to.toLowerCase(), '0x0000008ebbf2323f95c4fbc18254f3d65c53998c', 'the zap takes the call');
+  assert.equal(d.call.value, '0', 'it is sent no ETH');
+  assert.deepEqual(await page.evaluate(() => globalThis.__pulled), { token: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', amount: '150000000' }, 'the zap is let take exactly the sale\'s amount');
+  assert.equal(sent.length, 0, 'nothing else from the wallet');
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('Pay with a token: a price that moved more than 1% since it was shown sends nothing', async () => {
+  const { ctx, page, problems } = await open({ search: '?fixed=0', payWith: true });
+  await page.addInitScript(() => { globalThis.__priceMove = 5_000000; });
+  await page.reload();
+  await unlock(page);
+  await page.waitForFunction(() => [...(document.querySelector('#f-pay')?.options || [])].some((o) => o.textContent === 'USDC'), null, { timeout: 30000 });
+  await page.selectOption('#f-pay', { label: 'USDC' });
+  await page.fill('#f-damt', '0.05');
+  await page.waitForFunction(() => /about 150 USDC/.test(document.querySelector('#f-rcpt')?.innerText || ''), null, { timeout: 30000 });
+  await page.click('#f-go');
+  await page.waitForFunction(() => /The price moved/.test(document.body.innerText), null, { timeout: 60000 });
+  assert.equal(await page.evaluate(() => (globalThis.__deposits || []).length), 0);
+  assert.equal(await page.evaluate(() => globalThis.__pulled ?? null), null, 'nothing was asked of the wallet');
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+
+await test('Receive as a token: Withdraw sells the ETH for the token in the same transaction, paid to the address, with the relay\'s fee for the larger call', async () => {
+  const { ctx, page, problems, sent } = await open({ search: '?fixed=0', payWith: true, notes: [10n ** 18n], keeper: QUOTE });
+  await unlock(page);
+  await page.click('#tab-withdraw');
+  await page.waitForFunction(() => [...(document.querySelector('#f-wout')?.options || [])].some((o) => o.textContent === 'DAI'), null, { timeout: 30000 });
+  await page.selectOption('#f-wout', { label: 'DAI' });
+  const DEST = '0x' + '5a'.repeat(20);
+  await page.fill('#f-wto', DEST);
+  await page.fill('#f-wamt', '0.1');
+  await page.waitForFunction(() => /Arrives\s+at least 298\.5 DAI/.test(document.querySelector('#f-rcpt')?.innerText || ''), null, { timeout: 30000 });
+  const rc = await page.locator('#f-rcpt').innerText();
+  assert.match(rc, /Swapped through\s+Uniswap v4 0\.05%/);
+  assert.match(rc, /From your private balance\s+0\.1 ETH/);
+  assert.match(rc, /Relay fee/);
+  assert.match(await page.locator('#f-go').innerText(), /^Withdraw as DAI$/);
+  assert.ok((await page.evaluate(() => globalThis.__feeGas)).every((g) => g === 900000), 'the fee is asked for the call\'s gas');
+  if (SHOTS) await page.locator('.card, main').first().screenshot({ path: join(SHOTS, 'recvas.png') });
+  await page.click('#f-go');
+  await page.waitForFunction(() => (globalThis.__calls || []).length === 1, null, { timeout: 60000 });
+  const [c] = await page.evaluate(() => globalThis.__calls);
+  assert.equal(c.amount, String(10n ** 17n));
+  assert.equal(c.via, 'relay'); assert.equal(c.gas, 900000);
+  assert.equal(c.maxFee, String((5n * 10n ** 14n * 5n) / 4n), 'held to the fee shown and a quarter over');
+  assert.deepEqual(c.calls, [{ target: '0x000000000000FB114709235f1ccBFfb925F600e4', value: String(10n ** 17n), data: '0xbeef' }]);
+  assert.equal(c.refund, '0x' + 'ee'.repeat(20), 'a failed sale comes back to a receive box of the person\'s own');
+  assert.equal(sent.length, 0);
+  assert.deepEqual(problems, []);
   await ctx.close();
 });
 

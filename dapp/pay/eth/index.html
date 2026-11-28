@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-JftbKEGAoHXcJWflJbPDnkI+STTukfEB0v3zdZp63C0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-jLUXXbuMeehVPQLKud1HQK0qca19jgehCG2lKhFORR8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin fetchpriority="low">
@@ -1185,7 +1185,7 @@ const mods = lazy(async () => {
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
   return {
     zk: zkm.makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) }), poolAsset: zkm.poolAsset, extDataHash: zkm.extDataHash,
-    evmPoolKeys: wm.evmPoolKeys, makeEvmPoolWallet: wm.makeEvmPoolWallet, routerDeposit: wm.routerDeposit, splitDepositCall: wm.splitDepositCall, jsonRpc: wm.jsonRpc, feedStart: wm.feedStart, openNote: wm.openNote, openNotes: wm.openNotes, logFailure: wm.logFailure, sealNote: wm.sealNote, recipientOf: wm.recipientOf, paymentKey: wm.paymentKey, PAYMENT_ATTEMPTS: wm.PAYMENT_ATTEMPTS, verifyPayment: wm.verifyPayment,
+    evmPoolKeys: wm.evmPoolKeys, makeEvmPoolWallet: wm.makeEvmPoolWallet, routerDeposit: wm.routerDeposit, zapDeposit: wm.zapDeposit, splitDepositCall: wm.splitDepositCall, jsonRpc: wm.jsonRpc, feedStart: wm.feedStart, openNote: wm.openNote, openNotes: wm.openNotes, logFailure: wm.logFailure, sealNote: wm.sealNote, recipientOf: wm.recipientOf, paymentKey: wm.paymentKey, PAYMENT_ATTEMPTS: wm.PAYMENT_ATTEMPTS, verifyPayment: wm.verifyPayment,
     receiveKeys: gw.receiveKeys, receiveBoxAddress: gw.receiveBoxAddress, RECEIVE_FEE_BPS: gw.RECEIVE_FEE_BPS, vkHash: pm.vkHash,
   };
 });
@@ -1668,6 +1668,7 @@ const signerFor = (c) => ({
   get address() { return S.wallet; },
   ready: async () => { if (!S.wallet || !S.provider) await connectWallet(); await ensureChain(c.chainId); },
   send: ({ to, data, value }) => walletSend(c, { from: S.wallet, to, data, value: '0x' + BigInt(value || 0).toString(16), chainId: '0x' + c.chainId.toString(16) }),
+  batch: (calls, sent) => sendBatch(c, calls, sent),      // only a call that brings its approvals (`before`) is sent this way
   rpc: async (method, params) => (await rpcApart(c))(method, params),
 });
 
@@ -3318,6 +3319,7 @@ function formDeposit(f) {
   } else {
     mount(f, html`${seg}
       ${amountField('f-damt', 'Amount', S.wallet ? html`<button type="button" id="f-max" disabled title="Reading your wallet’s balance on ${c.full}">Wallet <span id="f-wb" class="num"><span class="sk" style="--w:5ch"></span></span> ETH</button>` : html`<button type="button" id="f-conn">Connect wallet</button>`)}
+      ${c.chainId === 1 && S.wallet ? html`<div class="lbl" id="f-paywith"><span>Pay with<select id="f-pay" aria-label="Pay with"><option value="">ETH</option></select></span><span id="f-paybal" class="num"></span></div>` : ''}
       <details class="else"${DRAFT['f-dto'] ? ' open' : ''}><summary class="more" style="cursor:pointer">Deposit to someone else</summary>
         <div class="lbl"><span>To</span><span>a name or an address</span></div>
         <div class="amt text"><input id="f-dto" placeholder="A name or an address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Deposit to"></div>
@@ -3328,6 +3330,32 @@ function formDeposit(f) {
       <p class="note">Proved on this device. You pay the network fee, with no relay fee. The deposit and your wallet show on chain; whose balance it lands in does not.</p>${LARGE_ON && c.chainId === 1 ? html`<div id="lg-notes"></div>` : ''}`);
     let wb = null, dto = null, lastDto = '', split = null;
     const amt = $('#f-damt'), go = $('#f-go'), rc = $('#f-rcpt'), toEl = $('#f-dto');
+    // Pay with a token (Ethereum): the deposit stays in ETH, the token is sold for it in the same transaction (dapp/pay-with.js)
+    const paySel = $('#f-pay'), payBal = $('#f-paybal');
+    let toks = [], pq = { key: '', r: null, bal: null, busy: false, failed: false }, pqT = 0;
+    const payTok = () => (paySel?.value ? toks.find((t) => lc(t.a) === paySel.value) || null : null);
+    if (paySel) PAY_TOKENS().then((ts) => {
+      if (!paySel.isConnected) return;
+      toks = ts;
+      for (const t of ts) { const o = document.createElement('option'); o.value = lc(t.a); o.textContent = t.s; paySel.append(o); }
+      if (S.payWith && ts.some((t) => lc(t.a) === S.payWith)) { paySel.value = S.payWith; FORM.check?.(); }
+    }).catch(() => { $('#f-paywith')?.remove(); });
+    paySel?.addEventListener('change', () => { S.payWith = paySel.value || null; pq = { key: '', r: null, bal: null, busy: false, failed: false }; if (payBal) payBal.textContent = ''; FORM.check?.(); });
+    const payQuote = (t, a) => {
+      const key = `${lc(t.a)}:${a}`;
+      if (pq.key === key) return;
+      pq = { key, r: null, bal: pq.bal?.t === t.a ? pq.bal : null, busy: true, failed: false };
+      clearTimeout(pqT);
+      pqT = setTimeout(async () => {
+        const PW = await PAY_WITH(), read = readOn(c), deadline = BigInt((await chainClock(c))() + 1200);
+        const [r, bal] = await Promise.all([PW.quoteDeposit({ ethCall: read, token: t.a, dec: t.d, depositWei: a, from: S.wallet, deadline }).catch(() => null),
+          tokenBalanceOf({ chain: c, token: t.a }, S.wallet).catch(() => null)]);
+        if (pq.key !== key) return;
+        pq = { key, r, bal: bal == null ? null : { t: t.a, v: bal }, busy: false, failed: !r };
+        if (payBal?.isConnected) payBal.textContent = bal == null ? '' : `Wallet ${fmt(bal, t.d, 4, true)} ${t.s}`;
+        FORM.check?.();
+      }, 350);
+    };
     $('#f-conn')?.addEventListener('click', () => connectWallet().catch((e) => toast(errText(e), true)));
     const wbEl = $('#f-wb'), mx = $('#f-max');
     if (S.wallet) rpcApart(c).then((r) => r('eth_getBalance', [S.wallet, 'latest'])).then((b) => {
@@ -3350,6 +3378,19 @@ function formDeposit(f) {
       const say_ = R.set;
       if (raw && !dto) { go.disabled = true; return /\.(g?wei|eth)$/i.test(raw) ? say_(html`<p class="note">Looking up ${raw.toLowerCase()}…</p>`) : undefined; }
       if (raw && dto.error) { go.disabled = true; return say_(html`<p class="note err" role="alert">${dto.error}</p>`); }
+      const t = payTok();
+      if (mx) mx.hidden = !!t;
+      if (t) {
+        go.textContent = dto?.bp ? `Pay with ${t.s}, deposit to them` : `Pay with ${t.s}, deposit privately`;
+        if (!a) return;
+        payQuote(t, a);
+        if (pq.busy || !pq.key) { go.disabled = true; return say_(html`<p class="note">Finding the price of ${t.s} onchain…</p>`); }
+        if (pq.failed) { go.disabled = true; return say_(html`<p class="note err" role="alert">No onchain route sells ${t.s} for ${fmt(a, 18, 6)} ETH right now. Try another amount or token.</p>`); }
+        const need = pq.r.amountIn;
+        if (pq.bal && pq.bal.v < need) { go.disabled = true; return say_(html`${kvRow('Pays', `${fmt(need, t.d, 6)} ${t.s}`)}<p class="note err" role="alert">More ${t.s} than your wallet holds.</p>`); }
+        return say_(html`${kvRow('Pays', `about ${fmt(need, t.d, 6)} ${t.s}`)}${kvRow('Swapped through', pq.r.name || 'an onchain pool')}${dto?.bp ? kvRow('To', html`${dto.label ? `${dto.label} → ` : ''}${viewAddr(dto.bp, 8)}`) : ''}${kvRow(dto?.bp ? 'Into their private balance' : 'Into your private balance', `${fmt(a, 18, 6)} ETH`)}${kvRow('Relay fee', 'none · your wallet pays the network fee')}${pointsRow(a)}
+          <p class="note">Sold for ETH and deposited in one transaction; any ETH the sale makes over the deposit goes back to your wallet. Your wallet asks to let the deposit take this ${t.s} first, unless it already may.</p>`);
+      }
       if (a && wb != null && a > wb) { say_(html`<p class="note err" role="alert">More than your wallet holds on ${c.full}.</p>`); go.disabled = true; }
       else if (a && dto?.bp) say_(html`${kvRow('To', html`${dto.label ? `${dto.label} → ` : ''}${viewAddr(dto.bp, 8)}`)}${dto.id ? kvRow('ID', dto.id) : ''}${kvRow('Into their private balance', html`${fmt(a, 18, 6)} ETH on ${cname(c)}`)}${kvRow('Relay fee', 'none · your wallet pays the network fee')}${pointsRow(a)}${split ? html`<p class="note">Whole notes are for your own balance. Clear “To” to deposit this amount as notes and the rest.</p>` : ''}`);
       else if (a && split && !raw) say_(html`${kvRow('Relay fee', 'none · your wallet pays the network fees')}${split.remainder ? pointsRow(split.remainder) : ''}`);
@@ -3358,7 +3399,7 @@ function formDeposit(f) {
     };
     go.onclick = () => {
       if (!S.wallet) return connectWallet().catch((e) => toast(errText(e), true));
-      if (split && !toEl.value.trim()) {
+      if (split && !toEl.value.trim() && !payTok()) {
         const sp = split;
         return act(go, async (step, c) => {
           const r = await sp.run(step, c);
@@ -3380,6 +3421,14 @@ function formDeposit(f) {
         }
         const W2 = await walletOn(c);
         await signerFor(c).ready();
+        const t = payTok();
+        if (t) {
+          const h = await payWithDeposit(c, W2, { t, a, to, shown: pq.r?.amountIn, step });
+          ptsExpect(c, a);
+          if (!to) justDid(c, { kind: 'dep', v: a, from: lc(S.wallet), tx: h });
+          clearDraft('f-damt', 'f-dto');
+          return finish(c, h, 'self', to ? `Paid with ${t.s}: ${exact(a)} ETH into their private balance.` : `Paid with ${t.s}: deposited ${exact(a)} ETH.`);
+        }
         if (to) {
           const h = await W2.depositTo({ to, amount: a, onStep: step });
           ptsExpect(c, a);
@@ -3962,6 +4011,7 @@ function formWithdraw(f) {
     ${l2 ? '' : html`<div class="lbl"><span>To</span>${S.wallet ? html`<button type="button" id="f-me">My wallet</button>` : ''}</div>
       <div class="amt text"><input id="f-wto" placeholder="0x… or name.wei, a fresh address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Recipient address"></div>`}
     ${amountField('f-wamt', 'Amount', html`<button type="button" id="f-max">Max</button>`)}
+    ${!l2 && c.chainId === 1 ? html`<div class="lbl" id="f-woutrow"><span>Receive as<select id="f-wout" aria-label="Receive as"><option value="">ETH</option></select></span></div>` : ''}
     ${l2 ? '' : routeSeg(tab, quoteFee(c))}
     <div class="rcpt" id="f-rcpt" role="status" hidden></div>
     <button class="btn" type="button" id="f-go" aria-describedby="f-rcpt" disabled>${l2 ? `Move to ${l2.full}` : 'Withdraw'}</button>
@@ -3970,9 +4020,35 @@ function formWithdraw(f) {
   wireRoute(f, tab);
   $$('[data-dest]', f).forEach((b) => b.onclick = () => { S.dest = b.dataset.dest; renderForm(); if (S.dest !== 'addr') bridgeQuote(S.dest); });
   const to = $('#f-wto'), amt = $('#f-wamt'), go = $('#f-go'), rc = $('#f-rcpt');
+  // Receive as a token (Ethereum): the withdrawal's ETH is sold through zRouter in the same transaction, paying the token to the address (dapp/pay-with.js)
+  const outSel = $('#f-wout');
+  let outToks = [], wq = { key: '', q: null, fee: null, busy: false, failed: false, at: 0 }, wqT = 0;
+  const outTok = () => (outSel?.value ? outToks.find((t) => lc(t.a) === outSel.value) || null : null);
+  if (outSel) PAY_TOKENS().then((ts) => {
+    if (!outSel.isConnected) return;
+    outToks = ts;
+    for (const t of ts) { const o = document.createElement('option'); o.value = lc(t.a); o.textContent = t.s; outSel.append(o); }
+    if (S.recvAs && ts.some((t) => lc(t.a) === S.recvAs)) { outSel.value = S.recvAs; FORM.check?.(); }
+  }).catch(() => { $('#f-woutrow')?.remove(); });
+  outSel?.addEventListener('change', () => { S.recvAs = outSel.value || null; wq = { key: '', q: null, fee: null, busy: false, failed: false, at: 0 }; FORM.check?.(); });
+  const outQuote = (t, a, dest, self) => {
+    const key = `${lc(t.a)}:${a}:${lc(dest)}:${self ? 1 : 0}`;
+    if (wq.key === key && (wq.busy || Date.now() - wq.at < 45_000)) return;
+    wq = { key, q: null, fee: null, busy: true, failed: false, at: 0 };
+    clearTimeout(wqT);
+    wqT = setTimeout(async () => {
+      const PW = await PAY_WITH(), deadline = BigInt((await chainClock(c))() + 1200), rpc = await rpcOn(c);
+      const q = await PW.quoteOut({ ethCall: readOn(c), rpc, token: t.a, amount: a, to: dest, deadline }).catch(() => null);
+      let fee = self ? 0n : null;
+      if (q && !self) fee = await walletOn(c).then((W) => W.spendQuote(q.gas)).then((x) => (x?.fee != null ? BigInt(x.fee) : null), () => null);
+      if (wq.key !== key) return;
+      wq = { key, q, fee, busy: false, failed: !q, at: Date.now() };
+      FORM.check?.();
+    }, 350);
+  };
   // whole notes in the large pools: an amount of a whole note or more takes these first, the rest comes from the private balance
   let wd = null, wdPlan = null, wdWarn = null, wdList = [], wdFeePct = MAX_NOTE_FEE_PERCENT;
-  const notesFor = (a) => (!l2 && wdPlan && wdList.length && a ? wdPlan(a, wdList.map((x) => x.den)) : null);
+  const notesFor = (a) => (!l2 && !outTok() && wdPlan && wdList.length && a ? wdPlan(a, wdList.map((x) => x.den)) : null);
   $('#f-me')?.addEventListener('click', () => { to.value = S.wallet; to.dispatchEvent(new Event('input')); });
   const feeNow = () => (l2 ? (BRIDGE_Q.fee[S.dest] ?? null) : relayFee(tab));
   const prepay = () => (l2 ? BRIDGE_Q.prepay[S.dest] || 0n : 0n);
@@ -3998,6 +4074,30 @@ function formWithdraw(f) {
     if (!l2 && raw && !isAddr(raw)) return /^0x[0-9a-fA-F]{0,39}$/.test(raw) ? R.set(html`<p class="note">An address is 0x and 40 more characters.</p>`) : bad(/^bp1/i.test(raw) ? 'That is a pool address. Use Send to pay it privately.' : /^0x/i.test(raw) ? NOT_ADDR : 'Withdraw takes a 0x address. To pay a Tacit address or a name, use Send.');
     if (!l2 && raw && badSum(raw)) return bad(SUM_MSG);
     if (!l2 && raw && (BigInt(raw) === 0n || [lc(POOL), lc(ROUTER)].includes(lc(raw)))) return bad('That address cannot receive a withdrawal.');
+    const t = !l2 ? outTok() : null;
+    $('#f-max').hidden = !!t;
+    if (t) {
+      go.textContent = `Withdraw as ${t.s}`;
+      if (!a || !raw) return;
+      const selfT = routeOf(tab) === 'wallet';
+      if (!selfT && !relayUp()) return R.set(html`<p class="note">The relay can’t take this one right now. Send it from your wallet instead, or try again in a moment.</p>`);
+      outQuote(t, a, raw, selfT);
+      if (wq.busy || !wq.key) return R.set(html`<p class="note">Finding the price of ${t.s} onchain…</p>`);
+      if (wq.failed) return bad(`No onchain route sells ${fmt(a, 18, 6)} ETH for ${t.s} right now. Try another amount or token.`);
+      if (wq.fee == null) return R.set(html`<p class="note">${relayUp() ? 'Reading the relay’s fee…' : 'The relay can’t take this one right now. Send it from your wallet instead, or try again in a moment.'}</p>`);
+      const capT = atCap(wq.fee), planT = spendPlan(a, capT);
+      if (bal != null && !planT) return bad(tooSpread(a, capT) ? spreadText(c, cur(), maxSpend(capT, 0n), 'Withdraw up to') : 'More than your private balance covers with the fee.');
+      const changeT = bal != null && planT ? bal - planT.total : null, r = wq.q.r;
+      R.set(html`${wtoName(to) ? kvRow('To', html`${wtoName(to)} <span class="mute">${short(raw)}</span>`) : ''}${kvRow('Arrives', html`at least ${fmt(r.min, t.d, 6)} ${t.s} <span class="mute">about ${fmt(r.out, t.d, 6)}</span>`)}
+        ${kvRow('Swapped through', r.name || 'an onchain pool')}
+        ${kvRow('From your private balance', `${fmt(a, 18, 6)} ETH`)}
+        ${feeRow(wq.fee, selfT)}
+        ${mergeRow(wq.fee, planT?.merges, selfT)}
+        ${changeT != null ? keptRow(changeT, wq.fee) : ''}
+        <p class="note">Sold for ${t.s} in the withdrawal’s own transaction and paid straight to the address. If the price moves past the least shown, nothing is sold and the ETH comes back to your private balance.</p>`);
+      go.disabled = false;
+      return;
+    }
     if (!a || (!l2 && !raw)) return;
     if (fee == null && l2) {
       return R.set(!relayUp() || BRIDGE_Q.failed[S.dest]
@@ -4045,6 +4145,28 @@ function formWithdraw(f) {
     act(go, async (step) => {
     const a = parseUnits(amt.value);
     if (!a) throw new Error('Enter an amount.');
+    const tOut = !l2 ? outTok() : null;
+    if (tOut) {
+      const raw = wto(to), shown = wq.q, fee = wq.fee;
+      if (!raw || !isAddr(raw)) throw new Error('Enter the address to pay.');
+      if (badSum(raw)) throw new Error(SUM_MSG);
+      if (!shown) throw new Error('Read the price first.');
+      const via = viaFor(tab);
+      if (via) await signerFor(c).ready();
+      const [PW, gw, R] = await Promise.all([PAY_WITH(), import('/evm-pool-gateway.js'), ROUTE_MOD()]), W = await walletOn(c);
+      let q = shown;
+      if (Date.now() - wq.at > 60_000 || lc(shown.r.to) !== lc(raw)) {
+        step('reading the price again');
+        q = await PW.quoteOut({ ethCall: readOn(c), rpc: await rpcOn(c), token: tOut.a, amount: a, to: raw, deadline: BigInt((await chainClock(c))() + 1200) });
+        if (!q) throw new Error(`No onchain route sells this for ${tOut.s} right now. Nothing was sent.`);
+        if (q.r.min < shown.r.min) throw Object.assign(new Error(`The price moved: it now pays at least ${fmt(q.r.min, tOut.d, 6)} ${tOut.s} where ${fmt(shown.r.min, tOut.d, 6)} was shown. Nothing was sent; check it and press again.`), { said: true });
+      }
+      const refund = await W.refundBox();
+      const intent = PW.outIntent(gw, { r: q.r, amount: a, refund, nonce: R.randomNonce() });
+      const h = await W.withdrawAndCall({ intent, amount: a, gas: q.gas, maxFee: via ? null : capOf(fee), via: via || 'relay', onStep: step });
+      clearDraft('f-wamt');
+      return finish(c, h, via, `Withdrew ${exact(a)} ETH as ${tOut.s}, at least ${fmt(q.r.min, tOut.d, 6)}, to ${short(raw)}.`);
+    }
     const px = notesFor(a);
     if (px?.total) {
       const raw = wto(to), rest = a - px.total;
@@ -5010,6 +5132,34 @@ function tokSigner(t) {
   return s;
 }
 const ROUTE_MOD = lazy(() => import('/swap/route.js?cb=c4135f43'));
+const PAY_WITH = lazy(() => import('/pay-with.js?cb=7da32f21'));
+const PAY_TOKENS = lazy(async () => { const [PW, L] = await Promise.all([PAY_WITH(), import('/swap/tokens.js?cb=73f33d2c')]); return PW.payTokens(L.LIST); });
+// Waits for a transaction of the wallet's own on chain `c`; a failed one throws (`failed` says what did not happen).
+async function minedOn(c, h, failed = 'The approval failed. Nothing was lost but its network fee.') {
+  for (let i = 0; i < 120; i++) { const s = await receiptOf(c, h, true).catch(() => null); if (s === 'ok') return; if (s === 'reverted') throw Object.assign(new Error(failed), { said: true }); await sleep(3000); }
+  throw Object.assign(new Error('It has not landed yet. Check your wallet before sending anything again.'), { said: true });
+}
+// A deposit (or a deposit to someone's pool address) paid with token `t`: the price read again, held to what was shown and 1% over; the zap let take
+// exactly the sale's amount (an allowance in place, a permit, the approval in one batch with the deposit, or an approval first); then the deposit, the
+// zap's call in place of the pool's. A wallet that turns the batch down gets the approval on its own first and the deposit after it.
+async function payWithDeposit(c, W, { t, a, to = null, shown, step }) {
+  const [PW, m] = await Promise.all([PAY_WITH(), mods()]), read = readOn(c), deadline = BigInt((await chainClock(c))() + 1200);
+  step('reading the price again');
+  const r = await PW.quoteDeposit({ ethCall: read, token: t.a, dec: t.d, depositWei: a, from: S.wallet, deadline });
+  if (!r) throw Object.assign(new Error(`No onchain route sells ${t.s} for this deposit right now. Nothing was sent.`), { said: true });
+  if (shown != null && r.amountIn > PW.mostOf(shown)) throw Object.assign(new Error(`The price moved: the deposit now takes ${fmt(r.amountIn, t.d, 6)} ${t.s}. Nothing was sent; check it and press again.`), { said: true });
+  const sg = { ...signerFor(c), address: S.wallet, batch: (calls, sent) => sendBatch(c, calls, sent), canBatch: () => canBatch(c),
+    signTyped: async (typed) => { await ensureChain(c.chainId); return S.provider.request({ method: 'eth_signTypedData_v4', params: [S.wallet, JSON.stringify(typed)] }); } };
+  const pull = await PW.zapPullWith({ ethCall: read, signer: sg, mined: (h) => minedOn(c, h), calldata: async () => (await import('/evm-pool-gateway.js')).calldata, token: t.a, sym: t.s, amount: r.amountIn, deadline, onStep: step });
+  const zap = (tx) => m.zapDeposit(PW.ZAP, tx, { token: t.a, amountIn: r.amountIn, swap: r.callData, pull });
+  const run = (selfCall) => (to ? W.depositTo({ to, amount: a, selfCall, onStep: step }) : W.deposit({ amount: a, selfCall, onStep: step }));
+  if (!pull.before?.length) return run(zap);
+  return run((tx) => ({ ...zap(tx), before: pull.before })).catch(async (e) => {
+    if (!e?.noBatch) throw e;
+    for (const call of pull.before) { step(call.data.endsWith('0'.repeat(64)) ? 'reset the allowance' : 'approve'); await minedOn(c, await sg.send(call)); }
+    return run(zap);
+  });
+}
 const readOn = (c) => async (to, data) => (await rpcOn(c))('eth_call', [{ to, data }, 'latest']);
 const tokenBalanceOf = async (t, who) => BigInt(await readOn(t.chain)(t.token, '0x70a08231' + strip(who).toLowerCase().padStart(64, '0')));
 // USDT on Ethereum changes an allowance only through zero
