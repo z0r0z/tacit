@@ -199,13 +199,18 @@ await click('tp-refresh');
 assert.doesNotMatch(st('tp-bal'), /joining/, 'once the pool lists the note it is no longer joining');
 // a shield the pool read the block of and did not take is said, with its transaction, until the pool lists a note of it
 assert.equal($('tp-wait').hidden, true, 'nothing to say while every shield is joining or listed');
-refusedNow = [{ txid: 'dd'.repeat(32), v: 7n * TAC, h: 977900, at: Date.now() }];
+refusedNow = [{ txid: 'dd'.repeat(32), v: 7n * TAC, h: 977900, at: Date.now(), why: '' }];
 await click('tp-refresh');
 assert.equal($('tp-wait').hidden, false);
 assert.match(st('tp-wait'), /A shield of 7 TAC did not join the pool\. It confirmed in Bitcoin in block 977900, and the pool has read that block and holds no note from it\. Transaction dddddddddd… · ask in the Tacit Discord/);
 assert.ok($('tp-wait').querySelector(`a[href="https://mempool.space/tx/${'dd'.repeat(32)}"]`), 'it links the transaction');
 assert.equal(tp.totals().refused.length, 1);
 assert.doesNotMatch(st('tp-bal'), /joining/, 'and the refused amount is not counted as on its way');
+// with the pool's reason: it is said instead of the guess that the pool holds no note
+refusedNow = [{ txid: 'dd'.repeat(32), v: 7n * TAC, h: 977900, at: Date.now(), why: 'The pool did not accept the TAC note it spent as a valid note of this asset.' }];
+await click('tp-refresh');
+assert.match(st('tp-wait'), /A shield of 7 TAC did not join the pool\. The pool did not accept the TAC note it spent as a valid note of this asset\. It confirmed in Bitcoin in block 977900\. Transaction dddddddddd… · ask in the Tacit Discord/);
+assert.doesNotMatch(st('tp-wait'), /holds no note/);
 refusedNow = [];
 await click('tp-refresh');
 assert.equal($('tp-wait').hidden, true);

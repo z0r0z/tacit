@@ -115,12 +115,13 @@ const carried = (txid, payload) => ({ txid, vin: [{ witness: ['00', hex(real.enc
 const ADDR = 'bc1qmine', SHIELD_TX = 'f1'.repeat(32), OTHER_TX = 'f2'.repeat(32), PLAIN_TX = 'f3'.repeat(32), OLD_TX = 'f4'.repeat(32);
 const chain = { NET: { api: 'https://esplora.test', api2: null }, wallet: { address: () => ADDR }, txOutputEnvelope: real.txOutputEnvelope };
 const chain2 = { ...chain, NET: { api: 'https://esplora.test', api2: 'https://esplora2.test' } };   // two explorers, as the page has
-let mempool = [], txs = {}, txs2 = {}, asked = [], tipHeight = null, poolStatus = null, poolFeed = [];
+let mempool = [], txs = {}, txs2 = {}, asked = [], tipHeight = null, poolStatus = null, poolFeed = [], poolEnvelope, envelopeAsked = 0;   // (poolEnvelope undefined: a replay without the route, which answers 404)
 const POOL = 'https://tacit-btc-pool-mainnet.onrender.com/btc-pool/';
 const reply = (t) => (t instanceof Error ? Promise.reject(t) : t === undefined || t === null ? { ok: false, status: 404, json: async () => null } : { ok: true, status: 200, json: async () => t });
 globalThis.fetch = async (url) => {
   url = String(url);
   if (url.startsWith(POOL + 'status')) return poolStatus instanceof Error ? Promise.reject(poolStatus) : poolStatus ? reply(poolStatus) : { ok: false, status: 503, json: async () => null };
+  if (url.startsWith(POOL + 'envelope/')) { envelopeAsked++; return poolEnvelope instanceof Error ? Promise.reject(poolEnvelope) : poolEnvelope === undefined ? { ok: false, status: 404, json: async () => ({ error: 'not found' }) } : reply(poolEnvelope); }
   if (url.startsWith(POOL + 'notes')) {
     if (poolFeed instanceof Error) return Promise.reject(poolFeed);
     const from = Number(/from=(\d+)/.exec(url)[1]), rows = poolFeed.filter((n) => n.leafIndex >= from);
@@ -189,8 +190,8 @@ assert.equal(settling(), AMOUNT, 'a record that is not a shield (a relayed payme
 // read yet, the pool paused, in the list, or in a block the pool has read and not taken
 const H = 977000, feedRow = (i, txid) => ({ leafIndex: i, txid, height: H, leaf: '0x' + String(i).padStart(64, '0'), asset: '0x' + ASSET, pk_eph: '02' + '00'.repeat(32), ct_note: '00'.repeat(24) });
 const inBlock = (h = H) => ({ status: { confirmed: true, block_height: h } });
-const stageOf = async (tx, { tip = null, rs = null, feed = [], ago = 5 * 60e3, extra = {}, via = chain, txid = OLD_TX } = {}) => {
-  localStorage.clear(); mem.clear(); keep(aged(txid, ago, extra)); mempool = []; txs = { [txid]: tx }; txs2 = {}; tipHeight = tip; poolStatus = rs; poolFeed = feed;
+const stageOf = async (tx, { tip = null, rs = null, feed = [], ago = 5 * 60e3, extra = {}, via = chain, txid = OLD_TX, verdict = undefined } = {}) => {
+  localStorage.clear(); mem.clear(); keep(aged(txid, ago, extra)); mempool = []; txs = { [txid]: tx }; txs2 = {}; tipHeight = tip; poolStatus = rs; poolFeed = feed; poolEnvelope = verdict; envelopeAsked = 0;
   await secret.syncPendingShields(via, pw, { force: true });
   return store()[txid];
 };
@@ -220,6 +221,42 @@ assert.deepEqual(pv.shields, []);
 assert.equal(pendingView([{ asset: '0x' + ASSET, value: String(AMOUNT), txid: REF_TX, nf: '0x09' }], ASSET, pw).refused.length, 0, 'and goes if the pool lists a note of it after all');
 asked = []; await secret.syncPendingShields(chain, pw, { force: true });
 assert.ok(!asked.some((u) => u.includes(`/tx/${REF_TX}`)), 'a refused shield is not asked about again');
+// why it was refused: the replay's own verdict on the shield's envelope, said in plain words; a replay without the route leaves only that the list holds nothing of it
+const REASON = `input ${'ee'.repeat(32)}:0 is not a valid note of the asset`, SH_OP = 0x6c;
+const verdictOf = (...envelopes) => ({ seen: envelopes.length > 0, height: H + 2, envelopes: envelopes.map((e) => ({ height: H, vin: 0, opcode: SH_OP, accepted: false, reason: null, ...e })) });
+const notListed = { rs: RS(H), tip: H + 2, feed: [feedRow(0, 'f9'.repeat(32))] };
+c = await stageOf(inBlock(), { ...notListed, txid: 'fa'.repeat(32), verdict: verdictOf({ reason: REASON }) });
+assert.deepEqual([c.st, c.reason], ['refused', REASON], 'refused with the reason the replay gave');
+pv = pendingView([], ASSET, pw);
+assert.match(pv.refused[0].why, /^The pool did not accept the TAC note it spent as a valid note of this asset/, 'said in plain words');
+assert.equal(pv.refused[0].reason, REASON, 'and the raw reason is kept for the person who looks into it');
+c = await stageOf(inBlock(), { ...notListed, txid: 'fb'.repeat(32), verdict: verdictOf() });
+assert.equal(c.none, true, 'a transaction in which the replay found no pool envelope');
+assert.equal(pendingView([], ASSET, pw).refused[0].why, 'The pool found no shield in that transaction.');
+c = await stageOf(inBlock(), { ...notListed, txid: 'fc'.repeat(32), verdict: verdictOf({ accepted: true }) });
+assert.equal(c.st, 'reading', 'the replay says it took the shield although the list this page holds does not show it yet: not refused');
+assert.deepEqual(pendingView([], ASSET, pw).refused, []);
+for (const [what, verdict] of [['a replay without the route (404)', undefined], ['a verdict that cannot be read', new Error('offline')]]) {
+  c = await stageOf(inBlock(), { ...notListed, txid: 'fd'.repeat(32), verdict });
+  assert.deepEqual([c.st, c.reason, c.none], ['refused', undefined, undefined], `${what}: refused as before, with no reason`);
+  assert.equal(pendingView([], ASSET, pw).refused[0].why, '', 'and nothing more said');
+}
+// a refusal kept before the replay could say why is asked again, at most every ten minutes, and the reason is added; one the replay says it took goes back to waiting
+localStorage.clear(); mem.clear(); keep(aged('fe'.repeat(32), 3600e3, { st: 'refused', h: H })); mempool = []; txs = {}; poolEnvelope = verdictOf({ reason: REASON }); envelopeAsked = 0;
+await secret.syncPendingShields(chain, pw, { force: true });
+assert.equal(store()['fe'.repeat(32)].reason, REASON); assert.equal(envelopeAsked, 1);
+await secret.syncPendingShields(chain, pw, { force: true });
+assert.equal(envelopeAsked, 1, 'a refusal that has its reason is not asked about again');
+localStorage.clear(); mem.clear(); keep(aged('ff'.repeat(32), 3600e3, { st: 'refused', h: H })); poolEnvelope = undefined; envelopeAsked = 0;
+await secret.syncPendingShields(chain, pw, { force: true }); await secret.syncPendingShields(chain, pw, { force: true });
+assert.equal(envelopeAsked, 1, 'one that the replay cannot answer is asked again only after ten minutes');
+localStorage.clear(); mem.clear(); keep(aged('ff'.repeat(32), 3600e3, { st: 'refused', h: H })); poolEnvelope = verdictOf({ accepted: true });
+await secret.syncPendingShields(chain, pw, { force: true });
+assert.equal(store()['ff'.repeat(32)].st, 'reading', 'a refusal the replay now says it did not make is waiting again');
+for (const [r, re] of [[REASON, /valid note of this asset/], ['T_BTC_SHIELD must ride vin[0]', /first input/], ['non-canonical envelope', /form the pool reads/], ['carrier has too few inputs', /did not spend the note/], ['proof does not verify', /proof did not verify/], ['kernel signature does not verify', /proof did not verify/], ['note tree is full', /tree is full/]]) assert.match(secret.shieldWhy({ reason: r }), re, r);
+assert.equal(secret.shieldWhy({ reason: 'something new at the replay' }), 'The pool’s reason: something new at the replay.', 'a reason it does not know is shown as given');
+assert.equal(secret.shieldWhy({}), ''); assert.equal(secret.shieldWhy({ reason: '' }), '');
+
 c = await stageOf(inBlock(), { tip: H + 2, rs: RS(H) , feed: new Error('offline') });
 assert.equal(c.st, 'reading', 'a list that cannot be read says nothing against the shield');
 c = await stageOf(inBlock(), { tip: H + 5, rs: new Error('offline') });

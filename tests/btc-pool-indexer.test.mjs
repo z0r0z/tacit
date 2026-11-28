@@ -1172,6 +1172,18 @@ test('indexer: replays shields, pays and exits; persists; serves HTTP', async ()
   assert.deepEqual(pages, all.nullifiers, 'one at a time, the same list');
   assert.deepEqual((await call(h, '/btc-pool/nullifiers?from=503')).body.nullifiers, []);
   assert.equal((await call(h, '/btc-pool/nullifiers?after=zz')).code, 400);
+  // What the replay made of each pool envelope, by transaction: the shield and the pay were taken; a transaction with none is not seen; a refusal carries its reason.
+  const taken = (await call(h, `/btc-pool/envelope/${shTx.txid}`)).body;
+  assert.deepEqual([taken.seen, taken.height, taken.envelopes.map((e) => [e.height, e.opcode, e.accepted, e.reason])], [true, 503, [[501, 0x6c, true, null]]]);
+  assert.equal((await call(h, `/btc-pool/envelope/0x${pay.txid.toUpperCase()}`)).body.envelopes[0].opcode, 0x6d, 'a 0x prefix and capitals are read');
+  const none = (await call(h, `/btc-pool/envelope/${'ab'.repeat(32)}`)).body;
+  assert.deepEqual([none.seen, none.envelopes, none.height], [false, [], 503]);
+  const why = 'input ' + 'ee'.repeat(32) + ':0 is not a valid note of the asset';
+  store.db.prepare('INSERT INTO envelopes (height, tx_index, vin, txid, opcode, accepted, reason) VALUES (?, ?, ?, ?, ?, ?, ?)').run(503, 40, 0, 'cd'.repeat(32), 0x6c, 0, why);
+  assert.deepEqual((await call(h, `/btc-pool/envelope/${'cd'.repeat(32)}`)).body.envelopes, [{ height: 503, vin: 0, opcode: 0x6c, accepted: false, reason: why }], 'a refused shield carries the reason the replay logs');
+  store.db.prepare('DELETE FROM envelopes WHERE txid = ?').run('cd'.repeat(32));   // (the rows below this are the replay's own)
+  assert.equal((await call(h, '/btc-pool/envelope/xyz')).code, 404);
+  assert.equal((await call(h, `/btc-pool/envelope/${'ab'.repeat(31)}`)).code, 404, 'a txid is 64 hex digits');
   const { cx, cy } = pointXY(B5.C);
   assert.deepEqual((await call(h, `/btc-pool/exit/${exit.txid}/1`)).body, {
     exists: true, txid: exit.txid, vout: 1, height: 502, asset: '0x' + bytesToHex(ASSET), Cx: '0x' + bytesToHex(cx), Cy: '0x' + bytesToHex(cy),

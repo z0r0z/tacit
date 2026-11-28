@@ -2,7 +2,7 @@ import { declinedWords } from '../wallet-prompts.js';
 import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '../tab-key.js';
 
 const TACIT_URL = '/tacit.js?cb=082704c4';
-const SECRET_URL = '/sats/secret.js?cb=6a2b3864';
+const SECRET_URL = '/sats/secret.js?cb=4a43ebd0';
 const MIX_URL = '/sats/mix.js?cb=65890c7a';
 const ETH_URL = '/sats/eth.js?cb=947ee23a';
 const POOL_STATUS = 'https://tacit-btc-pool-mainnet.onrender.com/btc-pool/status';

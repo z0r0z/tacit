@@ -114,4 +114,20 @@ await test('a later feed read asks only from twelve blocks below its newest note
   } finally { Date.now = realNow; }
 });
 
+await test('envelope asks the replay what it made of one transaction, with the txid bare and lower case; feedHas finds a shield by its txid in the feed', async () => {
+  const calls = [], TX = 'ab'.repeat(32), json = (v, status = 200) => ({ ok: status < 400, status, json: async () => v });
+  const fetchImpl = async (url) => {
+    const u = new URL(url), p = u.pathname; calls.push(p);
+    if (p === `/btc-pool/envelope/${TX}`) return json({ txid: TX, height: 9, seen: true, envelopes: [{ height: 8, vin: 0, opcode: 0x6c, accepted: false, reason: 'proof does not verify' }] });
+    if (p === '/btc-pool/notes') return json({ notes: [{ leafIndex: 0, txid: TX, height: 8, leaf: '0x' + '01'.repeat(32), asset: '0x00', pk_eph: '0x00', ct_note: '0x00' }], next: 1 });
+    return json({ error: 'not found' }, 404);
+  };
+  const client = makePoolClient({ api: 'http://replay', fetchImpl });
+  const v = await client.envelope('0x' + TX.toUpperCase());
+  assert.deepEqual([v.seen, v.envelopes[0].accepted, v.envelopes[0].reason], [true, false, 'proof does not verify']);
+  assert.ok(calls.includes(`/btc-pool/envelope/${TX}`), calls.join(' '));
+  await assert.rejects(() => client.envelope('cd'.repeat(32)), (e) => e.status === 404, 'a replay without the route (or an unknown path) answers 404');
+  assert.equal(await client.feedHas(TX), true); assert.equal(await client.feedHas('cd'.repeat(32)), false);
+});
+
 console.log(`\n${passed} passed`);

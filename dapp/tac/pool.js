@@ -1,5 +1,5 @@
 
-const SECRET_URL = '/sats/secret.js?cb=6a2b3864';
+const SECRET_URL = '/sats/secret.js?cb=4a43ebd0';
 const SATS_URL = '/tac/sats.js?cb=cfed8c5c';
 const CLAIM_URL = '/tac/claim.js?cb=3191f575';
 const WORKER = 'https://api.tacit.finance';
@@ -307,7 +307,7 @@ export function makeTacPool(ctx) {
       const p = document.createElement('p'), e = document.createElement('span'), a = document.createElement('a');
       e.className = 'err'; e.textContent = `A shield of ${fmt(x.v)} TAC did not join the pool.`;
       a.href = 'https://discord.gg/VxYx9XSBrM'; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = 'Tacit Discord';
-      p.append(e, ` It confirmed in Bitcoin${x.h ? ` in block ${x.h}` : ''}, and the pool has read that block and holds no note from it. Transaction `, txLink(x.txid), ' · ask in the ', a, ' with it.');
+      p.append(e, x.why ? ` ${x.why} It confirmed in Bitcoin${x.h ? ` in block ${x.h}` : ''}. Transaction ` : ` It confirmed in Bitcoin${x.h ? ` in block ${x.h}` : ''}, and the pool has read that block and holds no note from it. Transaction `, txLink(x.txid), ' · ask in the ', a, ' with it.');
       return [p];
     }));
   }

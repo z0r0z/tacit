@@ -60,6 +60,7 @@ export function openBtcPoolStore(dbPath) {
       height INTEGER NOT NULL, tx_index INTEGER NOT NULL, vin INTEGER NOT NULL, txid TEXT NOT NULL,
       opcode INTEGER NOT NULL, accepted INTEGER NOT NULL, reason TEXT, PRIMARY KEY (height, tx_index, vin)
     );
+    CREATE INDEX IF NOT EXISTS envelopes_txid ON envelopes(txid);
   `);
 
   const st = {
@@ -81,6 +82,7 @@ export function openBtcPoolStore(dbPath) {
     nf: db.prepare('SELECT nf, height, txid FROM nullifiers WHERE nf = ?'),
     nfFrom: db.prepare('SELECT nf, height FROM nullifiers WHERE height > ? OR (height = ? AND nf > ?) ORDER BY height, nf LIMIT ?'),
     exit: db.prepare('SELECT * FROM exits WHERE txid = ? AND vout = ?'),
+    envs: db.prepare('SELECT height, vin, opcode, accepted, reason FROM envelopes WHERE txid = ? ORDER BY height, tx_index, vin LIMIT 16'),
     rootsFrom: db.prepare('SELECT height, root FROM blocks WHERE height >= ? ORDER BY height'),
     allLeaves: db.prepare('SELECT idx, height, leaf FROM leaves ORDER BY idx'),
     allNf: db.prepare('SELECT nf, height, txid FROM nullifiers'),
@@ -140,6 +142,8 @@ export function openBtcPoolStore(dbPath) {
     // Nullifiers from block `from` on in (height, nf) order; `after` continues within block `from`.
     nullifiersFrom: (from, after, limit) => st.nfFrom.all(after ? from : from - 1, from, after || '', limit),
     exit: (txid, vout) => st.exit.get(txid, vout) || null,
+    // What the replay made of each pool envelope of one transaction (taken, or refused and why), oldest first.
+    envelopes: (txid) => st.envs.all(txid),
     rootsFrom: (height) => st.rootsFrom.all(height),
     // Rows for BtcPoolState.restore.
     snapshot() {

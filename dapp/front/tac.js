@@ -574,7 +574,7 @@ function tacWait(k) {
   const a = HELD.pub === k ? HELD.sats?.find((x) => x.ticker === 'TAC') : null;
   return { line: a?.joinLine || TAC_JOIN_DEFAULT, refused: a?.refused || [] };
 }
-const tacRefused = (k) => (k ? tacWait(k).refused : []).map((x) => html`<p class="note"><span class="err">A shield of ${fmt(x.v, 8, 4)} TAC did not join the pool.</span> It confirmed in Bitcoin${x.h ? ` in block ${x.h}` : ''}, and the pool has read that block and holds no note from it. <a href="https://mempool.space/tx/${x.txid}" target="_blank" rel="noopener noreferrer">View the transaction</a> · ask in the <a href="https://discord.gg/VxYx9XSBrM" target="_blank" rel="noopener noreferrer">Tacit Discord</a> with it.</p>`);
+const tacRefused = (k) => (k ? tacWait(k).refused : []).map((x) => html`<p class="note"><span class="err">A shield of ${fmt(x.v, 8, 4)} TAC did not join the pool.</span> ${x.why ? `${x.why} It confirmed in Bitcoin${x.h ? ` in block ${x.h}` : ''}.` : `It confirmed in Bitcoin${x.h ? ` in block ${x.h}` : ''}, and the pool has read that block and holds no note from it.`} <a href="https://mempool.space/tx/${x.txid}" target="_blank" rel="noopener noreferrer">View the transaction</a> · ask in the <a href="https://discord.gg/VxYx9XSBrM" target="_blank" rel="noopener noreferrer">Tacit Discord</a> with it.</p>`);
 const TAC_MOVE_PAY = 'Takes it out of the Pay pool to your wallet, then shields it to the Tacit chain.';
 const TAC_MOVE_BTC = 'Takes all of it out of the pool to your Bitcoin address, then opens the bridge to Ethereum. From there it moves to the Tacit chain.';
 function tacPlaces(k, who) {
@@ -694,7 +694,7 @@ document.addEventListener('click', (e) => {
   tacMoveGo(b.dataset.tacMove, b);
 });
 function tacPool() {
-  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=87c0cf3b').then((m) => {
+  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=462c8c2b').then((m) => {
     const api = m.makeTacPool({
       key: () => (S.key ? { pubHex: S.key.pubHex } : null),
       priv: () => walletPriv(),

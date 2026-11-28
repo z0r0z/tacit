@@ -402,6 +402,12 @@ export function createHandler(ix, store) {
           ? { exists: true, txid: r.txid, vout: r.vout, height: r.height, asset: pre(r.asset), Cx: pre(r.cx), Cy: pre(r.cy) }
           : { exists: false, height: st.tip });
       }
+      if ((m = p.match(/^\/btc-pool\/envelope\/(?:0x)?([0-9a-fA-F]{64})$/))) {
+        // What the replay made of the pool envelopes in one transaction: each taken, or refused with the reason the replay logs. `seen: false` is a transaction in which it
+        // found no pool envelope (or one in a block it has not read: compare `height` with the block's).
+        const txid = m[1].toLowerCase(), rows = store.envelopes(txid);
+        return send(200, { txid, height: st.tip, seen: rows.length > 0, envelopes: rows.map((r) => ({ height: r.height, vin: r.vin, opcode: r.opcode, accepted: r.accepted === 1, reason: r.reason ?? null })) });
+      }
       return send(404, { error: 'not found' });
     } catch (e) {
       return send(500, { error: String(e?.message || e) });

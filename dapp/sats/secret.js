@@ -369,7 +369,15 @@ async function lookPendingShields(tacit, poolWallet, addr) {
   const now = Date.now(), client = poolClientFor(poolWallet.network);
   let chain = null;   // the chain's tip and the pool replay's status, asked once for all the kept shields
   for (const [txid, c] of Object.entries(pendingRead().change)) {
-    if (!c.shield || c.st === 'refused' || (c.owner && owner && c.owner !== owner)) continue;
+    if (!c.shield || (c.owner && owner && c.owner !== owner)) continue;
+    if (c.st === 'refused') {
+      // (one kept before the replay said why, or while it could not: asked again, at most every ten minutes)
+      if (c.reason === undefined && c.none === undefined && now - (c.askedAt || 0) > 10 * 60e3) {
+        const v = await poolVerdict(client, txid);
+        pendingNote(txid, v?.taken ? { st: 'reading' } : { askedAt: now, ...(v ? { reason: v.reason, none: v.none } : {}) });
+      }
+      continue;
+    }
     if (inMempool.has(txid)) { if (c.st !== 'mempool') pendingNote(txid, { st: 'mempool', conf: 0 }); continue; }
     if (now - c.at < SHIELD_GRACE_MS) continue;
     const tx = await esplora(tacit, `/tx/${txid}`).catch(() => undefined);
@@ -394,7 +402,32 @@ async function shieldStage(client, txid, height, { tip, rs }) {
   if (h == null || rs?.height == null || rs.height < h) return { ...at, st: at.conf != null && at.conf >= need ? 'behind' : 'confirming' };
   // (asked twice, the second time with the list read afresh: the list this page holds may be a few seconds old, and a read that fails says nothing against the shield)
   if (await client.feedHas(txid).catch(() => true) || await client.feedHas(txid, { fresh: true }).catch(() => true)) return { ...at, st: 'reading' };
-  return { ...at, st: 'refused' };
+  // Not listed. The replay says what it made of the shield's envelope: taken after all (its notes are in the list now), or refused and why, or that the transaction held no pool
+  // envelope. A replay that does not answer (an older one has no such route) leaves only that the list holds nothing of it.
+  const v = await poolVerdict(client, txid);
+  if (v?.taken) return { ...at, st: 'reading' };
+  return { ...at, st: 'refused', askedAt: Date.now(), ...(v ? { reason: v.reason, none: v.none } : {}) };
+}
+// -> { taken: true } | { taken: false, reason } | { taken: false, none: true } | null when the replay does not answer
+async function poolVerdict(client, txid) {
+  const v = await client.envelope?.(txid).catch(() => null);
+  if (!v || !Array.isArray(v.envelopes)) return null;
+  const own = v.envelopes.find((e) => e.opcode === T_BTC_SHIELD) || v.envelopes[0] || null;
+  if (own?.accepted) return { taken: true };
+  return own ? { taken: false, reason: String(own.reason || '') } : { taken: false, none: true };
+}
+// The replay's reason for a refused shield, in plain words (empty when it is not known). The reasons are the ones the replay logs; one this does not know is shown as it was given.
+export function shieldWhy({ reason, none } = {}) {
+  if (none) return 'The pool found no shield in that transaction.';
+  const r = String(reason || '');
+  if (!r) return '';
+  if (/not a valid note of the asset/.test(r)) return 'The pool did not accept the TAC note it spent as a valid note of this asset: it checks a note’s whole history.';
+  if (/must ride vin\[0\]/.test(r)) return 'The shield was not the first input of its transaction.';
+  if (/non-canonical envelope/.test(r)) return 'The shield’s data was not in the form the pool reads.';
+  if (/too few inputs/.test(r)) return 'The transaction did not spend the note the shield named.';
+  if (/kernel signature|boundary does not verify|proof does not verify|excess is infinity|curve point/.test(r)) return 'The shield’s proof did not verify.';
+  if (/tree is full/.test(r)) return 'The pool’s note tree is full.';
+  return `The pool’s reason: ${r.slice(0, 160)}.`;
 }
 const SHIELD_STAGE = { mempool: 0, confirming: 1, behind: 2, paused: 2, reading: 3 };
 const spell = (ms) => (ms < 90 * 60e3 ? `${Math.max(1, Math.round(ms / 60e3))} min` : `${Math.round(ms / 3600e3)} h`);
@@ -418,7 +451,7 @@ export function pendingView(notes, asset, poolWallet = null) {
   const shields = [], refused = [];   // the shields waiting, each with where it is; the ones the pool did not take
   for (const [txid, c] of Object.entries(p.change)) {
     if (seen.has(txid) || (asset && !eqAsset(c.asset, asset)) || (owner && c.owner && c.owner !== owner)) continue;
-    if (c.shield && c.st === 'refused') { refused.push({ txid, v: BigInt(c.v), h: c.h ?? null, at: c.at }); continue; }
+    if (c.shield && c.st === 'refused') { refused.push({ txid, v: BigInt(c.v), h: c.h ?? null, at: c.at, reason: c.reason || null, why: shieldWhy(c) }); continue; }
     settling += BigInt(c.v); leaving += BigInt(c.out || 0); paying += BigInt(c.pay || 0);
     if (c.shield) shields.push({ txid, v: BigInt(c.v), st: c.st || null, conf: c.conf ?? null, need: c.need ?? SHIELD_CONFS, h: c.h ?? null, at: c.at });
   }
