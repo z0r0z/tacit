@@ -35,9 +35,7 @@ function chainOf(entry) {
 const IMAGES = {
   'Dockerfile.pool-maker': ['worker-relay/src/pool-maker.js'],
   'Dockerfile.btc-pool': ['worker-relay/src/btc-pool-indexer.js'],
-  'Dockerfile.sats-faucet': ['worker-relay/src/sats-faucet.js', 'worker-relay/src/bridge-recover.js'],
-  'Dockerfile.sp-index': ['worker-relay/src/sp-tweak-index.js'],
-  'Dockerfile.join-board': ['worker-relay/src/join-board.js'],
+  'Dockerfile.sats-faucet': ['worker-relay/src/bridge-recover.js'],   // the file keeps its old name: the tacit-bridge-recover service points at it
   'Dockerfile.evm-pool-keeper': ['worker-relay/src/evm-pool-keeper.js', 'worker-relay/src/evm-pool-keepers.js'],
   'Dockerfile.fastbridge-lp': ['fastbridge-lp/server.mjs', 'fastbridge-lp/setup.mjs', 'worker-relay/src/take-watcher-main.js'],
 };

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import * as M from '../src/pool-maker.js';
-import { loadTacitHeadless, setWalletKey, HttpError } from '../src/sats-faucet.js';
+import { loadTacitHeadless, setWalletKey, HttpError } from '../src/lib/headless-service.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DAPP = path.resolve(HERE, '../../dapp');

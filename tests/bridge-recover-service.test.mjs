@@ -146,7 +146,7 @@ test('fee money: one top-up from the fee key when plain sats run low, never more
     buildAndBroadcastSatsSend: async ({ recipientAddr, amountSats }) => { sent.push({ from: tacit.wallet.address(), recipientAddr, amountSats }); return { txid: 'cd'.repeat(32) }; },
   };
   Object.defineProperty(tacit.wallet, 'address', { value: () => addrOf(hex(tacit.wallet.pub)) });
-  const { setWalletKey } = await import('../worker-relay/src/sats-faucet.js');
+  const { setWalletKey } = await import('../worker-relay/src/lib/headless-service.js');
   setWalletKey({ tacit, deps: vdeps }, RECOVER);
   let t = 0;
   const none = makeTopUp({ tacit, deps: vdeps, recoverKey: RECOVER, feeKey: null });

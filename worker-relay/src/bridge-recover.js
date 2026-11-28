@@ -24,7 +24,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadTacitHeadless, setWalletKey } from './sats-faucet.js';
+import { loadTacitHeadless, setWalletKey } from './lib/headless-service.js';
 import { makeBridgeRecover } from '../../dapp/bridge-recover.js';
 import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
 import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-scan-indexer.js';

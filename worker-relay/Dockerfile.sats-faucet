@@ -1,4 +1,4 @@
-# tacit-sats-faucet: signet cBTC + signet sats faucet for Secret Sats (src/sats-faucet.js).
+# tacit-bridge-recover (src/bridge-recover.js). The file keeps its old name, from the signet faucet it was first written for, because the service points at it.
 # Build context is the repo root: the service loads dapp/tacit.js headlessly, so the runtime image keeps the
 # dapp/ and worker-relay/ layout side by side.
 #   docker build -f worker-relay/Dockerfile.sats-faucet .
@@ -13,7 +13,7 @@ COPY dapp/*.js /app/dapp/
 COPY dapp/vendor/*.js /app/dapp/vendor/
 # dapp/*.js is the top level only; confidential-pool-ux.js (reached through tacit.js) reads the public nodes through trade/rpc.js
 COPY dapp/trade/rpc.js /app/dapp/trade/rpc.js
-# The maker verifies pool proofs with the pool's own verifier (Halo2 wasm, params and key pinned in pin.json).
+# The service verifies pool proofs with the pool's own verifier (Halo2 wasm, params and key pinned in pin.json).
 COPY dapp/btc-pool/pin.json dapp/btc-pool/vk.bin dapp/btc-pool/params-k13.bin dapp/btc-pool/btc_pool_halo2.js dapp/btc-pool/btc_pool_halo2_bg.wasm /app/dapp/btc-pool/
 
 WORKDIR /app/worker-relay
@@ -22,8 +22,6 @@ RUN npm ci --omit=dev --ignore-scripts && npm rebuild better-sqlite3 && npm cach
 COPY worker-relay/src ./src
 
 ENV NODE_ENV=production \
-    FAUCET_NETWORK=signet \
-    FAUCET_STATE=/var/lib/tacit-sats-faucet/state.json \
     PORT=10000
 EXPOSE 10000
-CMD ["node", "src/sats-faucet.js"]
+CMD ["node", "src/bridge-recover.js"]

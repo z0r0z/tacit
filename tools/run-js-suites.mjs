@@ -36,7 +36,6 @@ const SKIP = new Map(Object.entries({
   'worker-relay/tests/btc-pool-relayer.test.mjs': 'live Bitcoin/pool endpoints: ran 23 min offline before being killed',
   'tests/btc-pool-indexer.test.mjs': 'live Bitcoin endpoints: hangs offline',
   'tests/btc-pool-zap.test.mjs': 'live Bitcoin endpoints: hangs offline',
-  'tests/secret-sats-join.test.mjs': 'live endpoints: hangs offline',
   'tests/capacity-monitoring.test.mjs': 'reads a live endpoint: fails at once offline',
   'tests/pool-swap-carrier.test.mjs': 'live endpoints: passes online in ~2 min, hangs offline',
   // Passes offline, but only by soft-skipping every live check, so in this gate it would assert nothing. It is a

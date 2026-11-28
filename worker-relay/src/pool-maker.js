@@ -40,7 +40,7 @@ import { createServer } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HttpError, clientIp, makeLock, loadTacitHeadless, setWalletKey, openStateFile } from './sats-faucet.js';
+import { HttpError, clientIp, makeLock, loadTacitHeadless, setWalletKey, openStateFile } from './lib/headless-service.js';
 import { parseUrl, badRequest } from './lib/safe-url.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));

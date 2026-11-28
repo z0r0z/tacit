@@ -39,7 +39,7 @@ test('no service parses its request line bare: every `new URL(req.url …` is gu
 });
 
 test('every service that parses a request line imports the helper from a path that exists', () => {
-  const files = ['pool-maker', 'points-indexer', 'sp-tweak-index', 'btc-pool-indexer', 'sats-faucet', 'join-board', 'lib/btc-pool-relayer', 'lib/sp-hints'];
+  const files = ['pool-maker', 'points-indexer', 'btc-pool-indexer', 'lib/btc-pool-relayer', 'lib/sp-hints'];
   for (const f of files) {
     const path = new URL(`../src/${f}.js`, import.meta.url);
     const src = readFileSync(path, 'utf8'), spec = /from '(\.[^']*safe-url\.js)'/.exec(src)?.[1];
