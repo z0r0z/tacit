@@ -19,8 +19,14 @@ export function tabKeyWrite(k) {
   for (const f of FIELDS) if (k[f] != null) rec[f] = k[f];
   rec.priv = priv;
   try { sessionStorage.setItem(K, JSON.stringify(rec)); } catch { }
+  said();
 }
 export function tabKeyClear() { try { sessionStorage.removeItem(K); } catch { } }
+// A page can hold more than one session (the front page's own and the Bitcoin and Ethereum lane's in its swap card): a key opened by one after the
+// other has loaded is told to the others in this tab, which open it the way they open it at load (tabKeyRead). The event carries no key.
+const EV = 'tacit:tab-key';
+function said() { try { dispatchEvent(new Event(EV)); } catch { } }
+export function onTabKey(fn) { try { addEventListener(EV, fn); } catch { } return () => { try { removeEventListener(EV, fn); } catch { } }; }
 
 let last = 0;
 function touch() {

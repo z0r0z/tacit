@@ -6,7 +6,7 @@ import { makeFeed } from '/vault/feed.js?cb=bd584ab8';
 import { makePools } from '/vault/pools.js?cb=448a04ee';
 import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=5c4d23f3';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=c1a728a3';
-import { tabKeyRead } from '/tab-key.js?cb=e90d6a31';
+import { tabKeyRead } from '/tab-key.js?cb=18dd5b40';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -464,12 +464,12 @@ document.addEventListener('click', (e) => {
 // The Bitcoin side's own position (vault/mine.js): loaded on the holder's first press, or with the side when this tab already has a Tacit
 // wallet open, so the side reads nothing more until then
 // with no wallet connected here, the visitor chooses among the browser's wallets (the sign-in sheet's own picker)
-const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : import('/trade/key.js?cb=4e4c3027').then((m) => m.pickWalletSheet(list)); };
+const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : import('/trade/key.js?cb=6d715552').then((m) => m.pickWalletSheet(list)); };
 let mineP = null;
 function openMine(press, btn = null) {
   if (mineP) return;
   if (btn) { btn.textContent = 'Opening…'; btn.disabled = true; }
-  mineP = import('/vault/mine.js?cb=64c4ec01').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectSaying }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
+  mineP = import('/vault/mine.js?cb=ae6f46d2').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectSaying }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
     .catch((err) => { mineP = null; if (btn) { btn.textContent = 'Could not load. Try again'; btn.disabled = false; } console.warn('your position:', err?.message || err); });
 }
 $('#btc').addEventListener('click', (e) => {

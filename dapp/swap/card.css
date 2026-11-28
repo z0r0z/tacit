@@ -59,6 +59,24 @@
 @media (max-width: 420px) { .swc .snt.atm .stp { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 420px) { .swc .snt.atm .stp.s5 { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; } .swc .snt.atm .stp.s5 li { font-size: 10.5px; overflow-wrap: anywhere; } }
 @media (prefers-reduced-motion: reduce) { .swc .snt.atm .stp li.active i { animation: none; } }
+/* the front page's own step dots and its green .ok are not these cards': a card's text stays muted, its steps stay bars */
+.swc .snt > div { color: var(--mute); }
+.swc .snt.atm .stp li + li::before { content: none; }
+.swc .snt.atm .stp.s5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.swc .snt.atm .stp li i { flex: none; }
+/* under the button: the swaps of this card (a swap under way, one that needs a look, the latest finished), then a link to the rest on /btc/ */
+.swc #atomic .act + .snt { margin-top: 14px; }
+.swc #atomic .more-recs { margin: 8px 2px 0; font-size: 12px; color: var(--mute); }
+.swc #atomic .more-recs a { color: var(--ink); text-underline-offset: 3px; }
+/* a finished swap's next steps, and its said outcome (as on /btc/) */
+.swc .snt small.paid, .swc .snt small.sure { color: var(--ink); }
+.swc .snt small.paid.err { color: var(--err); }
+.swc .snt .nx { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+.swc .snt .nx-b { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 0 16px; font: 500 12.5px var(--mono); color: var(--ink); background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 22%, transparent); border-radius: 10px; cursor: pointer; text-decoration: none; }
+.swc .snt .nx-b:hover { border-color: var(--ink); }
+.swc .snt .nx-b.main { color: var(--card); background: var(--ink); border-color: var(--ink); }
+@media (pointer: coarse), (max-width: 540px) { .swc .snt .nx-b { min-height: 42px; flex: 1 1 140px; } }
+.swc .snt small.nx-n { color: var(--mute); }
 /* an amount before the wallet is open is an estimate at the market, set apart from a quote; the line that says when to be back is read first */
 .swc #atomic .big.est { color: var(--mute); font-size: 34px; }
 /* an amount sized to its field, as /btc/ draws it: smaller as it gets longer, never cut (--n is its length, set by the lane) */

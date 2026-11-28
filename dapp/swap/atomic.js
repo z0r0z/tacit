@@ -24,7 +24,7 @@
 // to be seen again can miss its window); and the page asks before it is left while one is under way.
 import { esc, fmtUnits, parseUnits, plain, E10 } from '/trade/util.js?cb=9c8b4133';
 
-const BTC_MODULE = '/trade/btc.js?cb=6d65d5b0';
+const BTC_MODULE = '/trade/btc.js?cb=29249ab1';
 const PAIR_WIRE = '/fast/pair-wire.js?cb=65033b15';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const NO_ANSWER = 'No answer just now. Nothing was sent. Try again soon.', RETRY_MS = [2000, 4000, 8000, 15000, 30000], RETRY_SHOWN = 3;
@@ -212,12 +212,13 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       <div class="ff"><span id="a-get-bal" class="num"></span><span></span></div>
     </div>
     <dl class="rcpt" id="a-rcpt" hidden></dl>
-    <div class="snt atm" id="a-sent" hidden></div>
     <div class="payto" id="a-payto" hidden></div>
     <div class="act">
       <button class="go" id="a-go" type="button" disabled>Sign in to swap</button>
       <p class="q" id="a-q" role="status"></p>
-    </div>`;
+    </div>
+    <div class="snt atm" id="a-sent" hidden></div>
+    <p class="more-recs" id="a-more" hidden></p>`;
 
   // an amount's length, for a page that sizes it to its field (--n)
   const fit = (el) => el.style.setProperty('--n', String(Math.max(5, String(el.tagName === 'INPUT' ? el.value : el.textContent).length)));
@@ -602,7 +603,12 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   }
   function paintRecs() {
     const box = recsHost || $('a-sent'), gone = dismissed(), recs = L.recs.filter((r) => !gone.has(r.id)).map(withPress);
-    const shown = L.chain ? [pressCard(L.chain), ...recs] : recs;
+    // in a card with no list of its own (the front page's swap card) the swaps sit under the button: each one under way or that needs a look, and the
+    // two latest finished in the last day; the rest are on /btc/
+    const brief = (rs) => { const hot = rs.filter((r) => r.state !== 'done'), fresh = rs.filter((r) => r.state === 'done' && !(r.at && now() - r.at > 86400)).slice(0, Math.max(0, 2 - hot.length)); return rs.filter((r) => hot.includes(r) || fresh.includes(r)); };
+    const listed = recsHost ? recs : brief(recs), more = recs.length - listed.length;
+    if (!recsHost) { const m = $('a-more'); m.hidden = more <= 0; m.innerHTML = more > 0 ? `<a href="/btc/#mine">${more === 1 ? 'One more swap' : `${more} more swaps`} on the Bridge page →</a>` : ''; }
+    const shown = L.chain ? [pressCard(L.chain), ...listed] : listed;
     if (recsHost) $('a-sent').hidden = true;
     box.hidden = !shown.length;
     onRecs(recs, shown);
@@ -652,8 +658,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const out = $('a-out'), q = L.q;
     // what arrives is what the provider locks less the fee of the transaction that takes it (e2b), not the lock
     const arrives = q && L.dir === 'e2b' && Number(q.takeFeeSats) > 0 && q.get > BigInt(q.takeFeeSats) ? q.get - BigInt(q.takeFeeSats) : q && q.get;
-    // before a quote (the wallet not open yet), what the best provider would give at the market, marked as an estimate (to six places: it is not a quote)
-    const est = !q && !pair && L.mk?.estimate && amountBase() ? L.mk.estimate(L.dir, amountBase()) : null;
+    // before a quote (the wallet not open yet, or its balance and quote still being read), what the best provider would give at the market, marked as an
+    // estimate (to six places: it is not a quote)
+    const est = !q && L.mk?.estimate && amountBase() ? L.mk.estimate(L.dir, amountBase()) : null;
     out.classList.toggle('est', !!est);
     if (q) { out.textContent = fmt(arrives); out.classList.remove('ph'); } else if (est) { out.textContent = `≈ ${tidy(fmtUnits(est.get, DEC, 6))}`; out.classList.remove('ph'); } else { out.textContent = '0'; out.classList.add('ph'); }
     fit(out); fit($('a-amt'));

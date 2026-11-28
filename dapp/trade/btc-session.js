@@ -5,7 +5,7 @@
 // These are the ways in /tac has (dapp/tac/app.js) that need nothing but the wallet or the passkey itself. A key pasted in, one saved in
 // the browser and one an extension funds each ask for a passphrase in tacit.js's own dialogs, which belong to the classic app.
 
-import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=e90d6a31';
+import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch, onTabKey } from '/tab-key.js?cb=18dd5b40';
 
 const TACIT_URL = '/tacit.js?cb=082704c4', KNOWN_URL = '/tacit-wallet-known.js?cb=ec5b5193', EVM_URL = '/evm-wallet.js?cb=ed67f38d';
 const DEPS_URL = '/vendor/tacit-deps.min.js', PRF_URL = '/prf-wallet.js';
@@ -179,11 +179,16 @@ export function makeBtcSession({ moved = null, busy = null } = {}) {
   // Ethereum wallet's once that wallet answers, without a prompt, as the account that opened it (any other answer, or none, locks it).
   // and an open key is locked after IDLE with no use of the page (tab-key.js), the way the sign-in sheet says it is
   tabKeyWatch({ busy, onIdle: (why) => { if (!key) return; if (moved) moved(why); else { forget(); emit(); } } });
-  const kept = tabKeyRead();
-  if (kept && kept.mode !== 'eth') load().then(() => key || setKey(kept)).catch(() => tabKeyClear());
-  else if (kept?.mode === 'eth') {
-    load().then(() => evm.restore()).then((c) => { if (key) return; if (c && '0x' + lc(c.address) === lc(kept.address)) return setKey(kept); tabKeyClear(); }).catch(() => tabKeyClear());
-  }
+  // (also when another session of this page opens a key after this one loaded: a session that already holds a key keeps it)
+  const adopt = () => {
+    const kept = key ? null : tabKeyRead();
+    if (kept && kept.mode !== 'eth') load().then(() => key || setKey(kept)).catch(() => tabKeyClear());
+    else if (kept?.mode === 'eth') {
+      load().then(() => evm.restore()).then((c) => { if (key) return; if (c && '0x' + lc(c.address) === lc(kept.address)) return setKey(kept); tabKeyClear(); }).catch(() => tabKeyClear());
+    }
+  };
+  adopt();
+  onTabKey(adopt);
   return {
     load, turn, open, setKey,
     get T() { return T; }, get D() { return D; }, get key() { return key; }, get unlocked() { return !!(key && T && T.wallet.priv); },

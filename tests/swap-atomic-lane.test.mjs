@@ -306,6 +306,7 @@ console.log('a provider: the switch appears, and the lane opens');
   ok((await page.$$('#a-sent .stp li')).length === 4 && (await page.$$('#a-sent .stp li.active')).length === 1 && (await page.$$('#a-sent .stp li.todo')).length === 3, 'four steps, the first under way');
   ok(/If it stops, your BTC returns in 2[34] h/.test(await text(page, '#a-sent')), `it says when the user's own refund opens (${(await text(page, '#a-sent')).slice(0, 220)})`);
   await SHOT(page, 'lane-working');
+  ok(await page.evaluate(() => !!(document.querySelector('#a-go').compareDocumentPosition(document.querySelector('#a-sent')) & Node.DOCUMENT_POSITION_FOLLOWING)), 'in the card the swaps sit under the button (a list of past swaps never pushes the button out of sight)');
   await atom(page, '(A.advance("sw1", 2, "working", "Claiming your ETH"), 0)');
   await page.waitForFunction(() => /Claiming your ETH/.test(document.querySelector('#a-sent').textContent), null, { timeout: 9000 });
   ok((await page.$$('#a-sent .stp li.done')).length === 2 && (await page.$$('#a-sent .stp li.active')).length === 1, 'a step further on: two done, one under way (the lane follows the swap on its own)');

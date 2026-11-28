@@ -14,7 +14,7 @@ import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPass
 import { knownWallets } from '/tacit-wallet-known.js?cb=ec5b5193';
 import { makeRescanGate } from '/rescan-gate.js?cb=69bb32ff';
 import { btcAddressOf, pubHexOf, elsewhere } from '/pub-address.js?cb=cb1da32d';
-import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=e90d6a31';
+import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch, onTabKey } from '/tab-key.js?cb=18dd5b40';
 import { makeTacitAddress, poolKeysOf } from '/tacit-address.js';
 import { bip352TaggedHash } from '/bip352.js';
 import { makeEvmWallet, declinedWords, stillWaiting } from '/evm-wallet.js?cb=ed67f38d';
@@ -14184,7 +14184,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=fc704c76').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=0a925e76').catch((e) => { SWC.p = null; throw e; }));
 // Intent on Shield or Swap is a useful head start: fetch both the card and the
 // private action engine, and warm the fee/log reads they need before submit.
 const hxActionWarm = () => { swcLoad().catch(() => {}); hxWarm(); hxWarmWrap(); };
@@ -14827,7 +14827,7 @@ async function hxBtcMarket(addr) {
   const r = xtOf(addr), b = r && xtBridge(r);
   if (!b) return;
   try {
-    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=6d65d5b0')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
+    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=29249ab1')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
     await BTC_MKT.get(b.hex).open();
   } catch (e) { toast(`The ${b.name} market on Bitcoin did not open: ${errText(e)}`, true); }
 }
@@ -15006,6 +15006,8 @@ tabKeyWatch({ onIdle: lockIdle, busy: () => signing || busySheet() != null });
 tabKeyOpen(false);
 const restoring = restoreWallet();
 restoring.then(() => tabKeyOpen(true), () => tabKeyOpen(true));
+// a key opened by the swap card's Bitcoin and Ethereum lane (its own session) opens the page's wallet too
+onTabKey(() => tabKeyOpen(true));
 Promise.race([restoring, new Promise((r) => setTimeout(() => r(false), 1500))]).then((restored) => { if (!restored && !S.key) refreshAll(); });
 evm.onElsewhere(restoreWallet);
 // a remembered wallet that announces itself after the page started (an extension still waking), or is unlocked later, is restored when it does
