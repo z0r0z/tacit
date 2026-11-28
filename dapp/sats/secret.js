@@ -265,6 +265,8 @@ function poolNoteRecord(note, txid) {
 }
 
 const mb = (n) => (n / 1e6).toFixed(1);
+// The proof is made on the device: about 15 seconds on a quiet one, minutes on a busy or slow one (a canary on a loaded laptop took 212 s), so after half a minute the line stops promising 15.
+export const proveLine = (sec) => (sec <= 30 ? `Proving on your device (~15 s)… ${sec} s` : `Proving on your device… ${sec} s. A busy device can take a few minutes; keep this tab open.`);
 export async function proveHere(built, say = () => {}) {
   const total = await poolClient.artifactBytes();
   const got = new Map();
@@ -283,8 +285,8 @@ export async function proveHere(built, say = () => {}) {
         if (stage === 'loading') { say('Preparing the prover…'); return; }
         if (stage !== 'proving') return;
         t0 = Date.now();
-        say('Proving on your device (~15 s)… 0 s');
-        timer = setInterval(() => say(`Proving on your device (~15 s)… ${Math.round((Date.now() - t0) / 1000)} s`), 500);
+        say(proveLine(0));
+        timer = setInterval(() => say(proveLine(Math.round((Date.now() - t0) / 1000))), 500);
       },
     });
   } finally {

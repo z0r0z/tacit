@@ -280,5 +280,11 @@ mempool = [carried(SHIELD_TX, PAYLOAD.mine)];
 await secret.syncPendingShields(chain, pw);
 assert.equal(settling(), AMOUNT, 'and the next look is made again, not held to the failed one');
 
+// the proving line promises 15 seconds only while that is likely
+assert.match(secret.proveLine(0), /^Proving on your device \(~15 s\)… 0 s$/);
+assert.match(secret.proveLine(30), /~15 s/);
+assert.doesNotMatch(secret.proveLine(31), /~15 s/);
+assert.match(secret.proveLine(212), /^Proving on your device… 212 s\. A busy device can take a few minutes; keep this tab open\.$/);
+
 console.log('secret shield pending: all passed');
 process.exit(0);   // tacit.js, loaded for its envelope reader, keeps timers alive
