@@ -3,7 +3,7 @@
   var TABS = ['wallet', 'holdings', 'transfer', 'discover', 'market', 'pool', 'farms', 'etch', 'factory', 'drops', 'claim',
     'about', 'mixer', 'confidential-pool', 'otc', 'cdp', 'csend', 'cswap', 'earn', 'points'];
   var PAGES = ['sats', 'secret-sats', 'ceremony', 'tacit-v1', 'tac', 'trade', 'trade/tac', 'teth', 'cbtc', 'vault', 'pay', 'weld/stats', 'weld/keeper', 'pay/eth', 'swap', 'assets', 'rewards', 'bridge', 'discord', 'farm', 'spx',
-    'govern', 'etch', 'nodes', 'fast', 'btc', 'help', 'build', 'shop', 'vanity', 'face', 'tasks', 'relay', 'splitter', 'recover', 'prove', 'chain', 'praxis', 'docs/btc', 'docs/chain'];
+    'govern', 'gov', 'etch', 'nodes', 'fast', 'btc', 'help', 'build', 'shop', 'vanity', 'face', 'tasks', 'relay', 'splitter', 'recover', 'prove', 'chain', 'praxis', 'docs/btc', 'docs/chain'];
   var CLASSIC_HASH = /^#(?:(?:tab|recv|claim|dclaim|gate|tacit-invoice|amm)=|amm-?ceremony$)/;
   var CLASSIC_QUERY = ['ceremony', 'coordinator', 'amm', 'ammceremony'];
   var VIEWS = ['lock', 'borrow', 'farm', 'leaderboard', 'bitcoin', 'private', 'device', 'buy', 'sell', 'activity', 'asset', 'airdrop'];
