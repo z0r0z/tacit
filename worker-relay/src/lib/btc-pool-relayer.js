@@ -67,7 +67,7 @@ const newId = () => randomBytes(16).toString('hex');
 const bpm = makeBtcShieldedPool({ secp, keccak256: keccak_256, sha256 });
 
 export class RelayError extends Error {
-  constructor(status, message, extra = null) { super(message); this.status = status; this.extra = extra; }
+  constructor(status, message, extra = null, retryAfter = 0) { super(message); this.status = status; this.extra = extra; if (retryAfter) this.retryAfter = retryAfter; }
 }
 const bad = (m) => new RelayError(400, m);
 
@@ -245,10 +245,10 @@ export function makeBitcoindMempool({ rpc, maxFetchPerRefresh = 5000, maxTxids =
 }
 
 // ── admission helpers ──
-export function makeRateLimiter({ perMin = 30, burst = 10, maxClients = 10_000, now = () => Date.now() } = {}) {
+export function makeRateLimiter({ perMin = 60, burst = 30, maxClients = 10_000, now = () => Date.now() } = {}) {
   const buckets = new Map();
   const fill = (b, t) => { b.tokens = Math.min(burst, b.tokens + ((t - b.at) * perMin) / 60_000); b.at = t; };
-  return (key) => {
+  const check = (key) => {
     const t = now();
     let b = buckets.get(key);
     if (!b) {
@@ -262,6 +262,12 @@ export function makeRateLimiter({ perMin = 30, burst = 10, maxClients = 10_000, 
     b.tokens -= 1;
     return true;
   };
+  // Whole seconds until this key has a token again, so a 429 can say how long to wait.
+  check.retryAfter = (key) => {
+    const b = buckets.get(key);
+    return b ? Math.max(1, Math.ceil(((1 - b.tokens) * 60_000) / perMin / 1000)) : 1;
+  };
+  return check;
 }
 
 export { clientKey };
@@ -1121,8 +1127,8 @@ export function createRelayer({
     if (!url) return false;                      // no URL: not this handler's, and the next one answers it
     const p = url.pathname.replace(/\/$/, '');
     if (!p.startsWith(PREFIX)) return false;
-    const send = (code, body) => {
-      res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store', ...(code === 429 ? { 'Retry-After': '10' } : {}) });
+    const send = (code, body, retryAfter) => {
+      res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store', ...(code === 429 ? { 'Retry-After': String(retryAfter || 10) } : {}) });
       res.end(JSON.stringify(body));
     };
     if (req.method === 'OPTIONS') {
@@ -1133,7 +1139,7 @@ export function createRelayer({
     try {
       let m;
       const client = clientKey(req);
-      const limited = (route) => { if (!limiter(`${route} ${client}`)) throw new RelayError(429, 'rate limited'); };
+      const limited = (route) => { if (!limiter(`${route} ${client}`)) throw new RelayError(429, 'rate limited: too many requests from this address, wait and ask again (a batch should be paced)', null, limiter.retryAfter(`${route} ${client}`)); };
       if (p === `${PREFIX}/info` && req.method === 'GET') send(200, await info());
       else if (p === `${PREFIX}/quote` && req.method === 'POST') { limited('quote'); send(200, await quote(await readBody(req), client)); }
       else if (p === `${PREFIX}/submit` && req.method === 'POST') { limited('submit'); send(200, await submit(await readBody(req), client)); }
@@ -1142,7 +1148,7 @@ export function createRelayer({
         send(s ? 200 : 404, s || { error: 'unknown payload' });
       } else send(404, { error: 'not found' });
     } catch (e) {
-      send(e instanceof RelayError ? e.status : 500, e instanceof RelayError ? { error: e.message, ...(e.extra || {}) } : { error: 'internal error' });
+      send(e instanceof RelayError ? e.status : 500, e instanceof RelayError ? { error: e.message, ...(e.extra || {}) } : { error: 'internal error' }, e instanceof RelayError ? e.retryAfter : 0);
       if (!(e instanceof RelayError)) log(`relay handler error: ${e?.message || e}`);
     }
     return true;
@@ -1355,7 +1361,7 @@ export function startBtcPoolRelayerFromEnv({ ix, store = null, verifier, network
     aggMin: num('BTC_POOL_RELAYER_AGG_MIN', 2),
     log,
   });
-  r.setRateLimit({ perMin: num('BTC_POOL_RELAYER_RATE_PER_MIN', 30), burst: num('BTC_POOL_RELAYER_RATE_BURST', 10) });
+  r.setRateLimit({ perMin: num('BTC_POOL_RELAYER_RATE_PER_MIN', 60), burst: num('BTC_POOL_RELAYER_RATE_BURST', 30) });
   r.start();
   log(`relayer enabled: pool address ${r.address}, funding ${r.fundAddress}, mempool ${source}`);
   return r;
