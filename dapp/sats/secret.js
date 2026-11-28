@@ -66,17 +66,21 @@ const outpointBytes = (txid, vout) => {
   return b;
 };
 
+// null when every explorer asked has no such thing: one that has not heard of a transaction (it has dropped it from its mempool, or has not been told) says 404 while
+// another still holds it, so a 404 is only believed once the others agree, and an explorer that does not answer leaves the question open (a throw).
 async function esplora(tacit, p) {
-  let last = null;
+  let last = null, asked = 0, missing = 0;
   for (const base of [tacit.NET.api, tacit.NET.api2]) {
     if (!base) continue;
+    asked++;
     try {
       const r = await fetch(base + p, { signal: AbortSignal.timeout?.(10_000) });   // a stalled explorer falls through to the next
-      if (r.status === 404) return null;
+      if (r.status === 404) { missing++; continue; }
       if (r.ok) return await r.json();
       last = new Error(`${p}: HTTP ${r.status}`);
     } catch (e) { last = e; }
   }
+  if (asked && missing === asked) return null;
   throw last || new Error(`${p}: no explorer to ask`);
 }
 
@@ -299,13 +303,17 @@ export async function poolNotes(poolWallet, asset) {
 
 const PENDING_KEY = 'tacit-pool-pending-v1', PENDING_MS = 6 * 3600e3;
 const MAY_STILL_MS = 30 * 60e3;
+// A shield is kept longer than the change of a payment: Bitcoin can take hours to confirm one, and the pool lists it three blocks after that. It goes when the pool lists it, when Bitcoin has
+// dropped it, or after SHIELD_MS; one whose block the pool has read and which it did not take (`st: 'refused'`) stays as a notice, not as TAC on its way.
+const SHIELD_MS = 3 * 86400e3, REFUSED_MS = 30 * 86400e3;
+const keptFor = (x) => (x.shield ? (x.st === 'refused' ? REFUSED_MS : SHIELD_MS) : PENDING_MS);
 const nfKey = (nf) => String(nf).replace(/^0x/, '').toLowerCase();
 function pendingRead() {
   let v = null;
   try { v = typeof localStorage === 'undefined' ? null : JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); } catch {}
   const out = { spent: {}, change: {} }, now = Date.now();
   for (const [k, x] of Object.entries(v?.spent || {})) if (now < (x.until ?? x.at + PENDING_MS)) out.spent[k] = x;
-  for (const [k, x] of Object.entries(v?.change || {})) if (now - x.at < PENDING_MS) out.change[k] = x;
+  for (const [k, x] of Object.entries(v?.change || {})) if (now - x.at < keptFor(x)) out.change[k] = x;
   return out;
 }
 const ownerTag = (poolWallet) => (poolWallet?.addressString ? String(poolWallet.addressString).slice(-16) : null);
@@ -322,6 +330,13 @@ function pendingDrop(txid) {
   const p = pendingRead();
   if (!(txid in p.change)) return;
   delete p.change[txid];
+  try { if (typeof localStorage !== 'undefined') localStorage.setItem(PENDING_KEY, JSON.stringify(p)); } catch {}
+}
+// What the last look found out about a kept record (a shield's place on its way to the pool: `st`, its block `h`, its confirmations `conf`).
+function pendingNote(txid, patch) {
+  const p = pendingRead();
+  if (!(txid in p.change)) return;
+  p.change[txid] = { ...p.change[txid], ...patch };
   try { if (typeof localStorage !== 'undefined') localStorage.setItem(PENDING_KEY, JSON.stringify(p)); } catch {}
 }
 // What this browser kept is not the whole story: a shield made on another device, or before this browser kept one, is waiting too, and one this browser kept may
@@ -349,21 +364,63 @@ async function lookPendingShields(tacit, poolWallet, addr) {
     const total = pool.scan(poolWallet, sh.outputs.map((o, j) => ({ ...o, leafIndex: j }))).reduce((t, x) => t + BigInt(x.value), 0n);
     if (total > 0n && !(tx.txid in pendingRead().change)) pendingMark([], tx.txid, total, sh.asset, 0n, owner, { shield: true });
   }
-  const now = Date.now();
+  const now = Date.now(), client = poolClientFor(poolWallet.network);
+  let chain = null;   // the chain's tip and the pool replay's status, asked once for all the kept shields
   for (const [txid, c] of Object.entries(pendingRead().change)) {
-    if (!c.shield || inMempool.has(txid) || (c.owner && owner && c.owner !== owner) || now - c.at < SHIELD_GRACE_MS) continue;
-    if ((await esplora(tacit, `/tx/${txid}`).catch(() => undefined)) === null) pendingDrop(txid);   // null: the explorer knows no such transaction
+    if (!c.shield || c.st === 'refused' || (c.owner && owner && c.owner !== owner)) continue;
+    if (inMempool.has(txid)) { if (c.st !== 'mempool') pendingNote(txid, { st: 'mempool', conf: 0 }); continue; }
+    if (now - c.at < SHIELD_GRACE_MS) continue;
+    const tx = await esplora(tacit, `/tx/${txid}`).catch(() => undefined);
+    if (tx === null) { pendingDrop(txid); continue; }                 // null: no explorer knows such a transaction
+    if (!tx) continue;                                                // none answered: what was kept stays
+    if (!tx.status?.confirmed) { pendingNote(txid, { st: 'mempool', conf: 0 }); continue; }
+    chain ||= await chainLook(tacit, client);
+    pendingNote(txid, await shieldStage(client, txid, tx.status.block_height, chain));
+  }
+}
+async function chainLook(tacit, client) {
+  const [tip, rs] = await Promise.all([esplora(tacit, '/blocks/tip/height').catch(() => null), client.status().catch(() => null)]);
+  return { tip: Number.isInteger(tip) ? tip : null, rs };
+}
+// Where a shield that is in a block is on its way to the pool's list. The replay counts a block once it has `need` confirmations (3 on mainnet), so a shield mined in block h is
+// listed when the replay has read h. A shield whose block it has read, and whose notes the list does not hold, was not taken by the pool: nothing else keeps a note out of the list.
+export const SHIELD_CONFS = 3;
+async function shieldStage(client, txid, height, { tip, rs }) {
+  const h = Number.isInteger(height) ? height : null, need = Number(rs?.confirmations) > 0 ? Number(rs.confirmations) : SHIELD_CONFS;
+  const at = { h, conf: h != null && tip != null ? Math.max(1, tip - h + 1) : null, need, chk: Date.now() };
+  if (rs?.halted) return { ...at, st: 'paused' };
+  if (h == null || rs?.height == null || rs.height < h) return { ...at, st: at.conf != null && at.conf >= need ? 'behind' : 'confirming' };
+  // (asked twice, the second time with the list read afresh: the list this page holds may be a few seconds old, and a read that fails says nothing against the shield)
+  if (await client.feedHas(txid).catch(() => true) || await client.feedHas(txid, { fresh: true }).catch(() => true)) return { ...at, st: 'reading' };
+  return { ...at, st: 'refused' };
+}
+const SHIELD_STAGE = { mempool: 0, confirming: 1, behind: 2, paused: 2, reading: 3 };
+const spell = (ms) => (ms < 90 * 60e3 ? `${Math.max(1, Math.round(ms / 60e3))} min` : `${Math.round(ms / 3600e3)} h`);
+// One clause for the shields waiting for their block (pendingView's `shields`), said of the one furthest from the pool: "+12 TAC joining, <clause>".
+export function shieldLine(shields, now = Date.now()) {
+  if (!shields?.length) return '';
+  const w = shields.reduce((a, b) => ((SHIELD_STAGE[b.st] ?? -1) < (SHIELD_STAGE[a.st] ?? -1) ? b : a));
+  switch (w.st) {
+    case 'mempool': return now - w.at > 2 * 3600e3 ? `still unconfirmed in Bitcoin after ${spell(now - w.at)}, usually a low fee (it confirms or drops out, and the TAC comes back if it drops)` : 'waiting for Bitcoin to confirm it';
+    case 'confirming': return w.conf != null ? `confirmed in Bitcoin, ${Math.min(w.conf, w.need)} of ${w.need} confirmations` : `confirmed in Bitcoin, counts after ${w.need} confirmations`;
+    case 'behind': return 'confirmed in Bitcoin, the pool is catching up to it';
+    case 'paused': return 'confirmed in Bitcoin, the pool is paused and takes it when it is back';
+    case 'reading': return 'in the pool, being read';
+    default: return `counts after ${w.need ?? SHIELD_CONFS} Bitcoin confirmations`;
   }
 }
 export function pendingView(notes, asset, poolWallet = null) {
   const p = pendingRead(), seen = new Set(notes.map((n) => n.txid)), owner = ownerTag(poolWallet);
   const live = notes.filter((n) => !n.spent && !(n.nf && p.spent[nfKey(n.nf)]));
   let settling = 0n, leaving = 0n, paying = 0n;
+  const shields = [], refused = [];   // the shields waiting, each with where it is; the ones the pool did not take
   for (const [txid, c] of Object.entries(p.change)) {
     if (seen.has(txid) || (asset && !eqAsset(c.asset, asset)) || (owner && c.owner && c.owner !== owner)) continue;
+    if (c.shield && c.st === 'refused') { refused.push({ txid, v: BigInt(c.v), h: c.h ?? null, at: c.at }); continue; }
     settling += BigInt(c.v); leaving += BigInt(c.out || 0); paying += BigInt(c.pay || 0);
+    if (c.shield) shields.push({ txid, v: BigInt(c.v), st: c.st || null, conf: c.conf ?? null, need: c.need ?? SHIELD_CONFS, h: c.h ?? null, at: c.at });
   }
-  return { live, settling, leaving, paying };
+  return { live, settling, leaving, paying, shields, refused };
 }
 const spentElsewhere = (m) => /nullifier|conflict|replayed|already spent|double/i.test(String(m || ''));
 const relayDeclined = (msg) => Object.assign(new Error(msg), { said: true, relayDeclined: true });
@@ -1036,6 +1093,7 @@ export async function shieldFromSaleKey(tacit, { key, note, asset, poolWallet, s
     inputs: [{ txid: note.txid, vout: note.vout, value: c.value, script: tacit.p2wpkhScript(salePub), sign }],
     outputs: [{ value: tacit.DUST, script: tacit.p2wpkhScript(tacit.wallet.pub) }],
   });
+  markShield(poolWallet, r.revealTxid, assetHex, sh.total);   // (as for any shield: the TAC is at no sale key now and not yet in the pool's list)
   return { ...r, poolNote: poolNoteRecord(sh.note, r.revealTxid) };
 }
 

@@ -470,7 +470,7 @@ assert.equal(r.revealTxid, null); assert.equal(log.opened.length, 0);
   const walletPriv = new Uint8Array(32).fill(2), walletPub = secp.getPublicKey(walletPriv, true);
   const L = { built: [], proofs: 0, bySale: [], byWallet: [], sent: [] };
   const isCommit = (tx) => tx.outputs.some((o) => o.script.length === 34);
-  pool.buildShieldEnvelope = (a) => { L.built.push(a); return { note: { value: a.inputs[0].value, npk: 1n, rho: 1n, cm: '0xcm' } }; };
+  pool.buildShieldEnvelope = (a) => { L.built.push(a); return { total: a.inputs[0].value, note: { value: a.inputs[0].value, npk: 1n, rho: 1n, cm: '0xcm' } }; };
   pool.prove = async () => { L.proofs++; return { payload: new Uint8Array([0x6c]), payloadHex: '6c' }; };
   secret.poolClient.artifactBytes = async () => 0;
   secret.poolClient.system = async () => ({});
