@@ -20,7 +20,7 @@ export const CHROME_PAGES = {
   'vault/index.html': 'borrow', 'pay/index.html': 'pay', 'pay/eth/index.html': 'pay', 'tasks/index.html': 'tasks',
   'build/index.html': '', 'etch/index.html': 'etch', 'weld/stats/index.html': '', 'relay/index.html': '',
   'splitter/index.html': '', 'sats/index.html': '', 'bridge/index.html': 'chains',
-  'discord/index.html': '', 'govern/index.html': '', 'recover/index.html': '', 'shop/index.html': 'shop', 'face/index.html': 'face', 'fast/index.html': 'chains', 'prove/index.html': 'prove', 'help/index.html': '', 'nodes/index.html': '', 'docs/chain/index.html': '', 'docs/btc/index.html': '',
+  'discord/index.html': '', 'govern/index.html': 'govern', 'recover/index.html': '', 'shop/index.html': 'shop', 'face/index.html': 'face', 'fast/index.html': 'chains', 'prove/index.html': 'prove', 'help/index.html': '', 'nodes/index.html': '', 'docs/chain/index.html': '', 'docs/btc/index.html': '',
   'farm/index.html': 'defi', 'btc/index.html': 'chains', 'praxis/index.html': 'praxis',
 };
 
@@ -49,6 +49,7 @@ const G = {
   build: '<path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/>',
   nodes: '<circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M11 7l-5 10M13 7l5 10M7 19h10"/>',
   stats: '<path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/>',
+  govern: '<path d="M5 14h14v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1z"/><path d="M8 14V4.5h8V14"/><path d="M10.2 8.7l1.3 1.3 2.4-2.6"/>',
   praxis: '<circle cx="8" cy="15.5" r="4.5"/><path d="M11.2 12.3L20 3.5"/><path d="M17 6.5l2.5 2.5"/><path d="M14.5 9l2 2"/>',
   prove: '<rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/>',
   paper: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/>',
@@ -68,14 +69,14 @@ const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : 
 // Pay, DeFi and Bridge are views of the front page (its card, TAC's page and its sheets, each cut to the one thing); Borrow and Rewards are pages
 // of their own. The menu holds the pages no section is, in three named groups: the holder's own (Assets, TAC, Trade, Pay pool), what can be made
 // (Etch makes a token, the Shop sells an address to deploy a contract to, FACE) and the ways to help build it (Prove is mining, Tasks pay for small
-// jobs, the Praxis ceremony). Build and Stats are in every page's footer. Trade is in the menu as well as linked from the pages that show TAC's price: that is where a visitor who wants to buy or sell
+// jobs, the Praxis ceremony, Govern is where TAC holders signal on proposals). Build and Stats are in every page's footer. Trade is in the menu as well as linked from the pages that show TAC's price: that is where a visitor who wants to buy or sell
 // TAC looks first, and the link says (?src=menu) which door it was, which the page counts and nothing else.
 const MAIN = [['portfolio', '/#portfolio', 'Portfolio'], ['payments', '/#/payments', 'Pay'], ['defi', '/#/defi', 'DeFi'], ['chains', '/#/chains', 'Bridge'], ['borrow', '/vault/', 'Borrow'], ['rewards', '/rewards/', 'Rewards']];
 // the menu in three short groups, each under its name; every way between the chains (the Bridge page, BTC ⇄ ETH) is the Bridge section's
 const MORE = [
   ['Yours', [['assets', '/assets/', 'Assets'], ['tac', '/tac/', 'TAC'], ['trade', '/trade/tac/?src=menu', 'Trade'], ['pay', '/pay/', 'Pay pool']]],
   ['Make', [['etch', '/etch/', 'Etch'], ['shop', '/shop/', 'Shop'], ['face', '/face/', 'FACE']]],
-  ['Help build', [['prove', '/prove/', 'Prove'], ['tasks', '/tasks/', 'Tasks'], ['praxis', '/praxis/', 'Praxis']]],
+  ['Help build', [['prove', '/prove/', 'Prove'], ['tasks', '/tasks/', 'Tasks'], ['praxis', '/praxis/', 'Praxis'], ['govern', '/govern/', 'Govern']]],
 ];
 const MORE_ALL = MORE.flatMap(([, l]) => l);
 const BAR = 4;   // how many of the sections the phone's bar holds before More; the rest are first in the menu there
