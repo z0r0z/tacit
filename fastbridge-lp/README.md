@@ -346,7 +346,7 @@ everything it does is logged; a failure is alerted (at most hourly per kind).
 - **Low-balance alerts** (always on; `lib/refill-watch.mjs`). Each goes through the alert (webhook, below), is said when it begins and again every four hours while it lasts, and
   once more, as an info, when it ends:
   `private ETH to lend is low` (free pool ETH under `FB_LP_ALERT_LOW_ETH`, 0.05: send ETH to `poolAccount`), `Bitcoin is low` (sats at the main and reverse addresses under
-  `FB_LP_ALERT_LOW_SATS`, 100000: send BTC to the address named), `the pool account is under its gas reserve` (public ETH under the reserve: send ETH to `poolAccount`) and
+  `FB_LP_ALERT_LOW_SATS`, 100000: send BTC to the address named), `the pool account is low on gas` (public ETH under `FB_LP_ALERT_LOW_GAS_ETH`, half the gas reserve unless set: send ETH to `poolAccount`; the auto-shield keeps the reserve and each deposit's own gas back, so it does not trip this) and
   `ETH ... has sat unshielded` (public ETH over the reserve and the smallest deposit for 30 minutes with auto-shield off: run the tool or switch it on). `/info` shows the same
   as `refill: { poolAccount, btcAddresses, freeEth, lowEth, sats, lowSats, publicEth, gasReserveEth, minChunkEth, alerting, autoShield }` (ETH in ETH, no secrets).
 
