@@ -11117,18 +11117,11 @@ await step('fmchips', async () => {
       await p.waitForSelector('#hx-body .hx-h');
       const top0 = await p.$eval('.hero', (e) => e.getBoundingClientRect().top);
       await p.waitForFunction(() => document.querySelector('#fms.on'), null, { timeout: 120000 });
-      const s = await read(p), pub = s.chips.find((c) => c.hx === 'earn:ether:public');
+      const s = await read(p), pub = s.chips.find((c) => c.href === '/farm/#tac-eth');
       ok(s.chips.length >= 2 && !!pub && pub.icons === '#tk-tac,#tk-eth' && s.chips.every((c) => c.apr > 0 && c.icons.split(',').length === 2), `fmchips (${name}): the public pool and the private pools, each a pair of marks and its APR (${s.chips.map((c) => `${c.hx.slice(11)} ${c.apr}%`).join(', ')})`);
       ok(s.chips.every((c, i) => i === 0 || s.chips[i - 1].apr >= c.apr), `fmchips (${name}): best APR first`);
-      ok(s.chips.every((c) => c.hx === 'earn:ether:public' ? c.href === '#farm/public' : /^earn:ether:p\d+$/.test(c.hx) && c.href === `#farm/private-${c.hx.slice(12)}`), `fmchips (${name}): each keeps its farm's link for a new tab`);
+      ok(s.chips.every((c) => /^\/farm\/#[a-z0-9]+(-[a-z0-9]+)+$/.test(c.href) && !c.hx), `fmchips (${name}): each opens its farm on the farm page, the one place to farm (${s.chips.map((c) => c.href).join(' ')})`);
       ok(Math.abs(s.top - top0) < 1 && s.h >= 24 && !s.scroll, `fmchips (${name}): the row was already there, so the hero did not move (${Math.round(s.top - top0)}px), and the page does not scroll sideways`);
-      for (const c of [s.chips[0], pub]) {
-        const key = c.hx === 'earn:ether:public' ? 'precision' : c.hx.slice(12);
-        await p.click(`#fms a[data-hx="${c.hx}"]`);
-        await until(p, (k) => document.querySelector(`#hx-routes [data-hxr="${k}"]`)?.getAttribute('aria-checked') === 'true', key, 120000);
-        const row = await p.$eval(`#hx-routes [data-hxr="${key}"]`, (e) => e.textContent.replace(/\s+/g, ' '));
-        ok(c.apr >= 10000 || row.includes(`${c.apr.toLocaleString('en-US')}%`),`fmchips (${name}): ${c.hx} opens the Earn tab on that pool, with its APR in the row (${row.slice(0, 60)})`);
-      }
       if (r.errors.length) { fails++; console.log('FAIL fmchips page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     } finally { await r.browser.close(); }
   }

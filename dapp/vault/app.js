@@ -5,7 +5,7 @@ import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vaul
 import { makeFeed } from '/vault/feed.js?cb=bd584ab8';
 import { makePools } from '/vault/pools.js?cb=448a04ee';
 import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=5c4d23f3';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=514272b7';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=c1a728a3';
 import { tabKeyRead } from '/tab-key.js?cb=e90d6a31';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
 

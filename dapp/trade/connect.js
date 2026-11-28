@@ -5,7 +5,7 @@ import { rpc, RPCS, short, $ } from '/trade/util.js?cb=9c8b4133';
 
 export { UserStopped };
 
-export function makeConnect({ describe, name = 'tacit trade', rpc: read = rpc, rows = () => '', wire = () => {}, leave = () => {}, busy = () => false, say = () => {}, onChange = () => {}, restore = true, rewards = true }) {
+export function makeConnect({ describe, name = 'tacit trade', rpc: read = rpc, rows = () => '', wire = () => {}, leave = () => {}, busy = () => false, say = () => {}, onChange = () => {}, restore = true, rewards = true, idle = 'Connect' }) {
   const sheets = wcSheets((title, onClose) => overlay({ title, top: true, onClose }));
   const WC = announceWalletConnect({
     projectId: WC_PROJECT_ID, chains: [1], rpcMap: { 1: RPCS[0] },
@@ -49,8 +49,8 @@ export function makeConnect({ describe, name = 'tacit trade', rpc: read = rpc, r
   function renderChip() {
     const on = !!W.account, wrong = on && W.chain && W.chain !== '0x1';
     $('#wallet-dot').classList.toggle('on', on && !wrong && !connecting); $('#wallet-dot').classList.toggle('warn', !!wrong || connecting);
-    $('#wallet-label').textContent = on ? short(W.account, 4) : 'Connect';
-    $('#wallet-chip').setAttribute('aria-label', connecting ? 'Waiting for your wallet' : on ? `Wallet ${W.account}${wrong ? ', on another network' : ''}` : 'Connect a wallet');
+    $('#wallet-label').textContent = on ? short(W.account, 4) : idle;
+    $('#wallet-chip').setAttribute('aria-label', connecting ? 'Waiting for your wallet' : on ? `Wallet ${W.account}${wrong ? ', on another network' : ''}` : idle === 'Connect' ? 'Connect a wallet' : idle);
     $('#wallet-chip').toggleAttribute('aria-busy', connecting);
     $('#wallet-chip').title = connecting ? 'Waiting for your wallet…' : wrong ? 'Your wallet is on another network. It is asked to switch to Ethereum when you send.' : '';
   }

@@ -7902,20 +7902,22 @@ function hintGo(id) {
   if (id === 'bal') { openPortfolio(); return; }
   if (id === 'act') openAct();
 }
+// a farm on the front page opens on the farm page, the one place to farm: its address there is its name's slug (farm/app.js slug)
+const farmSlug = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 function paintFarmChips(pools) {
   const el = $('#fms'), chips = pools.filter(({ p }) => !p.idle && String(p.reserves?.assetA).toLowerCase() === CETH_ID && Number(p.reserves?.lpTotalShares)).map(({ p, apr }) => ({
-    spec: `p${p.pid}`, poolId: p.poolId, href: `#farm/private-${p.pid}`, name: pairName(p.pair), apr, kind: 'private farm',
+    spec: `p${p.pid}`, poolId: p.poolId, href: `/farm/#${farmSlug(pairName(p.pair))}`, name: pairName(p.pair), apr, kind: 'private farm',
     impact: zapImpact(p, Number(HINT_ETH), { split: true }), off: offMarket(poolVsMarket(p)?.ratio),
     icons: farmIcons(p) }));
   const pub = FARM.top?.apr;
-  if (pub != null) chips.push({ spec: 'public', href: '#farm/public', name: 'TAC / ETH', apr: pub, kind: 'public farm', icons: ['tk-tac', 'tk-eth'] });
+  if (pub != null) chips.push({ spec: 'public', href: '/farm/#tac-eth', name: 'TAC / ETH', apr: pub, kind: 'public farm', icons: ['tk-tac', 'tk-eth'] });
   chips.sort((a, b) => b.apr - a.apr);
   const best = chips.find((c) => c.poolId && !c.off);
   HINT_POOL = hintFarm(pools) || (best ? { spec: best.spec, poolId: best.poolId, apr: best.apr, icons: best.icons, name: best.name } : null);
   paintHints();
   if (!el) return;
   const shown = chips.filter((c) => !c.off);   // a farm priced off the market stays on the farm page, not on the front page
-  const view = html`<span class="fms-k" aria-hidden="true">Farms</span>${shown.map((c) => html`<a href="${c.href}" data-hx="earn:ether:${c.spec}" title="${c.name}, ${c.kind}: put ETH in with one transaction${c.off ? `. Off the market: its price for the other coin is ${pctFmt(c.off.gap * 100)} ${c.off.dear ? 'above' : 'below'} the market’s, and a zap swaps half of the deposit at it. Adding both coins together swaps nothing` : c.impact >= 0.05 ? `. A small pool: a ${HINT_ETH} ETH deposit moves its price ${pctFmt(c.impact * 100)}` : ''}"><span class="pair">${c.icons.map((i) => icoHtml(i))}</span><b class="num">${c.apr >= 10000 ? '10,000+' : Math.round(c.apr).toLocaleString('en-US')}%</b><small>APR${c.off ? html` · <i class="fms-thin fms-off">off the market</i>` : c.impact >= 0.05 ? html` · <i class="fms-thin">small pool</i>` : ''}</small></a>`)}`;
+  const view = html`<span class="fms-k" aria-hidden="true">Farms</span>${shown.map((c) => html`<a href="${c.href}" title="${c.name}, ${c.kind}: put ETH in with one transaction${c.off ? `. Off the market: its price for the other coin is ${pctFmt(c.off.gap * 100)} ${c.off.dear ? 'above' : 'below'} the market’s, and a zap swaps half of the deposit at it. Adding both coins together swaps nothing` : c.impact >= 0.05 ? `. A small pool: a ${HINT_ETH} ETH deposit moves its price ${pctFmt(c.impact * 100)}` : ''}"><span class="pair">${c.icons.map((i) => icoHtml(i))}</span><b class="num">${c.apr >= 10000 ? '10,000+' : Math.round(c.apr).toLocaleString('en-US')}%</b><small>APR${c.off ? html` · <i class="fms-thin fms-off">off the market</i>` : c.impact >= 0.05 ? html` · <i class="fms-thin">small pool</i>` : ''}</small></a>`)}`;
   if (el.__h !== view.s) { el.__h = view.s; mount(el, view); }
   el.classList.toggle('on', shown.length > 0);
 }

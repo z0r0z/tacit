@@ -4,7 +4,7 @@
 // private, and the relay bonds it. What the key holds in the private farms is the rewards page's panel (rewards/farms.js), on one
 // sign-in with the deposits. The borrow markets' pools are joined on the vault page: their tiles lead there.
 // Figures are read as /assets/ and /rewards/ read them (trade/farm-read.js, trade/lp-campaign.js), so a farm's APR is the same on each.
-import { makeConnect } from '/trade/connect.js?cb=514272b7';
+import { makeConnect } from '/trade/connect.js?cb=c1a728a3';
 import { rpc, api, esc, usd, fmtUnits, parseUnits, plain, $ } from '/trade/util.js?cb=9c8b4133';
 import { nodeHealth } from '/trade/rpc.js';
 import { batchReads } from '/trade/batch.js';
@@ -30,7 +30,8 @@ const health = nodeHealth({ store: { getItem: store.get, setItem: store.set } })
 const call = batchReads(({ to, data, from }) => rpc('eth_call', [{ to: to.toLowerCase(), data, ...(from ? { from: from.toLowerCase() } : {}) }, 'latest'], undefined, { health })
   .catch((e) => { throw e?.revert ? Object.assign(e, { code: 3 }) : e; }));
 const txLink = (h) => `<a href="https://etherscan.io/tx/${h}" target="_blank" rel="noopener noreferrer">${h.slice(0, 10)}…${h.slice(-6)} ↗</a>`;
-const tk = (k) => `<svg class="tk" aria-hidden="true"><use href="#tk-${k}"/></svg>`;
+const LOGOS = { spx: '/swap/logos/0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c.webp' };
+const tk = (k) => (LOGOS[k] ? `<img class="tk" src="${LOGOS[k]}" alt="" aria-hidden="true" width="16" height="16" decoding="async">` : `<svg class="tk" aria-hidden="true"><use href="#tk-${k}"/></svg>`);
 const pairIcons = (icons) => `<span class="pairtk">${icons.map(tk).join('')}</span>`;
 const pctTxt = (x) => `${x.toFixed(x < 10 ? 1 : 0)}%`;
 const sharePct = (f) => `${(f * 100).toFixed(f >= 0.1 ? 0 : f >= 0.01 ? 1 : 2)}%`;
@@ -42,7 +43,7 @@ const note = $('#note'), said = (t) => { note.textContent = ''; setTimeout(() =>
 
 const connect = makeConnect({
   describe: 'Farm TAC with ETH, in public or in private.',
-  name: 'tacit farm',
+  name: 'tacit farm', idle: 'Sign in',
   busy: () => busyNow() || !!pubUi?.busy(),
   say: (html, bad) => { const el = $('#menu-note'); el.innerHTML = html; el.classList.toggle('err', !!bad); },
   onChange: () => onWallet(),
@@ -256,7 +257,7 @@ function tileFor(f) {
   let a = $(`#d-${f.id}`);
   if (a) return a;
   const li = document.createElement('li');
-  li.innerHTML = `<a class="dish" id="d-${esc(f.id)}" href="#${esc(f.id)}" data-farm="${esc(f.id)}"><span class="plate">${f.icons.map(tk).join('')}</span><b class="nm"></b><span class="kind">Private pool</span><span class="how">Deposit <b>ETH</b><br>Earn <b>TAC</b></span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a>`;
+  li.innerHTML = `<a class="dish" id="d-${esc(f.id)}" href="#${esc(f.id)}" data-farm="${esc(f.id)}"><span class="plate">${f.icons.map(tk).join('')}</span><b class="nm"></b><span class="kind">Private pool</span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a>`;
   li.querySelector('.nm').textContent = f.name;
   const at = $$('#dishes a[data-farm]').pop()?.closest('li');
   if (at) at.after(li); else $('#dishes').prepend(li);
@@ -274,11 +275,11 @@ function paintTiles() {
     $('.kind', a).title = size && !dry ? 'What the pool holds, in dollars: its APR is shared by everyone in it, so a small pool pays a small deposit a lot and a large one little.' : '';
     $('.sel', a).textContent = f.yours ? 'Manage' : 'Select';
     $('.day', a).textContent = f.live && f.perDay ? `${tacTxt(f.perDay)} TAC a day` : '';
-    flag(a, 'tag', f.id === pick ? 'Chef’s pick' : '', 'The most TAC over a week for 0.1 ETH, once the way in is paid');
+    flag(a, 'tag', f.id === pick ? 'Chef’s pick · most TAC for 0.1 ETH' : '', 'The most TAC over a week for 0.1 ETH, once the way in is paid');
     flag(a, 'yours', f.yours ? 'Yours' : '');
     const dear = f.cost != null && f.cost >= 5;
-    flag($('.sub', a), 'cost', dear ? `0.1 ETH entry −${pctTxt(f.cost)}` : '', dear ? costWhy(f) : '');
-    flag($('.sub', a), 'offm', f.off ? `Off the market · ${pctTxt(f.off.gap * 100)} ${f.off.dear ? 'above' : 'below'}` : '', f.off ? offSaid(f, f.off) : '');
+    flag($('.sub', a), 'cost', dear ? `Putting in 0.1 ETH costs about ${pctTxt(f.cost)} on the way in` : '', dear ? costWhy(f) : '');
+    flag($('.sub', a), 'offm', f.off ? `Its price for ${otherOf(f.pool?.pair || f.name)} is ${pctTxt(f.off.gap * 100)} ${f.off.dear ? 'above' : 'below'} the market` : '', f.off ? offSaid(f, f.off) : '');
   }
 }
 // a line a tile has only when there is something to say

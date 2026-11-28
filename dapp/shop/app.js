@@ -1,4 +1,4 @@
-import { makeConnect } from '/trade/connect.js?cb=514272b7';
+import { makeConnect } from '/trade/connect.js?cb=c1a728a3';
 import { esc } from '/trade/sheet.js?cb=d857446c';
 import { $, rpc } from '/trade/util.js?cb=9c8b4133';
 import { MULTICALL3, encodeBatch, decodeBatch } from '/trade/batch.js';

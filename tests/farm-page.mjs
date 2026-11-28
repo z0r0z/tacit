@@ -319,10 +319,10 @@ try {
     ok(campaignRate(c).perUsd === 0.05, 'the campaign pays its cap at these depths');
     ok(pub.kind === 'Public pool' && pub.day === `${Math.round(PER_DAY)} TAC a day` && pub.href === '#tac-eth' && pub.sel === 'Select', `the public farm: ${pub.name}, ${pub.kind}, ${pub.apr}, ${pub.day}`);
     ok([p0, p1, p2].every((x, i) => x.apr === aprText(priv[i].apr) && x.kind === `Private pool · ${usd(poolWorthEth(prog.pools.find((q) => q.pid === priv[i].pid), TAC_ETH, PX) * ETH_USD)}` && x.day === `${Math.round(priv[i].perDay)} TAC a day`), `the private farms (each tile says what its pool holds, in dollars): ${[p0, p1, p2].map((x) => `${x.name} ${x.apr}, ${x.day}`).join('; ')}`);
-    ok(costs[1] >= 14 && costs[1] < 16 && p1.cost === `0.1 ETH entry −${pctTxt(costs[1])}` && !p0.cost && !pub.cost, `a pool priced away from the market says what the way in costs (${p1.cost}; the arithmetic ${costs[1].toFixed(2)}%), and a pool at the market's price does not`);
+    ok(costs[1] >= 14 && costs[1] < 16 && p1.cost === `Putting in 0.1 ETH costs about ${pctTxt(costs[1])} on the way in` && !p0.cost && !pub.cost, `a pool priced away from the market says what the way in costs (${p1.cost}; the arithmetic ${costs[1].toFixed(2)}%), and a pool at the market's price does not`);
     ok(costs[2] < 5 && !p2.cost, `a small pool under 5% says nothing (tETH / cBTC ${costs[2].toFixed(2)}%)`);
     const tags = { 'tac-eth': pub.tag, 'teth-tac': p0.tag, 'teth-cusd': p1.tag, 'teth-cbtc': p2.tag };
-    ok(Object.entries(tags).every(([id, tag]) => (id === pick ? tag === 'Chef’s pick' : !tag)), `the chef's pick is the best week for 0.1 ETH after the way in: ${pick} (${nets.map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', ')})`);
+    ok(Object.entries(tags).every(([id, tag]) => (id === pick ? tag === 'Chef’s pick · most TAC for 0.1 ETH' : !tag)), `the chef's pick is the best week for 0.1 ETH after the way in: ${pick} (${nets.map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', ')})`);
     ok(te.kind === 'Borrow market' && te.href === '/vault/#v=eth&pools' && te.sel === 'Supply' && !te.hidden, `the TACE / ETH market's tile leads to the vault's pools (${te.apr})`);
     ok(td.hidden, 'TACD’s pools trade outside their range, so its tile is not offered');
     ok(pub.top === p0.top && p0.top === p1.top && p2.top > pub.top && pub.left < p0.left && p0.left < p1.left, 'three tiles to a row on a desktop');
@@ -926,7 +926,7 @@ try {
       ok(/Your share\d+(\.\d+)?% of the pool/.test(rc), `the quote says what share of the pool the deposit would be: ${rc.match(/Your share[^A-Z]*/)?.[0]}`);
       ok(st.spxReads >= 1, `the price came from the public pools (${st.spxReads} read)`);
       const mm = zapMath({ res, wei: 10n ** 17n, market: rate, unitB: 1n, decimals: 8 });
-      ok(mm && await until(page, (s) => document.querySelector('#d-teth-spx .cost')?.textContent === s, `0.1 ETH entry −${pctTxt(mm.cost)}`), `its tile says what a tenth of an ETH gives up, against the market (${mm?.cost.toFixed(1)}%: ${(await tile(page, 'teth-spx'))?.cost})`);
+      ok(mm && await until(page, (s) => document.querySelector('#d-teth-spx .cost')?.textContent === s, `Putting in 0.1 ETH costs about ${pctTxt(mm.cost)} on the way in`), `its tile says what a tenth of an ETH gives up, against the market (${mm?.cost.toFixed(1)}%: ${(await tile(page, 'teth-spx'))?.cost})`);
       clean(r, 'a tETH / SPX quote');
       await r.browser.close();
     }

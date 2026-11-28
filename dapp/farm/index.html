@@ -6,6 +6,8 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://api.tacit.finance https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://ipfs.filebase.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com">
 <meta name="color-scheme" content="light dark">
 <title>tacit farm</title>
+<link rel="preload" href="/fonts/newsreader-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <meta name="description" content="Put ETH into a Tacit farm in one transaction and earn TAC, in public or in private.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
@@ -32,8 +34,8 @@
 <link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /farm/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/farm/app.js?cb=0842d4c3">
-<link rel="modulepreload" href="/trade/connect.js?cb=514272b7">
+<link rel="modulepreload" href="/farm/app.js?cb=dd4b2278">
+<link rel="modulepreload" href="/trade/connect.js?cb=c1a728a3">
 <link rel="modulepreload" href="/walletconnect.js?cb=4740866f">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
@@ -358,6 +360,16 @@ html[data-view="farm"] .menu { display: none; }
 /* the menu and a farm trade places as one picture where the browser can draw it: the plate picked becomes the open farm's */
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: .22s; }
 ::view-transition-group(plate), ::view-transition-group(dishname) { animation-duration: .34s; animation-timing-function: cubic-bezier(.2, .8, .2, 1); }
+@font-face { font-family: 'Newsreader'; font-weight: 400; font-display: swap; src: url('/fonts/newsreader-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Newsreader'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/newsreader-400i-latin.woff2') format('woff2'); }
+/* the section's look, as its other tabs wear it: Newsreader for heads, the grotesk for words; figures keep the mono they name */
+:root { --serif: 'Newsreader', 'Newsreader Fallback', 'Newsreader Fallback T', Georgia, serif; }
+body { font-family: var(--sans, var(--mono)); }
+/* the chef a size smaller over the menu (he keeps his moods); a tile's costs said in words, not codes; the borrow markets under their own line */
+.chef { width: 68px; height: 88px; }
+.dish .cost, .dish .offm { font-family: var(--sans, var(--mono)); letter-spacing: 0; text-transform: none; line-height: 1.35; }
+.dishes > li.mk-h { grid-column: 1 / -1; list-style: none; }
+.dishes > li.mk-h p { margin: 18px 0 2px; text-align: center; font-size: 13px; color: var(--mute); }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -638,7 +650,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 <div class="shell">
 
   <header class="top">
-    <a class="brand" href="/" aria-label="tacit"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>farm</i></a>
+    <a class="brand" href="/" aria-label="tacit"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>v1</i></a>
     <div class="top-r">
       <!-- chrome:nav:begin -->
       <nav class="sn" aria-label="Sections">
@@ -671,7 +683,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
           </details>
         </nav>
       <!-- chrome:nav:end -->
-      <button class="chip" id="wallet-chip" type="button" aria-label="Connect a wallet"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Connect</span></button>
+      <button class="chip" id="wallet-chip" type="button" aria-label="Sign in"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Sign in</span></button>
     </div>
   </header>
 
@@ -683,16 +695,16 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <button class="chef" id="chef" type="button" data-mood="idle" aria-label="The chef"><span class="steam" aria-hidden="true"><i></i><i></i><i></i></span><span class="emo" id="emo" aria-hidden="true"></span><span class="fig" aria-hidden="true"></span></button>
       <h1 id="farm-h1">tacit <em>farm</em></h1>
       <p class="lede">Put ETH in. Earn TAC every second.</p>
-      <p class="app-way"><a href="/#card=earn">Signed in to Tacit? Farm from the app →</a></p>
     </section>
 
     <section class="menu" id="menu" aria-labelledby="menu-h">
       <h2 class="sr" id="menu-h">Farms</h2>
       <ul class="dishes" id="dishes">
-        <li style="--i:0"><a class="dish" id="d-tac-eth" href="#tac-eth" data-farm="tac-eth"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span><b class="nm">TAC / ETH</b><span class="kind">Public pool</span><span class="how">Deposit <b>ETH</b><br>Earn <b>TAC</b></span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
-        <li style="--i:1"><a class="dish" id="d-teth-tac" href="#teth-tac" data-farm="teth-tac"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span><b class="nm">tETH / TAC</b><span class="kind">Private pool</span><span class="how">Deposit <b>ETH</b><br>Earn <b>TAC</b></span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
-        <li style="--i:2"><a class="dish" id="d-teth-cusd" href="#teth-cusd" data-farm="teth-cusd"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg></span><b class="nm">tETH / cUSD</b><span class="kind">Private pool</span><span class="how">Deposit <b>ETH</b><br>Earn <b>TAC</b></span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
-        <li style="--i:3"><a class="dish" id="d-teth-cbtc" href="#teth-cbtc" data-farm="teth-cbtc"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg></span><b class="nm">tETH / cBTC</b><span class="kind">Private pool</span><span class="how">Deposit <b>ETH</b><br>Earn <b>TAC</b></span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
+        <li style="--i:0"><a class="dish" id="d-tac-eth" href="#tac-eth" data-farm="tac-eth"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span><b class="nm">TAC / ETH</b><span class="kind">Public pool</span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
+        <li style="--i:1"><a class="dish" id="d-teth-tac" href="#teth-tac" data-farm="teth-tac"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span><b class="nm">tETH / TAC</b><span class="kind">Private pool</span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
+        <li style="--i:2"><a class="dish" id="d-teth-cusd" href="#teth-cusd" data-farm="teth-cusd"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg></span><b class="nm">tETH / cUSD</b><span class="kind">Private pool</span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
+        <li style="--i:3"><a class="dish" id="d-teth-cbtc" href="#teth-cbtc" data-farm="teth-cbtc"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg></span><b class="nm">tETH / cBTC</b><span class="kind">Private pool</span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
+        <li class="mk-h" style="--i:4"><p>Borrow markets: supply TACE or TACD, borrowed against TAC, and earn TAC</p></li>
         <li style="--i:4"><a class="dish" id="d-tace-eth" href="/vault/#v=eth&amp;pools" data-market="eth"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-tace"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span><b class="nm">TACE / ETH</b><span class="kind">Borrow market</span><span class="how">Supply <b>TACE</b> and <b>ETH</b><br>Earn <b>TAC</b></span><span class="sel">Supply</span><span class="apy"><span>Best APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
         <li style="--i:5"><a class="dish" id="d-tacd-usdc" href="/vault/#v=usd&amp;pools" data-market="usd"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-tacd"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-usdc"/></svg></span><b class="nm">TACD / USDC</b><span class="kind">Borrow market</span><span class="how">Supply <b>TACD</b> and <b>USDC</b><br>Earn <b>TAC</b></span><span class="sel">Supply</span><span class="apy"><span>Best APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
       </ul>
@@ -768,6 +780,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/farm/app.js?cb=0842d4c3"></script>
+<script type="module" src="/farm/app.js?cb=dd4b2278"></script>
 </body>
 </html>
