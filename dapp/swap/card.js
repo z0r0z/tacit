@@ -1629,7 +1629,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=7ca373ea').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=1ae10623').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
 const laterPair = (kind, pay = S.pay, get = S.get) => laterPay(pay)
   && (isEth(pay) ? kind === 'agg' || (kind === 'tac' && get === lc(R.TAC)) : (kind === 'agg' && get !== lc(R.WETH)) || kind === 'any' || kind === 'out' || kind === 'tac');
@@ -1750,6 +1750,7 @@ const LATER_TIP = 'Deposit now into a private pool and swap out later, so nothin
 function paintLater(q, r, kind) {
   const el = $('#later'), fits = laterFits(kind) && (!!r || !!q?.busy || (LATER.on && !!q?.lt));
   el.hidden = !fits;
+  if (fits && LATER.on && Number(S.amt) > 0) proverSoon();
   if (!fits) return;
   if (LATER.on) readHop();
   const th = tokHop(), viaRow = LATER.on && !isEth(S.pay) && viaShown(th), hopOn = viaToken(), dw = depWays(), gasRow = LATER.on && !isEth(S.pay) && (dw.token || dw.tac);
@@ -1801,7 +1802,22 @@ function viaPaint(th, hopOn) {
   if (t) { t.textContent = `${sym}${n(th.leaves)}`; t.title = relayed ? `With the deposit’s gas paid in a token the swap goes through the ETH pool. Pay it in ETH to use the ${sym} pool.` : th.fee == null ? `${notes(th.leaves, sym)}. The relay is picking it up.` : notes(th.leaves, sym); t.disabled = th.fee == null || relayed; t.setAttribute('aria-pressed', String(hopOn)); }
   if (e) { e.textContent = `ETH${n(LATER.ethLeaves)}`; e.title = notes(LATER.ethLeaves, 'ETH'); e.setAttribute('aria-pressed', String(!hopOn)); }
 }
-const laterStep = (s) => ({ 'proving on this device': `Proving on this device${LT?.proveMs ? `, about ${Math.max(5, Math.round(LT.proveMs / 1000))} s` : ''}…`, 'confirm in your wallet': 'Confirm the deposit in your wallet…', 'waiting for it to be mined': 'Waiting for it to land…',
+const mbOf = (b) => (b / 1e6).toFixed(b >= 1e7 ? 0 : 1);
+function provingWord() {
+  const st = LT?.proverState?.();
+  if (st?.busy && !st.ready && st.total) return `Getting the prover ready, ${mbOf(st.got)} of ${mbOf(st.total)} MB (the first time only)…`;
+  if (st?.busy && !st.ready) return 'Getting the prover ready (the first time only)…';
+  const was = st?.ms || LT?.proveMs, so = st?.runningMs ? Math.round(st.runningMs / 1000) : 0;
+  return `Proving on this device${so ? `, ${so} s` : ''}${was ? `${so ? ' of' : ','} about ${Math.max(5, Math.round(was / 1000))} s` : ''}…`;
+}
+// an onStep that, while a proof is asked for, says it again every half second (the files arriving, the seconds counting), until the proof is done
+let STEP_T = 0;
+const stepper = (apply) => (s) => {
+  clearInterval(STEP_T); STEP_T = 0;
+  apply(s);
+  if (s === 'proving on this device') STEP_T = setInterval(() => { if (!LT?.proverState?.().busy) { clearInterval(STEP_T); STEP_T = 0; return; } apply(s); }, 500);
+};
+const laterStep = (s) => ({ 'proving on this device': provingWord(), 'confirm in your wallet': 'Confirm the deposit in your wallet…', 'waiting for it to be mined': 'Waiting for it to land…',
   'sending through the relayer': 'The relay is sending it…', 'reading the price again': 'Reading the price again…', 'waiting for the TAC': 'Swapped. Waiting for the TAC to reach this key’s address…',
   'making it private': 'Making it private, from this key’s address…', 'sending it on': 'Private. Sending it on…',
   'sign the permit': 'Sign the permit in your wallet. The signature costs nothing…', 'approve': 'Approve exactly the deposit’s amount in your wallet, once…', 'reset the allowance': 'Your USDT allowance is reset to zero first (USDT asks for this)…' }[s] || `${s.charAt(0).toUpperCase()}${s.slice(1)}…`);
@@ -1835,7 +1851,7 @@ async function laterGo() {
   let moved = false, popped = false;
   const earned = laterPts(q, picked(q));
   try {
-    const lt = await ltLoad(), toName = to && S.toName?.addr === lc(to) ? S.toName.name : null, onStep = (s) => { LATER.depStep = laterStep(s); say(esc(laterStep(s))); paintSteps(); };
+    const lt = await ltLoad(), toName = to && S.toName?.addr === lc(to) ? S.toName.name : null, onStep = stepper((s) => { LATER.depStep = laterStep(s); say(esc(laterStep(s))); paintSteps(); });
     if (payer !== 'eth') await relayStart(lt, { q, to, toName, get, dep, extra, v, tin, pt, payer, slip, onStep });
     else await lt.start({ swapWei: laterSwapWei(q), extraWei: extra, token: S.get, sym: get.sym, dec: get.dec, to, toName, depositWei: dep,
       dest: hop ? { kind: 'address' } : dest, gasWei: hop ? 0n : laterGas(), pay: hop ? { token: S.pay, sym: pt.sym, dec: pt.dec } : pay, hop, onStep });
@@ -2071,9 +2087,9 @@ async function laterSwap(id, via = 'relay') {
       shown = LATER.offers[id] = { ...again, ks: shown.ks, via };
     }
     if (BLEND[id]) p.mixed = BLEND[id].since;
-    const done = await lt.swapOut(p, { shown, slippageBps: slip, via, onStep: (s) => { LATER.step[id] = laterStep(s); say(esc(laterStep(s))); paintSteps(); } });
+    const done = await lt.swapOut(p, { shown, slippageBps: slip, via, onStep: stepper((s) => { LATER.step[id] = laterStep(s); say(esc(laterStep(s))); paintSteps(); }) });
     delete LATER.offers[id];
-    if (done.state === 'shielding') { paintSteps(); await lt.shield(done, { onStep: (s) => say(esc(laterStep(s))) }); }
+    if (done.state === 'shielding') { paintSteps(); await lt.shield(done, { onStep: stepper((s) => say(esc(laterStep(s)))) }); }
     const where = done.into ? `is on its way into your private ${esc(p.sym)} pool: its relay completes it within minutes` : done.dest?.kind === 'tacit' ? `was sent privately to ${esc(done.dest.name || 'the Tacit address')}` : done.dest?.kind === 'me' ? 'is in your private balance' : `went to ${shortAddrH(p.to)}`;
     remember(done.swapTx, `${tidy(amtFmt(BigInt(p.swapWei), p.hop ? p.hop.dec : 18))} ${p.hop ? p.hop.sym : 'ETH'} → ${p.sym}, privately${done.into ? ', into your pool' : done.dest?.kind === 'address' || !done.dest ? `, to ${shortAddr(p.to)}` : ''}`);
     if (p.held) H.moves?.stale?.(p.hop ? lc(p.hop.token) : lc(R.ZERO), 'pay');
@@ -2107,7 +2123,7 @@ async function laterShield(id) {
   try {
     const lt = await ltLoad();
     try { await (await pvLoad()).open(); } catch (e) { if (!e?.unlockCancelled) throw e; return; }
-    const done = await lt.shield(p, { onStep: (s) => say(esc(laterStep(s))) });
+    const done = await lt.shield(p, { onStep: stepper((s) => say(esc(laterStep(s)))) });
     say(`<span class="ok">Private.</span> ${esc(p.sym)} ${done.dest.kind === 'tacit' ? `was sent to ${esc(done.dest.name || 'the Tacit address')}` : 'is in your private balance'}.`, 'ok', true);
   } catch (e) { say(esc(e?.message || String(e)), 'err', true); }
   finally { S.busy = false; paint(); paintSteps(); H.onDone?.(); }

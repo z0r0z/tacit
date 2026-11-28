@@ -229,7 +229,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     if (!meta?.assetId) throw new Error('TAC is not a pool asset on this network.');
     return { t, priv, acct: t.account(priv), tk, meta };
   }
-  const prover = { ms: null, ready: false };
+  const prover = { ms: null, ready: false, got: 0, total: 0, busy: false, since: 0 };
   const mods = () => (modsP ||= (async () => {
     const [zkm, wm, gw, pm, pos] = await Promise.all([import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=a6687b98'), import('/evm-pool-gateway.js'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js')]);
     const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
@@ -240,7 +240,15 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     const url = '/evm-pool/' + name, key = `${url}?sha256=${sha}`;
     let cache = null; try { cache = await caches.open(ARTIFACT_CACHE); } catch { }
     const hit = cache ? await cache.match(key).catch(() => null) : null;
-    const bytes = new Uint8Array(await (hit || await fetch(url).then((r) => { if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`); return r; })).arrayBuffer());
+    const res = hit || await fetch(url).then((r) => { if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`); return r; });
+    const size = Number(res.headers.get('content-length')) || 0;
+    prover.total += size;
+    let bytes;
+    if (!hit && size && res.body?.getReader) {
+      const rd = res.body.getReader(), parts = []; let n = 0;
+      for (;;) { const { done, value } = await rd.read(); if (done) break; parts.push(value); n += value.length; prover.got += value.length; }
+      bytes = new Uint8Array(n); let o = 0; for (const p of parts) { bytes.set(p, o); o += p.length; }
+    } else { bytes = new Uint8Array(await res.arrayBuffer()); prover.got += size || bytes.length; }
     if (hexOf(await crypto.subtle.digest('SHA-256', bytes)) !== lc(sha).replace(/^0x/, '')) { if (hit) await cache.delete(key).catch(() => {}); throw new Error(`${name} does not match the ceremony’s pinned hash`); }
     if (!hit && cache) await cache.put(key, new Response(bytes)).catch(() => {});
     return bytes;
@@ -248,6 +256,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
   function warm() {
     if (proveWith) return Promise.resolve(proveWith);
     return (proverP ||= (async () => {
+      prover.got = 0; prover.total = 0;
       const [{ vkHash }, p] = await Promise.all([mods(), fetch('/evm-pool/pin.json', { cache: 'no-store' }).then((r) => r.json())]);
       const [vkB, wasm, zkey] = await Promise.all([artifact(p.vk, p.vk_sha256), artifact(p.wasm, p.wasm_sha256), artifact(p.zkey, p.zkey_sha256)]);
       const vk = JSON.parse(new TextDecoder().decode(vkB));
@@ -268,7 +277,12 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       return async (input) => { const t = performance.now(), r = await call({ op: 'prove', input }, [], 8 * 60e3); prover.ms = performance.now() - t; return { proof: r.proof, publicSignals: r.publicSignals }; };
     })().catch((e) => { proverP = null; throw e; }));
   }
-  const prove = oneAtATime(async (input) => (await warm())(input));
+  const prove = oneAtATime(async (input) => {
+    prover.busy = true; prover.since = 0;
+    try { const run = await warm(); prover.since = Date.now(); return await run(input); } finally { prover.busy = false; prover.since = 0; }
+  });
+  // what the page says while a proof is asked for: the files still coming (bytes of bytes), or the proof running (ms so far, and the last one's ms)
+  const proverState = () => ({ busy: prover.busy, ready: prover.ready, got: prover.got, total: prover.total, ms: prover.ms, runningMs: prover.since ? Date.now() - prover.since : 0 });
 
   async function keyId() {
     const priv = await keyHex();
@@ -884,5 +898,5 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     } finally { save(plan); }
   }
 
-  return { start, startBoxed, ahead, adopt, swapIntoPool, depositBoxFor, blend, offer, swapOut, shield, check, reclaimBox, reclaimIntoBox, boxHolds, forget, warm, modules: mods, hopOf, openPool, plans: () => readPlans(store), get proveMs() { return prover.ms; }, get proverReady() { return prover.ready; } };
+  return { start, startBoxed, ahead, adopt, swapIntoPool, depositBoxFor, blend, offer, swapOut, shield, check, reclaimBox, reclaimIntoBox, boxHolds, forget, warm, proverState, modules: mods, hopOf, openPool, plans: () => readPlans(store), get proveMs() { return prover.ms; }, get proverReady() { return prover.ready; } };
 }
