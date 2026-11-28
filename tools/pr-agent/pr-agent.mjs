@@ -39,8 +39,9 @@ export function recentFiles(days = 3, max = 8) {
 
 export function decide(agent, check) {
   const sum = (agent.summary || '').trim();
-  if (agent.finish === 'error') return { status: 'error', note: agent.error };
   if (check && check.gates?.[0]?.gate === 'has a change' && !check.files?.length) check = null;
+  // a run that was cut off (the gateway went away for good) after it had already edited is still judged by the gates: a patch that passes every one is as reviewable as any other
+  if (agent.finish === 'error' && !check) return { status: 'error', note: agent.error };
   if (check) return check.ok ? { status: 'pr' } : { status: 'suggestion', note: 'a change was written but did not pass every check' };
   if (!sum || /^NOTHING\b/i.test(sum)) return { status: 'nothing' };
   if (/^SUGGEST:/i.test(sum) || sum.length >= 15) return { status: 'suggestion', note: 'no change was made' };
@@ -80,7 +81,7 @@ async function main() {
   }
   reset(base);
   say(`task ${task.id} (${task.kind}) on ${git('rev-parse', '--short', 'HEAD').stdout.trim()}`);
-  const agent = await runAgent({ repo, noweb, task, model: { url: chatUrl, token }, limits: { turns: Number(flag('--turns', 40)), wallMs: Number(flag('--wall-min', 25)) * 60000 }, say });
+  const agent = await runAgent({ repo, noweb, task, model: { url: chatUrl, token, retryMs: Number(process.env.PR_AGENT_RETRY_MS) || undefined }, limits: { turns: Number(flag('--turns', 40)), wallMs: Number(flag('--wall-min', 25)) * 60000 }, say });
   writeFileSync(join(out, 'transcript.json'), JSON.stringify(agent.log, null, 1));
   const check = checkPatch({ repo, noweb, buildCmd: flag('--build-cmd', ''), limits: { maxLines: Number(flag('--max-lines', 150)), maxFiles: Number(flag('--max-files', 5)), requireFailBefore: !has('--allow-weak-test') }, say });
   if (check.patch) writeFileSync(join(out, 'patch.diff'), check.patch);
