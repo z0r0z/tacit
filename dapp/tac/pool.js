@@ -771,7 +771,7 @@ export function makeTacPool(ctx) {
       <p class="note">Anyone with the link can take it. Add a PIN if you share it in the open.</p>
       ${amtRow('tp-claim-amt', 'Amount', 'tp-claim-max')}
       <div class="lbl"><label for="tp-claim-pin">PIN of 6 or more digits, shared separately</label></div>
-      <div class="amt text"><input id="tp-claim-pin" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" inputmode="numeric" placeholder="none"></div>
+      <div class="amt text"><input id="tp-claim-pin" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" inputmode="numeric" placeholder="optional"></div>
       <button class="btn ghost" type="button" id="tp-claim-go">Create a claim link</button>
       <div class="status" id="tp-st-claim-make" role="status"></div>
       <div id="tp-links" hidden>

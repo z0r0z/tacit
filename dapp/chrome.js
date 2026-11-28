@@ -151,9 +151,9 @@
   // (written as JSON: build/chrome.mjs reads this table to stamp the head into the pages that are a view by their path)
   const SEC = {
     "payments": ["Pay", "Send to anyone, ask to be paid, or leave TAC for someone with no wallet yet.", [
-      ["send", "Send", "/#/payments/send", "One send for every asset: private TAC, ETH, cUSD, cBTC, TAC on the Tacit chain, BTC. To a tacit1 address, a name or 0x."],
-      ["request", "Request", "/#/payments/request", "Ask to be paid in any asset: a link and a QR that open the payment, filled in."],
-      ["links", "Claim links", "/tac/?v=links#pool/send", "Leave TAC for someone with no wallet yet, with a PIN if you like; take it back if they never claim."]]],
+      ["send", "Send", "/#/payments/send", ""],
+      ["request", "Request", "/#/payments/request", ""],
+      ["links", "Claim links", "/tac/?v=links#pool/send", ""]]],
     "defi": ["DeFi", "Swap, farm and stake, privately when you want.", [
       ["swap", "Swap", "/#/defi/swap", ""],
       ["farm", "Farm", "/farm/", "Pick a farm, put ETH in, earn TAC."],
