@@ -76,11 +76,15 @@ export function relaysOf({ keeper = null, keepers = null, relayer = null, pinned
 const feeOf = (x) => BigInt(x.q.fee);
 
 // `quotes`: [{ e, q }] (a relay's entry and its vetted quote) → the same, the one to use first, then the others by fee. `random` → [0, 1).
-export function orderQuotes(quotes, random = Math.random) {
+// `prefer`: relay URLs the person chose to prefer; when one of them is among the near-cheapest, the pick is made among those alone.
+export function orderQuotes(quotes, random = Math.random, prefer = []) {
   if (quotes.length < 2) return [...quotes];
   const byFee = [...quotes].sort((a, b) => (feeOf(a) < feeOf(b) ? -1 : feeOf(a) > feeOf(b) ? 1 : 0));
   const low = feeOf(byFee[0]);
-  const near = byFee.filter((x) => feeOf(x) * 100n <= low * (100n + NEAR_PCT));
+  const close = byFee.filter((x) => feeOf(x) * 100n <= low * (100n + NEAR_PCT));
+  const yes = new Set((prefer || []).map((u) => String(u).replace(/\/+$/, '').toLowerCase()));
+  const mine = yes.size ? close.filter((x) => yes.has(String(x.e?.url || '').replace(/\/+$/, '').toLowerCase())) : [];
+  const near = mine.length ? mine : close;
   // a relay's odds: its weight, less as it is dearer than the cheapest (at NEAR_PCT above, 64% of the cheapest's odds)
   const odds = (x) => {
     const f = feeOf(x);

@@ -153,5 +153,14 @@ await check('every relay the Pay page lists for a chain is pinned to an address,
   for (const m of page.matchAll(/keeper:\s*'(https:\/\/[^']+)'/g)) assert.ok(connect.includes(new URL(m[1]).origin), `${new URL(m[1]).origin} is not in connect-src`);
 });
 
+await check('a preferred relay wins among the near-cheapest, and a preferred one priced well above the cheapest does not', () => {
+  const e = (url, w = 1) => ({ url, weight: w }), q = (fee) => ({ fee: String(fee) });
+  const quotes = [{ e: e('https://a/x'), q: q(100) }, { e: e('https://b/x'), q: q(102) }, { e: e('https://c/x'), q: q(500) }];
+  for (let i = 0; i < 30; i++) assert.equal(orderQuotes(quotes, Math.random, ['https://b/x/'])[0].e.url, 'https://b/x', 'b is within the near band: it is the pick');
+  for (let i = 0; i < 30; i++) assert.notEqual(orderQuotes(quotes, Math.random, ['https://c/x'])[0].e.url, 'https://c/x', 'c is far dearer: preference does not lift it');
+  const plain = orderQuotes(quotes, () => 0);
+  assert.equal(plain[0].e.url, 'https://a/x', 'with no preference the order is as before');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

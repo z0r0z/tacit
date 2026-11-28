@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-bbzqwEFPhnRTqb8j8/Hg6qSBo+iUOTb2BEWwTpvOCGk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yc7u0gUe8983py1oORmUY+/S6kl2RY5zWVIZaFIggnA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://mempool.ninja https://btcscan.org https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin fetchpriority="low">
@@ -42,7 +42,7 @@
 <link rel="modulepreload" href="/json-rpc.js">
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/evm-pool-tokens.js?cb=16e0e196">
-<link rel="modulepreload" href="/private-route.js?cb=b5c16019">
+<link rel="modulepreload" href="/private-route.js?cb=d9ec9e79">
 <link rel="modulepreload" href="/evm-pool-relays.js">
 <!-- preload:end -->
 <!-- The first reads go to these four: their connections open while the modules load. -->
@@ -919,6 +919,12 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <div id="pick-body"></div>
   </div>
 </dialog>
+<dialog class="sheet" id="sheet-relays" aria-labelledby="relays-h">
+  <div class="sheet-in">
+    <div class="sheet-head"><h2 id="relays-h" tabindex="-1" autofocus>Relays</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
+    <div id="relays-body"></div>
+  </div>
+</dialog>
 <dialog class="sheet" id="sheet-wc" aria-labelledby="wc-h">
   <div class="sheet-in">
     <div class="sheet-head"><h2 id="wc-h" tabindex="-1" autofocus>Connect a wallet app</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
@@ -943,14 +949,14 @@ import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView } from '/address-view.js?cb=58dd4914';
 import { qrSvg as qrMarkup } from '/qr.js?cb=7ca24213';
 import { keeperIdOf, KEEPERS as POOL_KEEPERS } from '/evm-pool-tokens.js?cb=16e0e196';
-import { keeperFetch, rpcFetch, walletRpcFetch, bundlerFetch, poolHistory, available as routeAvailable, enabled as routeOn, listRelays } from '/private-route.js?cb=b5c16019';
+import { keeperFetch, rpcFetch, walletRpcFetch, bundlerFetch, poolHistory, available as routeAvailable, enabled as routeOn, listRelays, setRouteEndpoints } from '/private-route.js?cb=d9ec9e79';
 globalThis.__tacitBundlerFetch ||= bundlerFetch();
 import { signBoxSync as signBox, boxSigOk as boxRecordOk } from '/box-record.js?cb=c66c8473';
 import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=18dd5b40';
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 // preload-later:begin
-for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=a6687b98","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-open-relays.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
+for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=2659d634","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-open-relays.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
 // preload-later:end
 
 const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5';
@@ -1173,7 +1179,7 @@ function sayLive(el, view) {
 
 const mods = lazy(async () => {
   const [zkm, wm, gw, pm, pos] = await Promise.all([
-    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=a6687b98'), import('/evm-pool-gateway.js'),
+    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=2659d634'), import('/evm-pool-gateway.js'),
     import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
   ]);
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
@@ -1198,14 +1204,39 @@ const rpcRegistry = async (c) => { if (!direct.has(c.chainId)) direct.set(c.chai
 // The relays anyone has listed in the relay registry (on Ethereum) for a chain, listed next to the one this page ships with: read once a visit, through a
 // node other than the wallet's own, a few drawn at random (dapp/evm-pool-open-relays.js). A registry that does not answer in time leaves the page with its own
 // relay; a wallet is built after this, so it has them (c.keepers), and each relay it asks has to name the address it was listed under.
+// The person's choice of relays, kept in this browser: those to prefer (asked first, and taken when their fee is among the near-cheapest), those never to
+// ask, and relays of their own ({ base, relayer }: reached through the private route like any listed relay, at <base>/<chain>/evm-pool/keeper).
+const RPICK = 'tacit-pay-relay-pick-v1';
+const rpick = () => {
+  let o = null; try { o = JSON.parse(localStorage.getItem(RPICK) || 'null'); } catch { o = null; }
+  const l = (x) => (Array.isArray(x) ? x.filter((u) => typeof u === 'string' && u.length <= 300).map((u) => u.replace(/\/+$/, '').toLowerCase()).slice(0, 32) : []);
+  const custom = (Array.isArray(o?.custom) ? o.custom : []).filter((x) => /^https:\/\/[\w.-]+(?::\d{1,5})?(?:\/[\w./-]*[\w-])?$/.test(String(x?.base)) && /^0x[0-9a-fA-F]{40}$/.test(String(x?.relayer))).slice(0, 8);
+  return { prefer: l(o?.prefer), avoid: l(o?.avoid), custom };
+};
+const rpickSave = (x) => { try { localStorage.setItem(RPICK, JSON.stringify(x)); } catch { } };
+const customUrl = (x, c) => `${x.base.replace(/\/+$/, '')}/${c.chainId}/evm-pool/keeper`;
+// The page's own curated registry (dapp/pay-registry.js): read once a visit through two public nodes that must agree; its forwarders and Nostr relays go in
+// front of the page's own (hosts this page may reach only), its relays join the draw, and its flag can leave the open registry unread.
+let PAYREG = null;
+const payRegistry = () => (PAYREG ||= (async () => {
+  const [m, lib] = await Promise.all([import('/pay-registry.js'), rpcLib()]), nodes = [...new Set(CHAINS[0].rpc)];
+  const calls = nodes.slice(0, 3).map((u) => { const r = lib.jsonRpc([u]); return (to, data) => r('eth_call', [{ to, data }, 'latest']); });
+  const reg = await m.readPayRegistry({ calls });
+  if (reg) setRouteEndpoints(reg);
+  return { reg, openOff: m.flagOn(reg, m.FLAG_OPEN_OFF) };
+})().catch(() => ({ reg: null, openOff: false })));
+const RELAYS_SEEN = new Map();      // chainId → every relay this visit could ask (the person's sheet shows them), before the draw
 const OPEN_RELAYS = new Map();
 const openRelaysFor = (c) => {
   if (!OPEN_RELAYS.has(c.chainId)) OPEN_RELAYS.set(c.chainId, (async () => {
     try {
-      const o = await import('/evm-pool-open-relays.js?cb=69f7bd54'), rpc = await rpcRegistry(CHAINS[0]);
+      const o = await import('/evm-pool-open-relays.js?cb=7f300089'), rpc = await rpcRegistry(CHAINS[0]);
       const real = !!location.hostname && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+      const { reg, openOff } = await Promise.race([payRegistry(), new Promise((resolve) => setTimeout(() => resolve({ reg: null, openOff: false }), 2500))]);
+      const pk = rpick(), extra = [...(c.chainId === 1 ? reg?.relays || [] : []), ...pk.custom.map((x) => ({ url: customUrl(x, c), relayer: x.relayer }))];
+      RELAYS_SEEN.set(c.chainId, extra);
       c.keepers = await Promise.race([
-        o.openRelays({ call: (to, data) => rpc('eth_call', [{ to, data }, 'latest']), chainId: c.chainId, own: chainKeeper(c), pinned: real }),
+        o.openRelays({ call: (to, data) => rpc('eth_call', [{ to, data }, 'latest']), chainId: c.chainId, own: chainKeeper(c), pinned: real, extra, prefer: pk.prefer, avoid: pk.avoid, openOff }),
         new Promise((resolve) => setTimeout(() => resolve([]), 4000)),
       ]);
       listRelays(c.chainId, c.keepers);      // the private route reaches them too, sealed to each one's own key (dapp/route-community.js)
@@ -1649,7 +1680,7 @@ const PSW = { w: null, n: 0, wait: new Map() };
 function pswDrop() { PSW.w?.terminate(); PSW.w = null; for (const f of PSW.wait.values()) f({ ok: false }); PSW.wait.clear(); }
 function pswWorker() {
   if (PSW.w) return PSW.w;
-  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=25b04009', { type: 'module' }); } catch { return null; }
+  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=2f5a0b20', { type: 'module' }); } catch { return null; }
   PSW.w.onmessage = (e) => PSW.wait.get(e.data?.id)?.(e.data);
   PSW.w.onerror = pswDrop;
   return PSW.w;
@@ -1678,7 +1709,7 @@ async function syncInWorker(c, back = false) {
     });
     hush();
     w.postMessage({ id, priv: hexToBytes(S.key.priv), pool: POOL, router: ROUTER, entries, watch: linkIndex(), back, partial: !st.whole,
-      chain: { chainId: c.chainId, keeper: chainKeeper(c), keepers: c.keepers, rpc: c.rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk } });
+      chain: { chainId: c.chainId, keeper: chainKeeper(c), keepers: c.keepers, prefer: () => rpick().prefer, rpc: c.rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk } });
   });
 }
 async function walletOn(c) {
@@ -1695,7 +1726,7 @@ async function walletOn(c) {
   const store = { open: true, get: kv.get, set: (k, v) => { if (store.open) kv.set(k, v); } };
   st.W = m.makeEvmPoolWallet({
     zk: m.zk, keys: S.keys, keeper: chainKeeper(c), store, feed: !S.chainOnly, prove, fetchImpl: timedFetch, partial: true,
-    chain: { chainId: c.chainId, pool: POOL, router: ROUTER, rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk, keepers: c.keepers },
+    chain: { chainId: c.chainId, pool: POOL, router: ROUTER, rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk, keepers: c.keepers, prefer: () => rpick().prefer },
   });
   st.store = store;
   st.W.connect(signerFor(c));
@@ -1724,7 +1755,7 @@ function backfillChain(c) {
     syncChain(c, true).then(() => historyOf(c, true));
   });
 }
-const sealing = lazy(() => import('/evm-pool-wallet.js?cb=a6687b98'));
+const sealing = lazy(() => import('/evm-pool-wallet.js?cb=2659d634'));
 // `whole`: a state that held the whole history is read whole again, in the worker, before a wallet is made from it (syncInWorker, walletOn), and the
 // balance it showed stays on screen, as older history being read, until then; without it the new state begins at a catch-up point.
 async function freshWallet(c, whole = false) {
@@ -2965,7 +2996,7 @@ const capOf = (fee) => (fee == null ? null : (fee * 5n) / 4n);
 const atCap = (fee) => capOf(fee) ?? 0n;
 const upTo = (v) => fmt(((v + 10n ** 12n - 1n) / 10n ** 12n) * 10n ** 12n, 18, 6);
 const tokUp = (v, dec) => { const u = 10n ** BigInt(Math.max(0, dec - 4)); return fmt(((v + u - 1n) / u) * u, dec, 4); };
-const feeRow = (fee, self) => (self ? kvRow('Relay fee', 'none · your wallet pays the network fee') : kvRow('Relay fee', fee ? `at most ${upTo(capOf(fee))} ETH` : 'none'));
+const feeRow = (fee, self) => (self ? kvRow('Relay fee', 'none · your wallet pays the network fee') : kvRow(html`Relay fee <button class="link" type="button" data-relays>Choose relays</button>`, fee ? `at most ${upTo(capOf(fee))} ETH` : 'none'));
 const mergeRow = (fee, n, self) => (!n ? '' : self ? kvRow(`Notes to combine first (${n}×)`, 'your wallet pays the network fee') : kvRow(`Relay fee to combine notes (${n}×)`, fee ? `at most ${upTo(capOf(fee) * BigInt(n))} ETH` : 'none'));
 const keptRow = (change, fee) => kvRow('Stays private', `${fee ? 'at least ' : ''}${ethDown(change)} ETH`);
 let MAXED = null;
@@ -4699,6 +4730,45 @@ function wireDisconnect(el) {
   });
 }
 function openWalletSheet() { renderWalletSheet(); if (!$('#sheet-wallet').open) $('#sheet-wallet').showModal(); }
+// Relays: who a send or withdrawal from the private balance asks for a quote on this chain, and the person's choice. The page's own relay is always
+// asked (it is the one that watches the deposit addresses it gave out); any other can be preferred or set aside, and a relay of one's own added. A choice
+// applies from the next time the page opens (its wallets are built with the relays drawn then).
+function renderRelays(c = S.chain) {
+  const body = $('#relays-body'), p = rpick(), norm = (u) => String(u).replace(/\/+$/, '').toLowerCase(), own = norm(chainKeeper(c) || '');
+  const seen = new Map();
+  for (const e of [{ url: chainKeeper(c), own: true }, ...(c.keepers || []), ...(RELAYS_SEEN.get(c.chainId) || [])]) if (e?.url && !seen.has(norm(e.url))) seen.set(norm(e.url), e);
+  for (const u of [...p.prefer, ...p.avoid]) if (!seen.has(u) && /\/evm-pool\/keeper$/.test(u)) seen.set(u, { url: u });
+  const asked = new Set((c.keepers || []).map((e) => norm(e.url)));
+  const row = (e) => {
+    const k = norm(e.url), host = (() => { try { return new URL(e.url).host; } catch { return e.url; } })(), mine = p.custom.some((x) => norm(customUrl(x, c)) === k);
+    const off = p.avoid.includes(k), pref = p.prefer.includes(k);
+    const say = k === own ? 'Tacit’s relay · always asked' : off ? 'set aside: never asked' : pref ? 'preferred' : asked.has(k) ? 'asked this visit' : 'not drawn this visit';
+    return html`<div class="kv"><span>${k === own ? 'Tacit' : host.split('.')[0]}<br><small class="mute" title="${host}">${host} · ${say}${mine ? ' · yours' : ''}</small></span>
+      <b>${off ? html`<button class="link" type="button" data-rl-on="${k}">Ask again</button>` : html`<button class="link" type="button" data-rl-pref="${k}" aria-pressed="${String(pref)}">${pref ? 'Preferred' : 'Prefer'}</button>${k === own ? '' : html` · <button class="link" type="button" data-rl-off="${k}">Never ask</button>`}`}${mine ? html` · <button class="link" type="button" data-rl-del="${k}">Remove</button>` : ''}</b></div>`;
+  };
+  mount(body, html`<p class="note">A send or a withdrawal from your private balance asks these relays for a quote and goes through one of the cheapest; each is reached through the private route and has to answer with the address it is listed under.</p>
+    ${[...seen.values()].map(row)}
+    <div class="lbl"><span>Add your own relay</span></div>
+    <div class="amt text"><input id="rl-base" placeholder="https://your-relay.example" autocomplete="off" spellcheck="false" autocapitalize="off" aria-label="Your relay's address"></div>
+    <div class="amt text"><input id="rl-who" placeholder="0x… the address it relays from" autocomplete="off" spellcheck="false" autocapitalize="off" aria-label="The address your relay relays from"></div>
+    <button class="btn ghost" type="button" id="rl-add">Add it</button>
+    <p class="note" id="rl-say" role="status"></p>
+    <p class="note mute">Choices are kept in this browser and apply the next time this page opens. <button class="link" type="button" id="rl-reload">Open it again now</button></p>`);
+  const save = (x) => { rpickSave(x); renderRelays(c); $('#rl-say').textContent = 'Saved. It applies the next time this page opens.'; };
+  $$('[data-rl-pref]', body).forEach((b) => b.onclick = () => { const k = b.dataset.rlPref; save({ ...p, prefer: p.prefer.includes(k) ? p.prefer.filter((x) => x !== k) : [...p.prefer, k] }); });
+  $$('[data-rl-off]', body).forEach((b) => b.onclick = () => { const k = b.dataset.rlOff; save({ ...p, prefer: p.prefer.filter((x) => x !== k), avoid: [...new Set([...p.avoid, k])] }); });
+  $$('[data-rl-on]', body).forEach((b) => b.onclick = () => { const k = b.dataset.rlOn; save({ ...p, avoid: p.avoid.filter((x) => x !== k) }); });
+  $$('[data-rl-del]', body).forEach((b) => b.onclick = () => { const k = b.dataset.rlDel; save({ prefer: p.prefer.filter((x) => x !== k), avoid: p.avoid.filter((x) => x !== k), custom: p.custom.filter((x) => norm(customUrl(x, c)) !== k) }); });
+  $('#rl-add').onclick = () => {
+    const base = $('#rl-base').value.trim().replace(/\/+$/, '').replace(/\/\d+\/evm-pool\/keeper$/, ''), who = $('#rl-who').value.trim();
+    if (!/^https:\/\/[\w.-]+(?::\d{1,5})?(?:\/[\w./-]*[\w-])?$/.test(base)) { $('#rl-say').textContent = 'A relay’s address starts https:// and names its host.'; return; }
+    if (!isAddr(who)) { $('#rl-say').textContent = 'The address it relays from is 0x and 40 more characters: a relay has to answer with it.'; return; }
+    if (p.custom.some((x) => norm(x.base) === norm(base))) { $('#rl-say').textContent = 'That relay is already yours.'; return; }
+    save({ ...p, custom: [...p.custom, { base, relayer: who }], prefer: [...new Set([...p.prefer, norm(customUrl({ base }, c))])] });
+  };
+  $('#rl-reload').onclick = () => location.reload();
+}
+document.addEventListener('click', (e) => { if (e.target.closest?.('[data-relays]')) { e.preventDefault(); renderRelays(); if (!$('#sheet-relays').open) $('#sheet-relays').showModal(); } });
 $('#wallet').onclick = openWalletSheet;
 $$('[data-close]').forEach((b) => b.onclick = () => b.closest('dialog').close());
 $$('dialog.sheet').forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
@@ -4968,7 +5038,7 @@ async function tokPull(t, amount, step) {
 
 // A token pool's chain as its wallet takes it. A chain's registered multi-keeper is projected to this pool's route and pinned to the same relayer address.
 const tokChain = async (t) => {
-  const [rpc, o] = await Promise.all([rpcOn(t.chain), openRelaysFor(t.chain).then(() => import('/evm-pool-open-relays.js?cb=69f7bd54'))]);
+  const [rpc, o] = await Promise.all([rpcOn(t.chain), openRelaysFor(t.chain).then(() => import('/evm-pool-open-relays.js?cb=7f300089'))]);
   const keepers = o.keepersForPool(t.chain.keepers, t.chainId, t.id);
   listRelays(t.chainId, keepers);      // the sealed community route takes the projected URL too, not only the native pool's
   return { chainId: t.chainId, pool: t.pool, router: t.router, token: t.token, rpc, deployBlock: t.from, confirmations: t.chain.confirmations, logChunk: t.chain.logChunk, maxRelayFee: t.maxRelayFee, keepers };

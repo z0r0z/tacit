@@ -1,4 +1,4 @@
-import '/relay-route.js?cb=7a415964';
+import '/relay-route.js?cb=99898ecb';
 // The tip splitter page: what an EthSplitter holds, who it pays and in what proportion, a button that sends the balance on, a form the owner
 // uses to change the list, and a form that deploys a new one. Reads go to Ethereum's public nodes, one after another; sends go through the
 // injected wallet. Nothing is kept except the address of the splitter being looked at (and the arguments of the one deployed here, for

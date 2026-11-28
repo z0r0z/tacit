@@ -51,6 +51,27 @@ export function keeperFetch(url, init) {
   return fetch(url, init);
 }
 
+// Endpoints from the page's own curated registry (dapp/pay-registry.js): its forwarders and Nostr relays go first and the page's own stay behind them,
+// so a dead one is passed over and none of the page's own is lost. Only a host this page's policy lets it reach is taken (the policy stays closed: a new
+// host needs a page that names it). A change before the route is first used costs nothing; after, the route is built again on its next request.
+const OWN_FORWARDERS = [...ROUTE.forwarders], OWN_NOSTR = [...ROUTE.nostr];
+const policyHosts = () => {
+  try {
+    const m = globalThis.document?.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content || '';
+    const c = /(?:^|;)\s*connect-src([^;]*)/.exec(m);
+    return c ? c[1].trim().split(/\s+/) : null;
+  } catch { return null; }
+};
+const allowedHere = (u) => { const hs = policyHosts(); if (!hs) return true; try { const o = new URL(u).origin; return hs.includes(o) || hs.includes(`${new URL(u).protocol}//${new URL(u).host}`); } catch { return false; } };
+export function setRouteEndpoints({ forwarders = [], nostr = [] } = {}) {
+  const f = [...new Set([...(forwarders || []).filter((u) => /^https:\/\/[\w.-]+(?::\d{1,5})?$/.test(u) && allowedHere(u)), ...OWN_FORWARDERS])].slice(0, 8);
+  const n = [...new Set([...(nostr || []).filter((u) => /^wss:\/\/[\w.-]+(?::\d{1,5})?$/.test(u) && allowedHere(u)), ...OWN_NOSTR])].slice(0, 8);
+  const same = f.join() === ROUTE.forwarders.join() && n.join() === ROUTE.nostr.join();
+  if (same) return false;
+  ROUTE.forwarders = f; ROUTE.nostr = n; made = null; community_ = null;
+  return true;
+}
+
 // The relays the relay registry lists that this page may reach through the route: { chainId, url, relayer }. A page names them as it reads the registry; the
 // private route's key for each is fetched, and checked against the relayer's address, when it is asked for (and once ahead, now).
 const RELAYS = [];

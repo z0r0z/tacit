@@ -212,6 +212,36 @@ await check('an answer after the grace is not added to what was returned', async
   assert.equal(got.length, 1);
 });
 
+console.log('the person\'s choice and the curated lists');
+{
+  const reg = [entry(1), entry(2), entry(3), entry(4), entry(5), entry(6)];
+  const OWN = 'https://own.example/1/evm-pool/keeper';
+  await check('a preferred relay is always asked, and an avoided one never is', async () => {
+    for (let i = 0; i < 20; i++) {
+      const got = (await openRelays({ call: fakeRegistry(reg), chainId: 1, own: OWN, prefer: [U(6)], avoid: [U(1), U(2)], random: Math.random })).map((e) => e.url);
+      assert.ok(got.includes(U(6)), `preferred asked (${got})`);
+      assert.ok(!got.includes(U(1)) && !got.includes(U(2)), `avoided never asked (${got})`);
+      assert.equal(got.length, MAX_RELAYS_ASKED - 1);
+    }
+  });
+  await check('a relay the person added (or the page\'s registry names) is a candidate, and a preferred one of those is asked', async () => {
+    const mine = { url: 'https://mine.example/1/evm-pool/keeper', relayer: '0x' + 'ab'.repeat(20) };
+    const got = await openRelays({ call: fakeRegistry(reg), chainId: 1, own: OWN, extra: [mine], prefer: [mine.url] });
+    assert.ok(got.some((e) => e.url === mine.url && e.relayer === mine.relayer), JSON.stringify(got));
+  });
+  await check('with the open registry switched off, only the added relays are drawn from, and the registry is not read', async () => {
+    let calls = 0;
+    const mine = { url: 'https://mine.example/1/evm-pool/keeper', relayer: '0x' + 'ab'.repeat(20) };
+    const got = await openRelays({ call: async (...a) => { calls++; return fakeRegistry(reg)(...a); }, chainId: 1, own: OWN, extra: [mine], openOff: true });
+    assert.deepEqual(got.map((e) => e.url), [mine.url]);
+    assert.equal(calls, 0);
+  });
+  await check('an added relay that a wallet would not use (no relayer pin, not https) takes no place, and a repeat is listed once', async () => {
+    const got = await openRelays({ call: fakeRegistry([entry(1)]), chainId: 1, own: OWN, extra: [{ url: 'http://bad.example/1/evm-pool/keeper', relayer: '0x' + 'ab'.repeat(20) }, { url: U(1), relayer: '0x' + (1).toString(16).padStart(40, '0') }, { url: 'https://nopin.example/1/evm-pool/keeper' }] });
+    assert.deepEqual(got.map((e) => e.url), [U(1)]);
+  });
+}
+
 console.log('the page');
 await check('the Pay page reads the registry for each chain and lists what it finds next to its own relay, and its policy does not open to the host of a relay (the private route carries it)', () => {
   const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8');

@@ -1299,7 +1299,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     if (!asked.length) return withinFee(await keeperGet(path, 4, relays[0]), maxFee);      // none answered: the first relay's own answer, or its error
     const cheap = asked.filter((x) => maxFee == null || BigInt(x.q.fee) <= BigInt(maxFee));
     if (!cheap.length) throw feeWentUp(asked.map((x) => BigInt(x.q.fee)).reduce((a, b) => (a < b ? a : b)));
-    const [first, ...rest] = orderQuotes(cheap);
+    const [first, ...rest] = orderQuotes(cheap, Math.random, chain.prefer?.() || []);      // the relays the person prefers win among the near-cheapest
     return quoteOf(first.e, first.q, rest.map((x) => x.e), path, maxFee);
   }
   // The ordinary quotes spendQuote gave, which a withdrawal or a send may be built for as they are (a copy has lost its relay, and is priced afresh).

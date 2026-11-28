@@ -51,7 +51,7 @@ import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeOffers, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead, fastItem, lookReplaced, landedHash, traceTx, guessSeen, REPLACED_TEXT } from '/activity.js?cb=7766c464';
 // The relay's API goes through the private route when a forwarder answers it (private-route.js apiFetch). The pool client below and the page's own reads of the relay take their fetch from here at each
 // call, so a call made before this has loaded is a plain fetch, as it always was.
-import('/private-route.js?cb=b5c16019').then((m) => { globalThis.__tacitRelayFetch ||= m.apiFetch(); }, () => {});
+import('/private-route.js?cb=d9ec9e79').then((m) => { globalThis.__tacitRelayFetch ||= m.apiFetch(); }, () => {});
 if (window.__tacitAway) await new Promise(() => {});
 document.querySelector('link[rel="stylesheet"][href^="/swap/card.css"]')?.setAttribute('media', 'all');
 
@@ -5577,7 +5577,7 @@ async function usdtBackRows(t, arrives) {
 const DEV = { chain: DEVICE_CHAINS.find((c) => c.chainId === store.get('tacit-lite-device-chain')) || DEVICE_CHAINS[0], tok: null, mode: 'deposit', dest: 'addr', W: null, bal: null, key: null, quote: null, gq: {}, err: null, self: false };
 const getDeviceMods = lazy(async () => {
   const [zkm, wm, pm, pos] = await Promise.all([
-    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=a6687b98'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
+    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=2659d634'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
   ]);
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
   return { zk: zkm.makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) }), ...wm, vkHash: pm.vkHash };
@@ -5658,7 +5658,7 @@ const PSW = { w: null, n: 0, wait: new Map(), q: Promise.resolve() };
 function pswWorker() {
   try {
     if (PSW.w) return PSW.w;
-    const w = PSW.w = new Worker('/evm-pool-sync-worker.js?cb=25b04009', { type: 'module' });
+    const w = PSW.w = new Worker('/evm-pool-sync-worker.js?cb=2f5a0b20', { type: 'module' });
     w.onmessage = (e) => { const f = PSW.wait.get(e.data?.id); if (f) { if (!e.data.write && e.data.part == null) PSW.wait.delete(e.data.id); f(e.data); } };
     w.onerror = () => { for (const f of PSW.wait.values()) f({ ok: false }); PSW.wait.clear(); PSW.w = null; };
     return w;
@@ -14192,7 +14192,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=0e23ce22').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=67b496c6').catch((e) => { SWC.p = null; throw e; }));
 // Intent on Shield or Swap is a useful head start: fetch both the card and the
 // private action engine, and warm the fee/log reads they need before submit.
 const hxActionWarm = () => { swcLoad().catch(() => {}); hxWarm(); hxWarmWrap(); };

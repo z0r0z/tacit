@@ -1,7 +1,7 @@
 // /prove/: the network's blocks as they land, the proofs waiting and the provers making them, and this computer's own prover, started
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
-import '/relay-route.js?cb=7a415964';
+import '/relay-route.js?cb=99898ecb';
 import { cleanAddress, proveCommand, utcDay, mineLines, capOf, perPoint } from '/community-prove.js?cb=e2a65259';
 import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
@@ -818,7 +818,7 @@ async function copy() {
 // connect again or a relay account (whose settles are sent or seen home from any tab) has it once the page has settled; a wallet connected
 // in another tab loads it here too.
 let opsLoad = null, opsReady = false;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=6598d3a4').then((m) => { opsReady = true; return m; }));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=fc7949ec').then((m) => { opsReady = true; return m; }));
 $('#wallet').title = 'Connect an Ethereum wallet to pay the network fee';
 $('#wallet').addEventListener('click', async (e) => {
   if (opsReady) return;                                            // loaded: ops.js has its own handler on the chip
@@ -842,7 +842,7 @@ let fwdLoaded = false;
 async function loadForwarders() {
   if (fwdLoaded) return;
   fwdLoaded = true;
-  const { ROUTE } = await import('/private-route.js?cb=b5c16019');
+  const { ROUTE } = await import('/private-route.js?cb=d9ec9e79');
   const box = $('#fwd-box');
   const cmd = $('#fwd-cmd');
   if (cmd) cmd.textContent = `FORWARD_URL=https://your.host node tools/community-runner.mjs forward\nnode tools/private-route-check.mjs --service ${ROUTE.keeper} --gateway ${ROUTE.gateway} --forwarder https://your.host`;

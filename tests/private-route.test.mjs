@@ -118,7 +118,7 @@ const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url)
 await check('the pay page sends every request to a relay through keeperFetch, and its wallets ask it whether they are on the route', () => {
   const direct = page.split('\n').map((line, i) => [i + 1, line]).filter(([, line]) => /(^|[^\w.])fetch\(/.test(line) && /chainKeeper\(|\.keeper\b|POOL_KEEPERS|onrender\.com\/\$\{|evm-pool\/keeper/.test(line));
   assert.deepEqual(direct, [], `a relay request that does not go through keeperFetch: ${direct.map(([i]) => i)}`);
-  assert.match(page, /import \{ keeperFetch(?:, rpcFetch)?(?:, walletRpcFetch)?(?:, bundlerFetch)?(?:, poolHistory)?, available as routeAvailable, enabled as routeOn(?:, listRelays)? \} from '\/private-route\.js\?cb=[A-Za-z0-9_-]+';/);
+  assert.match(page, /import \{ keeperFetch(?:, rpcFetch)?(?:, walletRpcFetch)?(?:, bundlerFetch)?(?:, poolHistory)?, available as routeAvailable, enabled as routeOn(?:, listRelays)?(?:, setRouteEndpoints)? \} from '\/private-route\.js\?cb=[A-Za-z0-9_-]+';/);
   assert.match(page, /const timedFetch = \(url, init = \{\}\) => keeperFetch\(url,/);
   assert.match(page, /Object\.defineProperty\(timedFetch, 'sealed', \{ get: routeOn \}\)/);
   const wallets = [...page.matchAll(/makeEvmPoolWallet\(/g)].map((m) => {
