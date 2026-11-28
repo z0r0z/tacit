@@ -375,7 +375,19 @@ function peek() {
     paintRes();
   }, 450);
 }
-function paintRes() { const el = $('#dg-res'); if (!el) return; const t = resLine(S.dg.res); el.innerHTML = t; el.hidden = !t; el.className = `mute${S.dg.res?.state === 'err' ? ' err' : ''}`; }
+function paintRes() {
+  const el = $('#dg-res'); if (!el) return;
+  const t = resLine(S.dg.res); el.innerHTML = t; el.hidden = !t; el.className = `mute${S.dg.res?.state === 'err' ? ' err' : ''}`;
+  paintGo();
+}
+// the button says who it will sign for, so what is signed is never a surprise
+const shortAddr = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+function goLabel() {
+  if (S.busy) return 'Waiting for your wallet…';
+  const d = S.dg, to = d.res?.state === 'ok' ? d.res.name : isAddr(d.to) ? shortAddr(d.to) : '';
+  return `${d.me ? 'Sign and change' : 'Sign and delegate'}${to ? ` to ${to}` : ''}`;
+}
+function paintGo() { const b = $('#dg-go'); if (b && !S.busy) b.textContent = goLabel(); }
 function delegateView() {
   const d = S.dg, on = !!W.account, back = '<p class="eyebrow"><a href="#">← All proposals</a></p>';
   if (d.avail === false) return `${back}<h2 class="ptitle">Delegate your vote</h2><p class="lede">Delegation is not available yet.</p>`;
@@ -396,12 +408,12 @@ function delegateView() {
     <form class="form sec" id="dgform">
       <label class="f"><span class="lbl">${me ? 'Change to' : 'Delegate to'}</span><input class="fld" id="dg-to" inputmode="text" autocomplete="off" spellcheck="false" placeholder="0x… or name.wei" value="${esc(d.to)}"><small id="dg-res" class="mute${d.res?.state === 'err' ? ' err' : ''}" aria-live="polite"${resLine(d.res) ? '' : ' hidden'}>${resLine(d.res)}</small></label>
       <div class="f"><span class="lbl">What they can do</span><div class="seg two-way" role="radiogroup" aria-label="What they can do">${[['vote', 'Vote'], ['all', 'Vote and open proposals']].map(([k, l]) => `<button type="button" role="radio" aria-checked="${d.rights === k}" class="${d.rights === k ? 'on' : ''}" data-rights="${k}">${l}</button>`).join('')}</div></div>
-      <button class="btn" type="submit" id="dg-go" ${S.busy ? 'disabled' : ''}>${S.busy ? 'Waiting for your wallet…' : me ? 'Sign and change' : 'Sign and delegate'}</button>
+      <button class="btn" type="submit" id="dg-go" ${S.busy ? 'disabled' : ''}>${goLabel()}</button>
       <p class="status" id="note" aria-live="polite"></p>
     </form>
     <div class="sec"><p class="eyebrow">Delegated to you <span class="who">${yours ? yours.count : 0}${yours?.count ? ` · ${esc(fmtTac(yours.weight))} TAC` : ''}</span></p>${list}</div>`
     : `<div class="sec"><button class="btn" type="button" id="dg-connect">Connect wallet</button></div>`}
-    <p class="note">This covers the TAC in your Ethereum wallet. TAC on Bitcoin, or shielded, votes from its own key and is not delegated.</p>`;
+    <p class="note">This covers the TAC in your Ethereum wallet. TAC on Bitcoin, or shielded, votes from its own key and is not delegated. Your wallet asks you to sign a message that names the delegate and what they can do. Delegations are public: anyone can see who a wallet delegates to.</p>`;
 }
 
 // ── actions ──
@@ -413,7 +425,7 @@ async function setDelegate(to, rights, name = '') {
   S.busy = true; render();
   try {
     const c = { network: GOV_NETWORK, delegate: to.toLowerCase(), rights, issued: Math.floor(Date.now() / 1000) };
-    const sig = await conn.wallet.signMessage(delegateMessage(c), W.account);
+    const sig = await conn.wallet.signMessage(delegateMessage(c), W.account);   // the wallet layer sends nothing if the account changes while it asks
     await getJson('/delegate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ delegate: c.delegate, rights: c.rights, issued: c.issued, eth_sig: sig }) });
     S.busy = false; S.dg.to = ''; S.dg.res = null;
     if (to && name) rememberName(to, name);
@@ -449,11 +461,17 @@ function wire(root) {
       const name = isAddr(S.dg.to) ? '' : nameOf(S.dg.to);
       if (!isAddr(S.dg.to) && !name) { say('Enter a 0x address or a name ending in .wei.', true); return; }
       if (!name) { setDelegate(S.dg.to, S.dg.rights); return; }
-      let address = S.dg.res?.name === name && S.dg.res.state === 'ok' ? S.dg.res.address : '';
-      if (!address) {
-        say(`Looking up ${name}…`);
-        try { address = await addressOfName(name); } catch (err) { say(err.message, true); return; }
+      // a name is looked up again at the press, and signed only if it still points where the page showed
+      const shown = S.dg.res?.name === name && S.dg.res.state === 'ok' ? S.dg.res.address : '';
+      say(`Checking ${name}…`);
+      let address;
+      try { address = await addressOfName(name); } catch (err) { say(err.message, true); return; }
+      if (address !== shown) {
+        S.dg.res = { name, state: 'ok', address }; paintRes();
+        say(shown ? `${name} now points at a different address. Check it, then press again.` : 'Check the address above, then press again.', !!shown);
+        return;
       }
+      say('');
       setDelegate(address, S.dg.rights, name);
     };
     peek();

@@ -115,7 +115,7 @@ export function governanceApi() { return {
   createProposal: async (c) => window.__btcPropose(JSON.stringify(c), hex(wallet.pub)),
 }; }`;
 const btcCalls = [];
-async function open(holder, hash = '', { viewport = { width: 1280, height: 900 }, scheme = 'light', tacitKey = null, noDelegation = false } = {}) {
+async function open(holder, hash = '', { viewport = { width: 1280, height: 900 }, scheme = 'light', tacitKey = null, noDelegation = false, switchOnSign = null } = {}) {
   const ctx = await b.newContext({ viewport, colorScheme: scheme });
   const page = await ctx.newPage();
   const errs = [], csp = [], signed = [];
@@ -138,17 +138,19 @@ async function open(holder, hash = '', { viewport = { width: 1280, height: 900 }
   await page.exposeFunction('__sign', async (hexMsg, account) => {
     const text = Buffer.from(hexMsg.slice(2), 'hex').toString('utf8');
     signed.push({ text, account });
-    return personalSign(holder.priv, text);
+    const sig = await personalSign(holder.priv, text);
+    if (switchOnSign) await page.evaluate((a) => { window.__acct = a; window.__cbs?.accountsChanged?.([a]); }, switchOnSign);   // the wallet moves to another account while the prompt is open
+    return sig;
   });
   await page.addInitScript((acct) => {
     const provider = {
       async request({ method, params }) {
-        if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [acct];
+        if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [window.__acct || acct];
         if (method === 'eth_chainId') return '0x1';
         if (method === 'personal_sign') return window.__sign(params[0], params[1]);
         throw Object.assign(new Error(`unsupported ${method}`), { code: 4200 });
       },
-      on() {}, removeListener() {},
+      on(ev, cb) { (window.__cbs ||= {})[ev] = cb; }, removeListener() {},
     };
     const info = { uuid: 'test-wallet', name: 'Test wallet', icon: '', rdns: 'test.wallet' };
     const announce = () => dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail: Object.freeze({ info, provider }) }));
@@ -293,7 +295,7 @@ let id2;
   ok(/0x address or a name/.test(await text(page, '#note')) && signed.length === 0, 'something that is neither an address nor a name is refused before the wallet is asked');
   ok(await page.getAttribute('#dg-to', 'placeholder') === '0x… or name.wei', 'the field says a name works too');
   await page.fill('#dg-to', rich.addr);
-  ok(await page.getAttribute('[data-rights="vote"]', 'aria-checked') === 'true' && await text(page, '#dg-go') === 'Sign and delegate', 'the vote right is the default, Sign and delegate is ready');
+  ok(await page.getAttribute('[data-rights="vote"]', 'aria-checked') === 'true' && /^Sign and delegate to 0x/.test(await text(page, '#dg-go')), 'the vote right is the default, and the button names the address it signs for');
   await page.click('#dg-go');
   await page.waitForFunction(() => /Delegated\. It counts/.test(document.querySelector('#note')?.textContent || ''), null, { timeout: 30e3 });
   const issued = +/Issued: (\d+)/.exec(signed[0]?.text || '')?.[1];
@@ -379,7 +381,8 @@ let id2;
   await page.waitForFunction(() => /does not point at an address/.test(document.querySelector('#dg-res')?.textContent || ''), null, { timeout: 15e3 });
   ok(true, 'a name that points nowhere says so as it is typed');
   await page.click('#dg-go');
-  ok(signed.length === 0 && /does not point at an address/.test(await text(page, '#note')), 'and pressing the button does not ask the wallet');
+  await page.waitForFunction(() => /does not point at an address/.test(document.querySelector('#note')?.textContent || ''), null, { timeout: 15e3 });
+  ok(signed.length === 0, 'and pressing the button does not ask the wallet');
   await page.fill('#dg-to', 'rich.com');
   await page.click('#dg-go');
   ok(signed.length === 0 && /0x address or a name/.test(await text(page, '#note')), 'a name from another service is not looked up');
@@ -410,6 +413,44 @@ let id2;
   await page.evaluate(() => { location.hash = 'delegate'; });
   await page.waitForSelector('.ptitle');
   ok(/not available yet/.test(await text(page, '.lede')), 'a link straight to the delegate page says it is not available yet');
+  ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
+  await page.context().close();
+}
+// 2d. the wallet flow's guards: a name that moves between lookup and press is not signed, and an account switch mid-prompt records nothing
+{
+  const other = holderOf('gov-page-other-wallet');
+  const key = `gov:d:mainnet:${poor.addr}`;
+  const back = async () => { const r = await env.REGISTRY_KV.get(key, 'json'); r.history.forEach((h) => { h.at -= 900; h.issued -= 900; }); await env.REGISTRY_KV.put(key, JSON.stringify(r)); };
+  await back();
+  const before = (await env.REGISTRY_KV.get(key, 'json')).history.length;
+  const { page, errs, csp, signed } = await open(poor, '#delegate');
+  await connect(page);
+  await page.waitForSelector('#dgform');
+  await page.fill('#dg-to', 'moves.wei'); weiNames.set(nodeOf('moves.wei'), rich.addr);
+  await page.waitForFunction((a) => (document.querySelector('#dg-res')?.textContent || '').includes(a), rich.addr, { timeout: 15e3 });
+  ok(/to moves\.wei$/.test(await text(page, '#dg-go')), 'the button names who it will sign for');
+  weiNames.set(nodeOf('moves.wei'), other.addr);                      // the name changes hands before the press
+  await page.click('#dg-go');
+  await page.waitForFunction((a) => (document.querySelector('#dg-res')?.textContent || '').includes(a), other.addr, { timeout: 15e3 });
+  ok(signed.length === 0 && /now points at a different address/.test(await text(page, '#note')), 'a name that moved since it was shown is not signed: the new address is shown instead');
+  ok((await env.REGISTRY_KV.get(key, 'json')).history.length === before, 'and nothing was recorded');
+  ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
+  await page.context().close();
+}
+{
+  // the wallet switches account while the prompt is open: what the first account signed is not sent
+  const other = holderOf('gov-page-other-wallet');
+  balances.set(other.addr, 40n * TAC);
+  const key = `gov:d:mainnet:${poor.addr}`, before = (await env.REGISTRY_KV.get(key, 'json')).history.length;
+  const { page, errs, csp, signed } = await open(poor, '#delegate', { switchOnSign: other.addr });
+  await connect(page);
+  await page.waitForSelector('#dgform');
+  await page.fill('#dg-to', rich.addr);
+  await page.click('#dg-go');
+  await page.waitForFunction(() => /account changed/.test(document.querySelector('#note')?.textContent || ''), null, { timeout: 30e3 });
+  ok(signed.length === 1, 'the prompt was shown once');
+  ok((await env.REGISTRY_KV.get(key, 'json')).history.length === before && !(await env.REGISTRY_KV.get(`gov:d:mainnet:${other.addr}`, 'json')), 'but nothing was recorded for either account');
+  ok(/Nothing was sent/.test(await text(page, '#note')), 'and the page says so');
   ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
   await page.context().close();
 }
