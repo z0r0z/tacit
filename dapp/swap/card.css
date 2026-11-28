@@ -60,6 +60,27 @@
 @media (prefers-reduced-motion: reduce) { .swc .snt.atm .stp li.active i { animation: none; } }
 /* an amount before the wallet is open is an estimate at the market, set apart from a quote; the line that says when to be back is read first */
 .swc #atomic .big.est { color: var(--mute); font-size: 34px; }
+/* an amount sized to its field, as /btc/ draws it: smaller as it gets longer, never cut (--n is its length, set by the lane) */
+.swc #atomic .fm { container-type: inline-size; }
+.swc #atomic .fm :is(.amt, .big) { font-size: clamp(20px, calc((100cqi - 112px) / (var(--n, 5) * .6)), 38px); }
+.swc #atomic .fm .big.est { font-size: clamp(20px, calc((100cqi - 112px) / (var(--n, 5) * .6)), 34px); }
+/* where a BTC swap's ETH goes ("Receive as": kept private, or sent on to an address), and the one-press notes under the button: as /btc/ draws them */
+.swc #atomic .payto { margin: 12px 0 0; }
+.swc #atomic .pt { display: grid; gap: 7px; min-width: 0; margin: 0; padding: 10px 12px 12px; background: var(--field); border: 1px solid var(--hair); border-radius: 12px; }
+.swc #atomic .pt legend { padding: 0 4px; font-size: 12px; color: var(--mute); }
+.swc #atomic .pt label { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--ink); cursor: pointer; }
+.swc #atomic .pt label span { white-space: normal; min-width: 0; overflow-wrap: anywhere; }
+.swc #atomic .pt input[type="radio"] { accent-color: var(--ink); }
+.swc #atomic .pt code { font: 12px var(--mono); color: var(--mute); }
+.swc #atomic #a-pt-addr { width: 100%; min-height: 40px; padding: 6px 10px; font: 13px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 10px; outline: none; }
+.swc #atomic #a-pt-addr:focus { border-color: var(--ink); }
+.swc #atomic .pt-say { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--mute); white-space: normal; overflow-wrap: anywhere; }
+.swc #atomic .pt-say:empty { display: none; }
+.swc #atomic .pt-say.err { color: var(--err); }
+.swc #atomic .q.hint { color: var(--ink); }
+.swc #atomic .q small { display: block; margin-top: 2px; color: var(--mute); font-size: 11.5px; }
+.swc #atomic .q .safe { display: block; margin-top: 6px; color: var(--ink); }
+.swc #atomic .q code { overflow-wrap: anywhere; font: 12px var(--mono); }
 .swc .snt.atm small.stay.by { color: var(--ink); }
 .swc .f { padding: 12px 14px 10px; background: var(--field); border: 1px solid color-mix(in srgb, var(--ink) 4%, transparent); border-radius: 16px; transition: border-color .15s, box-shadow .15s; }
 .swc .f:focus-within { border-color: color-mix(in srgb, var(--ink) 16%, transparent); }
