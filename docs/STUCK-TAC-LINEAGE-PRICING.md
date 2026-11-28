@@ -72,8 +72,7 @@ confirmed, and then found by `scanHoldings` as the reverse key. The public evide
 [`d74a1dc6...6b81859d`](https://mempool.space/signet/tx/d74a1dc6110a6618e29ba157a1403b134a91b1e1d14a435dc74d3c846b81859d)
 and the 5,000-unit recycle reveal
 [`699884f8...d3104868`](https://mempool.space/signet/tx/699884f8bbf2eed4fe538138c3f390b3177972f8023a954d3c4880f4d3104868).
-This proves the real broadcast/scan path for the exact note movement; it is not a TAC pool-liquidity proof and the reverse sale itself
-remains machine-tested offline.
+This proves the real broadcast/scan path for the exact note movement. The reverse sale rail itself was then rehearsed live as described below.
 
 A second public-signet drill exercises the reserve and CPFP path. The reserve-enabled recycle reveal
 [`0a609e66...e4c546f6`](https://mempool.space/signet/tx/0a609e66e1d5c6a239f391773c48fdd9ddbe61738279446e61010422e4c546f6)
@@ -83,6 +82,13 @@ then found by the reverse-key scan. The CPFP child
 spent only that reveal reserve output, never the confidential note output, paid an 11,950-sat package-aware fee for the 556-vB
 commit+reveal package plus child at a 20 sat/vB target, and confirmed in the same block as its parents. This proves live construction,
 relay acceptance and confirmation of the bump path; it does not prove that a real fee market required that bump.
+
+A full reverse-sale rehearsal then completed on public Signet plus a fresh Sepolia rehearsal pool. A 5,000-unit recycled/refunded confidential note at the reverse key was locked in reverse-lock reveal
+[`b00a28cb...01ec3952`](https://mempool.space/signet/tx/b00a28cbdce5c3ffcad7a4216ab43391a17160a96b4ea7de3123e3c501ec3952); the user's 5,000-unit EVM adaptor lock was proved by the public relay and self-settled in
+[`0xfba3b120...b06d93`](https://sepolia.etherscan.io/tx/0xfba3b1208d130f5ff42d10d935ed10daf83798a9f9fb92be3aaf6b3a43b06d93); the provider's adaptor claim was settled in
+[`0x30bf140...b23665`](https://sepolia.etherscan.io/tx/0x30bf1402536c86746bf364b6a0fa7ba9e69be8eee8f364093cef6bcd04b23665); and the user's Bitcoin-side take
+[`06e7f749...aff5bd24`](https://mempool.space/signet/tx/06e7f749d6ca0f7a1e3aae23ab9ca7e804a4780b941517cf36bc6014aff5bd24)
+confirmed in Signet block 332,788. Both machine records finished `done`. This is the live counterpart of the offline reverse-machine test: the note was actually locked, the EVM leg was actually claimed, and the Bitcoin-side note was actually taken. Its caveats are operational rather than conceptual: it used a fresh rehearsal pool because the production Signet deployment still carries an older SP1 verifying key, and the private adaptor-claim proof was made locally with the pinned CPU/native-gnark harness because the public relay's private-prover path repeatedly failed during the drill. It does not prove production relay uptime or market demand.
 - `stuckRecycle.enabled` defaults on only when the reverse side is on, and can be disabled in config or with `FB_LP_STUCK_RECYCLE=off`. `stuckRecycle.cpfp.enabled` controls only the stalled-transfer CPFP child; `bumpReserveSats` is reserve liquidity returned as change unless a bump is needed. Manual `recoveredSwaps` / `FB_LP_RECOVERED_SWAPS` remains available for notes recovered outside this loop.
 
 ## Numbers
@@ -153,4 +159,4 @@ node tests/fastbridge-wire.test.mjs
 node tests/fastbridge-lp-env.test.mjs
 ```
 
-Not tested: a live mainnet or signet fast-bridge swap, a real reverse sale of a recycled note, a CPFP bump in a fee market that actually required it (the reveal-reserve child was broadcast and confirmed on public signet), the real reflection service's latency on a maximally long history, browser UI copy, and market measurement of actual haircuts. No contracts, keys, pool parameters or deployed services change.
+Not tested: a live mainnet or production-signet fast-bridge swap, the production relay's private-prover path end to end, a CPFP bump in a fee market that actually required it (the reveal-reserve child was broadcast and confirmed on public signet), the real reflection service's latency on a maximally long history, browser UI copy, and market measurement of actual haircuts. No contracts, keys, pool parameters or deployed services change.
