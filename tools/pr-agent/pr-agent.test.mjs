@@ -33,11 +33,13 @@ const NEWTEST_WEAK = "import { add } from '../src/add.mjs';\nif (add(0, 0) !== 0
 
 // the scripted model + the endpoints around it: /agent/chat (a script of tool calls), /agent/status, and /pr-agent/report (collects what is posted)
 let script = [], nodes = 1; const requests = [], reports = [];
+let flaky = 0, failAfter = Infinity, okCalls = 0;   // a gateway that restarts: the next `flaky` turns get a 502 page; after `failAfter` good turns every turn does
 const server = http.createServer((req, res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
   const json = (o, code = 200) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
   if (req.url === '/agent/status') return json({ ok: true, nodes, queued: 0, models: ['qwen3.6-35b-a3b'] });
   if (req.url === '/pr-agent/report') { reports.push({ auth: req.headers.authorization, body: JSON.parse(b) }); return json({ ok: true }); }
-  if (req.url === '/agent/chat') { requests.push({ auth: req.headers.authorization, body: JSON.parse(b) });
+  if (req.url === '/agent/chat' && (flaky > 0 || okCalls >= failAfter)) { if (flaky > 0) flaky--; res.writeHead(502, { 'content-type': 'text/html' }); return res.end('<!DOCTYPE html><html><head><title>502</title></head><body>bad gateway</body></html>'); }
+  if (req.url === '/agent/chat') { okCalls++; requests.push({ auth: req.headers.authorization, body: JSON.parse(b) });
     const step = script.shift() || { name: 'finish', args: { summary: 'NOTHING: ran out of script' } };
     return json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: `c${requests.length}`, type: 'function', function: { name: step.name, arguments: JSON.stringify(step.args) } }] } }], usage: { prompt_tokens: 1000, completion_tokens: 40 },
       swarm: { tier: 'big', model: 'qwen3.6-35b-a3b-q4', miner: '0x' + 'ab'.repeat(20) } }); }
@@ -156,6 +158,21 @@ try {
     const r = await cli(root, req('probe'), ['--dry-run'], { NUDGER_SECRET: 'n'.repeat(40), GH_TOKEN: 'ghp_x' });
     const tr = JSON.parse(readFileSync(path.join(r.out, 'transcript.json'), 'utf8')).filter((m) => m.role === 'tool').map((m) => m.content).join('\n');
     check('a test the model wrote cannot read the runner\'s tokens from its environment', /SECRETS=0/.test(tr) && !/SECRETS=[1-9]/.test(tr), tr.slice(0, 160)); }
+
+  // a gateway that restarts mid-run is waited out; one that goes away for good does not throw away a patch that already passes every gate
+  { const root = mkRepo(); okCalls = 0; failAfter = Infinity; flaky = 2;
+    script = [...FIX, call('create_file', { path: 'tests/add-new.test.mjs', content: NEWTEST_FAILS_BEFORE }), call('finish', { summary: 'add returns the sum of its arguments' })];
+    const r = await cli(root, req(), ['--dry-run'], { PR_AGENT_RETRY_MS: '15' });
+    check('two 502 pages from a restarting gateway are waited out, and the run goes on to a PR', r.result?.status === 'pr' && r.result.finish === 'finish', JSON.stringify({ s: r.result?.status, f: r.result?.finish, note: r.result?.note })); }
+  { const root = mkRepo(); okCalls = 0; failAfter = 3; flaky = 0;   // the fix, the test, a test run: then the gateway is gone for good
+    script = [...FIX, call('create_file', { path: 'tests/add-new.test.mjs', content: NEWTEST_FAILS_BEFORE }), call('run_test', { file: 'tests/add-new.test.mjs' }), call('finish', { summary: 'never reached' })];
+    const r = await cli(root, req(), ['--dry-run'], { PR_AGENT_RETRY_MS: '5' });
+    check('a gateway that never comes back ends the run as an error, but the patch it had already made is judged by the gates, and passes', r.result?.finish === 'error' && r.result.status === 'pr' && r.result.gates.every((g) => g.ok) && r.result.files.includes('src/add.mjs'), JSON.stringify({ f: r.result?.finish, s: r.result?.status, files: r.result?.files }));
+    const t = JSON.parse(readFileSync(path.join(r.out, 'transcript.json'), 'utf8')); check('the transcript keeps what the model did before the gateway went away', t.filter((m) => m.role === 'assistant').length >= 2); }
+  { const root = mkRepo(); okCalls = 0; failAfter = 0; flaky = 0; script = [];   // dead from the first turn, and nothing was edited
+    const r = await cli(root, req(), ['--dry-run'], { PR_AGENT_RETRY_MS: '5' });
+    check('a gateway that is down from the first turn, with nothing edited, is an error with a plain message', r.result?.status === 'error' && /error page/.test(r.result.summary || '') && !/<html/i.test(r.result.summary || ''), r.result?.summary); }
+  failAfter = Infinity; flaky = 0; okCalls = 0;
 
   // units
   check('defang breaks @mentions and #refs', defang('hi @bob see #12') === 'hi @​bob see #​12');

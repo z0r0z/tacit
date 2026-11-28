@@ -155,13 +155,21 @@ export function compact(messages, keep = 4) {
 }
 
 // One model turn. `model` = { url (the full chat-completions URL), token? }. A stale keep-alive socket under load makes fetch throw before anything reached the server: safe to repeat.
+// A gateway that is restarting answers 502, 503 or 504 (or 429 when busy) for a minute or so: that is waited out, with growing pauses (about two minutes in all) before the run is
+// given up, because a run is minutes of work. Any other refusal ends the run at once; a connection that failed before reaching the server is tried a few times.
+const RETRY_HTTP = new Set([429, 502, 503, 504]);
 export async function chat(model, body, signal) {
+  const base = model.retryMs ?? 2000;
   for (let a = 0; ; a++) {
     try {
       const res = await fetch(model.url, { method: 'POST', headers: { 'content-type': 'application/json', ...(model.token ? { authorization: `Bearer ${model.token}` } : {}) }, body: JSON.stringify(body), signal });
-      if (!res.ok) throw Object.assign(new Error(`model endpoint ${res.status}: ${(await res.text()).slice(0, 200)}`), { http: res.status });
+      if (!res.ok) { const t = (await res.text()).trim(); throw Object.assign(new Error(`model endpoint ${res.status}: ${t.startsWith('<') ? 'the gateway answered with an error page' : t.slice(0, 200)}`), { http: res.status }); }
       return await res.json();
-    } catch (e) { if (e.http || a >= 3 || signal?.aborted) throw e; await new Promise((r) => setTimeout(r, 1000 * (a + 1))); }
+    } catch (e) {
+      const retryable = e.http ? RETRY_HTTP.has(e.http) : true, max = e.http ? 8 : 3;
+      if (!retryable || a >= max || signal?.aborted) throw e;
+      await new Promise((r) => setTimeout(r, Math.min(30000, base * 2 ** a)));
+    }
   }
 }
 
