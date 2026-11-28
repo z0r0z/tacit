@@ -139,6 +139,14 @@ try {
     check('the request text cannot mention a person or link an issue', !/@someone/.test(body) && !/#77/.test(body) && body.includes('@​someone') && body.includes('#​77'));
     check('the base branch on the remote is untouched', sh(remote, 'rev-parse', 'main').stdout.trim() === sh(root, 'rev-parse', 'origin/main').stdout.trim()); }
 
+  // running the same test again after an edit is NOT a repeat (the result can change); running it again with nothing edited is
+  { const root = mkRepo(); script = [call('run_test', { file: 'tests/greet.test.mjs' }), call('run_test', { file: 'tests/greet.test.mjs' }), call('replace', { path: 'src/greet.mjs', old: "'Hello '", new: "'Hello, '" }), call('run_test', { file: 'tests/greet.test.mjs' }), call('read_file', { path: 'src/greet.mjs' }), call('read_file', { path: 'src/greet.mjs' }), call('finish', { summary: 'NOTHING: probing the guard' })];
+    const r = await cli(root, req('probe the repeat guard'), ['--dry-run']);
+    const tr = JSON.parse(readFileSync(path.join(r.out, 'transcript.json'), 'utf8')).filter((m) => m.role === 'tool').map((m) => m.content);
+    check('the same test twice with no edit between is refused the second time', /already made this exact call/.test(tr[1]) && /PASSED/.test(tr[0]), `first run: ${tr[0]?.slice(0, 30)}`);
+    check('exactly two calls were refused in all: that repeat, and the repeated read at the end', r.result.repeats === 2, `repeats ${r.result?.repeats}`);
+    check('but the same test after an edit runs again (the result can differ), and so does a repeated read after it is refused', /FAILED|PASSED/.test(tr[3]) && !/already made/.test(tr[3]) && /already made this exact call/.test(tr[5]), tr[3]?.slice(0, 60)); }
+
   // the model starts at the code: what each kind of task already tells us about where
   { const first = async (task) => { const root = mkRepo(); script = [call('finish', { summary: 'NOTHING: looked' })]; const r = await cli(root, task, ['--dry-run']);
       return JSON.parse(readFileSync(path.join(r.out, 'transcript.json'), 'utf8'))[1].content; };

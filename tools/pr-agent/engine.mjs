@@ -180,7 +180,7 @@ export async function runAgent({ repo, noweb, task, model, limits = {}, say = ()
   const messages = [{ role: 'system', content: SYSTEM }, { role: 'user', content: taskPrompt(task, taskContext(task, repo)) }];
   const log = [...messages], push = (m) => { messages.push(m); log.push(m); };
   const rec = { finish: 'turns', turns: 0, summary: '', calls: {}, toolErrors: 0, repeats: 0, compactions: 0, promptTokens: 0, genTokens: 0, malformed: 0, error: undefined, node: undefined };
-  const seen = new Set(), t0 = Date.now(); let plain = 0;
+  const seen = new Set(), t0 = Date.now(); let plain = 0, epoch = 0;   // epoch counts the edits made so far: after one, a read, a search or a test run can give a different answer, so repeating it is not a repeat
   while (rec.turns < L.turns) {
     if (Date.now() - t0 > L.wallMs) { rec.finish = 'wall'; break; }
     let res;
@@ -200,10 +200,11 @@ export async function runAgent({ repo, noweb, task, model, limits = {}, say = ()
     try {
       const args = typeof call.function?.arguments === 'string' ? JSON.parse(call.function.arguments || '{}') : (call.function?.arguments || {});
       if (!tools[name]) throw new Error(`unknown tool ${name}`);
-      const key = ['replace', 'create_file', 'finish'].includes(name) ? '' : `${name}:${JSON.stringify(args)}`;
+      const editing = name === 'replace' || name === 'create_file';
+      const key = editing || name === 'finish' ? '' : `${name}:${epoch}:${JSON.stringify(args)}`;
       if (key && seen.has(key)) { rec.repeats++; throw new Error('you already made this exact call and its result has not changed: try a different search or file, make the edit, or call finish'); }
       if (key) seen.add(key);
-      const r = tools[name](args); rec.calls[name] = (rec.calls[name] || 0) + 1;
+      const r = tools[name](args); rec.calls[name] = (rec.calls[name] || 0) + 1; if (editing) epoch++;
       if (r && r.done) { finished = true; rec.summary = r.summary; out = 'ok'; } else out = String(r);
     } catch (e) { rec.toolErrors++; out = `error: ${e.message}`; }
     const left = L.turns - rec.turns; if (left === 12 || left === 4) out += `\n[${left} steps left: if you know what to change, edit now; call finish when done]`;
