@@ -25,8 +25,8 @@ export function makeCounter(call) {
       if (r.status !== 200 || !r.body) throw fail(r, 'the liquidity provider did not give its terms');
       return r.body;
     },
-    async quote(amount) {
-      const r = await call('POST', '/quote', { amount: String(amount) });
+    async quote(amount, riskClass) {
+      const r = await call('POST', '/quote', { amount: String(amount), ...(riskClass === undefined ? {} : { riskClass }) });
       if (r.status !== 200 || !r.body) throw fail(r, 'no quote');
       return r.body;
     },
