@@ -35,6 +35,9 @@ const CSS = `
   .hw-p { position: fixed; left: 0; right: 0; bottom: 0; width: auto; height: min(84vh, 680px); border-width: 1px 0 0; }
   @supports (height: 100dvh) { .hw-p { height: min(84dvh, 680px); } }
 }
+/* on a phone the round button would sit over whatever scrolls under it (a card's close button, a row's end): it steps aside while the page
+   scrolls down and comes back on a scroll up, at the top and at the end of the page */
+@media (max-width: 560px) { .hw.hw-tuck .hw-b { transform: translateX(calc(100% + 24px)); opacity: 0; pointer-events: none; transition: transform .25s ease, opacity .2s; } }
 @media print { .hw { display: none; } }
 `;
 
@@ -88,6 +91,20 @@ if (!doc.getElementById('hw')) {
   x.addEventListener('click', close);
   doc.addEventListener('keydown', (e) => { if (e.key === 'Escape' && isOpen()) close(); });
   addEventListener('message', (e) => { if (e.origin === location.origin && e.source === frame?.contentWindow && e.data === 'tacit-help-close') close(); });
+
+  // phone: step aside on a scroll down (see .hw-tuck), back on a scroll up of a little, near the top, near the end, or while the panel is open
+  const phone = matchMedia('(max-width: 560px)');
+  let lastY = scrollY, upFrom = scrollY, ticking = false;
+  const tuck = () => {
+    ticking = false;
+    const y = scrollY, end = doc.documentElement.scrollHeight - innerHeight - 80;
+    if (y > lastY) upFrom = y;
+    const show = !phone.matches || isOpen() || y < 160 || y >= end || upFrom - y > 40;
+    root.classList.toggle('hw-tuck', !show);
+    lastY = y;
+  };
+  addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(tuck); } }, { passive: true });
+  btn.addEventListener('focus', () => root.classList.remove('hw-tuck'));
 
   (doc.body || doc.documentElement).append(root);
   window.tacitHelp = { open, close };

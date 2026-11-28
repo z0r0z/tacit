@@ -49,9 +49,10 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   const underWay = new Map();
 
   // The first explorer that has the answer. A 404 from one is not the end of the search (another may know a newer
-  // transaction); when none has it the 404 is the answer when every explorer that was asked said so or two agree, and when none could answer it is an
+  // transaction); when none has it the 404 is the answer when every explorer that was asked said so or two agree (for a status look, two agreeing
+  // with no other failure end the search: a transaction not out yet is not asked of every explorer on each look), and when none could answer it is an
   // error. One explorer's 404 beside others that failed is not an answer (the one that said 404 may be the one that lags), so it is an error to ask again.
-  async function ask(path, init) {
+  async function ask(path, init, quick = false) {
     let last = null, notFound = null, notFounds = 0;
     for (const b of askOrder()) {
       try {
@@ -59,16 +60,16 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
         const text = (await r.text()).trim();
         if (r.ok) { healed(b); return text; }
         const err = Object.assign(new Error(`${path} -> ${r.status} ${text.slice(0, 160)}`), { status: r.status });
-        if (r.status === 404) { healed(b); notFound ||= err; notFounds++; } else { last = err; if (r.status === 429 || r.status >= 500) coolDown(b, retryAfter(r), `HTTP ${r.status}`); }
+        if (r.status === 404) { healed(b); notFound ||= err; if (++notFounds >= 2 && !last && quick) break; } else { last = err; if (r.status === 429 || r.status >= 500) coolDown(b, retryAfter(r), `HTTP ${r.status}`); }
       } catch (e) { last = e; coolDown(b, 0, e && e.name === 'TimeoutError' ? 'timed out' : (e && e.cause && e.cause.code) || (e && e.message) || e); }
     }
     if (notFound && (!last || notFounds >= 2)) throw notFound;
     throw last || notFound;
   }
-  async function req(path, init) {
+  async function req(path, init, quick = false) {
     if (init) { await takeSlot(); try { return await ask(path, init); } finally { giveSlot(); } }
     if (underWay.has(path)) return underWay.get(path);
-    const p = (async () => { await takeSlot(); try { return await ask(path, init); } finally { giveSlot(); } })().finally(() => underWay.delete(path));
+    const p = (async () => { await takeSlot(); try { return await ask(path, init, quick); } finally { giveSlot(); } })().finally(() => underWay.delete(path));
     underWay.set(path, p);
     return p;
   }
@@ -89,7 +90,7 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   }
   const tip = async () => Number(await req('/blocks/tip/height'));
   async function status(txid) {
-    const st = await orNull(() => getJson(`/tx/${need(txid)}/status`));
+    const st = await orNull(async () => JSON.parse(await req(`/tx/${need(txid)}/status`, undefined, true)));
     if (!st || !st.confirmed) return { confirmations: 0, height: 0 };
     return { confirmations: (await tip()) - st.block_height + 1, height: st.block_height };
   }
@@ -220,14 +221,15 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     }
     return out.sort((a, b) => b.value - a.value);
   }
-  // the same bytes to every explorer; one that takes it (or already has it) is enough
+  // the same bytes to each explorer in turn until one takes it (or already has it): its node passes it on to the network, and a second copy
+  // would only be refused as known (a refusal a page shows as an error, and two explorers send it without the header a page needs to read it)
   async function post(hex) {
     let took = false, last = 'no explorer answered';
     for (const b of list) {
       try {
         const r = await fetchImpl(b + '/tx', { method: 'POST', body: hex, headers: { 'content-type': 'text/plain' }, signal: AbortSignal.timeout(timeoutMs) });
         const text = (await r.text()).trim();
-        if (r.ok || KNOWN.test(text)) took = true; else last = text.slice(0, 160);
+        if (r.ok || KNOWN.test(text)) { took = true; break; } else last = text.slice(0, 160);
       } catch (e) { last = String((e && e.message) || e).slice(0, 160); }
     }
     if (!took) throw new Error(`broadcast refused: ${last}`);
