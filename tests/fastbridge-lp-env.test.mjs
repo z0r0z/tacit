@@ -25,6 +25,11 @@ test('each knob sets its own field and no other', () => {
   assert.equal(applyEnv(BASE, { FB_LP_MAILBOX_POLL_SECS: '1' }).mailboxPollSecs, 1); assert.equal(applyEnv(BASE, { FB_LP_MAILBOX_POLL_SECS: '2.5' }).mailboxPollSecs, 2.5);
   assert.equal('mailboxPollSecs' in applyEnv(BASE, {}), false, 'unset leaves the daemon\'s own default (3 s)');
   assert.equal(applyEnv(BASE, { FB_LP_NAME: 'x'.repeat(80) }).name.length, 40, 'a name is kept to what the ad takes');
+  assert.deepEqual(applyEnv(BASE, { FB_LP_RECOVERED_SWAPS: ' ' + 'ab'.repeat(36) + ' ,' + 'cd'.repeat(36) }).recoveredSwaps, ['ab'.repeat(36), 'cd'.repeat(36)]);
+  assert.throws(() => applyEnv(BASE, { FB_LP_RECOVERED_SWAPS: 'xyz' }), /FB_LP_RECOVERED_SWAPS/);
+  assert.deepEqual(applyEnv(BASE, { FB_LP_STUCK_RECYCLE: 'off' }).stuckRecycle, { enabled: false });
+  assert.deepEqual(applyEnv({ ...BASE, stuckRecycle: { enabled: true, maxPerTick: 2 } }, { FB_LP_STUCK_RECYCLE: 'on' }).stuckRecycle, { enabled: true, maxPerTick: 2 });
+  assert.throws(() => applyEnv(BASE, { FB_LP_STUCK_RECYCLE: 'yes' }), /FB_LP_STUCK_RECYCLE/);
 });
 
 test('the switch: a most below the least is taken as it is (the provider then quotes nothing and finishes its open swaps)', () => {
@@ -36,6 +41,18 @@ test('a value that is set and is not valid stops the start, naming it', () => {
   for (const [env, name] of [[{ PORT: 'abc' }, 'PORT'], [{ PORT: '70000' }, 'PORT'], [{ FB_LP_MAX_AMOUNT: '1000.5' }, 'FB_LP_MAX_AMOUNT'], [{ FB_LP_MAX_AMOUNT: '-1' }, 'FB_LP_MAX_AMOUNT'], [{ FB_LP_MIN_AMOUNT: '10 TAC' }, 'FB_LP_MIN_AMOUNT'], [{ FB_LP_FEE_BPS: '600' }, 'FB_LP_FEE_BPS'], [{ FB_LP_FEE_BPS: '0.3' }, 'FB_LP_FEE_BPS'], [{ FB_LP_FLAT_FEE: 'x' }, 'FLAT_FEE'], [{ FB_LP_MAILBOX_POLL_SECS: '0' }, 'MAILBOX_POLL'], [{ FB_LP_MAILBOX_POLL_SECS: '0.5' }, 'MAILBOX_POLL'], [{ FB_LP_MAILBOX_POLL_SECS: '60' }, 'MAILBOX_POLL'], [{ FB_LP_MAILBOX_POLL_SECS: 'fast' }, 'MAILBOX_POLL']]) {
     assert.throws(() => applyEnv(BASE, env), (e) => e.message.includes(name), JSON.stringify(env));
   }
+});
+
+
+test('the lineage pricing knobs: the class additions over the config, and a value that is not valid stops the start', () => {
+  const c = applyEnv(BASE, { FB_LP_LINEAGE_DEFAULT_CLASS: 'long', FB_LP_LINEAGE_LONG_FEE_BPS: '125', FB_LP_LINEAGE_LONG_FLAT_FEE: '7', FB_LP_LINEAGE_POOL_EXIT_FEE_BPS: '300', FB_LP_LINEAGE_POOL_EXIT_FLAT_FEE: '9', FB_LP_LINEAGE_LONG_CAP: '2000', FB_LP_LINEAGE_POOL_EXIT_CAP: '1000', FB_LP_LINEAGE_TOTAL_CAP: '2500' });
+  assert.deepEqual(c.quote.lineageFees, { defaultClass: 'long', long: { feeBps: 125, flatFee: '7' }, poolExit: { feeBps: 300, flatFee: '9' }, caps: { long: '2000', poolExit: '1000', total: '2500' } });
+  const kept = applyEnv({ ...BASE, quote: { ...BASE.quote, lineageFees: { defaultClass: 'pool-exit', long: { feeBps: 100, flatFee: '0' }, poolExit: { feeBps: 250, flatFee: '0' } } } }, { FB_LP_LINEAGE_LONG_FEE_BPS: '150' });
+  assert.deepEqual(kept.quote.lineageFees, { defaultClass: 'pool-exit', long: { feeBps: 150, flatFee: '0' }, poolExit: { feeBps: 250, flatFee: '0' } }, 'a knob over a config keeps the config\'s other classes');
+  for (const [env, name] of [[{ FB_LP_LINEAGE_DEFAULT_CLASS: 'stuck' }, 'LINEAGE_DEFAULT_CLASS'], [{ FB_LP_LINEAGE_LONG_FEE_BPS: '9001' }, 'LINEAGE_LONG_FEE_BPS'], [{ FB_LP_LINEAGE_POOL_EXIT_FEE_BPS: '0.5' }, 'LINEAGE_POOL_EXIT_FEE_BPS'], [{ FB_LP_LINEAGE_LONG_FLAT_FEE: '-1' }, 'LINEAGE_LONG_FLAT_FEE']]) {
+    assert.throws(() => applyEnv(BASE, env), (e) => e.message.includes(name), JSON.stringify(env));
+  }
+  const before = JSON.stringify(BASE); applyEnv(BASE, { FB_LP_LINEAGE_LONG_FEE_BPS: '100' }); assert.equal(JSON.stringify(BASE), before, 'the config handed in is not changed');
 });
 
 test('the Bitcoin explorers can be set: https only, in the order given, a trailing slash dropped, and a bad value never echoes the (possibly keyed) URL', () => {

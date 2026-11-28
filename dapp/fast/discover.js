@@ -4,8 +4,8 @@
 //   const list = await discoverProviders({ providers, boards })                         who there is to bridge with
 
 import { makeHttpCounter } from '/fastbridge-http.js';
-import { termsOf } from '/fastbridge-client.js?cb=09a13249';
-import { readProviders } from '/fastbridge-mailbox.js?cb=4c2ccb36';
+import { termsOf } from '/fastbridge-client.js?cb=81a9bef3';
+import { readProviders } from '/fastbridge-mailbox.js?cb=da2bd2bf';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
 
 // The terms of the other direction (private TAC sent for TAC on Bitcoin), from an ad that has them. A provider that sells only the one way has no `reverse`.

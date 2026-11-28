@@ -15,14 +15,19 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { makeLineageClassScreen, normalizeLineageFees } from '../dapp/fastbridge-lineage-pricing.js';
 process.on('unhandledRejection', (e) => console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'error', msg: 'unhandled rejection', error: String((e && e.message) || e).slice(0, 200) })));
 
 const DRY = process.argv.includes('--dry-run');
 const cfgPath = resolve(process.env.FB_LP_CONFIG || 'fastbridge-lp/config.json');
 const { applyEnv } = await import('./lib/env-config.mjs');
 const pairLib = await import('./lib/pair.mjs');
-let C;
-try { C = applyEnv(JSON.parse(readFileSync(cfgPath, 'utf8'))); if (pairLib.isPair(C)) C = pairLib.pairConfig(C); } catch (e) { console.error(String((e && e.message) || e)); process.exit(1); }
+let C, lineageFees = null;
+try {
+  C = applyEnv(JSON.parse(readFileSync(cfgPath, 'utf8'))); if (pairLib.isPair(C)) C = pairLib.pairConfig(C);
+  if (pairLib.isPair(C) && C.quote && C.quote.lineageFees) throw new Error('quote.lineageFees is for a TAC provider, not a BTC-ETH pair provider');
+  lineageFees = normalizeLineageFees(C.quote && C.quote.lineageFees);
+} catch (e) { console.error(String((e && e.message) || e)); process.exit(1); }
 // BTC-ETH pair mode (lib/pair.mjs): a provider of Bitcoin for ETH and ETH for Bitcoin, priced from a feed of ETH per BTC, with a key of its own
 const PAIR = pairLib.isPair(C);
 const keyHex = String(process.env.FB_LP_KEY || '').trim().replace(/^0x/, '');
@@ -149,13 +154,16 @@ const confs = (C.policy.confs || [['0', 1]]).map(([from, n]) => [BigInt(from), n
 const tacUnits = (t) => { const [whole, frac = ''] = String(t).split('.'); return BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8)); };
 const config = {
   claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
+  ...(Array.isArray(C.recoveredSwaps) ? { recoveredSwaps: C.recoveredSwaps } : {}),
   lowFree: (PAIR ? C.lowFreeEth : C.lowFreeTac) != null ? tacUnits(PAIR ? C.lowFreeEth : C.lowFreeTac) : null,    // what is left to lend, an amount with up to 8 places (TAC, or ETH for a pair provider)
   lowEth: C.lowEth != null ? tacUnits(C.lowEth) * 10n ** 10n : null,        // an ETH amount ("0.002") in wei: the units helper reads up to 8 places
-  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(PAIR ? { rate: () => quoteRate() } : {}), ...(flat ? { flatFee: () => flat.fwd() } : {}) },
+  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(lineageFees ? { lineageFees } : {}), ...(PAIR ? { rate: () => quoteRate() } : {}), ...(flat ? { flatFee: () => flat.fwd() } : {}) },
+  anyTac: C.anyTac !== false,
   policy: {
     minCsv: C.policy.minCsv ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, minClaimSecs: C.policy.minClaimSecs ?? 3600, claimSlackSecs: C.policy.claimSlackSecs ?? 7200,
     roundSecs: C.policy.roundSecs ?? 600, refundMarginSecs: C.policy.refundMarginSecs ?? 600, maxOfferAgeSecs: C.policy.maxOfferAgeSecs ?? 3600, holdAgeSecs: C.policy.holdAgeSecs,
     minAmount: C.quote.minAmount, maxAmount: C.quote.maxAmount,
+    ...((lineageFees || C.anyTac === false) ? { screen: makeLineageClassScreen((ns) => tacit.bridgeUx().lineage(ns), { refusePoolExit: C.anyTac === false }) } : {}),
     minConfsFor: (v) => confs.reduce((n, [from, c]) => (BigInt(v) >= from ? c : n), confs[0][1]),
   },
 };
@@ -254,12 +262,16 @@ else if (ropts) {
     bases: C.btcBases, tacit, prims: rprims, builder: makeAdaptorBtcTx({ prims: rprims, kit: tacitKit(tacit) }), pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]),
     poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log, ...btcFees,
   });
-  // the notes are read by the module's own scan of the wallet it holds: that is the reverse key's here, and nothing else of this process reads it
-  // (a pair provider sells plain coins, which it lists from the address itself)
-  if (!PAIR) { tacit.wallet.priv = rkey; tacit.wallet.pub = rprims.wallet.pub; }
+  // the notes are read by the module's scan of the reverse key. The singleton wallet is switched only inside walletTurn,
+  // because the stuck-note recycler uses the same module with the main key below.
+  const { makeTacitWalletSwitch, makeStuckRecycler } = await import('./lib/stuck-recycle.mjs');
+  const walletTurn = makeSerial();
+  const withTacitWallet = makeTacitWalletSwitch({ tacit, lock: walletTurn });
+  const baseInventory = PAIR ? null : makeReverseInventory({ tacit, asset: C.btcAsset, log });
+  const reverseInventory = PAIR ? pairLib.satsInventory(rbtc) : { notes: () => withTacitWallet(rkey, rprims.wallet.pub, () => baseInventory.notes()) };
   const rswaps = makeFileStore(resolve(data, 'reverse/swaps')), rquotes = withMkt(makeFileStore(resolve(data, 'reverse/quotes')));
   const reverse = makeReverseService({
-    seed: reverseSeedOf(key), btc: rbtc, evm, inventory: PAIR ? pairLib.satsInventory(rbtc) : makeReverseInventory({ tacit, asset: C.btcAsset, log }), config: ropts, log, alert,
+    seed: reverseSeedOf(key), btc: rbtc, evm, inventory: reverseInventory, config: ropts, log, alert,
     swaps: rswaps, quotes: rquotes, offers: makeFileStore(resolve(data, 'reverse/offers')), evmOffers: makeFileStore(resolve(data, 'reverse/evm-offers')),
   });
   rside = { btc: rbtc, prims: rprims, swaps: rswaps, quotes: rquotes };
@@ -268,6 +280,34 @@ else if (ropts) {
   setInterval(async () => { if (rbusy) return; rbusy = true; try { await reverse.tick(); } catch (e) { log({ level: 'error', msg: 'reverse tick failed', error: String((e && e.message) || e).slice(0, 200) }); } finally { rbusy = false; } }, (C.tickSecs ?? 15) * 1000);
   handle = routed(service.handle, reverse.handle);
   log({ level: 'info', msg: 'the reverse side is on: the TAC and the sats at this Bitcoin address are what it sells and what it pays fees from', reverseAddress: rbtc.address, maxOpen: ropts.maxOpen, maxTac: String(ropts.maxLocked), csvBlocks: ropts.csvBlocks, feeBps: ropts.quote.feeBps });
+
+  if (!PAIR) {
+    const srEnv = String(process.env.FB_LP_STUCK_RECYCLE || '').trim().toLowerCase();
+    if (srEnv && !['on', 'off'].includes(srEnv)) { console.error('FB_LP_STUCK_RECYCLE must be on or off'); process.exit(1); }
+    const srCfg = C.stuckRecycle && typeof C.stuckRecycle === 'object' ? C.stuckRecycle : {};
+    const srOn = srEnv ? srEnv === 'on' : (C.stuckRecycle !== false && srCfg.enabled !== false);
+    if (srOn) {
+      const srCpfp = srCfg.cpfp === false ? { enabled: false } : { ...(srCfg.cpfp || {}) };
+      const srReserve = srCpfp.enabled === false ? 0 : (srCfg.bumpReserveSats ?? 15000);
+      const recycler = makeStuckRecycler({
+        tacit, withWallet: withTacitWallet, mainPriv: key, mainPub: prims.wallet.pub, reversePubHex: Buffer.from(rprims.wallet.pub).toString('hex'), assetIdHex: C.btcAsset,
+        swaps: swapStore, reverseSwaps: rswaps, store: makeFileStore(resolve(data, 'stuck-recycle')), btc, maxPerTick: srCfg.maxPerTick ?? 1,
+        satsChangeReserve: srReserve, cpfp: srCpfp, mainSpk: Buffer.from(prims.p2wpkhScript(prims.wallet.pub)).toString('hex'),
+        sign: (tx, i, value) => tacit.signP2wpkhInputWithKey(tx, i, value, key, prims.wallet.pub),
+        serialize: (tx) => Buffer.from(tacit.serializeTx(tx)).toString('hex'), txidOf: (tx) => tacit.txid(tx),
+        log, alert,
+      });
+      let sbuzy = false;
+      setInterval(async () => { if (sbuzy) return; sbuzy = true; try { await recycler.tick(); } catch (e) { log({ level: 'error', msg: 'stuck recycle tick failed', error: String((e && e.message) || e).slice(0, 200) }); } finally { sbuzy = false; } }, (srCfg.tickSecs ?? 120) * 1000).unref();
+      const inner = handle;
+      handle = async (req) => {
+        const r = await inner(req);
+        return req && req.method === 'GET' && req.path === '/info' && r && r.status === 200 && r.body && typeof r.body === 'object'
+          ? { ...r, body: { ...r.body, stuckRecycle: await recycler.info().catch(() => ({ enabled: true })) } } : r;
+      };
+      log({ level: 'info', msg: 'stuck TAC recycling is on: completed long and pool-exit takes are moved to the reverse address', maxPerTick: srCfg.maxPerTick ?? 1, everySecs: srCfg.tickSecs ?? 120 });
+    }
+  }
 }
 if (PAIR && !DRY) {
   const { wireAutomation } = await import('./lib/automation-wire.mjs');

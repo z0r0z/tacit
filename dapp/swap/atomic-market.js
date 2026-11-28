@@ -10,11 +10,11 @@
 //                   by one provider, and by the best few together (split)
 //   estimate(m, dir, amount) -> { get, provider } | null       what the best provider would give for `amount`, before its own quote
 
-import { discoverProviders } from '/fast/discover.js?cb=a3e99ef5';
+import { discoverProviders } from '/fast/discover.js?cb=e806c31e';
 import { makeRateFeed, chainlinkEthBtc, chainlinkQuorum, PRICE_NODES } from '/fastbridge-rate.js?cb=b392f6cc';
 import { ETH_NODES, batchSize } from '/eth-nodes.js';
 import { bodyType } from '/rpc-body.js';
-import { SATS_ASSET_ID, ETH_ASSET_ID } from '/swap/atomic-probe.js?cb=99f7488b';
+import { SATS_ASSET_ID, ETH_ASSET_ID } from '/swap/atomic-probe.js?cb=04cc2ad4';
 import { OWN_PROVIDERS } from '/fastbridge-board.js';
 
 const loadLists = async (fetchImpl) => {

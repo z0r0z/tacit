@@ -117,6 +117,10 @@ than the proof folds (255 transfers) is not looked at this way: the trace's verd
 provider takes it is the provider's rule. The Bridge tab offers the fast bridge for a note the regular bridge cannot follow when a
 provider online takes any TAC.
 
+A daemon can make that rule a price instead of only accepting or refusing (`docs/STUCK-TAC-LINEAGE-PRICING.md`): `quote.lineageFees`
+adds a configured fee for long histories and for TAC the proof cannot follow, the page sends the class it expects the lock to spend as
+an optional quote hint, and the provider checks the lock's real inputs against that price before it locks anything in the pool.
+
 ## On the front page
 
 The Bridge tab's way in for TAC from Bitcoin prefers the fast bridge: when a note is picked, the tab asks the providers there are

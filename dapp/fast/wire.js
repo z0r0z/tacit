@@ -17,9 +17,9 @@ import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=82196961';
 import * as EN from '/eth-nodes.js';   // (a namespace: eth-nodes.js has no cache token)
 import { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=de77400c';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeFastBridgeClient, makeLocalStore } from '/fastbridge-client.js?cb=09a13249';
-import { makeLpService } from '/fastbridge-provider.js?cb=52e95d32';
-import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=4c2ccb36';
+import { makeFastBridgeMarket, makeFastBridgeClient, makeLocalStore } from '/fastbridge-client.js?cb=81a9bef3';
+import { makeLpService } from '/fastbridge-provider.js?cb=86303797';
+import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=da2bd2bf';
 import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=ab82771e';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=b3c3ac03';
 import { adLabel } from '/fastbridge-board.js';
@@ -27,9 +27,10 @@ import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=63153972';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=a3e99ef5';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=e806c31e';
+import { classifyVerdicts } from '/fastbridge-lineage-pricing.js';
 import { splitAmount, assignNotes } from '/fast/sweep.js';   // the same URL ui.js, route.js and ladder.js reach: one instance
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=a3e99ef5';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=e806c31e';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 // four explorers, tried in turn: one busy or rate-limited explorer does not stop a swap (every page that uses this allows all four)
@@ -264,9 +265,40 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
     return busy || { ok: false, why: 'busy' };
   }
   const startSweep = async (offer) => market.sweep({ legs: offer.legs.map(({ provider, quote, notes: legNotes }) => ({ provider, quote, notes: legNotes })), notes: await notes() });
+  // A provider that prices stuck TAC needs to know what the lock will spend before it quotes. The pick is deterministic,
+  // so the page reads the class of the notes each kind of provider would be given and sends it as an optional hint when a provider takes any TAC or says it prices by class. Old providers
+  // ignore the field; a provider without the rule quotes as it always did. A trace that cannot be read sends no hint rather
+  // than stopping the bridge, and such a provider falls back to its conservative default class.
+  const quoteAll = async (providers, units, o = {}) => {
+    if (!providers.some((p) => p.terms && (p.terms.anyTac || p.terms.lineagePricing)) || !vet) return market.quoteAll(providers, units, o);
+    const classes = new Map();
+    const classFor = (any) => {
+      if (!classes.has(any)) classes.set(any, (async () => {
+        try {
+          const all = await notes(), amount = BigInt(units), client = market.clientFor(null);
+          const pseudo = providers.map((provider) => ({ provider, quote: { btcValue: amount } }));
+          const first = await fastFirst(all, pseudo), tiers = first === all ? [all] : [first, all];
+          const pick = async (set) => { const p = client.pickNotes(await client.freeNotes(set), amount); return p && p.notes; };
+          let picked = null;
+          if (any) for (const tier of tiers) { picked = await pick(tier); if (picked) break; }
+          else {
+            try { picked = await pick(await followed(tiers, pick, (ns) => vet(ns))); } catch (e) { if (!e || e.code !== 'lineage') throw e; }
+          }
+          if (picked) {
+            const inputs = picked.map((n) => ({ txid: n.txid, vout: n.vout }));
+            const c = classifyVerdicts(picked, await vet(picked));
+            return { inputs, ...(c.class === 'unread' ? {} : { lineage: c.class }) };
+          }
+        } catch { /* no hint: the provider prices its conservative default */ }
+        return null;
+      })());
+      return classes.get(any);
+    };
+    return market.quoteAll(providers, units, { ...o, lineageFor: (provider) => (provider.terms && (provider.terms.anyTac || provider.terms.lineagePricing) ? classFor(!!provider.terms.anyTac) : null) });
+  };
   return {
     address: prims.wallet.address(), notes, balance, market,
-    quoteAll: (providers, units, o) => market.quoteAll(providers, units, o),
+    quoteAll,
     sweepOffer, startSweep,
     // what the lock would cost on Bitcoin for a quote and whether the address can pay it (nothing is stored or sent)
     cost: async ({ quote, provider, only, onProgress }) => {

@@ -24,8 +24,16 @@
     "feeBps": 30,
     "flatFee": "10000000",
     "validSecs": 600,
-    "rate": { "num": 1, "den": 1 }
+    "rate": { "num": 1, "den": 1 },
+    "lineageFees": {
+      "defaultClass": "pool-exit",
+      "long": { "feeBps": 100, "flatFee": "0" },
+      "poolExit": { "feeBps": 250, "flatFee": "0" },
+      "caps": { "long": "25000000000", "poolExit": "10000000000", "total": "30000000000" }
+    }
   },
+  "recoveredSwaps": [],
+  "stuckRecycle": { "enabled": true, "maxPerTick": 1, "tickSecs": 120, "bumpReserveSats": 15000, "cpfp": { "enabled": true, "afterSecs": 21600, "maxBumps": 2, "maxFeeRate": 25, "feeFactor": 2 } },
   "policy": {
     "minCsv": 72,
     "evmWindowSecs": 14400,

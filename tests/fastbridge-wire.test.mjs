@@ -241,6 +241,38 @@ test('the lock goes to the best provider that takes what it must spend: a provid
   T._testSetScanHoldingsOverride(null);
 });
 
+test('quoteAll sends the class of the notes a pricing provider would be given: clean, long or pool-exit, and no hint when it cannot take them', async () => {
+  const priv = key(10), pubHex = bytesToHex(secp.getPublicKey(priv, true));
+  openWallet(priv);
+  T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 1000n, blinding: 7n }] }]]));
+  const claimA = '02' + 'aa'.repeat(32), claimB = '03' + 'bb'.repeat(32);
+  const quoteFor = (claimPub) => ({ id: claimPub.slice(2, 34), btcAsset: TAC_ASSET, btcValue: '1000', evmAsset: '0x' + TAC_ASSET, evmAmount: '1000', claimPub, csvBlocks: 144, evmWindowSecs: 14400, minConfs: 1, created: Math.floor(Date.now() / 1000), validUntil: Math.floor(Date.now() / 1000) + 600 });
+  const tt = { ...T, bridgeUx: () => ({ noteTracking: async () => new Map() }) };
+  const terms = (anyTac, priced = false) => ({ feeBps: 0, flatFee: 0n, minAmount: 1n, maxAmount: 5000n, available: 5000n, anyTac, ...(priced ? { lineagePricing: { defaultClass: 'pool-exit', classes: {} } } : {}) });
+  const providers = [
+    { name: 'Open', ref: { kind: 'http', claimPub: claimA }, terms: terms(true) },
+    { name: 'Screen', ref: { kind: 'http', claimPub: claimB }, terms: terms(false, true) },
+  ];
+  for (const [verdict, openClass, screenClass] of [
+    [{ state: 'tracked' }, 'clean', 'clean'],
+    [{ state: 'long', hops: 300, max: 255 }, 'long', 'long'],
+    [{ state: 'unprovable', through: 'shielded' }, 'pool-exit', null],
+  ]) {
+    const asked = new Map();
+    const counterFor = (ref) => !ref ? {} : {
+      quote: async (amount, opts = {}) => { asked.set(ref.claimPub, opts); return quoteFor(ref.claimPub); },
+    };
+    const s = await openFast({ T: tt, withKey: (fn) => fn(tt), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor, vet: verdicts({ 1: verdict }) });
+    const r = await s.quoteAll(providers, 1000n);
+    assert.equal(r.failed.length, 0);
+    assert.equal((asked.get(claimA) || {}).lineage || null, openClass, `open ${verdict.state}`);
+    assert.equal((asked.get(claimB) || {}).lineage || null, screenClass, `screen ${verdict.state}`);
+    if (openClass) assert.deepEqual(asked.get(claimA).inputs, [{ txid: utxo(1).txid, vout: 0 }], 'the exact note is named');
+    if (screenClass) assert.deepEqual(asked.get(claimB).inputs, [{ txid: utxo(1).txid, vout: 0 }], 'the exact note is named');
+  }
+  T._testSetScanHoldingsOverride(null);
+});
+
 test('reach: whether a lock for an amount can be built from notes the bridge\'s proof follows, needs a provider that takes any TAC, or cannot be covered; and the look at a history reports how far it is', async () => {
   const priv = key(9), pubHex = bytesToHex(secp.getPublicKey(priv, true));
   openWallet(priv);
@@ -370,7 +402,8 @@ test('a provider and a user, each from its own key, find and reach each other th
     assert.equal(ad.anyTac, true, 'the provider says in its signed ad that it takes TAC whatever its history'); assert.equal(found[0].terms.anyTac, true, 'and the user\'s side reads it');
     openWallet(uPriv);
     T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 500n * TAC, blinding: 7n }] }]]));
-    const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv: uPriv, pubHex: uPub, hrp: 'tb', fetchImpl, call: { pollMs: 5 } });
+    const ut = { ...T, bridgeUx: () => ({ noteTracking: async () => new Map() }) };
+    const s = await openFast({ T: ut, withKey: (fn) => fn(ut), ux: { cfg: { pool: POOL } }, priv: uPriv, pubHex: uPub, hrp: 'tb', fetchImpl, call: { pollMs: 5 }, vet: follows });
     const r = await s.quoteAll(found, 100n * TAC);
     assert.deepEqual(r.failed, []);
     assert.deepEqual([r.quotes[0].quote.btcValue, r.quotes[0].quote.evmAmount, r.quotes[0].quote.fee], [100n * TAC, 9_870_000_000n, 130_000_000n]);
@@ -405,7 +438,8 @@ test('a provider away from its page takes on nothing new: no ad is posted and a 
     const found = await discoverProviders({ providers: [], boards: ['https://board.example'], fetchImpl });
     openWallet(uPriv);
     T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 500n * TAC, blinding: 7n }] }]]));
-    const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv: uPriv, pubHex: uPub, hrp: 'tb', fetchImpl, call: { pollMs: 5 } });
+    const ut = { ...T, bridgeUx: () => ({ noteTracking: async () => new Map() }) };
+    const s = await openFast({ T: ut, withKey: (fn) => fn(ut), ux: { cfg: { pool: POOL } }, priv: uPriv, pubHex: uPub, hrp: 'tb', fetchImpl, call: { pollMs: 5 }, vet: follows });
     here = false;
     const away = await s.quoteAll(found, 100n * TAC);
     assert.equal(away.quotes.length, 0);

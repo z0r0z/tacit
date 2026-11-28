@@ -3,6 +3,7 @@ import { makeBitcoinLocker } from './fastbridge-bl.js';
 import { makeHttpCounter } from './fastbridge-http.js';
 import * as X from './adaptor-xswap.js';
 import { feeOf, noWorse } from './fastbridge-price.js';
+import { worstLineagePricing } from './fastbridge-lineage-pricing.js';
 
 export { noWorse };
 import { bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
@@ -53,15 +54,16 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     if (!i || !isHex(i.claimPub, 66) || !isHex(i.btcAsset, 64) || !isHex(i.evmAsset, 64)) throw new Error('the provider\'s terms are not readable');
     const t = {
       claimPub: strip(i.claimPub), btcAsset: strip(i.btcAsset), evmAsset: strip(i.evmAsset), minAmount: big(i.minAmount, 'minimum'), maxAmount: big(i.maxAmount, 'maximum'),
-      feeBps: Number(i.feeBps) || 0, flatFee: big(i.flatFee ?? 0, 'flat fee'), csvBlocks: Number(i.csvBlocks), evmWindowSecs: Number(i.evmWindowSecs),
+      feeBps: (Number(i.feeBps) || 0) + ((worstLineagePricing(i.lineagePricing) || {}).feeBps || 0), flatFee: big(i.flatFee ?? 0, 'flat fee') + ((worstLineagePricing(i.lineagePricing) || {}).flatFee || 0n), csvBlocks: Number(i.csvBlocks), evmWindowSecs: Number(i.evmWindowSecs),
       available: i.available == null ? null : big(i.available, 'capacity'),
+      ...(i.lineagePricing && typeof i.lineagePricing === 'object' ? { lineagePricing: i.lineagePricing } : {}),
     };
     for (const k of ['claimPub', 'btcAsset', 'evmAsset']) if (pinned(k) && pinned(k) !== t[k]) throw new Error(`the provider's ${k === 'claimPub' ? 'key' : 'asset'} is not the one this page expects`);
     return t;
   }
 
-  async function quote(amount) {
-    const q = await counter.quote(amount);
+  async function quote(amount, opts = {}) {
+    const q = await counter.quote(amount, opts);
     if (!q || typeof q.id !== 'string' || q.id.length > 128 || !isHex(q.claimPub, 66) || !isHex(q.btcAsset, 64) || !isHex(q.evmAsset, 64)) throw new Error('the provider\'s quote is not readable');
     for (const k of ['claimPub', 'btcAsset', 'evmAsset']) if (pinned(k) && pinned(k) !== strip(q[k])) throw new Error(`the provider's ${k === 'claimPub' ? 'key' : 'asset'} is not the one this page expects`);
     const btcValue = big(q.btcValue, 'amount'), evmAmount = big(q.evmAmount, 'payout');
@@ -227,10 +229,12 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   // Each quote is also checked against the provider's own terms (`aboveTerms`: it keeps more than its ad says) and against the most the holder said
   // it will pay (`maxFeeBps`, a kept want's price: `aboveWant`). Quotes are ranked by what they cost the holder: one with a take above fair or a fee
   // above its word comes after every one without, then the most paid out first.
-  async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS, maxFeeBps = null } = {}) {
+  async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS, maxFeeBps = null, lineageFor = null } = {}) {
     const got = await Promise.all(providers.map(async (provider) => {
       try {
-        const q = await withTimeout(clientFor(provider.ref).quote(amount), timeoutMs);
+        const hint = lineageFor ? await lineageFor(provider) : null;
+        const opts = hint && typeof hint === 'object' ? hint : (hint ? { lineage: hint } : {});
+        const q = await withTimeout(clientFor(provider.ref).quote(amount, opts), timeoutMs);
         let aboveTerms = false;
         // (for one asset on both sides the fee is what is not paid out; a provider that lists no terms is judged as before)
         try { aboveTerms = !!provider.terms && q.btcAsset === q.evmAsset && q.fee > feeOf(provider.terms, q.btcValue); } catch { }
@@ -403,9 +407,10 @@ export function describe(rec, clock = null) {
 }
 
 export const termsOf = (i) => ({
-  feeBps: Number(i.feeBps) || 0, flatFee: BigInt(i.flatFee ?? 0), minAmount: BigInt(i.minAmount), maxAmount: BigInt(i.maxAmount),
+  feeBps: (Number(i.feeBps) || 0) + ((worstLineagePricing(i.lineagePricing) || {}).feeBps || 0), flatFee: BigInt(i.flatFee ?? 0) + ((worstLineagePricing(i.lineagePricing) || {}).flatFee || 0n), minAmount: BigInt(i.minAmount), maxAmount: BigInt(i.maxAmount),
   available: i.available == null ? null : BigInt(i.available),
   anyTac: i.anyTac === true,
+  ...(i.lineagePricing && typeof i.lineagePricing === 'object' ? { lineagePricing: i.lineagePricing } : {}),
 });
 
 export function makeLocalStore(prefix, storage = globalThis.localStorage) {
