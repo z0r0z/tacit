@@ -9,7 +9,7 @@ import { overlay } from '/trade/sheet.js?cb=d857446c';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
 import { mountDepth } from '/trade/depth.js?cb=4f87419e';
 import { candlesFromTrades, closeAt } from '/trade/tape.js?cb=337da1f0';
-import { readMarket, isActive, bookState, refSats, premium, vsEth, satsTxt, ladders, bookPrime, summary, fillBars, BTC_ID } from '/teth/market.js?cb=247c29e9';
+import { readMarket, isActive, bookState, refSats, premium, vsEth, satsTxt, ladders, bookPrime, summary, fillBars, BTC_ID } from '/teth/market.js?cb=6937f675';
 import { $, esc, now, rpc, fmtUnits, plain, parseUnits, grp, sig, usd, pct, ago, short, E10, E18 } from '/trade/util.js?cb=9c8b4133';
 
 const ETHBLUE = '#627eea', ORANGE = '#f7931a';

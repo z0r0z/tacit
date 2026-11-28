@@ -5,7 +5,7 @@ import {
   makeEvmTradeVenues, zswapDeepLink, encErc20Approve, PRECISION_POOL, TAC_ERC20, TACIT_AMM, MULTICALL3, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, _internal,
 } from '/evm-trade-venues.js?cb=9aac0fac';
 import { DEPLOY_OVERRIDES } from '/confidential-deployments.generated.js';
-import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js';
+import { buildBook, planBuy, planSell as planBtcSell, ladderLevels, foldFarAsks, FAR_ASK_RATIO } from '/btc-book.js';
 import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, lastTrade, closeAt, volumeSince, gap, lastTradeView, ageWords, TAPE_FINE, TAPE_COARSE, TAPE_WORDS } from '/trade/tape.js?cb=337da1f0';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
 import { mountDepth } from '/trade/depth.js?cb=4f87419e';
@@ -58,7 +58,7 @@ const PRIV_TIERS = [30, 5, 100, 1];
 
 const D = { gasPrice: null, chainFailed: false, tapeFailed: false, btcFailed: false, bookFailed: false, ethUsd: null, btcUsd: null, perEth: null, root: null, range: null, precFee: null, priv: null, precision: null, ethSupply: null, btc: null, book: null, bidsRead: false, zb: null, zbFailed: false, tape: { fine: [], coarse: [] }, readAt: 0 };
 const ME = { pub: null, how: '', pageKey: null };
-const S = { side: 'buy', amt: '', book: null, pin: null, via: null, lane: 'eth', unit: 'usd', range: null, log: false, slip: 50, bal: null, busy: false, tf: { eth: null, btc: null }, kind: 'line', quote: null, seq: 0, zq: null, pending: null };
+const S = { side: 'buy', amt: '', book: null, pin: null, via: null, lane: 'eth', unit: 'usd', range: null, log: false, slip: 50, bal: null, busy: false, tf: { eth: null, btc: null }, kind: 'line', quote: null, seq: 0, zq: null, pending: null, farAsks: false };
 const TF = { eth: [['5m', 300], ['15m', 900], ['1h', 3600], ['4h', 14400], ['1d', 86400]], btc: [['1h', 3600], ['4h', 14400], ['1d', 86400], ['1w', 604800]] };
 const CHART_KEY = 'tacit-trade-chart-v1';
 try {
@@ -1013,7 +1013,7 @@ const tacFmt = (n) => grp(n, n >= 100 ? 0 : 2);
 const left = (t) => { const d = t - now(); return d <= 0 ? 'now' : d < 3600 ? `${Math.ceil(d / 60)} min` : d < 172800 ? `${Math.round(d / 3600)} h` : `${Math.round(d / 86400)} days`; };
 const ZSWAP_LINK = `<a href="${ZSWAP_HOST}" target="_blank" rel="noopener noreferrer">Place an order on zSwap ↗</a>`;
 const BOOK_ROWS = 8;
-function stackBook({ asks, bids, totalHead, mid, levels = false, kind = '' }) {
+function stackBook({ asks, bids, totalHead, mid, levels = false, kind = '', fold = null, askTotal = asks.length }) {
   const show = (l) => (S.bookAll ? l : l.slice(0, BOOK_ROWS)), a = show(asks), b = show(bids);
   const cum = (l) => { let t = 0; return l.map((x) => (t += x.depth)); };
   const ac = cum(a), bc = cum(b), max = Math.max(ac.at(-1) || 0, bc.at(-1) || 0) || 1;
@@ -1023,11 +1023,13 @@ function stackBook({ asks, bids, totalHead, mid, levels = false, kind = '' }) {
     return x.attrs && !x.mine ? `<button type="button" class="${cls}" style="${style}" title="${esc(x.title)}" aria-label="${esc(x.label)}" ${x.attrs}>${inner}</button>` : `<div class="${cls}" style="${style}" title="${esc(x.title)}">${inner}</div>`;
   };
   const hidden = asks.length - a.length + bids.length - b.length;
+  // asks priced far above the cheapest, folded into a row of their own (open: they are in `asks` and this row folds them again); drawn only once every nearer row is
+  const foldRow = fold && (S.bookAll || asks.length <= BOOK_ROWS) ? `<button type="button" class="ob-row ask ob-fold" data-far="1" aria-expanded="${S.farAsks}" title="${esc(fold.title)}"><span class="p">${esc(fold.price)}+</span><span class="a"><i class="ob-tag">${S.farAsks ? 'fold' : 'far'}</i>${esc(fold.amount)}</span><span class="t">${esc(fold.count)}</span></button>` : '';
   return `<div class="ob${kind ? ` ${kind}` : ''}"><div class="ob-head"><span>Price</span><span><svg class="tk xs inl" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span><span>${esc(totalHead)}</span></div>`
-    + `<div class="ob-asks">${a.length ? a.map((x, i) => row(x, 'ask', ac[i])).reverse().join('') : '<div class="ob-empty">No one is selling right now.</div>'}</div>`
+    + `<div class="ob-asks">${foldRow}${a.length ? a.map((x, i) => row(x, 'ask', ac[i])).reverse().join('') : '<div class="ob-empty">No one is selling right now.</div>'}</div>`
     + `<div class="ob-spread">${mid}</div>`
     + `<div class="ob-bids">${b.length ? b.map((x, i) => row(x, 'bid', bc[i])).join('') : '<div class="ob-empty">No one is bidding right now.</div>'}</div>`
-    + (hidden > 0 || S.bookAll ? `<button type="button" class="ob-more" data-more="1">${S.bookAll ? 'Show less' : `Full book · ${count(asks.length, levels ? 'ask price' : 'ask')}, ${count(bids.length, levels ? 'bid price' : 'bid')}`}</button>` : '') + '</div>';
+    + (hidden > 0 || S.bookAll ? `<button type="button" class="ob-more" data-more="1">${S.bookAll ? 'Show less' : `Full book · ${count(askTotal, levels ? 'ask price' : 'ask')}, ${count(bids.length, levels ? 'bid price' : 'bid')}`}</button>` : '') + '</div>';
 }
 const count = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 const spreadTxt = (ask, bid, why = '', waits = false) => {
@@ -1081,7 +1083,8 @@ function lastSpan() {
     : `<span class="ob-last"><b>${px}</b><em>last trade</em></span>`;
 }
 function btcStack(b, live) {
-  const lvs = (rows, ask) => { let upTo = 0; return ladderLevels(rows, ask ? 'ask' : 'bid').map((l, i) => {
+  // (`pre`: the levels already made, so the asks can be drawn without the far ones; they sort last, so each drawn level keeps its index for the press that primes the sheet)
+  const lvs = (rows, ask, pre = null) => { let upTo = 0; return (pre || ladderLevels(rows, ask ? 'ask' : 'bid')).map((l, i) => {
     const amt = Number(l.amount) / 1e8, px = btcPxFmt(btcPx(l.unit)), ends = ask ? Math.min(...l.rows.map((r) => r.expiry).filter(Boolean)) : 0;
     const why = ask ? (l.flag === 'maker' ? `${l.count > 1 ? `${l.count} offers` : 'one offer'}, each taken whole once its seller confirms (usually seconds)` : l.count > 1 ? `${l.count} listings, each taken whole` : 'one listing, taken whole') : l.flag === 'auto' ? 'settles within minutes' : 'settles when the bidder is online';
     if (l.flag !== 'mine') upTo += amt;
@@ -1089,7 +1092,9 @@ function btcStack(b, live) {
       attrs: live ? `data-btc="${ask ? 'buy' : 'sell'}" data-i="${i}"` : '', title: `${why}${Number.isFinite(ends) && ends ? ` · ends in ${left(ends)}` : ''}.${live ? ` Click to ${ask ? 'buy' : 'sell'} up to this price.` : ''}`,
       label: `${ask ? 'Buy' : 'Sell'} ${tacFmt(upTo)} TAC in all, ${ask ? 'up' : 'down'} to ${px} each` };
   }); };
-  return stackBook({ asks: lvs(b.asks, true), bids: lvs(b.bids, false), totalHead: 'Sats', levels: true,
+  const askLvls = ladderLevels(b.asks, 'ask'), fold = foldFarAsks(askLvls), f = fold.far;
+  const summary = f && { price: btcPxFmt(btcPx(f.from)), amount: tacFmt(Number(f.amount) / 1e8), count: `${f.count} ask${f.count === 1 ? '' : 's'}`, title: `${f.count} ask${f.count === 1 ? '' : 's'} priced more than ${FAR_ASK_RATIO} times the cheapest, from ${satsFmt(f.from)} sats a TAC: ${tacFmt(Number(f.amount) / 1e8)} TAC in all. Click to ${S.farAsks ? 'fold' : 'show'} ${f.count === 1 ? 'it' : 'them'}.` };
+  return stackBook({ asks: lvs(b.asks, true, f && !S.farAsks ? fold.near : askLvls), bids: lvs(b.bids, false), fold: summary, askTotal: askLvls.length, totalHead: 'Sats', levels: true,
     mid: `${D.btc?.mark ? lastSpan() : '<span></span>'}${spreadTxt(b.bestAsk, b.bestBid, ' A bid settles when its bidder is online, and a listing is taken whole.', ladderLevels(b.bids, 'bid')[0]?.flag === 'manual')}` });
 }
 const setHtml = (el, h) => { if (el.__h !== h) { el.__h = h; el.innerHTML = h; } };
@@ -1540,6 +1545,7 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#hint
 $('#depth-note').addEventListener('click', (e) => { const g = e.target.closest('[data-goto]'); if (g) { S.book = g.dataset.goto; renderBook(); } });
 $('#book-seg').addEventListener('click', (e) => { const b = e.target.closest('[data-book]'); if (b) { S.book = b.dataset.book; keepChart(); renderBook(); if (S.book === 'trades') ensureTrades(); } });
 $('#ladders').addEventListener('click', (e) => {
+  if (e.target.closest('[data-far]')) { S.farAsks = !S.farAsks; renderBook(); return; }
   if (e.target.closest('[data-more]')) { S.bookAll = !S.bookAll; renderBook(); return; }
   if (e.target.closest('[data-more-trades]')) { S.tradesAll = !S.tradesAll; renderBook(); return; }
   const f = e.target.closest('[data-fill]'); if (f) { pinOrder(f.dataset.fill); return; }

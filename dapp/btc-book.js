@@ -237,6 +237,19 @@ export function ladderLevels(rows, side) {
   return out;
 }
 
+// The asks of a ladder priced far above its cheapest (more than FAR_ASK_RATIO times it) are folded into one row of their own: they set no price anyone pays, and a book with a few
+// of them (a thousand TAC at ten times the market) reads as a wall. The person's own orders are never folded. `levels` is ladderLevels(asks, 'ask'), cheapest first.
+// -> { near: the levels to draw, far: null | { list, levels, count, amount, sats, from, to } }
+export const FAR_ASK_RATIO = 3;
+export function foldFarAsks(levels, ratio = FAR_ASK_RATIO) {
+  const base = levels.find((l) => l.flag !== 'mine');
+  if (!base) return { near: levels, far: null };
+  const list = levels.filter((l) => l.flag !== 'mine' && l.unit > base.unit * ratio);
+  if (!list.length) return { near: levels, far: null };
+  const out = new Set(list);
+  return { near: levels.filter((l) => !out.has(l)), far: { list, levels: list.length, count: list.reduce((t, l) => t + l.count, 0), amount: list.reduce((t, l) => t + l.amount, 0n), sats: list.reduce((t, l) => t + l.sats, 0), from: list[0].unit, to: list[list.length - 1].unit } };
+}
+
 export function planBuy(book, { spendSats = null, receiveBase = null, maxUnit = Infinity, maxBase = null, includeIntents = true, excludeIds = null } = {}) {
   const dec = book.decimals;
   const skip = excludeIds || new Set();

@@ -1947,7 +1947,7 @@ function loadBridgedHere(force = false) {
   return (BNOTES.loading = withKey(async (t) => {
     // cBTC stays at its Taproot address: a redeem burns the notes the bridge minted there
     const read = await Promise.all(BTC_NOTE_ASSETS.filter((a) => a !== CHAIN_ASSETS.cbtc).map((a) => t.bridgedNotes(a.id).then((r) => r.notes.map((n) => ({ ...n, aid: a.id })))));
-    try { MOVE_SATS = BigInt(await (await import('/btc-book.js?cb=7a684b5c')).moveSatsNeeded(() => t.getFeeRate())); } catch {}
+    try { MOVE_SATS = BigInt(await (await import('/btc-book.js?cb=07502141')).moveSatsNeeded(() => t.getFeeRate())); } catch {}
     return read.flat();
   }, pub).then((v) => { if (S.key?.pubHex === pub) Object.assign(BNOTES, { pub, at: Date.now(), bridged: v, err: null }); },
     (e) => { if (S.key?.pubHex === pub) Object.assign(BNOTES, { pub, at: Date.now(), err: e }); }).finally(() => { BNOTES.loading = null; }));

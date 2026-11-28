@@ -193,6 +193,30 @@ try {
   ok(/Cheapest ask .*?157 sats · 319 TAC/.test(noMk) && !/seller confirms/.test(noMk), `with the sheet's switch for them off, the ticket is the listings' again (${noMk.slice(0, 120)})`);
   await r.browser.close();
 
+  // The asks priced more than three times the cheapest are one row of their own at the top of the full book: none in the short view (it ends before them), a count that matches the
+  // listings, a press that opens them above the nearer ones, and a press that folds them.
+  r = await openPage({ width: 1280, height: 900 }, { hash: '' });
+  p = r.page;
+  await ladderReady(p);
+  await p.click('[data-book="btc"]');
+  await until(p, () => document.querySelectorAll('#ladders [data-btc="buy"]').length > 0, null, 120000);
+  const units = sales.sales.filter((x) => Number(x.asset_opening.amount) > 0).map((x) => Number(x.min_price_sats) / (Number(x.asset_opening.amount) / 1e8));
+  const cut = 3 * Math.min(...units), farN = units.filter((u) => u > cut).length;
+  ok(farN > 5 && !(await p.$('#ladders .ob-fold')), `the fixture has ${farN} asks past ${cut.toFixed(0)} sats; the short view, which ends before them, has no fold row`);
+  await p.click('#ladders .ob-more');
+  await until(p, () => document.querySelector('#ladders .ob-asks .ob-fold'), null, 10000);
+  const info = () => p.$eval('#ladders .ob-asks', (e) => ({ rows: [...e.querySelectorAll('.ob-row')].length, first: e.firstElementChild.className, fold: e.querySelector('.ob-fold')?.innerText.replace(/\s+/g, ' '), open: e.querySelector('.ob-fold')?.getAttribute('aria-expanded'), title: e.querySelector('.ob-fold')?.title, firstPrice: e.querySelectorAll('.ob-row')[1]?.querySelector('.p')?.textContent }));
+  const shut = await info();
+  ok(/ob-fold/.test(shut.first) && shut.open === 'false' && new RegExp(`${farN} asks`).test(shut.fold) && /more than 3 times the cheapest/.test(shut.title), `the full book has the fold row on top of the asks, counting ${farN} (${shut.fold})`);
+  await p.click('#ladders .ob-fold');
+  await until(p, () => document.querySelector('#ladders .ob-asks .ob-fold')?.getAttribute('aria-expanded') === 'true', null, 10000);
+  const wide = await info();
+  ok(wide.rows > shut.rows && /fold/i.test(wide.fold), `a press opens them (${shut.rows} rows to ${wide.rows}) and the row offers to fold them`);
+  await p.click('#ladders .ob-fold');
+  await until(p, () => document.querySelector('#ladders .ob-asks .ob-fold')?.getAttribute('aria-expanded') === 'false', null, 10000);
+  ok((await info()).rows === shut.rows, 'another press folds them again');
+  await r.browser.close();
+
   r = await openPage({ width: 1280, height: 900 }, { wallet: true });
   p = r.page;
   await until(p, () => document.querySelectorAll('#ladders [data-btc]').length > 0, null, 120000);

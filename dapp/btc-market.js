@@ -1,6 +1,6 @@
 
 import {
-  DUST, buildBook, planBuy, planSell, withinBounds, ladderLevels, listingShape,
+  DUST, buildBook, planBuy, planSell, withinBounds, ladderLevels, foldFarAsks, FAR_ASK_RATIO, listingShape,
   parseAmount, parseNumber, fmtAmount, fmtUnit, fmtSats, amountForSats, satsForAmount, moveSatsNeeded, MOVE_SATS_FLAT,
 } from './btc-book.js';
 
@@ -100,7 +100,7 @@ function createMarket(host, ctx) {
     includeManual: pref.includeManual === true,
     expirySec: EXPIRY_CHOICES.some(([s]) => s === pref.expirySec) ? pref.expirySec : 86400,
     watchtower: pref.watchtower !== false,
-    showAllAsks: false, showAllBids: false,
+    showAllAsks: false, showAllBids: false, showFarAsks: false,
     busy: false, destroyed: false, cancelling: new Set(),
     lastOk: 0, lastErr: null, timer: null, statsAt: 0,
     lane: ctx.initialLane === 'eth' && ctx.mountEth ? 'eth' : 'btc',
@@ -336,11 +336,18 @@ function createMarket(host, ctx) {
       <span class="p">${fmtUnit(lv.unit)}</span><span class="a">${tag}${fmtAmount(lv.amount, dec, 4)}</span><span class="t">${fmtSats(lv.sats)}</span></button>`;
   }
 
+  function foldRowHtml(f) {
+    const open = S.showFarAsks, s = f.count === 1 ? '' : 's', tip = `${f.count} ask${s} priced more than ${FAR_ASK_RATIO} times the cheapest, from ${fmtUnit(f.from)} sats/${asset0.ticker || 'token'}: ${fmtAmount(f.amount, dec, 0)} ${asset0.ticker || 'token'} in all. Click to ${open ? 'fold' : 'show'} ${f.count === 1 ? 'it' : 'them'}.`;
+    return `<button type="button" class="bm-row ask bm-fold" data-act="far" aria-expanded="${open}" title="${esc(tip)}"><span class="p">${fmtUnit(f.from)}+</span><span class="a"><i class="bm-tag">${open ? 'fold' : 'far'}</i>${fmtAmount(f.amount, dec, 0)}</span><span class="t">${f.count} ask${s}</span></button>`;
+  }
+
   function paintBook() {
     const b = S.book;
     const ref = ctx.asset().markUnit || (b.bestAsk && b.bestBid ? (b.bestAsk + b.bestBid) / 2 : b.bestAsk || b.bestBid);
     const near = (r) => r.mine || !ref || (r.unit >= ref * FAR_BELOW && r.unit <= ref * FAR_ABOVE);
-    const askLv = ladderLevels(S.showAllAsks ? b.asks : b.asks.filter(near), 'ask');
+    const askAll = ladderLevels(S.showAllAsks ? b.asks : b.asks.filter(near), 'ask');
+    const fold = foldFarAsks(askAll);   // (asks priced far above the cheapest are one row of their own until it is opened)
+    const askLv = S.showFarAsks ? askAll : fold.near;
     const bidLv = ladderLevels(S.showAllBids ? b.bids : b.bids.filter(near), 'bid');
     const farAsks = b.asks.length - b.asks.filter(near).length;
     const farBids = b.bids.length - b.bids.filter(near).length;
@@ -350,11 +357,12 @@ function createMarket(host, ctx) {
     const askCum = cum(askShown), bidCum = cum(bidShown);
     const maxCum = Math.max(askCum[askCum.length - 1] || 0, bidCum[bidCum.length - 1] || 0, 1);
     const pct = (v) => Math.max(1, Math.round((v / maxCum) * 100));
-    const sig = [askShown, bidShown].map((ls) => ls.map((l) => l.key + ':' + l.amount + ':' + l.count).join(',')).join('|') + S.showAllAsks + S.showAllBids;
+    const foldRow = fold.far && (S.showAllAsks || askLv.length <= LADDER_ROWS) ? foldRowHtml(fold.far) : '';   // (only when every nearer level is drawn: it stands past the last of them)
+    const sig = [askShown, bidShown].map((ls) => ls.map((l) => l.key + ':' + l.amount + ':' + l.count).join(',')).join('|') + S.showAllAsks + S.showAllBids + S.showFarAsks + (foldRow ? fold.far.count + ':' + fold.far.amount : '');
     if (sig !== S.levelsSig) {
       S.levelsSig = sig;
       el.asks.innerHTML = askShown.length
-        ? askShown.map((l, i) => rowHtml(l, 'ask', pct(askCum[i]))).reverse().join('')
+        ? foldRow + askShown.map((l, i) => rowHtml(l, 'ask', pct(askCum[i]))).reverse().join('')
         : `<div class="bm-empty">No one is selling right now.${S.side === 'buy' ? ' Place a limit bid and sellers can fill it.' : ''}</div>`;
       el.bids.innerHTML = bidShown.length
         ? bidShown.map((l, i) => rowHtml(l, 'bid', pct(bidCum[i]))).join('')
@@ -1735,6 +1743,7 @@ function createMarket(host, ctx) {
       }
       primeFromRow(t.dataset.side, t.dataset.key); return;
     }
+    if (act === 'far') { S.showFarAsks = !S.showFarAsks; paintBook(); return; }
     if (act === 'more-bids') { const f = !(S.showAllAsks && S.showAllBids); S.showAllAsks = f; S.showAllBids = f; paintBook(); return; }
     if (act === 'cancel') { cancelOrder(t.dataset.id); return; }
     if (act === 'tf') { LS.set('tacit-btc-market-tf', t.dataset.v); paintChart(); return; }

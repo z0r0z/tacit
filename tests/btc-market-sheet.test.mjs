@@ -252,5 +252,37 @@ await run('last trade mark: a trade more than a day old is dimmed and carries it
   ok(old && /10d ago/.test(old.title), 'and its hover text says so too');
 });
 
+// Asks priced more than three times the cheapest are one row of their own at the top of the asks, opened by a press and folded by another. Only once every nearer level is drawn.
+await run('far asks fold', async () => {
+  const askRows = (m) => [...m.$('asks').querySelectorAll('.bm-row')];
+  const near = [mkL('c1', 10, 9000), mkL('c2', 10, 12000), mkL('c3', 10, 15000)], far = [mkL('f1', 10, 30000), mkL('f2', 10, 38000), mkL('f3', 10, 44000)];   // 900, 1,200, 1,500 | 3,000, 3,800, 4,400 sats a TAC
+  const m = await mk({ listings: [...near, ...far], bids: [], markUnit: 900 });   // (the sheet's own reach, five times the last trade, is 4,500: it would draw them all)
+  let rows = askRows(m);
+  ok(rows[0]?.classList.contains('bm-fold') && /3 asks/.test(rows[0].textContent) && /far/.test(rows[0].textContent) && /^3,000\+/.test(rows[0].querySelector('.p').textContent), `the far asks are one row at the top: ${rows[0]?.textContent.replace(/\s+/g, ' ')}`);
+  ok(/more than 3 times the cheapest, from 3,000 sats\/TAC: 30 TAC in all\. Click to show them\./.test(rows[0].title), `and its hover text says what is in it (${rows[0].title})`);
+  ok(rows.length === 4 && JSON.stringify(rows.slice(1).map((r) => r.querySelector('.p').textContent)) === JSON.stringify(['1,500', '1,200', '900.00']), 'under it, the nearer asks: the cheapest at the bottom, by the spread');
+  m.click('[data-act=far]'); await m.settle();
+  rows = askRows(m);
+  ok(rows.length === 7 && rows[0].classList.contains('bm-fold') && /fold/.test(rows[0].textContent) && rows[0].getAttribute('aria-expanded') === 'true' && JSON.stringify(rows.slice(1, 4).map((r) => r.querySelector('.p').textContent)) === JSON.stringify(['4,400', '3,800', '3,000']), 'a press opens them, above the nearer ones, and the row now offers to fold them');
+  ok(rows[1].dataset.act === 'row' && rows[1].dataset.side === 'ask', 'and each is a row to press, as the others are');
+  m.click('[data-act=far]'); await m.settle();
+  ok(askRows(m).length === 4 && askRows(m)[0].getAttribute('aria-expanded') === 'false', 'another press folds them again');
+  m.destroy();
+  // more near levels than the ladder draws: the fold row would stand past rows that are not there, so it waits for the full book
+  const many = Array.from({ length: 10 }, (_, i) => mkL('n' + i, 10, 9000 + i * 600));
+  const b = await mk({ listings: [...many, mkL('x1', 10, 90000)], bids: [], markUnit: 900 });
+  ok(!b.$('asks').querySelector('.bm-fold') && askRows(b).length === 8, 'with ten near levels and the ladder short, there is no fold row');
+  b.click('[data-act=more-bids]'); await b.settle();
+  ok(/1 ask/.test(b.$('asks').querySelector('.bm-fold')?.textContent || '') && askRows(b).length === 11, 'the full book shows every near level with the fold row above them');
+  b.destroy();
+  // the person's own ask is never folded, and nothing folds when nothing is far
+  const own = await mk({ listings: [mkL('c1', 10, 9000), mkL('mine', 10, 90000, ME)], bids: [], me: meOf(), markUnit: 900 });
+  ok(!own.$('asks').querySelector('.bm-fold'), 'an ask of mine at ten times the cheapest stays in the ladder');
+  own.destroy();
+  const flat = await mk({ listings: near, bids: [], markUnit: 900 });
+  ok(!flat.$('asks').querySelector('.bm-fold') && askRows(flat).length === 3, 'a book with no far asks has no fold row');
+  flat.destroy();
+});
+
 console.log(fails ? `\n${fails} FAILED, ${n} ok` : `\n${n} btc-market-sheet checks passed`);
 process.exit(fails ? 1 : 0);

@@ -56,7 +56,7 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/assets/f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b/bid-intents?network=mainnet" crossorigin fetchpriority="low">
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload:begin -->
-<link rel="modulepreload" href="/trade/app.js?cb=0c8f3263">
+<link rel="modulepreload" href="/trade/app.js?cb=379f18c4">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
@@ -397,6 +397,8 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 .ob-row .p small { display: inline; margin-left: 6px; font-weight: 400; font-size: 11px; color: var(--mute); }
 .ob-row .a, .ob-row .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ob-row .t { color: var(--mute); }
 .ob-row.mine { box-shadow: inset 3px 0 0 var(--mute); } .ob-row.take { box-shadow: inset 3px 0 0 var(--orange); }
+.ob-row.ob-fold { font-style: italic; color: var(--mute); border-top: 1px dashed var(--line, currentColor); }
+.ob-row.ob-fold::before { display: none; }
 .ob-tag { font-style: normal; font-size: 9px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--warn); margin-right: 6px; }
 .ob-spread { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 12px; min-height: 36px; padding: 4px 12px; border-top: 1px solid var(--hair-2); border-bottom: 1px solid var(--hair-2); background: var(--field); font-size: 11px; color: var(--mute); }
 .ob-last { display: inline-flex; align-items: baseline; gap: 6px; } .ob-last b { font-size: 15px; font-weight: 500; color: var(--ink); } .ob-last em { font-style: normal; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; } .ob-last.old b { font-weight: 400; color: var(--mute); }
@@ -958,6 +960,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/trade/app.js?cb=0c8f3263"></script>
+<script type="module" src="/trade/app.js?cb=379f18c4"></script>
 </body>
 </html>

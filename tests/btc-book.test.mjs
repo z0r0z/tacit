@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { isRerouteable, isSpentOffer } from '../dapp/btc-market.js';
 import {
-  DUST, BID_CLAIM_WINDOW_SEC, buildBook, planBuy, planSell, withinBounds, ladderLevels, listingShape,
+  DUST, BID_CLAIM_WINDOW_SEC, buildBook, planBuy, planSell, withinBounds, ladderLevels, foldFarAsks, FAR_ASK_RATIO, listingShape,
   parseAmount, parseNumber, fmtAmount, fmtUnit, amountForSats, satsForAmount, scaledSats, unitPrice,
 } from '../dapp/btc-book.js';
 
@@ -236,6 +236,35 @@ t('a limit buy of N tokens never fills more than N from cheaper whole lots', () 
   assert.equal(capped.fills.length, 1);
   assert.equal(capped.fills[0].ask.raw.sale_id, 'b');
   assert.ok(capped.skipped.some((s) => s.ask.raw.sale_id === 'a' && s.reason === 'too-big'));
+});
+
+// asks priced far above the cheapest are folded in a ladder, and nothing else is
+const askAt = (id, unit, tac = 100, extra = {}) => ({ asset_id: AID, kind: 'preauth', sale_id: id, seller_pubkey: '02' + id.padEnd(64, '0').slice(0, 64), asset_opening: { amount: String(tac * 1e8) }, min_price_sats: Math.round(unit * tac), expiry: NOW + 86400, created_at: NOW - 60, ...extra });
+const ladderOf = (units, extra = {}) => ladderLevels(buildBook({ assetId: AID, decimals: 8, listings: units.map((u, i) => askAt('l' + i, u)), bids: [], nowSec: NOW, ...extra }).asks, 'ask');
+t('foldFarAsks: asks more than three times the cheapest are folded, with what they hold; the rest stay in order', () => {
+  assert.equal(FAR_ASK_RATIO, 3);
+  const lv = ladderOf([900, 910, 1555, 2700, 2701, 3000, 5555, 10000]);
+  const { near, far } = foldFarAsks(lv);
+  assert.deepEqual(near.map((l) => l.unit.toFixed(0)), ['900', '910', '1555', '2700'], '3 x 900 = 2,700 is not past three times');
+  assert.deepEqual([far.levels, far.count, far.from.toFixed(0), far.to.toFixed(0)], [4, 4, '2701', '10000']);
+  assert.equal(far.amount, 40000000000n, 'four lots of 100 TAC');
+  assert.equal(far.sats, [2701, 3000, 5555, 10000].reduce((a, u) => a + Math.round(u * 100), 0));
+});
+t('foldFarAsks: nothing folds when nothing is far, with no asks, or with one ask; the anchor is the cheapest ask, not a price from elsewhere', () => {
+  assert.equal(foldFarAsks(ladderOf([900, 1000, 2000])).far, null);
+  assert.deepEqual(foldFarAsks([]), { near: [], far: null });
+  assert.equal(foldFarAsks(ladderOf([10000])).far, null, 'the only ask is the cheapest');
+  const cheap = foldFarAsks(ladderOf([100, 400, 900]));
+  assert.deepEqual(cheap.near.map((l) => l.unit.toFixed(0)), ['100'], 'a very cheap first ask pulls the cut down with it');
+});
+t('foldFarAsks: a level of several listings counts them all, and the person’s own orders are never folded', () => {
+  const lv = ladderOf([900, 5000, 5000, 5000]);
+  assert.deepEqual([foldFarAsks(lv).far.levels, foldFarAsks(lv).far.count], [1, 3], 'one price level, three listings');
+  const me = '02' + 'ab'.repeat(32);
+  const own = ladderLevels(buildBook({ assetId: AID, decimals: 8, listings: [askAt('a1', 900), askAt('a2', 9000, 100, { seller_pubkey: me })], bids: [], nowSec: NOW, myPubHex: me }).asks, 'ask');
+  assert.equal(foldFarAsks(own).far, null, 'an ask of mine at ten times the cheapest stays where it is');
+  const mineFirst = ladderLevels(buildBook({ assetId: AID, decimals: 8, listings: [askAt('a1', 200, 100, { seller_pubkey: me }), askAt('a2', 900), askAt('a3', 4000)], bids: [], nowSec: NOW, myPubHex: me }).asks, 'ask');
+  assert.deepEqual(foldFarAsks(mineFirst).near.map((l) => l.unit.toFixed(0)), ['200', '900'], 'my own cheap ask does not set the cut: the cheapest ask of anyone else does');
 });
 
 console.log(`btc-book: ${n} checks passed`);
