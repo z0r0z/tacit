@@ -144,8 +144,8 @@ function renderBridge(el) {
   xoOut($('#brm-form'), $('#bt-status'), XA.tac);
 }
 function renderBridgeIn(el) {
-  if (!needKey(el, BRM.mode === 'out' ? 'Burn private TAC on Ethereum and it arrives on your own Bitcoin address, usually within a few hours.'
-    : 'Bring TAC from your Bitcoin address into your private TAC on Ethereum, usually within a few hours.', 'btc')) return;
+  if (!needKey(el, BRM.mode === 'out' ? 'Burn private TAC on Ethereum and it arrives at your own Bitcoin address.'
+    : 'Open your Bitcoin wallet to see your TAC there, note by note.', 'btc')) return;
   const pub = S.key.pubHex, b = BR.pub === pub ? BR : null;
   if (!b?.notes && !BR.loading && !b?.err) loadBridge().then(() => rerender('tac')).catch(() => {});
   brDiscover(pub, true);

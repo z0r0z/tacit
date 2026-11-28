@@ -139,11 +139,11 @@ try {
     await page.waitForFunction(() => /fee/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
     // its own heading, under a header of sections the Chains section's head (#sec-head) over it with the Fast TAC tab marked
     const own = await page.evaluate(() => document.querySelector('.hero h1')?.textContent.trim() || ''), sec = await page.evaluate(() => document.querySelector('#sec-head') ? `${document.querySelector('#sec-head h1')?.textContent}|${document.querySelector('#sec-head .sh-t a[aria-current="page"]')?.textContent}` : '');
-    ok((await page.title()) === 'tacit fast' && /^Bridge in minutes/.test(own) && (!sec || sec === 'Chains|Fast TAC'), `the page is "tacit fast", headed "Bridge in minutes"${sec ? ' (under Chains, its Fast TAC tab marked)' : ''}`);
+    ok((await page.title()) === 'tacit fast' && /^Bridge in minutes/.test(own) && (!sec || sec === 'Bridge|Bitcoin ⇄ Ethereum'), `the page is "tacit fast", headed "Bridge in minutes"${sec ? ' (under Bridge, its Bitcoin ⇄ Ethereum tab marked)' : ''}`);
     ok(await page.$eval('#fx-alt a', (a) => a.getAttribute('href') === '/#card=bridge'), 'the regular bridge is linked from the card');
-    ok(await page.$eval('#provide', (e) => !e.hidden) && (await text(page, '#pv-go')) === 'Open wallet', 'anyone who comes by finds the provider panel, with a way to open the wallet');
+    ok(await page.$eval('#provide', (e) => !e.hidden) && (await text(page, '#pv-go')) === 'Sign in', 'anyone who comes by finds the provider panel, with a way to open the wallet');
     ok(/0\.30% \+ 0\.000002 TAC fee/.test(await text(page, '#fx-lp')), `the provider's fee is shown (${await text(page, '#fx-lp')})`);
-    ok((await text(page, '#fx-go')) === 'Open wallet' && !(await page.$eval('#fx-go', (e) => e.hidden)), 'the button reads Open wallet');
+    ok((await text(page, '#fx-go')) === 'Sign in' && !(await page.$eval('#fx-go', (e) => e.hidden)), 'the button reads Sign in');
     ok(await page.$eval('#fx-form', (e) => e.hidden), 'no form before a key');
     ok(!(await page.$('.fx-keep')), 'with nothing under way the page does not say to keep it open');
     await shot('fast-signed-out');
@@ -163,7 +163,7 @@ try {
   {
     const { page, bad } = await visit(`/fast/?lp=${encodeURIComponent(lp.base)}&claimPub=02${'ab'.repeat(32)}`);
     await page.waitForFunction(() => /No provider is online/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
-    ok(!/ fee/.test(await text(page, '#fx-lp')) && (await text(page, '#fx-go')) === 'Open wallet', 'a provider with another key than the pinned one is not offered, and the wallet can still open to provide');
+    ok(!/ fee/.test(await text(page, '#fx-lp')) && (await text(page, '#fx-go')) === 'Sign in', 'a provider with another key than the pinned one is not offered, and the wallet can still open to provide');
     ok(bad.length === 0, `no errors (${bad.join(' | ')})`);
     await page.context().close();
   }

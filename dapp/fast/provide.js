@@ -118,7 +118,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     }
     const go = $('pv-go');
     go.hidden = !inv && !locked;
-    go.textContent = locked ? 'Open wallet' : S.busy ? 'Working…' : accepting() ? 'Stop providing' : 'Start providing';
+    go.textContent = locked ? 'Sign in' : S.busy ? 'Working…' : accepting() ? 'Stop providing' : 'Start providing';
     go.disabled = !locked && (short() || S.busy);
     if (st && st.lastError && !S.note) $('pv-st').textContent = st.lastError;
     keepAwake();

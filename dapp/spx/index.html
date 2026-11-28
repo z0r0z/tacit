@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://rpc.mevblocker.io" crossorigin>
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=51f5d28b"></script>
-<script src="/front-route.js?cb=f339fa56"></script>
+<script src="/front-route.js?cb=464099d6"></script>
 <script type="module" src="/px-strip.js?cb=10c6841d" async fetchpriority="high"></script>
 <link rel="preload" href="/swap/card.css?cb=5525b436" as="style">
 <link rel="preload" href="/fonts/newsreader-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -37,7 +37,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /front/main.js /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /auto-claim.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js /rescan-gate.js /pub-address.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/front/main.js?cb=47758dc2">
+<link rel="modulepreload" href="/front/main.js?cb=d9495374">
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/own-node.js?cb=ed1de110">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -1296,32 +1296,34 @@ html[data-sec="chains/notes"] :is(.tpg > :not(#tpg-where, #tpg-notes, #tpg-side,
 html[data-sec="chains/notes"][data-page="tac"] .tpg > * { max-width: 720px; }
 html[data-sec="chains/notes"] #tpg-where { border: 0; }
 /* ── Chains overview: decisions first. The tools keep their own pages; this page says which one matches the job. ── */
-.cpg { max-width: 920px; margin: 0 auto; padding: 8px 0 40px; }
-.cpg-intro { max-width: 650px; margin: 0 auto 24px; text-align: center; }
-.cpg-intro .k { margin: 0 0 7px; font: 500 11px/1.2 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
-.cpg-intro h2 { margin: 0; font: 400 clamp(30px, 5vw, 46px)/1.05 var(--serif); letter-spacing: -.02em; }
-.cpg-intro p:last-child { margin: 12px auto 0; color: var(--mute); text-wrap: balance; }
-.cpg-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.cpg-card { --tone: var(--ink); position: relative; display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 4px 14px; align-items: start; min-height: 154px; padding: 20px; color: inherit; background: linear-gradient(145deg, color-mix(in srgb, var(--tone) 8%, var(--card)), var(--card) 60%); border: 1px solid var(--hair); border-radius: 18px; box-shadow: var(--float); text-decoration: none; transition: border-color .15s, transform .2s var(--spring), box-shadow .2s; }
-.cpg-card.btc { --tone: #f7931a; } .cpg-card.eth { --tone: #627eea; } .cpg-card.tac { --tone: #b79234; }
-.cpg-ic { grid-row: 1 / span 3; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: color-mix(in srgb, var(--tone) 13%, var(--field)); border: 1px solid color-mix(in srgb, var(--tone) 20%, var(--hair)); }
-.cpg-ic .tk { width: 30px; height: 30px; }
-.cpg-ic.pair { position: relative; } .cpg-ic.pair .tk { position: absolute; width: 27px; height: 27px; } .cpg-ic.pair .tk:first-child { translate: -7px -5px; } .cpg-ic.pair .tk:last-child { translate: 7px 6px; }
-.cpg-card h3 { margin: 1px 0 0; font: 400 24px/1.1 var(--serif); letter-spacing: -.01em; }
-.cpg-card > i { font: normal 18px/1 var(--mono); color: var(--mute); transition: translate .15s, color .15s; }
-.cpg-card p { grid-column: 2 / -1; margin: 5px 0 0; font-size: 13px; line-height: 1.5; color: var(--mute); text-wrap: pretty; }
-.cpg-card small { grid-column: 2 / -1; align-self: end; margin-top: 10px; font: 500 11.5px/1.4 var(--mono); color: var(--ink); }
-@media (hover: hover) { .cpg-card:hover { border-color: color-mix(in srgb, var(--tone) 45%, var(--hair)); transform: translateY(-2px); box-shadow: 0 20px 42px -30px color-mix(in srgb, var(--tone) 42%, transparent); } .cpg-card:hover > i { color: var(--ink); translate: 3px 0; } }
-.cpg-compare { margin-top: 18px; padding: 20px; background: color-mix(in srgb, var(--ink) 3%, var(--card)); border: 1px solid var(--hair); border-radius: 18px; }
-.cpg-compare h3 { margin: 0 0 14px; font: 400 24px/1.1 var(--serif); }
-.cpg-routes { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; overflow: hidden; background: var(--hair); border: 1px solid var(--hair); border-radius: 12px; }
-.cpg-route { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; padding: 14px 16px; color: inherit; background: var(--card); text-decoration: none; }
-.cpg-route b { font-weight: 500; } .cpg-route i { grid-row: 1 / span 2; grid-column: 2; font-style: normal; color: var(--mute); } .cpg-route span { font-size: 12px; line-height: 1.45; color: var(--mute); }
-@media (hover: hover) { .cpg-route:hover b, .cpg-route:hover i { color: var(--orange); } }
-.cpg-note { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 14px 2px 0; padding-top: 14px; border-top: 1px solid var(--hair); font-size: 12.5px; color: var(--mute); }
+.cpg { max-width: 980px; margin: 0 auto; padding: 4px 0 40px; }
+/* Every way between the chains, in two columns by direction: a row is what you have, its buttons the ways it can go, each with its time and fee */
+.cpg-dirs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.cpg-dir { display: flex; flex-direction: column; padding: 18px 18px 8px; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
+.cpg-dir header { padding: 0 2px 12px; border-bottom: 1px solid var(--hair); }
+.cpg-dir h2 { display: flex; align-items: center; gap: 10px; margin: 0; font: 400 24px/1.15 var(--serif); letter-spacing: -.01em; }
+.cpg-dir header p { margin: 4px 0 0; font-size: 12.5px; color: var(--mute); }
+.cpg-m { display: inline-flex; align-items: center; gap: 4px; } .cpg-m .tk { width: 20px; height: 20px; } .cpg-m i { font: normal 13px/1 var(--mono); color: var(--mute); }
+.cpg-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); align-items: center; gap: 12px; padding: 12px 2px; }
+.cpg-row + .cpg-row { border-top: 1px solid var(--hair); }
+.cpg-a { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 9px; align-items: center; }
+.cpg-a .tk { grid-row: 1 / span 2; width: 28px; height: 28px; }
+.cpg-a b { font-weight: 500; font-size: 15px; } .cpg-a small { grid-column: 2; font-size: 12px; color: var(--mute); }
+.cpg-a:not(:has(.tk)) b, .cpg-a:not(:has(.tk)) small { grid-column: 1 / -1; }
+.cpg-go { display: flex; flex-wrap: wrap; gap: 6px; }
+.cpg-opt { flex: 1 1 140px; display: flex; flex-direction: column; gap: 2px; padding: 9px 12px; color: inherit; text-decoration: none; background: color-mix(in srgb, var(--ink) 3%, var(--card)); border: 1px solid var(--hair); border-radius: 12px; transition: border-color .15s, background-color .15s; }
+.cpg-opt b { font-weight: 500; font-size: 13.5px; } .cpg-opt b::after { content: ' →'; color: var(--mute); }
+.cpg-opt small, .cpg-sub { font: 400 11.5px/1.4 var(--mono); color: var(--mute); }
+.cpg-chips { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+.cpg-chip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px 0 6px; color: var(--ink); font-size: 13px; font-weight: 500; text-decoration: none; background: color-mix(in srgb, var(--ink) 3%, var(--card)); border: 1px solid var(--hair); border-radius: 99px; transition: border-color .15s; }
+.cpg-chip .tk { width: 20px; height: 20px; }
+.cpg-sub { width: 100%; padding-left: 2px; }
+@media (hover: hover) { .cpg-opt:hover, .cpg-chip:hover { border-color: var(--ink); } }
+.cpg-opt:focus-visible, .cpg-chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+.cpg-note { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 16px 4px 0; font-size: 13px; color: var(--mute); }
 .cpg-note a { flex: none; color: var(--ink); font-weight: 500; }
-@media (max-width: 680px) { .cpg-grid { grid-template-columns: 1fr; } .cpg-card { min-height: 0; } .cpg-routes { grid-template-columns: 1fr; } }
-@media (max-width: 420px) { .cpg { padding-top: 0; } .cpg-card { grid-template-columns: 42px minmax(0, 1fr) auto; padding: 16px; } .cpg-ic { width: 42px; height: 42px; border-radius: 12px; } .cpg-card h3 { font-size: 22px; } .cpg-note { align-items: flex-start; flex-direction: column; gap: 8px; } }
+@media (max-width: 760px) { .cpg-dirs { grid-template-columns: 1fr; } }
+@media (max-width: 420px) { .cpg { padding-top: 0; } .cpg-dir { padding: 16px 14px 6px; } .cpg-row { grid-template-columns: 1fr; gap: 8px; } .cpg-note { flex-direction: column; align-items: flex-start; gap: 6px; } }
 .ppg { padding: 28px 0 8px; }
 .ppg-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 0 0 22px; }
 .ppg-head h1 { font: 400 clamp(40px, 6vw, 56px)/1 var(--serif); letter-spacing: -.02em; margin: 0; }
@@ -2397,10 +2399,11 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh.sh-l { max-width: 560px; text-align: left; } .sh.sh-l .sh-more { margin-top: 18px; }
 @media (hover: hover) { .sh-t a:hover { color: var(--ink); } }
 @media (max-width: 520px) { .sh { margin-top: 18px; } .sh-t { display: grid; grid-auto-columns: 1fr; } .sh-t a { padding: 6px 6px; font-size: 12px; } }
-/* Chains has several distinct routes. On a phone they are a legible 3 × 2 map, not six squeezed labels in one row. */
+/* Bridge's tabs carry longer names: on a phone they are one row that scrolls sideways, each name whole, rather than a squeezed grid */
 @media (max-width: 640px) {
-  .sh[data-of="chains"] .sh-t { display: grid; grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
-  .sh[data-of="chains"] .sh-t a { min-width: 0; padding-inline: 6px; white-space: normal; text-wrap: balance; }
+  .sh[data-of="chains"] .sh-t { display: flex; justify-content: flex-start; width: 100%; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; }
+  .sh[data-of="chains"] .sh-t::-webkit-scrollbar { display: none; }
+  .sh[data-of="chains"] .sh-t a { flex: none; padding-inline: 12px; }
 }
 .sh-more { list-style: none; margin: 22px auto 0; padding: 4px 18px; max-width: 560px; text-align: left; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
 .sh-more li + li { border-top: 1px solid var(--hair); }
@@ -2524,7 +2527,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=1709bb7f" defer></script>
+<script src="/chrome.js?cb=1118f1b1" defer></script>
 <!-- chrome:head:end -->
 <link rel="preload" href="/fonts/orbitron-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/space-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -2677,46 +2680,40 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <div class="ppg-head"><div><h1 id="ppg-h" tabindex="-1">Portfolio</h1><p>Everything you hold, by asset. Where it sits is the small print.</p></div><button class="link" type="button" id="ppg-re">Refresh</button></div>
     <div id="ppg-body"></div>
   </section>
-  <section class="cpg" id="page-chains" aria-labelledby="cpg-h">
-    <header class="cpg-intro">
-      <p class="k">Start with the outcome</p>
-      <h2 id="cpg-h">Where should your money go?</h2>
-      <p>Pick the destination you want. The next screen shows the amount, route, fee, time and recovery path before anything is sent.</p>
-    </header>
-    <div class="cpg-grid">
-      <a class="cpg-card eth" href="/#/chains/move">
-        <span class="cpg-ic"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span>
-        <h3>Use a private balance</h3><i aria-hidden="true">→</i>
-        <p>Move an asset between your public Ethereum wallet and Tacit’s private pool.</p>
-        <small>Wallet ⇄ private balance · supported assets</small>
-      </a>
-      <a class="cpg-card btc" href="/btc/">
-        <span class="cpg-ic pair"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span>
-        <h3>Swap BTC and ETH</h3><i aria-hidden="true">→</i>
-        <p>Exchange native Bitcoin and ETH directly. ETH arrives in your private Tacit balance.</p>
-        <small>BTC ⇄ private ETH · direct swap</small>
-      </a>
-      <a class="cpg-card tac" href="/#/chains/bridge">
-        <span class="cpg-ic"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span>
-        <h3>Move TAC across chains</h3><i aria-hidden="true">→</i>
-        <p>Use the trustless standard bridge for TAC between Bitcoin and Ethereum, in either direction.</p>
-        <small>Bitcoin ⇄ Ethereum · every TAC note</small>
-      </a>
-      <a class="cpg-card tac" href="/fast/">
-        <span class="cpg-ic"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span>
-        <h3>Move TAC faster</h3><i aria-hidden="true">→</i>
-        <p>Receive TAC on Ethereum in minutes through a provider. Its quote includes the fee and capacity.</p>
-        <small>Bitcoin → Ethereum · provider route</small>
-      </a>
+  <section class="cpg" id="page-chains" aria-label="Every way between Bitcoin and Ethereum">
+    <div class="cpg-dirs">
+      <section class="cpg-dir in" aria-labelledby="cpg-in-h">
+        <header><h2 id="cpg-in-h"><span class="cpg-m"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><i aria-hidden="true">→</i><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span>Bitcoin to Ethereum</h2><p>Arrives private on Ethereum.</p></header>
+        <div class="cpg-row">
+          <span class="cpg-a"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><b>BTC</b><small>for private ETH</small></span>
+          <div class="cpg-go"><a class="cpg-opt" href="/btc/"><b>Swap</b><small>about 15–30 min · a provider’s rate</small></a></div>
+        </div>
+        <div class="cpg-row">
+          <span class="cpg-a"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>TAC</b><small>as private TAC</small></span>
+          <div class="cpg-go"><a class="cpg-opt" href="/#/chains/bridge" data-br="btc"><b>Standard</b><small data-brx="in">a few hours · Bitcoin fee in sats</small></a><a class="cpg-opt" href="/fast/"><b>Fast</b><small>minutes · a provider’s quoted fee</small></a></div>
+        </div>
+        <div class="cpg-row">
+          <span class="cpg-a"><b>Other tokens</b><small>tETH, cBTC, cUSD, USDT</small></span>
+          <div class="cpg-go"><div class="cpg-chips"><a class="cpg-chip" href="/#/chains/bridge" data-br="tb"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</a><a class="cpg-chip" href="/#/chains/bridge" data-br="kb"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg>cBTC</a><a class="cpg-chip" href="/#/chains/bridge" data-br="ub"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</a><a class="cpg-chip" href="/#/chains/bridge" data-br="ut"><svg class="tk" aria-hidden="true"><use href="#tk-usdt"/></svg>USDT</a></div><small class="cpg-sub" data-brx="in">a few hours · Bitcoin fee in sats</small></div>
+        </div>
+      </section>
+      <section class="cpg-dir out" aria-labelledby="cpg-out-h">
+        <header><h2 id="cpg-out-h"><span class="cpg-m"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><i aria-hidden="true">→</i><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg></span>Ethereum to Bitcoin</h2><p>Arrives at your Bitcoin address.</p></header>
+        <div class="cpg-row">
+          <span class="cpg-a"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><b>ETH</b><small>for BTC</small></span>
+          <div class="cpg-go"><a class="cpg-opt" href="/btc/?dir=e2b"><b>Swap</b><small>about 15–30 min · a provider’s rate</small></a></div>
+        </div>
+        <div class="cpg-row">
+          <span class="cpg-a"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>TAC</b><small>from private TAC</small></span>
+          <div class="cpg-go"><a class="cpg-opt" href="/#/chains/bridge" data-br="tac"><b>Standard</b><small data-brx="out">a few hours, at most a day</small></a></div>
+        </div>
+        <div class="cpg-row">
+          <span class="cpg-a"><b>Other tokens</b><small>held privately</small></span>
+          <div class="cpg-go"><div class="cpg-chips"><a class="cpg-chip" href="/#/chains/bridge" data-br="eth"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</a><a class="cpg-chip" href="/#/chains/bridge" data-br="cbtc"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg>cBTC</a><a class="cpg-chip" href="/#/chains/bridge" data-br="cusd"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</a><a class="cpg-chip" href="/#/chains/bridge" data-br="cusdt"><svg class="tk" aria-hidden="true"><use href="#tk-usdt"/></svg>USDT</a></div><small class="cpg-sub" data-brx="out">a few hours, at most a day</small></div>
+        </div>
+      </section>
     </div>
-    <aside class="cpg-compare" aria-labelledby="cpg-route-h">
-      <h3 id="cpg-route-h">Standard or fast TAC bridge?</h3>
-      <div class="cpg-routes">
-        <a class="cpg-route" href="/#/chains/bridge"><b>Standard bridge</b><i aria-hidden="true">→</i><span>Trustless, works in both directions and with every supported TAC note. Takes longer.</span></a>
-        <a class="cpg-route" href="/fast/"><b>Fast route</b><i aria-hidden="true">→</i><span>Provider liquidity pays out in minutes. Bitcoin → Ethereum only, with a quoted fee and limit.</span></a>
-      </div>
-    </aside>
-    <p class="cpg-note"><span>Already have TAC notes on Bitcoin? Merge or split them, or follow notes that are still moving.</span><a href="/tac/?v=notes#bridge">Manage Bitcoin notes →</a></p>
+    <p class="cpg-note"><span>TAC already on Bitcoin, in notes? See them, merge or split them, or follow ones still moving.</span><a href="/tac/?v=notes#bridge">Bitcoin notes →</a></p>
   </section>
   <section class="hero" aria-labelledby="hero-h">
     <a class="pxb" href="/praxis/" id="pxb"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span class="pxb-c"><span><b>Tacit Praxis ceremony.</b><span class="pxb-w"> The cryptography for smart contracts on Bitcoin: help build its key, earn up to 5 TAC.</span><span class="pxb-m"> Help build Bitcoin’s contract key, earn up to 5 TAC.</span></span><span class="pxb-p" id="pxb-p" hidden><span class="pxb-bar" aria-hidden="true"><span id="pxb-fill"></span></span><span id="pxb-n"></span></span></span><i aria-hidden="true">→</i></a>
@@ -3121,6 +3118,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
 <div class="toasts" id="toast-container" popover="manual"></div>
 
-<script type="module" src="/front/main.js?cb=47758dc2"></script>
+<script type="module" src="/front/main.js?cb=d9495374"></script>
 </body>
 </html>

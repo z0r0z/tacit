@@ -1795,7 +1795,7 @@ const render = {}, load = {};
 const tacCtx = () => ({ $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TK, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brHolds, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getDeviceMods, getUx, hexToBytes, html, hxChainEth, hxDevAny, hxLive, hxPreset, hxUsd, hxWalletBal, hxWalletBals, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, payingAccount, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, heldParts, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tokOutNow, tokenSync, tokenWallet, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your, get CH() { return CH; }, get T() { return T; }, get TACP() { return TACP; }, get TCARD() { return TCARD; }, get TCO() { return TCO; }, get TPOOL() { return TPOOL; }, get TREQ() { return TREQ; }, get brLooking() { return brLooking; } });
 // front-tac:end
 let TAC_CODE = null;
-const tacReady = lazy(() => import('/front/tac.js?cb=6380cb15').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
+const tacReady = lazy(() => import('/front/tac.js?cb=3f888988').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
 const withTac = (f) => (TAC_CODE ? f() : tacReady().then(f, () => {}));
 for (const k of ["tac"]) render[k] = () => { if (!TAC_CODE) withTac(() => rerender(k)); };
 for (const k of ["tac"]) load[k] = () => tacReady().then(() => load[k]());
@@ -2677,12 +2677,14 @@ function viewTitle() {
 // The Notes view of TAC's page opens its bridge, which the view shows without the summaries that would open it.
 function secView() {
   const sec = document.documentElement.dataset.sec || '';
+  if (sec === 'chains/overview') cpgLive();
   if (sec === 'chains/notes') { const w = $('#tpg-where'), br = $('#tpg-br'); if (w && !w.open) w.open = true; if (br && !br.open) br.open = true; }
   if (!sec || `#/${sec.replace(/\/$/, '')}` !== location.hash) return false;
   SECV.hash = location.hash;
   // Request is the card's own: its Send held to asking (an asset that cannot be asked for, wallet TAC, a pool share, gives way to ETH)
   const ask = sec === 'payments/request', askable = !['wtac', 'rtac'].includes(HX.send) && !hxIsLp(HX.send);
-  const spec = { 'payments/send': `send:${HX.send}`, 'payments/request': `send:${askable ? HX.send : 'eth'}`, 'defi/swap': 'swap', 'chains/move': 'shield', 'chains/bridge': 'bridge' }[sec];
+  const brAsk = HX.brAsk && Object.hasOwn(HX_BR, HX.brAsk) ? HX.brAsk : null; HX.brAsk = null;      // a row of the Bridge overview named its coin
+  const spec = { 'payments/send': `send:${HX.send}`, 'payments/request': `send:${askable ? HX.send : 'eth'}`, 'defi/swap': 'swap', 'chains/move': 'shield', 'chains/bridge': brAsk ? `bridge:${brAsk}` : 'bridge' }[sec];
   if (spec) { hxPreset(spec, ''); if (ask) { HX.ask = true; paintHx(); } window.scrollTo(0, 0); }      // the card is the view here: nothing to scroll to, the view starts at its head
   return true;
 }
@@ -10372,6 +10374,17 @@ function brxRead() {
     }),
   ].map((p) => p.catch(() => {}))).then(() => { BRX.at = Date.now(); BRX.p = null; }));
 }
+// the Bridge overview's standard routes, each way: the time and the Bitcoin fee as the card says them (brxRows), read when the overview shows
+function cpgLive() {
+  if (!$('#page-chains [data-brx]')) return;
+  brxRead().then(() => {
+    for (const el of $$('#page-chains [data-brx]')) {
+      const [fee, time] = brxRows(el.dataset.brx), f = String(fee[1]);
+      const t = `${time[1]} · ${/^none:/.test(f) ? 'no Bitcoin fee, Tacit’s relay pays it' : /^in sats/.test(f) ? 'Bitcoin fee in sats' : `Bitcoin fee ${f}`}`;
+      if (el.textContent !== t) el.textContent = t;
+    }
+  }).catch(() => {});
+}
 function brxRows(dir) {
   const sats = BRX.rate ? (dir === 'out' ? satsOut(BRX.rate) : satsBack(BRX.rate)) : null, usd = sats ? hxUsd('sats', sats) : '';
   const late = BRX.lag != null && BRX.lag > BRX.confs + 12, hrs = Math.round((late ? BRX.lag : BRX.confs) / 6);
@@ -11275,7 +11288,7 @@ function hxRatios() {
 async function hxBorrowQuote(units) {
   const [, , pad] = await Promise.all([loadTacPrice().catch(() => {}), hxRatios(), S.key && LOCK.state && units ? hxPad() : null]);
   const q = await hxBorrowTerms(units), st = S.key ? LOCK.state : null;
-  if (!st || !units) return st ? { ...q, go: units ? q.go : 'Lock BTC' } : { ...q, go: S.key ? q.go : 'Open your Tacit wallet to borrow' };
+  if (!st || !units) return st ? { ...q, go: units ? q.go : 'Lock BTC' } : { ...q, go: S.key ? q.go : 'Sign in to borrow' };
   const need = units + (pad || 0n), ready = st.sats != null ? st.sats - st.pendingSats : null;
   const auto = HX.bwAuto !== false, cb = HX.bm === 'cbtc', more = cb ? ' and mint' : ' and borrow', it = autoGet();
   const go = ready != null && ready >= need ? `Lock ${fmt(units, 8, 8)} BTC${auto ? more : ''}` : st.sats != null && st.sats >= need ? 'Waiting for your BTC to confirm' : auto ? `Send BTC, then lock${more}` : 'Send BTC to lock';
@@ -11296,7 +11309,7 @@ async function hxHeldQuote(units) {
   if (usd8 == null || !floor) throw new Error('no price');
   const debt = usd8 * 100n / BigInt(Math.round(ratio)) / 10n ** 6n * 10n ** 6n, held = S.key && P.scan ? spendable('cbtc') : null, over = held != null && !!units && units > held;
   const liqAt = debt && liq ? Number(debt) * liq / 100 / Number(units) : null;
-  return { out: units && !over ? fmt(debt, 8, 2) : units ? '—' : null, debt, go: S.key ? 'Borrow cUSD' : 'Open your Tacit wallet to borrow', warn: over,
+  return { out: units && !over ? fmt(debt, 8, 2) : units ? '—' : null, debt, go: S.key ? 'Borrow cUSD' : 'Sign in to borrow', warn: over,
     line: over ? `You hold ${fmt(held, 8, 8)} cBTC privately.` : '',
     rc: [liqAt ? ['Liquidation', `if BTC falls under $${Math.round(liqAt).toLocaleString('en-US')}`, '', `Liquidation starts at ${liq}%; the engine lends down to ${floor}%`] : liq ? ['Liquidation', `from ${liq}%`] : null,
       ['Collateral', 'your cBTC, private'], ['Repay', 'any time']] };
@@ -12253,7 +12266,7 @@ function hxBalPaint() {
     const l = HX.amt || hxSizesOn() || whole ? null : HX_QUICK[hxAmtKind()], onBtc = whole && !!HX_BR_ONBTC[src];
     if (onBtc && S.key && !BTC.loading && !BTC.err && HX.btcAsk !== S.key.pubHex) { HX.btcAsk = S.key.pubHex; loadBtc().then(dashSoon, dashSoon); }
     const view = wrapEth && hxWrapConnect() ? html`<button type="button" class="link" data-hxconnect>Connect wallet</button>`
-      : onBtc ? (!S.key ? html`<button type="button" class="link" data-signin>Open your Tacit wallet to see it</button>`
+      : onBtc ? (!S.key ? html`<button type="button" class="link" data-signin>Sign in to see it</button>`
         : BTC.err && !BTC.loading ? html`<span>Your Bitcoin address could not be read.</span> <button type="button" class="link" data-hxbtcre>Try again</button>`
         : !BTC.loading && BTC.pub === S.key.pubHex && ((BTC.unread || 0) > 0 || (BTC.arriving || 0) > 0) ? html`<span>Some of your notes could not be read yet, the Bitcoin explorers are busy.</span> <button type="button" class="link" data-hxbtcre>Try again</button>`
         : html`<span>Reading your Bitcoin address…</span>`)
@@ -13798,7 +13811,7 @@ async function hxBridgeInQuote(my, done) {
   const [btcFee, time] = brxRows('in');
   const gas = ['Ethereum gas', 'none: the relay sends it', '', 'The relay sends the Ethereum side of a bridge from Bitcoin and pays its gas. If its free settles for the day are used up, it waits and asks again every hour.'];
   const base = { out: 'Private', go: 'Bridge TAC from Bitcoin', rc: [['Arrives', 'private TAC on Ethereum'], btcFee, gas, time] };
-  if (!S.key) return done({ ...base, go: 'Open your Tacit wallet to bridge' });
+  if (!S.key) return done({ ...base, go: 'Sign in to bridge' });
   const pub = S.key.pubHex;
   if (!(BR.pub === pub && BR.notes)) done({ ...base, line: 'Reading your TAC on Bitcoin…' });
   await loadBridge().catch(() => {});
@@ -14851,6 +14864,8 @@ if ('IntersectionObserver' in window) { const io = new IntersectionObserver((es)
   if ($('#hw')) ask(); else { const mo = new MutationObserver(() => { if ($('#hw')) { mo.disconnect(); ask(); } }); mo.observe(document.body, { childList: true }); }
 }
 document.addEventListener('click', (e) => {
+  const brr = e.target.closest?.('#page-chains [data-br]');
+  if (brr) HX.brAsk = brr.dataset.br;      // the link goes on to the Bitcoin ⇄ Ethereum view, which opens on this coin (secView)
   const h = e.target.closest?.('[data-hx]');
   if (h) { e.preventDefault(); hxPreset(h.dataset.hx, h.dataset.amt || ''); return; }
   if (e.target.closest?.('[data-permit-cancel]')) { PERMIT_WAIT.cancel?.(); return; }

@@ -90,9 +90,9 @@ try {
   await page.click('#hx [data-hxm="bridge"]').catch(() => {});
   await page.waitForSelector('#hx-tab-bridge[aria-selected="true"]', { timeout: 10000 }).catch(() => {});
   await page.waitForSelector('#hx-bal [data-signin]', { timeout: 10000 }).catch(() => {});
-  ok(/Open your Tacit wallet to see it/.test(await text('#hx-bal [data-signin]')), `with no wallet open the From field asks for it: "${await text('#hx-bal')}"`);
+  ok(/Sign in to see it/.test(await text('#hx-bal [data-signin]')), `with no wallet open the From field asks for it: "${await text('#hx-bal')}"`);
   await page.waitForFunction(() => /Open your Tacit wallet/.test(document.querySelector('#hx-go')?.textContent || ''), null, { timeout: 10000 }).catch(() => {});
-  ok(/Open your Tacit wallet to bridge/.test(await text('#hx-go')), `and so does the button: "${await text('#hx-go')}"`);
+  ok(/Sign in to bridge/.test(await text('#hx-go')), `and so does the button: "${await text('#hx-go')}"`);
   await shot('out');
   await page.click('#hx-bal [data-signin]');
   await page.waitForSelector('#ws-in', { timeout: 15000 });
