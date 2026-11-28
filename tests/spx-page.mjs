@@ -118,7 +118,7 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   await p.waitForTimeout(5000);
   const seen = await p.evaluate(() => window.__seen), logos = await p.evaluate(() => document.querySelectorAll('#hx img.tk').length);
   ok(seen.length > 0 && seen.every((k) => k === 'true|false|0') && logos >= 2, `the tile never shows the default pair or a letter mark for SPX: its first paint is SPX with its logo (${seen.join(' > ')}, ${logos} logos)`);
-  ok(await p.evaluate(() => { const a = document.querySelector('#spx-news'); return !!a && !a.offsetParent; }), 'the landing strip’s link to this page is not shown on this page itself');
+  ok(await p.evaluate(() => { const a = document.querySelector('#spx-news'); return !a || !a.offsetParent; }), 'the landing strip’s link to this page is not shown on this page itself');
   await ctx.close();
 }
 // the token's logo does not wait for the swap card (which holds the token list, mounts with the Swap tab, and so is late or never comes on a visit that begins on Send, Request or
@@ -395,7 +395,7 @@ for (const w of [820, 390]) {
   const { ctx, p, bad } = await open('/');
   const t = await waitFor(p, /Shield ETH/i, 15000);
   ok(/Shield ETH/i.test(t) && !/SPX/.test(t), 'the front page still opens on Shield ETH');
-  ok(JSON.stringify(await p.evaluate(() => [...document.querySelectorAll('#hx .hx-where .w')].map((e) => e.textContent.trim()))) === JSON.stringify(['From wallet', 'From Bitcoin']), 'and its Shield ways in still read From wallet and From Bitcoin');
+  ok(await p.evaluate(() => !document.querySelector('#hx .hx-where')), 'and its Shield has no From wallet / From Bitcoin switch: the From coin list holds Bitcoin');
   ok(await p.evaluate(() => !document.querySelector('.spx-top, #spx-below') && !document.documentElement.dataset.page), 'and has none of this page’s parts');
   ok(await p.evaluate(() => { const a = document.querySelector('#spx-news'); return !a || !a.offsetParent; }), 'and its landing shows no strip of pills under the count');
   await p.click('#hx-tab-send'); await p.waitForTimeout(1500);

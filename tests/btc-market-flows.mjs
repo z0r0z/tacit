@@ -116,6 +116,7 @@ const SETUP = () => {
     bridged: W.bridgedNotes ? { list: async () => ({ notes: W.bridgedNotes, unread: 0 }), move: async (n, cb) => { rec('move', n.txid); cb?.('commit-start'); cb?.('reveal-start'); if (W.moveFail) throw new Error(W.moveFail); return { reveal_txid: 'cd'.repeat(32) }; } } : undefined,
     prepare: (raws) => rec('prepare', raws.map((r) => r.sale_id || r.intent_id)),
     onLotCheck: (fn) => { W.lotCheck = fn; return () => { if (W.lotCheck === fn) W.lotCheck = null; }; },
+    afterBuyNote: (o) => (W.buyNote ? `<p class="bm-q">Shield it: ${o.got} for ${o.spent} sats</p>` : ''),   // (the page that hosts the sheet may say what to do with what was bought)
     after: {
       bought: async (o) => rec('bought', { amount: String(o.amount), ids: o.ids }),
       sold: async (o) => rec('sold', { amount: String(o.amount), ids: o.ids }),
@@ -165,7 +166,7 @@ const test = async (name, fn) => {
 };
 
 await test('market buy: two listings in one batch, then the seller-confirmed offer; review numbers = what runs', async (page) => {
-  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000), W.preauth('p2', 50, 10100), W.intent('i1', 10, 2050)]; });
+  await page.evaluate(() => { const W = window.__w; W.buyNote = true; W.listings = [W.preauth('p1', 100, 20000), W.preauth('p2', 50, 10100), W.intent('i1', 10, 2050)]; });
   await mount(page); await settle(page, 300);
   await page.fill('[data-k=amount]', '40000'); await settle(page);
   const q = await page.textContent('[data-k=quote]');
@@ -178,6 +179,7 @@ await test('market buy: two listings in one batch, then the seller-confirmed off
   const done = await waitModal(page, /Bought/);
   await shot(page, 'done-buy');
   assert.match(done, /Bought 160 TAC/);
+  assert.match(done, /Shield it: 16000000000 for 32150 sats/, 'a page that hosts the sheet can say what to do with what was bought, under the receipt');
   const batch = await calls(page, 'takePreauthBatch');
   assert.deepEqual(batch[0].args, ['p1', 'p2']);
   const takes = await calls(page, 'takeAsk');
@@ -187,7 +189,7 @@ await test('market buy: two listings in one batch, then the seller-confirmed off
 });
 
 await test('a taken listing re-routes to the next one inside the confirmed price and budget', async (page) => {
-  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000), W.preauth('p2', 100, 20200)]; W.fail.takeAsk = (id) => (id === 'p1' ? 'preauth sale not found — refresh listings' : null); });
+  await page.evaluate(() => { const W = window.__w; W.buyNote = false; W.listings = [W.preauth('p1', 100, 20000), W.preauth('p2', 100, 20200)]; W.fail.takeAsk = (id) => (id === 'p1' ? 'preauth sale not found — refresh listings' : null); });
   await mount(page); await settle(page, 300);
   await page.fill('[data-k=amount]', '20500'); await settle(page);
   await clickGo(page);
@@ -196,13 +198,14 @@ await test('a taken listing re-routes to the next one inside the confirmed price
   await modalPrimary(page);
   const done = await waitModal(page, /Bought|Nothing/);
   assert.match(done, /Bought 100 TAC/);
+  assert.doesNotMatch(done, /Shield it/, 'a host that says nothing adds nothing');
   assert.match(done, /re-routed/);
   const takes = (await calls(page, 'takeAsk')).map((c) => c.args.id);
   assert.deepEqual(takes, ['p1', 'p2']);
 });
 
 await test('an offer found spent stays out of later quotes while the feed still lists it', async (page) => {
-  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000), W.preauth('p2', 100, 20200)]; W.fail.takeAsk = (id) => (id === 'p1' ? 'asset outpoint already spent' : null); });
+  await page.evaluate(() => { const W = window.__w; W.buyNote = false; W.listings = [W.preauth('p1', 100, 20000), W.preauth('p2', 100, 20200)]; W.fail.takeAsk = (id) => (id === 'p1' ? 'asset outpoint already spent' : null); });
   await mount(page); await settle(page, 300);
   await page.fill('[data-k=amount]', '20500'); await settle(page);
   await clickGo(page); await modalPrimary(page);

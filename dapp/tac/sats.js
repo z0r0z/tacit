@@ -243,7 +243,7 @@ export function mount(host, ctx) {
       if (!ctx.T.wallet.priv) throw new Error('Open your Tacit wallet first.');
       return S.shieldFromSaleKey(ctx.T, { key: n.key, note: n, asset: S.TAC_ASSET_MAINNET, poolWallet: pw, say: (m) => say('st-sats-2', m) });
     });
-    say('st-sats-2', `${fmt(n.value)} TAC put back in the pool in `, txLink(r.revealTxid), '. It joins your shielded balance after one confirmation.');
+    say('st-sats-2', `${fmt(n.value)} TAC put back in the pool in `, txLink(r.revealTxid), '. It joins your shielded balance after three Bitcoin confirmations (about 30 minutes), and shows as joining until then.');
     try { ctx.T.invalidateHoldingsCache?.(); } catch {}
     await loadShielded();
     await looking?.catch(() => {});   // a read already under way began before this and would still see the note

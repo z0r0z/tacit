@@ -206,6 +206,8 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
       friendlyError: (...a) => { const m = base.friendlyError?.(...a); return typeof m === 'string' ? m.replace('retry with the Swap tile or pick another row', 'try again or pick another row') : m; },
       unlock, feeRate: () => T.getFeeRate(), fundSats: (o) => fund({ fiat: (n) => { const px = Number(base.btcUsd?.() || 0); return px > 0 ? `$${((n / 1e8) * px).toFixed(2)}` : ''; }, ...(o || {}) }),
       confirm: confirmDialog,
+      // what to do with TAC just bought: it is at the Tacit wallet's own Bitcoin address (the amount is hidden, the address is not) until it is shielded
+      afterBuyNote: () => (AID === TAC ? '<p class="bm-q">The TAC is at your Bitcoin address: the amount is hidden, but anyone can see the address holds it. <a href="/tac/">Shield it to make it private →</a></p>' : ''),
       // the lot checks the sheet watches: begun, and how each ended (the listener is single, so a check the sheet is not watching is not counted)
       onLotCheck: base.onLotCheck ? (fn) => base.onLotCheck((e) => { if (e.phase === 'start') tally('lot_check_start'); else if (e.phase === 'end') tally(e.ok ? 'lot_check_pass' : 'lot_check_fail'); fn(e); }) : undefined,
       toast: (m, k, ms) => notify(m, k, ms),

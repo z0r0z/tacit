@@ -1,6 +1,6 @@
 
-const SECRET_URL = '/sats/secret.js?cb=36d327c8';
-const SATS_URL = '/tac/sats.js?cb=2d64741d';
+const SECRET_URL = '/sats/secret.js?cb=6e9f6287';
+const SATS_URL = '/tac/sats.js?cb=cfed8c5c';
 const CLAIM_URL = '/tac/claim.js?cb=3191f575';
 const WORKER = 'https://api.tacit.finance';
 const ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
@@ -183,7 +183,11 @@ export function makeTacPool(ctx) {
   const liveAll = () => (S && wallet() ? S.pendingView(shielded.notes || [], S.TAC_ASSET_MAINNET, wallet()).live : (shielded.notes || []).filter((n) => !n.spent));
   const shieldedTotal = () => liveAll().reduce((t, n) => t + BigInt(n.value), 0n);
   // a shield waiting for its block: its note is out of the public list and not yet in the pool's, so the pool says so until that note shows
-  const joiningTotal = () => (S && wallet() && shielded.read ? S.pendingView(shielded.notes || [], S.TAC_ASSET_MAINNET, wallet()).settling ?? 0n : 0n);
+  const pend = () => (S && wallet() && shielded.read ? S.pendingView(shielded.notes || [], S.TAC_ASSET_MAINNET, wallet()) : null);
+  const joiningTotal = () => pend()?.settling ?? 0n;
+  // where the shields waiting for their block are, said in a clause (secret.js shieldLine), and the ones the pool read the block of and did not take
+  const joiningLine = () => (S?.shieldLine ? S.shieldLine(pend()?.shields) : '') || 'counts after 3 Bitcoin confirmations';
+  const refusedShields = () => pend()?.refused ?? [];
   const liveNotes = () => liveAll().filter((n) => BigInt(n.value) > 0n);
   const liveValues = () => liveNotes().map((n) => BigInt(n.value)).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
 
@@ -274,7 +278,7 @@ export function makeTacPool(ctx) {
       : !shielded.read ? 'Reading your shielded notes…'
       : `${fmt(shieldedTotal())} TAC shielded, in ${n} note${n === 1 ? '' : 's'}`;
     const joining = joiningTotal();
-    if (joining > 0n) el.append(` · +${fmt(joining)} TAC joining after one confirmation`);
+    if (joining > 0n) el.append(` · +${fmt(joining)} TAC joining, ${joiningLine()}`);
     if (unlocked() && shielded.read && !shielded.loading && n > 2) {
       const b = Object.assign(document.createElement('button'), { className: 'link', type: 'button', textContent: 'Combine' });
       b.onclick = offerCombine;
@@ -289,8 +293,23 @@ export function makeTacPool(ctx) {
     q('tp-refresh').hidden = !unlocked();
     el.closest('.tp-bal').hidden = !unlocked();
     paintHeld();
+    paintWait();
     paintHist();
     paintSendComb();
+  }
+  // A shield whose block the pool has read and which it did not take: said here until the pool lists a note of it (secret.js keeps it 30 days), with the transaction to ask about.
+  function paintWait() {
+    const box = q('tp-wait');
+    if (!box) return;
+    const bad = unlocked() ? refusedShields() : [];
+    box.hidden = !bad.length;
+    box.replaceChildren(...bad.flatMap((x) => {
+      const p = document.createElement('p'), e = document.createElement('span'), a = document.createElement('a');
+      e.className = 'err'; e.textContent = `A shield of ${fmt(x.v)} TAC did not join the pool.`;
+      a.href = 'https://discord.gg/VxYx9XSBrM'; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = 'Tacit Discord';
+      p.append(e, ` It confirmed in Bitcoin${x.h ? ` in block ${x.h}` : ''}, and the pool has read that block and holds no note from it. Transaction `, txLink(x.txid), ' · ask in the ', a, ' with it.');
+      return [p];
+    }));
   }
   // The wallet's own history in the pool, read when asked for: each transaction behind its notes and what it did to the balance.
   async function readHist() {
@@ -420,7 +439,7 @@ export function makeTacPool(ctx) {
       if (e?.spent) { try { T.invalidateHoldingsCache?.(); } catch {} loadPublic(true).catch(() => {}); }
       throw e;
     }
-    say('tp-st-shield', `${fmt(r.poolNote.value)} TAC shielded in `, txLink(r.revealTxid), '. It joins the pool after one confirmation, and shows here as joining until then.');
+    say('tp-st-shield', `${fmt(r.poolNote.value)} TAC shielded in `, txLink(r.revealTxid), '. It joins the pool after three Bitcoin confirmations (about 30 minutes), and shows here as joining until then.');
     try { T.invalidateHoldingsCache?.(); } catch {}
     pub = { ...pub, notes: pub.notes.filter((x) => `${x.utxo.txid}:${x.utxo.vout}` !== picked) };
     paintBalances(); paintShieldPicker();
@@ -728,6 +747,7 @@ export function makeTacPool(ctx) {
     return html`<div class="seg sub" role="tablist" aria-label="TAC in the Bitcoin pool">${TABS.map(([k, t]) => html`<button type="button" role="tab" id="tp-t-${k}" aria-controls="tp-p-${k}" aria-selected="false" tabindex="-1" data-tp="${k}">${t}</button>`)}</div>
     <div class="kv tp-bal"><span id="tp-bal"></span><button class="link" type="button" id="tp-refresh" hidden>Refresh</button></div>
     <div class="kv tp-bal" id="tp-held-row" hidden><span id="tp-held"></span><button class="link" type="button" id="tp-held-go">To sats</button></div>
+    <div class="note" id="tp-wait" role="status" hidden></div>
     <div id="tp-hist" class="tp-hist" hidden></div>
     <div class="status" id="tp-st-comb" role="status"></div>
 
@@ -855,7 +875,7 @@ export function makeTacPool(ctx) {
     keyChanged,
     refresh: () => (unlocked() ? refreshAll() : Promise.resolve()),
     busy: () => busyId != null,
-    totals: () => ({ shielded: shielded.read ? shieldedTotal() : null, joining: joiningTotal(), public: pub.read ? publicTotal() : null, forSale: satsHeld ? satsHeld.units : null }),
+    totals: () => ({ shielded: shielded.read ? shieldedTotal() : null, joining: joiningTotal(), joiningLine: joiningTotal() > 0n ? joiningLine() : '', refused: refusedShields(), public: pub.read ? publicTotal() : null, forSale: satsHeld ? satsHeld.units : null }),
     pay: (to, amount) => {
       pick('send');
       q('tp-send-to').value = String(to || ''); q('tp-send-amt').value = String(amount || '');

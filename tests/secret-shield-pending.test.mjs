@@ -64,7 +64,7 @@ const listed = { asset: '0x' + ASSET, value: String(7n * 10n ** 8n), nf: '0x01',
 
 // ── shieldNote ──
 mem.clear(); sent = false;
-assert.deepEqual(pendingView([listed], ASSET, pw), { live: [listed], settling: 0n, leaving: 0n, paying: 0n }, 'nothing is joining before a shield');
+assert.deepEqual(pendingView([listed], ASSET, pw), { live: [listed], settling: 0n, leaving: 0n, paying: 0n, shields: [], refused: [] }, 'nothing is joining before a shield');
 const r = await shieldNote(tacit, { note, poolWallet: pw });
 assert.ok(sent, 'the shield went out');
 assert.equal(r.revealTxid, REVEAL);
@@ -72,6 +72,9 @@ let v = pendingView([listed], ASSET, pw);
 assert.equal(v.settling, AMOUNT, 'the amount shows as settling');
 assert.deepEqual(v.live, [listed], 'the notes already in the pool are untouched');
 assert.equal(v.leaving, 0n); assert.equal(v.paying, 0n);
+assert.equal(v.shields.length, 1, 'the shield is listed as one waiting');
+assert.equal(v.shields[0].txid, REVEAL); assert.equal(v.shields[0].st, null, 'with no place yet: nothing has looked at the chain');
+assert.equal(secret.shieldLine(v.shields), 'counts after 3 Bitcoin confirmations', 'and the line says what is known: the pool counts a block at three confirmations');
 assert.equal(pendingView([listed], ASSET, other).settling, 0n, 'another wallet on this browser does not see it');
 assert.equal(pendingView([listed], 'ab'.repeat(32), pw).settling, 0n, 'nor does another asset');
 v = pendingView([listed, { ...listed, value: String(AMOUNT), nf: '0x02', txid: REVEAL, leafIndex: 5 }], ASSET, pw);
@@ -83,6 +86,17 @@ mem.clear(); sent = false;
 const b = await buyAndShield(tacit, { status: { asset_id: ASSET }, sale, poolWallet: pw });
 assert.ok(sent); assert.equal(b.revealTxid, REVEAL);
 assert.equal(pendingView([], ASSET, pw).settling, AMOUNT, 'a lot bought into the pool shows as settling too');
+
+// ── shieldFromSaleKey (TAC at a sale key put back in the pool) ──
+{
+  mem.clear(); sent = false; refuseReveal = false;
+  const SALE_SPK = Buffer.from('0014' + '11'.repeat(20), 'hex');   // the explorer's stand-in output script above
+  const saleTacit = { ...tacit, p2wpkhScript: () => SALE_SPK, signP2wpkhInputWithKey: () => [new Uint8Array(64), new Uint8Array(33)] };
+  const saleKey = { pub: '02' + '33'.repeat(32), priv: '44'.repeat(32) }, saleNote = { txid: TXID, vout: 0, value: AMOUNT.toString(), blinding: '0x' + blindHex };
+  const sk = await secret.shieldFromSaleKey(saleTacit, { key: saleKey, note: saleNote, asset: ASSET, poolWallet: pw });
+  assert.ok(sent, 'the put-back went out'); assert.equal(sk.revealTxid, REVEAL);
+  assert.equal(pendingView([], ASSET, pw).settling, AMOUNT, 'TAC put back in the pool from a sale key shows as joining too: it is at no sale key now and not in the pool’s list yet');
+}
 
 // ── a shield Bitcoin refused ──
 mem.clear(); sent = false; refuseReveal = true;
@@ -100,15 +114,24 @@ const PAYLOAD = { mine: shieldPayload(pw), other: shieldPayload(other, 5n * 10n 
 const carried = (txid, payload) => ({ txid, vin: [{ witness: ['00', hex(real.encodeEnvelopeScript(new Uint8Array(32).fill(5), payload)), '00'] }], vout: [] });
 const ADDR = 'bc1qmine', SHIELD_TX = 'f1'.repeat(32), OTHER_TX = 'f2'.repeat(32), PLAIN_TX = 'f3'.repeat(32), OLD_TX = 'f4'.repeat(32);
 const chain = { NET: { api: 'https://esplora.test', api2: null }, wallet: { address: () => ADDR }, txOutputEnvelope: real.txOutputEnvelope };
-let mempool = [], txs = {}, asked = [];
+const chain2 = { ...chain, NET: { api: 'https://esplora.test', api2: 'https://esplora2.test' } };   // two explorers, as the page has
+let mempool = [], txs = {}, txs2 = {}, asked = [], tipHeight = null, poolStatus = null, poolFeed = [];
+const POOL = 'https://tacit-btc-pool-mainnet.onrender.com/btc-pool/';
+const reply = (t) => (t instanceof Error ? Promise.reject(t) : t === undefined || t === null ? { ok: false, status: 404, json: async () => null } : { ok: true, status: 200, json: async () => t });
 globalThis.fetch = async (url) => {
-  const path = url.replace('https://esplora.test', '');
-  asked.push(path);
-  if (path === `/address/${ADDR}/txs/mempool`) { if (mempool instanceof Error) throw mempool; return { ok: true, status: 200, json: async () => mempool }; }
+  url = String(url);
+  if (url.startsWith(POOL + 'status')) return poolStatus instanceof Error ? Promise.reject(poolStatus) : poolStatus ? reply(poolStatus) : { ok: false, status: 503, json: async () => null };
+  if (url.startsWith(POOL + 'notes')) {
+    if (poolFeed instanceof Error) return Promise.reject(poolFeed);
+    const from = Number(/from=(\d+)/.exec(url)[1]), rows = poolFeed.filter((n) => n.leafIndex >= from);
+    return reply({ height: 0, from, notes: rows, next: rows.length ? rows[rows.length - 1].leafIndex + 1 : from });
+  }
+  const second = url.startsWith('https://esplora2.test'), path = url.replace('https://esplora2.test', '').replace('https://esplora.test', '');
+  if (!second) asked.push(path);
+  if (path === `/address/${ADDR}/txs/mempool`) { if (mempool instanceof Error) throw mempool; return reply(mempool); }
+  if (path === '/blocks/tip/height') return reply(second ? undefined : tipHeight);
   const m = /^\/tx\/([0-9a-f]{64})$/.exec(path);
-  const t = m ? txs[m[1]] : undefined;
-  if (t instanceof Error) throw t;
-  return t === undefined ? { ok: false, status: 404, json: async () => null } : { ok: true, status: 200, json: async () => t };
+  return reply(m ? (second ? txs2 : txs)[m[1]] : undefined);
 };
 const sync = (wallet = pw) => secret.syncPendingShields(chain, wallet, { force: true });
 const keep = (rec) => localStorage.setItem('tacit-pool-pending-v1', JSON.stringify({ spent: {}, change: rec }));
@@ -161,6 +184,88 @@ assert.equal(settling(other), AMOUNT, 'another wallet’s kept shield is not jud
 localStorage.clear(); keep({ [OLD_TX]: { at: Date.now() - 5 * 60e3, v: String(AMOUNT), asset: ASSET, owner: pw.addressString.slice(-16) } }); mempool = []; txs = {};
 await sync();
 assert.equal(settling(), AMOUNT, 'a record that is not a shield (a relayed payment’s change) is left to the pool’s list');
+
+// where a kept shield is on its way to the pool's list (what the look finds out, and says): in the mempool, in a block with n of 3 confirmations, in a block the pool has not
+// read yet, the pool paused, in the list, or in a block the pool has read and not taken
+const H = 977000, feedRow = (i, txid) => ({ leafIndex: i, txid, height: H, leaf: '0x' + String(i).padStart(64, '0'), asset: '0x' + ASSET, pk_eph: '02' + '00'.repeat(32), ct_note: '00'.repeat(24) });
+const inBlock = (h = H) => ({ status: { confirmed: true, block_height: h } });
+const stageOf = async (tx, { tip = null, rs = null, feed = [], ago = 5 * 60e3, extra = {}, via = chain, txid = OLD_TX } = {}) => {
+  localStorage.clear(); mem.clear(); keep(aged(txid, ago, extra)); mempool = []; txs = { [txid]: tx }; txs2 = {}; tipHeight = tip; poolStatus = rs; poolFeed = feed;
+  await secret.syncPendingShields(via, pw, { force: true });
+  return store()[txid];
+};
+const REF_TX = 'f6'.repeat(32);   // (the pool client holds the list it read for 20 s, so each scenario that depends on the list has a transaction of its own)
+const RS = (height, extra = {}) => ({ height, confirmations: 3, halted: null, ...extra });
+let c = await stageOf({ status: { confirmed: false } });
+assert.equal(c.st, 'mempool', 'a kept shield the address list missed but the explorer holds unconfirmed is in the mempool');
+c = await stageOf(inBlock(), { tip: H, rs: RS(H - 2) });
+assert.deepEqual([c.st, c.h, c.conf, c.need], ['confirming', H, 1, 3], 'in its block: 1 of 3 confirmations');
+assert.equal(secret.shieldLine(pendingView([], ASSET, pw).shields), 'confirmed in Bitcoin, 1 of 3 confirmations');
+c = await stageOf(inBlock(), { tip: H + 1, rs: RS(H - 1) });
+assert.deepEqual([c.st, c.conf], ['confirming', 2]);
+c = await stageOf(inBlock(), { tip: H + 2, rs: RS(H - 1) });
+assert.equal(c.st, 'behind', 'three confirmations and the pool has not read the block yet');
+assert.equal(secret.shieldLine(pendingView([], ASSET, pw).shields), 'confirmed in Bitcoin, the pool is catching up to it');
+c = await stageOf(inBlock(), { tip: H + 2, rs: RS(H - 1, { halted: { height: H - 1 } }) });
+assert.equal(c.st, 'paused', 'the pool paused: it takes the shield when it is back');
+c = await stageOf(inBlock(), { tip: H + 2, rs: RS(H), feed: [feedRow(0, OLD_TX)] });
+assert.equal(c.st, 'reading', 'the pool has read the block and holds notes of the shield');
+assert.equal(settling(), AMOUNT, 'and it still counts as joining until the page has opened them');
+c = await stageOf(inBlock(), { tip: H + 2, rs: RS(H), feed: [feedRow(0, 'f9'.repeat(32))], txid: REF_TX });
+assert.equal(c.st, 'refused', 'the pool has read the block and holds nothing of this shield');
+let pv = pendingView([], ASSET, pw);
+assert.equal(pv.settling, 0n, 'a refused shield is not counted as on its way');
+assert.deepEqual(pv.refused.map((x) => [x.txid, x.v, x.h]), [[REF_TX, AMOUNT, H]], 'it is listed as refused, with its block');
+assert.deepEqual(pv.shields, []);
+assert.equal(pendingView([{ asset: '0x' + ASSET, value: String(AMOUNT), txid: REF_TX, nf: '0x09' }], ASSET, pw).refused.length, 0, 'and goes if the pool lists a note of it after all');
+asked = []; await secret.syncPendingShields(chain, pw, { force: true });
+assert.ok(!asked.some((u) => u.includes(`/tx/${REF_TX}`)), 'a refused shield is not asked about again');
+c = await stageOf(inBlock(), { tip: H + 2, rs: RS(H) , feed: new Error('offline') });
+assert.equal(c.st, 'reading', 'a list that cannot be read says nothing against the shield');
+c = await stageOf(inBlock(), { tip: H + 5, rs: new Error('offline') });
+assert.equal(c.st, 'behind', 'a pool status that cannot be read says nothing against it either');
+c = await stageOf(inBlock(), { tip: null, rs: RS(H - 2) });
+assert.deepEqual([c.st, c.conf], ['confirming', null], 'without the chain tip it is in a block, number of confirmations not known');
+assert.equal(secret.shieldLine(pendingView([], ASSET, pw).shields), 'confirmed in Bitcoin, counts after 3 confirmations');
+c = await stageOf({ status: { confirmed: true } }, { tip: H, rs: RS(H) });
+assert.equal(c.st, 'confirming', 'a block height the explorer does not give is not guessed at');
+
+// how long a record is kept: a shield for days (Bitcoin can take that long), one the pool refused for a month, the change of a payment for six hours
+const view = (rec) => { localStorage.clear(); mem.clear(); keep(rec); return pendingView([], ASSET, pw); };
+assert.equal(view(aged(OLD_TX, 11 * 3600e3)).settling, AMOUNT, 'a shield waiting eleven hours is still there (it was let go at six)');
+assert.equal(view(aged(OLD_TX, 2 * 86400e3)).settling, AMOUNT, 'and after two days');
+assert.equal(view(aged(OLD_TX, 4 * 86400e3)).settling, 0n, 'but not after four');
+assert.equal(view(aged(OLD_TX, 10 * 86400e3, { st: 'refused', h: H })).refused.length, 1, 'a refused shield is still said after ten days');
+assert.equal(view(aged(OLD_TX, 31 * 86400e3, { st: 'refused', h: H })).refused.length, 0, 'not after a month');
+assert.equal(view({ [OLD_TX]: { at: Date.now() - 7 * 3600e3, v: String(AMOUNT), asset: ASSET, owner: pw.addressString.slice(-16) } }).settling, 0n, 'the change of a payment is let go at six hours, as before');
+assert.equal(view({ [OLD_TX]: { ...aged(OLD_TX, 60e3)[OLD_TX], st: 'refused' }, [SHIELD_TX]: aged(SHIELD_TX, 60e3)[SHIELD_TX] }).settling, AMOUNT, 'a refused shield is not added to what is joining');
+
+// a transaction one explorer has dropped or never heard of and another holds is not gone
+localStorage.clear(); mem.clear(); keep(aged(OLD_TX, 5 * 60e3)); mempool = []; txs = {}; txs2 = { [OLD_TX]: { status: { confirmed: false } } }; tipHeight = null; poolStatus = null; poolFeed = [];
+await secret.syncPendingShields(chain2, pw, { force: true });
+assert.equal(store()[OLD_TX]?.st, 'mempool', 'the first explorer says 404, the second holds it: it is in the mempool');
+for (const [what, first, second, kept] of [
+  ['both explorers have no such transaction', undefined, undefined, false],
+  ['the second does not answer', undefined, new Error('429'), true],
+  ['the first does not answer', new Error('429'), undefined, true],
+]) {
+  localStorage.clear(); mem.clear(); keep(aged(OLD_TX, 5 * 60e3)); txs = { [OLD_TX]: first }; txs2 = { [OLD_TX]: second };
+  await secret.syncPendingShields(chain2, pw, { force: true });
+  assert.equal(OLD_TX in store(), kept, `${what}: ${kept ? 'kept' : 'let go'}`);
+}
+txs2 = {};
+
+// what the line says of the shield furthest from the pool
+const now = Date.now(), line = (...sh) => secret.shieldLine(sh.map((x) => ({ need: 3, at: now, ...x })), now);
+assert.equal(line(), '');
+assert.equal(line({ st: 'mempool', at: now - 10 * 60e3 }), 'waiting for Bitcoin to confirm it');
+assert.match(line({ st: 'mempool', at: now - 5 * 3600e3 }), /^still unconfirmed in Bitcoin after 5 h, usually a low fee \(it confirms or drops out, and the TAC comes back if it drops\)$/);
+assert.match(line({ st: 'mempool', at: now - 100 * 60e3 }), /^waiting for Bitcoin to confirm it$/, 'under two hours is not yet a long wait');
+assert.equal(line({ st: 'confirming', conf: 2 }), 'confirmed in Bitcoin, 2 of 3 confirmations');
+assert.equal(line({ st: 'paused' }), 'confirmed in Bitcoin, the pool is paused and takes it when it is back');
+assert.equal(line({ st: 'reading' }), 'in the pool, being read');
+assert.equal(line({ st: 'reading' }, { st: 'mempool' }), 'waiting for Bitcoin to confirm it', 'of several, the one furthest from the pool');
+assert.equal(line({ st: 'confirming', conf: 1 }, { st: null }), 'counts after 3 Bitcoin confirmations', 'one whose place is not known yet is said as that');
 
 // the look is shared and spaced, and an explorer that does not answer changes nothing
 localStorage.clear(); mem.clear(); keep(aged(SHIELD_TX, 5 * 60e3)); mempool = [carried(SHIELD_TX, PAYLOAD.mine)]; asked = [];

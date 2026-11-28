@@ -1341,7 +1341,7 @@ function createMarket(host, ctx) {
     for (const s of steps) if (s.status === 'queued') { s.status = 'skipped'; s.note = 'not attempted'; }
     const title = got > 0n ? `Bought ${fmtAmount(got, dec, 6)} ${T}` : 'Nothing bought';
     const summary = got > 0n
-      ? `<p class="bm-q">Paid ${fmtSats(spent)} sats · average ${fmtUnit((spent * Math.pow(10, dec)) / Number(got))} sats/${T}. It shows in your wallet now and confirms with the next Bitcoin block.</p>${err ? `<p class="bm-q bm-warn">The rest didn't go through: ${esc(ctx.friendlyError(err))}</p>` : ''}`
+      ? `<p class="bm-q">Paid ${fmtSats(spent)} sats · average ${fmtUnit((spent * Math.pow(10, dec)) / Number(got))} sats/${T}. It shows in your wallet now and confirms with the next Bitcoin block.</p>${ctx.afterBuyNote?.({ got, spent }) || ''}${err ? `<p class="bm-q bm-warn">The rest didn't go through: ${esc(ctx.friendlyError(err))}</p>` : ''}`
       : `<p class="bm-q">${err ? esc(ctx.friendlyError(err)) : 'The offers were taken before you — nothing was spent.'}</p>`;
     const leftover = order.spendSats != null ? order.spendSats - spent : 0;
     md.set(`<h2>${title}</h2>${summary}${stepsHtml(steps)}`);

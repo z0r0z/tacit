@@ -830,35 +830,13 @@ await step('farmback', async () => {
     if (r.errors.length) { fails++; console.log('FAIL farmback page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
-// The quick starts above the tile: three chips at 0.01 ETH; the private swap one fills the card with ETH for USDC, Swap privately on and 0.01 in; the shield one opens the
-// Shield way with 0.01. Each only fills the card: nothing is sent.
+// The front page has no quick-start chips for a visitor with nothing held: the farms stand under the card on their own.
 await step('hints', async () => {
   const r = await openPage({ account: A0, key: K0 }), p = r.page;
   try {
     await p.goto(r.url);
-    await p.waitForSelector('#hints .hint', { state: 'attached', timeout: 60000 });
-    ok(await p.$eval('#hints', (e) => getComputedStyle(e).display === 'none'), 'hints: the quick starts are not shown on the front page with nothing held (the farms are)');
-    await p.addStyleTag({ content: '#hints { display: flex !important; }' });      // what follows checks what each one fills in, should the row be shown
-    const names = await p.$$eval('#hints .hint', (bs) => bs.map((b) => b.dataset.hint));
-    ok(names.includes('pswap') && names.includes('shield'), `hints: quick starts show above the card (${names.join(' ')})`);
-    ok(await p.$$eval('#hints .hint', (bs) => bs.every((b) => b.querySelectorAll('svg.tk').length >= 2 && b.textContent.trim().length > 10)), 'hints: each carries its token marks and says what it does');
-    ok(names.includes('send'), 'hints: a Send start is among them');
-    ok(names.includes('buytac') && names.indexOf('buytac') === names.indexOf('send') + 1, `hints: a Buy TAC with BTC start follows Send (${names.join(' ')})`);
-    ok(await p.$eval('#hints [data-hint="buytac"]', (b) => b.querySelectorAll('svg.tk').length === 2 && /Buy\s*TAC\s*with BTC/.test(b.textContent)), 'hints: and says what it does, with BTC and TAC marks');
-    await p.click('#hints [data-hint="send"]');
-    ok(await p.waitForFunction(() => document.querySelector('#hx-sa')?.value === 'wusdc' && document.querySelector('#hx-amt')?.value === '25' && document.activeElement?.id === 'hx-rcpt', null, { timeout: 30000 }).then(() => true, () => false), 'hints: the Send start opens Send on the wallet\'s USDC with 25 in and the recipient asked for');
-    await p.click('[data-hxm="swap"]');
-    await p.click('#hints [data-hint="pswap"]');
-    ok(await p.waitForFunction(() => document.querySelector('#hx-swap #amt')?.value === '0.01', null, { timeout: 30000 }).then(() => true, () => false), 'hints: the private swap start puts 0.01 in the card');
-    ok(await cardIs(p, 'ETH>USDC'), 'hints: on ETH for USDC');
-    // the card takes the private way from the link (Swap privately itself needs quotes, which this fork does not give)
-    ok(await p.waitForFunction(() => /private=to/.test(location.search) && /to=USDC/.test(location.search), null, { timeout: 30000 }).then(() => true, () => false), 'hints: asking for the private way (the card\'s own link grammar)');
-    await p.click('#hints [data-hint="shield"]');
-    ok(await p.waitForFunction(() => document.querySelector('#hx-swap #amt')?.value === '0.01' && /Private|private|DeFi/.test(document.querySelector('#hx-swap')?.textContent || ''), null, { timeout: 30000 }).then(() => true, () => false), 'hints: the shield start opens the way to the private pool with 0.01');
-    // the Bitcoin start leaves the front page for the trade page, open on the Bitcoin order book and naming itself
-    const gone = p.waitForURL(/\/trade\/tac\/\?lane=btc&src=chip$/, { timeout: 30000 }).then(() => true, () => false);
-    await p.click('#hints [data-hint="buytac"]');
-    ok(await gone, 'hints: the Buy TAC with BTC start goes to the trade page on the Bitcoin order book (?lane=btc&src=chip)');
+    await p.waitForSelector('#fms a', { timeout: 60000 });
+    ok(await p.evaluate(() => { const h = document.querySelector('#hints'); return !h || h.hidden || !h.querySelector('.hint:not(.own)'); }), 'hints: no quick-start chips with nothing held, only the farms');
   } finally { await r.browser.close(); }
 });
 
@@ -10970,6 +10948,7 @@ await step('hxfold', async () => {
     const homes = () => p.$$eval('#hx-swap [data-home]', (b) => b.map((x) => `${x.dataset.home}${x.getAttribute('aria-checked') === 'true' ? '*' : ''}`).join());
     // the card shows the chosen home alone, and opens both rows when it is pressed (its Change link)
     ok((await homes()) === 'defi*', `hxfold: the Swap card opens on making ETH private, its chosen private home alone (${await homes()})`);
+    await p.fill('#hx-swap #amt', '0.1'); await p.waitForTimeout(800);      // the line shows once there is an amount
     await p.click('#hx-swap #homes [data-home]');
     ok((await homes()) === 'defi*,pay', `hxfold: opened, its two private homes side by side (${await homes()})`);
     await p.fill(MV.amt, '0.1');
@@ -11105,17 +11084,17 @@ await step('tradelinks', async () => {
           scroll: document.documentElement.scrollWidth > window.innerWidth + 1 };
       });
       ok(seen.menu, `tradelinks (${name}): the header has its menu in view`);
-      const SECTIONS = 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains Borrow:/vault/ Rewards:/rewards/';
+      const SECTIONS = 'Portfolio:/#portfolio Pay:/#/payments DeFi:/#/defi Bridge:/#/chains Borrow:/vault/ Rewards:/rewards/';
       if (name === 'desktop') ok(seen.sections && seen.order === SECTIONS, `tradelinks (${name}): and the six sections beside it (${seen.order})`);
-      else ok(!seen.sections && seen.bar === 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains More:/#/menu' && seen.all.startsWith('Borrow:/vault/ Rewards:/rewards/ Assets:/assets/ '), `tradelinks (${name}): four sections and More are the bar at the foot, the other two first in the menu (${seen.bar} | ${seen.all})`);
-      ok(seen.more === 'Assets:/assets/ TAC:/tac/ Trade:/trade/tac/?src=menu Pay pool:/pay/ Bridges:/bridge/ Etch:/etch/ Shop:/shop/ Prove:/prove/ Tasks:/tasks/ FACE:/face/', `tradelinks (${name}): and, under the menu, the pages no section is (${seen.more})`);
+      else ok(!seen.sections && seen.bar === 'Portfolio:/#portfolio Pay:/#/payments DeFi:/#/defi Bridge:/#/chains More:/#/menu' && seen.all.startsWith('Borrow:/vault/ Rewards:/rewards/ Assets:/assets/ '), `tradelinks (${name}): four sections and More are the bar at the foot, the other two first in the menu (${seen.bar} | ${seen.all})`);
+      ok(seen.more === 'Assets:/assets/ TAC:/tac/ Trade:/trade/tac/?src=menu Pay pool:/pay/ Etch:/etch/ Shop:/shop/ FACE:/face/ Prove:/prove/ Tasks:/tasks/ Praxis:/praxis/', `tradelinks (${name}): and, under the menu, the pages no section is (${seen.more})`);
       await p.click('.sn .sm > summary');
       ok(await p.evaluate(() => [...document.querySelectorAll('.sm-p a.pr')].some((a) => a.getBoundingClientRect().width > 0)) === (name === 'phone'), `tradelinks (${name}): the menu lists Borrow and Rewards only where the header has not`);
       await p.keyboard.press('Escape');
       ok(!(await p.$eval('.sm', (d) => d.open)), `tradelinks (${name}): and Escape shuts it`);
       ok(seen.chip, `tradelinks (${name}): and the account chip still shows its whole label`);
       ok(seen.tile, `tradelinks (${name}): the TAC section links to TAC's own trade page`);
-      ok(seen.foot === 'Whitepaper, Build, Security, Source, Pool contract, Stats, DefiLlama, Listed on ETHBeat, @tacitfi on X, Tacit Discord community', `tradelinks (${name}): and the footer is icons for the places outside the app (${seen.foot})`);
+      ok(seen.foot === 'Whitepaper, Build, Security, Source, Pool contract, Stats, Nodes, DefiLlama, Listed on ETHBeat, @tacitfi on X, Tacit Discord community', `tradelinks (${name}): and the footer is icons for the places outside the app (${seen.foot})`);
       ok(!seen.scroll, `tradelinks (${name}): and the page does not scroll sideways`);
       if (r.errors.length) { fails++; console.log('FAIL tradelinks page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     } finally { await r.browser.close(); }

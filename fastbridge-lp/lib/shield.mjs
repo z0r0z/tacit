@@ -17,6 +17,7 @@ import { checkDeposit, sendDeposit, waitMined, settleDeposit, GAS_KEPT } from '.
 
 const TICKER = 'cETH';
 const UNIT = 10n ** 10n;                                          // wei in one pool unit
+const DEPOSIT_GAS = 300000n, DEPOSIT_TIP = 1_500_000_000n;          // a deposit's gas limit (ux.routerWrap) and the tip it is priced with, at most
 const DROP = 10n ** 16n;                                          // a fall of the public ETH this big with nothing of ours under way is not gas
 const err = (e) => String((e && e.message) || e).slice(0, 200);
 const eth = (wei) => (Number(BigInt(wei) / UNIT) / 1e8).toFixed(4);
@@ -39,6 +40,8 @@ export function shieldConfig(env = process.env) {
 }
 
 export function makeShield({ cfg, ux, key, address, quiet = async () => true, turn = (fn) => fn(), load, save, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {}, waitTries = 90, waitMs = 4000, sendFrom = null }) {
+  // the most a deposit's gas can cost now: its limit at twice the base fee and the tip (what it is sent with); the floor GAS_KEPT when the price cannot be read
+  const depositGas = async () => { try { return DEPOSIT_GAS * (BigInt(await ux.rpc('eth_gasPrice', [])) * 2n + DEPOSIT_TIP); } catch { return GAS_KEPT; } };
   let st = null, busy = false, halted = null, bal = null, nextAt = -Infinity, stuckSaid = -Infinity;
   const ethOf = async () => BigInt(await ux.rpc('eth_getBalance', [address, 'latest']));
   const keep = () => save({ id: 'shield', ...st });
@@ -101,7 +104,10 @@ export function makeShield({ cfg, ux, key, address, quiet = async () => true, tu
       const have = await ethOf();
       if (bal != null && have + DROP < bal) { const was = bal; bal = have; alert({ level: 'warn', msg: 'auto-shield: the address\'s ETH fell without anything of the provider\'s under way; no deposit this time', was: eth(was), now: eth(have) }); return { did: 'dropped' }; }
       bal = have;
-      const room = have > cfg.reserveWei ? have - cfg.reserveWei : 0n;
+      // the deposit's own gas comes out of this address too: kept back with the reserve, so a deposit never leaves the address under it (it left it a few wei under, and the
+      // gas alert, which fires under the reserve, stayed on after every deposit)
+      const keepWei = cfg.reserveWei + await depositGas();
+      const room = have > keepWei ? have - keepWei : 0n;
       const amountWei = room - (room % UNIT);
       if (amountWei < cfg.minWei) return { did: 'low' };
       const at = await index();

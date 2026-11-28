@@ -566,6 +566,15 @@ function tacSeenKeep(k, places) {
 const tacSeenOn = (k, places) => { const seen = k ? tacSeen(k) : null; return seen ? places.map((p) => (p.v == null && seen[p.key] != null ? { ...p, v: BigInt(seen[p.key]), bad: false, seen: true } : p)) : places; };
 // TAC in a shield that is waiting for its block: out of the public list, not yet in the pool's. From the pool card's own read when it is up, else the page's holdings read.
 const tacJoining = (k) => (ctx.TPOOL.api?.totals().joining || 0n) || (HELD.pub === k ? HELD.sats?.find((a) => a.ticker === 'TAC')?.joining ?? 0n : 0n);
+// Where those shields are, in a clause (secret.js shieldLine), and the shields the pool read the block of and did not take: from the pool card's read when it is up, else the page's holdings read.
+const TAC_JOIN_DEFAULT = 'counts after 3 Bitcoin confirmations';
+function tacWait(k) {
+  const t = ctx.TPOOL.api?.totals();
+  if (t && ((t.joining || 0n) > 0n || t.refused?.length)) return { line: t.joiningLine || TAC_JOIN_DEFAULT, refused: t.refused || [] };
+  const a = HELD.pub === k ? HELD.sats?.find((x) => x.ticker === 'TAC') : null;
+  return { line: a?.joinLine || TAC_JOIN_DEFAULT, refused: a?.refused || [] };
+}
+const tacRefused = (k) => (k ? tacWait(k).refused : []).map((x) => html`<p class="note"><span class="err">A shield of ${fmt(x.v, 8, 4)} TAC did not join the pool.</span> It confirmed in Bitcoin${x.h ? ` in block ${x.h}` : ''}, and the pool has read that block and holds no note from it. <a href="https://mempool.space/tx/${x.txid}" target="_blank" rel="noopener noreferrer">View the transaction</a> · ask in the <a href="https://discord.gg/VxYx9XSBrM" target="_blank" rel="noopener noreferrer">Tacit Discord</a> with it.</p>`);
 const TAC_MOVE_PAY = 'Takes it out of the Pay pool to your wallet, then shields it to the Tacit chain.';
 const TAC_MOVE_BTC = 'Takes all of it out of the pool to your Bitcoin address, then opens the bridge to Ethereum. From there it moves to the Tacit chain.';
 function tacPlaces(k, who) {
@@ -685,7 +694,7 @@ document.addEventListener('click', (e) => {
   tacMoveGo(b.dataset.tacMove, b);
 });
 function tacPool() {
-  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=adc016b4').then((m) => {
+  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=89e225c0').then((m) => {
     const api = m.makeTacPool({
       key: () => (S.key ? { pubHex: S.key.pubHex } : null),
       priv: () => walletPriv(),
@@ -796,7 +805,7 @@ function tpgTop(el) {
   const places = k ? tacSeenOn(k, read) : read, by = Object.fromEntries(places.map((p) => [p.key, p])), stale = places.some((p) => p.seen);
   const total = places.reduce((s, p) => s + (p.v || 0n), 0n), known = places.filter((p) => p.core).every((p) => p.v != null), failed = places.some((p) => p.bad);
   const pub = (by.wallet?.v || 0n) + (by.btc?.v || 0n), usd = hxUsd('tac', Number(total) / 1e18);
-  const note = { chain: `private, for payments${k && ctx.CH.pub === k && (ctx.CH.incoming ?? 0n) > 0n ? ` · ${fmt(ctx.CH.incoming, 8, 2)} incoming` : ''}`, pool: 'private on Bitcoin', joining: 'one confirmation to go', defi: 'trade · farm · borrow', pay: 'from before the Tacit chain', wallet: 'public on Ethereum', btc: 'amounts hidden, address seen', sale: 'taken out of the pool to sell' };
+  const note = { chain: `private, for payments${k && ctx.CH.pub === k && (ctx.CH.incoming ?? 0n) > 0n ? ` · ${fmt(ctx.CH.incoming, 8, 2)} incoming` : ''}`, pool: 'private on Bitcoin', joining: k ? tacWait(k).line : TAC_JOIN_DEFAULT, defi: 'trade · farm · borrow', pay: 'from before the Tacit chain', wallet: 'public on Ethereum', btc: 'amounts hidden, address seen', sale: 'taken out of the pool to sell' };
   const rows = TPG_ROWS.filter(([key]) => by[key] && ((by[key].v || 0n) > 0n || (key === 'chain' && chainOn())));
   const seg = rows.filter(([key]) => (by[key].v || 0n) > 0n);
   const nudge = chainOn() && (by.defi?.v || 0n) > 0n && hxWays('tac').includes('chain');
@@ -811,6 +820,7 @@ function tpgTop(el) {
       ${key === 'defi' && nudge ? html`<span class="nudge"><button class="link" type="button" data-hx="shield:tac:chain">Move to the Tacit chain to earn from payments</button></span>` : ''}
       ${key === 'btc' && k && (by.btc.v || 0n) > 0n ? html`<span class="nudge"><button class="link" type="button" data-tn-top>Manage notes: bridge, merge, split</button></span>` : ''}</li>`)}</ul>
     ${k ? shLookingNote(k) : ''}
+    ${tacRefused(k)}
     ${k ? depositCallout('tac', 'tac-finish') : ''}
     ${kept.length ? html`<p class="note">${kept.length === 1 ? 'One of your Tacit chain moves has' : `${kept.length} of your Tacit chain moves have`} not landed yet. <button class="link" type="button" data-hx="${tpgKeptWay(kept[0])}">See ${kept.length === 1 ? 'it' : 'them'}</button></p>` : ''}
     ${stuck.map((h) => html`<p class="note">A move of ${fmt(BigInt(h.units), 8, 4)} TAC to the private pool has not been sent on, so the TAC is in neither place yet. <button class="link" type="button" data-chainhop="${h.commit}" data-st="tpg-top-st">Send it on</button></p>`)}
@@ -1349,7 +1359,7 @@ function tcardHead(side) {
   const elseU = split && split.other / E10 > 0n ? split.other / E10 : null;
   return html`<h2 class="tcd-k" id="tcd-name"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Private TAC</b><span>${chain ? 'on the Tacit chain' : 'on Bitcoin, in the shielded pool'}</span></h2>
     ${!k ? '' : html`<p class="tcd-v num">${v == null ? (chain && ctx.CH.err ? '—' : sk) : fmt(v, 8, 4)}<small>TAC</small></p>
-    <p class="tcd-sub">${[usd && `≈ ${usd}`, shares != null && shares > 0n && `${fmt(shares, 8, 4)} shares`, shares != null && shares > 0n && up != null && up > 0 && html`<span class="tcd-up">each +${up.toFixed(2)}% since the chain began</span>`, chain && ctx.CH.pub === k && (ctx.CH.incoming ?? 0n) > 0n && `+${fmt(ctx.CH.incoming, 8, 4)} TAC incoming`, joining > 0n && `+${fmt(joining, 8, 4)} TAC joining after one confirmation`].filter(Boolean).flatMap((x, i) => (i ? [' · ', x] : [x]))}</p>`}
+    <p class="tcd-sub">${[usd && `≈ ${usd}`, shares != null && shares > 0n && `${fmt(shares, 8, 4)} shares`, shares != null && shares > 0n && up != null && up > 0 && html`<span class="tcd-up">each +${up.toFixed(2)}% since the chain began</span>`, chain && ctx.CH.pub === k && (ctx.CH.incoming ?? 0n) > 0n && `+${fmt(ctx.CH.incoming, 8, 4)} TAC incoming`, joining > 0n && `+${fmt(joining, 8, 4)} TAC joining, ${tacWait(k).line}`].filter(Boolean).flatMap((x, i) => (i ? [' · ', x] : [x]))}</p>`}
     ${tcardAll(k, side)}
     ${pubU != null && pubU > 0n ? html`<p class="tcd-nudge">${fmt(pubU, 8, 2)} TAC is public ${chain ? (split ? (onKey ? 'at this key’s address' : 'in your wallet') : onKey && !S.wallet ? 'at this key’s address' : 'in your wallet') : 'at your Bitcoin address'}. <button class="link" type="button" id="tpg-priv">${over ? `Shield ${fmt(capU, 8, 0)} of it` : 'Shield it'}</button></p>` : ''}
     ${elseU ? html`<p class="tcd-nudge">${fmt(elseU, 8, 2)} TAC is public ${split.otherAs === 'tacit' ? 'at this key’s address' : 'in your wallet'}, which is not paying now. <button class="link" type="button" id="tpg-payfrom" data-as="${split.otherAs}">Pay from it and shield</button></p>` : ''}`;

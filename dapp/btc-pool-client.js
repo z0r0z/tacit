@@ -201,6 +201,11 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
     feedMemo = { at: Date.now(), notes };
     return notes;
   }
+  // Whether the feed holds a note made by transaction `txid` (a shield's notes carry its txid), from the feed held if it is under 20 s old, or `fresh`ly read.
+  async function feedHas(txid, { fresh = false } = {}) {
+    const t = strip(txid);
+    return (await feedNow(fresh)).some((n) => strip(n.txid) === t);
+  }
   const treeMemo = { keys: [], levels: [] };
   // Every nullifier the pool has seen, kept between reads and read again from twelve blocks back for reorgs; null when
   // the replay does not serve the list.
@@ -353,5 +358,5 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
   const submit = (body) => getJson(`${rApi}/btc-pool/relay/submit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const relayStatus = (id) => getJson(`${rApi}/btc-pool/relay/status/${id}`);
 
-  return { pin, system, artifactBytes, artifactsCached, status, allNotes, path, nullifier, exit, walletNotes, scanMine, anchorAndPaths, relayInfo, quote, submit, relayStatus, api };
+  return { pin, system, artifactBytes, artifactsCached, status, allNotes, feedHas, path, nullifier, exit, walletNotes, scanMine, anchorAndPaths, relayInfo, quote, submit, relayStatus, api };
 }

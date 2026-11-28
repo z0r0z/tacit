@@ -195,8 +195,10 @@ console.log('a provider: the switch appears, and the lane opens');
 
   console.log('the lane: the minimum, a quote, the market, a quote that must not start');
   await page.fill('#a-amt', '0.0001');
-  await page.waitForFunction(() => /Minimum 0\.0005 BTC/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
-  ok(await page.$eval('#a-go', (e) => e.disabled), 'under the least a provider takes the button says the minimum and waits');
+  await page.waitForFunction(() => /Use the minimum: 0\.0005 BTC/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
+  ok(!(await page.$eval('#a-go', (e) => e.disabled)), 'under the least a provider takes the button offers the minimum');
+  await page.click('#a-go');
+  ok((await page.inputValue('#a-amt')) === '0.0005', `and pressing it puts the minimum in the field, swapping nothing (${await page.inputValue('#a-amt')})`);
   await type(page, '0.01');
   ok((await text(page, '#a-out')) === '0.304', `0.01 BTC quotes 0.304 ETH (${await text(page, '#a-out')})`);
   const q = (await atom(page, 'A.calls.quote')).at(-1);

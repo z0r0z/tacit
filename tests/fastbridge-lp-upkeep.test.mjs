@@ -403,6 +403,7 @@ function shieldUx(o = {}) {
       if (m === 'eth_getBalance') return '0x' + o.bal().toString(16);
       if (m === 'eth_call') { c.checks++; if (o.dup) throw new Error('execution reverted: 0xad2fa98e'); return '0x'; }
       if (m === 'eth_getTransactionCount') return '0x' + (o.nonce ?? 5).toString(16);
+      if (m === 'eth_gasPrice') return '0x' + (o.gasPrice ?? 10n ** 9n).toString(16);
       if (m === 'eth_getTransactionReceipt') return o.receipt === undefined ? { status: '0x1' } : o.receipt;
       throw new Error('rpc ' + m);
     },
@@ -440,16 +441,21 @@ test('auto-shield waits for a quiet address', async () => {
   assert.equal((await m.s.step()).did, 'shielded'); assert.equal(m.c.sent.length, 1);
 });
 
-test('auto-shield never touches the gas reserve and sends nothing under the smallest chunk', async () => {
+test('auto-shield never touches the gas reserve, keeps back the deposit\'s own gas, and sends nothing under the smallest chunk', async () => {
+  // at 1 gwei the deposit's gas is at most 300000 x (2 x 1 + 1.5) gwei = 0.00105 ETH, kept back with the reserve: the address is never left under the reserve
   let m = mkShield({ bal: () => E('0.5') });
   assert.equal((await m.s.step()).did, 'shielded');
-  assert.equal(m.c.sent[0].amountWei, E('0.48'), 'the balance less the 0.02 reserve');
+  assert.equal(m.c.sent[0].amountWei, E('0.47895'), 'the balance less the 0.02 reserve and the deposit\'s gas');
   m = mkShield({ bal: () => E('0.0399') });
   assert.equal((await m.s.step()).did, 'low'); assert.equal(m.c.sent.length, 0);
   m = mkShield({ bal: () => E('0.04') });
+  assert.equal((await m.s.step()).did, 'low', 'the reserve and the chunk, but not the gas'); assert.equal(m.c.sent.length, 0);
+  m = mkShield({ bal: () => E('0.04105') });
   assert.equal((await m.s.step()).did, 'shielded'); assert.equal(m.c.sent[0].amountWei, E('0.02'));
+  m = mkShield({ bal: () => E('0.5'), gasPrice: 20n * 10n ** 9n });
+  await m.s.step(); assert.equal(m.c.sent[0].amountWei, E('0.46755'), 'more kept back when gas is dearer (300000 x 41.5 gwei)');
   m = mkShield({ bal: () => E('1') }, { FB_LP_AUTO_SHIELD: 'on', FB_LP_SHIELD_RESERVE_ETH: '0.5' });
-  await m.s.step(); assert.equal(m.c.sent[0].amountWei, E('0.5'));
+  await m.s.step(); assert.equal(m.c.sent[0].amountWei, E('0.49895'));
 });
 
 test('auto-shield keeps one deposit in flight and waits the gap before the next', async () => {
@@ -555,6 +561,8 @@ test('low-balance alerts: each says what to send where, once per few hours, and 
   assert.equal(watchConfig({}).lowEthUnits, 5_000_000n); assert.equal(watchConfig({}).lowSats, 100000n);
   assert.equal(watchConfig({ FB_LP_ALERT_LOW_ETH: '0.1', FB_LP_ALERT_LOW_SATS: '5' }).lowEthUnits, 10_000_000n);
   assert.throws(() => watchConfig({ FB_LP_ALERT_LOW_SATS: 'x' }), /sats/);
+  assert.equal(watchConfig({}).lowGasWei, undefined, 'half the gas reserve unless set');
+  assert.equal(watchConfig({ FB_LP_ALERT_LOW_GAS_ETH: '0.015' }).lowGasWei, E('0.015'));
   const { w, v, alerts } = mkWatch();
   await w.check(); assert.equal(alerts.length, 0);
   v.free = 1_000_000n; await w.check();
@@ -566,8 +574,10 @@ test('low-balance alerts: each says what to send where, once per few hours, and 
   await w.check(); assert.equal(alerts.length, 3);
   v.sats = 99999n; await w.check();
   assert.match(alerts[3].msg, /Bitcoin is low.*Send BTC to bc1qmain or bc1qrev/);
-  v.pub = E('0.01'); await w.check();
-  assert.match(alerts[4].msg, /gas reserve.*Send ETH to 0xPOOL/);
+  v.pub = E('0.0199'); await w.check();
+  assert.equal(alerts.length, 4, 'a little under the reserve (what a deposit\'s gas leaves) is not low on gas');
+  v.pub = E('0.0099'); await w.check();
+  assert.match(alerts[4].msg, /low on gas: 0\.0099 ETH, under 0\.0100 \(its reserve is 0\.0200\)\. Send ETH to 0xPOOL/);
   assert.deepEqual(w.info().alerting, ['gas', 'sats']);
 });
 
@@ -587,7 +597,7 @@ test('low-balance alerts: /info shows the same facts, and no secret', async () =
   const { w } = mkWatch({ free: 1_000_000n, sats: 7n, pub: E('0.3') });
   await w.check();
   const i = w.info();
-  assert.deepEqual({ ...i, alerting: undefined }, { poolAccount: '0xPOOL', btcAddresses: ['bc1qmain', 'bc1qrev'], freeEth: '0.0100', lowEth: '0.0500', sats: '7', lowSats: '100000', publicEth: '0.3000', gasReserveEth: '0.0200', minChunkEth: '0.0200', alerting: undefined, autoShield: { on: false } });
+  assert.deepEqual({ ...i, alerting: undefined }, { poolAccount: '0xPOOL', btcAddresses: ['bc1qmain', 'bc1qrev'], freeEth: '0.0100', lowEth: '0.0500', sats: '7', lowSats: '100000', publicEth: '0.3000', gasReserveEth: '0.0200', lowGasEth: '0.0100', minChunkEth: '0.0200', alerting: undefined, autoShield: { on: false } });
   assert.deepEqual(i.alerting, ['freeEth', 'sats']);
 });
 

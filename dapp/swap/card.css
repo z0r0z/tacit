@@ -67,6 +67,7 @@
 .swc #atomic .fm .big.est { font-size: clamp(20px, calc((100cqi - 112px) / (var(--n, 5) * .6)), 34px); }
 /* where a BTC swap's ETH goes ("Receive as": kept private, or sent on to an address), and the one-press notes under the button: as /btc/ draws them */
 .swc #atomic .payto { margin: 12px 0 0; }
+.swc #atomic .rcpt button.fill { padding: 0; font: inherit; color: inherit; background: none; border: 0; border-bottom: 1px dotted currentColor; cursor: pointer; } /* a limit tapped puts it in the field */
 .swc #atomic .pt { display: grid; gap: 7px; min-width: 0; margin: 0; padding: 10px 12px 12px; background: var(--field); border: 1px solid var(--hair); border-radius: 12px; }
 .swc #atomic .pt legend { padding: 0 4px; font-size: 12px; color: var(--mute); }
 .swc #atomic .pt label { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--ink); cursor: pointer; }

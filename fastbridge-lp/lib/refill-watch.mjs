@@ -3,7 +3,8 @@
 //
 //   freeEth   the private ETH not promised is under FB_LP_ALERT_LOW_ETH (0.05)           -> send ETH to the pool account
 //   sats      the Bitcoin at the provider's addresses is under FB_LP_ALERT_LOW_SATS (100000) -> send BTC to the address
-//   gas       the public ETH of the pool account is under the gas reserve                  -> send ETH there
+//   gas       the public ETH of the pool account is under FB_LP_ALERT_LOW_GAS_ETH (half the gas reserve: the reserve is the cushion, half of it gone
+//             is when to top up)                                                            -> send ETH there
 //   waiting   public ETH above the reserve and the smallest chunk has sat unshielded for 30 minutes, with auto-shield off -> shield it or switch it on
 //
 // A read that gives null (it could not be made) leaves its condition as it was.
@@ -21,11 +22,12 @@ export function watchConfig(env = process.env) {
   };
   const sats = Number(env.FB_LP_ALERT_LOW_SATS ?? 100000);
   if (!Number.isInteger(sats) || sats < 0) throw new Error(`FB_LP_ALERT_LOW_SATS must be a whole number of sats (got "${env.FB_LP_ALERT_LOW_SATS}")`);
-  return { lowEthUnits: eth('FB_LP_ALERT_LOW_ETH', '0.05'), lowSats: BigInt(sats) };
+  return { lowEthUnits: eth('FB_LP_ALERT_LOW_ETH', '0.05'), lowSats: BigInt(sats), ...(env.FB_LP_ALERT_LOW_GAS_ETH != null ? { lowGasWei: eth('FB_LP_ALERT_LOW_GAS_ETH', '0') * UNIT } : {}) };
 }
 
 export function makeRefillWatch({ cfg, shield, freeEth, sats, publicEth, poolAccount, btcAddresses = [], autoShield = false, shieldInfo = () => null, now = () => Math.floor(Date.now() / 1000), alert = () => {}, dedupeSecs = 14400, waitSecs = 1800 }) {
   const said = new Map(), active = new Set();
+  const gasFloor = () => (cfg.lowGasWei != null ? cfg.lowGasWei : shield.reserveWei / 2n);
   let seen = { freeEth: null, sats: null, publicEth: null }, waitingSince = null;
   const btcTo = btcAddresses.length ? btcAddresses.join(' or ') : 'the provider\'s Bitcoin address';
 
@@ -41,11 +43,11 @@ export function makeRefillWatch({ cfg, shield, freeEth, sats, publicEth, poolAcc
     const r = async (f) => { try { const v = await f(); return v == null ? null : BigInt(v); } catch { return null; } };
     const [free, sat, pub] = [await r(freeEth), await r(sats), await r(publicEth)];
     seen = { freeEth: free == null ? seen.freeEth : free, sats: sat == null ? seen.sats : sat, publicEth: pub == null ? seen.publicEth : pub };
-    const reserve = shield.reserveWei, min = shield.minWei, t = now();
+    const reserve = shield.reserveWei, min = shield.minWei, t = now(), lowGas = gasFloor();
     if (free != null) judge('freeEth', free < cfg.lowEthUnits, { msg: `private ETH to lend is low: ${eth8(free)} ETH free, under ${eth8(cfg.lowEthUnits)}. Send ETH to ${poolAccount}${autoShield ? ' (it is shielded and lent on its own)' : ' and shield it with tools/fastbridge-lp-shield.mjs, or set FB_LP_AUTO_SHIELD=on'}` }, { msg: `private ETH to lend is back: ${eth8(free)} ETH free` });
     if (sat != null) judge('sats', sat < cfg.lowSats, { msg: `Bitcoin is low: ${sat} sats at the provider's addresses, under ${cfg.lowSats}. Send BTC to ${btcTo}` }, { msg: `Bitcoin is back: ${sat} sats at the provider's addresses` });
     if (pub != null) {
-      judge('gas', pub < reserve, { msg: `the pool account is under its gas reserve: ${ethW(pub)} ETH, under ${ethW(reserve)}. Send ETH to ${poolAccount}; with none left the provider cannot send its own settles or deposits` }, { msg: `the pool account has its gas reserve again: ${ethW(pub)} ETH` });
+      judge('gas', pub < lowGas, { msg: `the pool account is low on gas: ${ethW(pub)} ETH, under ${ethW(lowGas)} (its reserve is ${ethW(reserve)}). Send ETH to ${poolAccount}; with none left the provider cannot send its own settles or deposits` }, { msg: `the pool account has its gas reserve again: ${ethW(pub)} ETH` });
       const over = pub >= reserve + min;
       if (over && waitingSince == null) waitingSince = t;
       if (!over) waitingSince = null;
@@ -58,7 +60,7 @@ export function makeRefillWatch({ cfg, shield, freeEth, sats, publicEth, poolAcc
     poolAccount, btcAddresses,
     freeEth: seen.freeEth == null ? null : eth8(seen.freeEth), lowEth: eth8(cfg.lowEthUnits),
     sats: seen.sats == null ? null : String(seen.sats), lowSats: String(cfg.lowSats),
-    publicEth: seen.publicEth == null ? null : ethW(seen.publicEth), gasReserveEth: ethW(shield.reserveWei), minChunkEth: ethW(shield.minWei),
+    publicEth: seen.publicEth == null ? null : ethW(seen.publicEth), gasReserveEth: ethW(shield.reserveWei), lowGasEth: ethW(gasFloor()), minChunkEth: ethW(shield.minWei),
     alerting: [...active].sort(), autoShield: { on: !!autoShield, ...(shieldInfo() || {}) },
   });
   return { check, info };

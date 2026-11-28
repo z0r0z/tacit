@@ -1795,7 +1795,7 @@ const render = {}, load = {};
 const tacCtx = () => ({ $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TK, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brHolds, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getDeviceMods, getUx, hexToBytes, html, hxChainEth, hxDevAny, hxLive, hxPreset, hxUsd, hxWalletBal, hxWalletBals, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, payingAccount, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, heldParts, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tokOutNow, tokenSync, tokenWallet, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your, get CH() { return CH; }, get T() { return T; }, get TACP() { return TACP; }, get TCARD() { return TCARD; }, get TCO() { return TCO; }, get TPOOL() { return TPOOL; }, get TREQ() { return TREQ; }, get brLooking() { return brLooking; } });
 // front-tac:end
 let TAC_CODE = null;
-const tacReady = lazy(() => import('/front/tac.js?cb=ca8f0d77').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
+const tacReady = lazy(() => import('/front/tac.js?cb=a9f50120').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
 const withTac = (f) => (TAC_CODE ? f() : tacReady().then(f, () => {}));
 for (const k of ["tac"]) render[k] = () => { if (!TAC_CODE) withTac(() => rerender(k)); };
 for (const k of ["tac"]) load[k] = () => tacReady().then(() => load[k]());
@@ -1975,7 +1975,7 @@ function pqNudge(privHex, pubHex) {
 const CHAIN_HOP_WAIT = 5 * 60e3;
 const chainHopsStuck = () => (chainOn() && S.key && CH.pub === S.key.pubHex ? CH.hops.filter((h) => Date.now() - h.at > CHAIN_HOP_WAIT) : []);
 function chainLaneOf(privHex) { try { return LANE && chainOn() ? LANE.chainLane(privHex) : undefined; } catch { return undefined; } }
-const chainMods = lazy(() => Promise.all([import('/tacit-chain-config.js?cb=74171404'), import('/tacit-chain-client.js?cb=cf0b8b9e'), import('/btc-pool-client.js?cb=95b709f6'), import('/tacit-chain-route.js?cb=518fd1f3')]));
+const chainMods = lazy(() => Promise.all([import('/tacit-chain-config.js?cb=74171404'), import('/tacit-chain-client.js?cb=cf0b8b9e'), import('/btc-pool-client.js?cb=696cc947'), import('/tacit-chain-route.js?cb=518fd1f3')]));
 function chainClient() {
   if (!chainOn() || !S.key) return Promise.reject(Object.assign(new Error('Open your Tacit wallet first.'), { said: true }));
   if (CH.pub !== S.key.pubHex) chainReset(S.key.pubHex);
@@ -5919,10 +5919,10 @@ function loadHeld(force = false) {
     for (const c of order) { if (S.key?.pubHex !== pub) return; await idle(); await one(c).catch(() => {}); }
   })()];
   const sats = (async () => {
-    const X = await import('/sats/secret.js?cb=36d327c8');
+    const X = await import('/sats/secret.js?cb=6e9f6287');
     const pw = X.poolWalletFor(priv, 'mainnet'), [all] = await Promise.all([X.poolNotes(pw), Promise.race([withKey((t) => X.syncPendingShields(t, pw), pub).catch(() => {}), new Promise((r) => setTimeout(r, 2500))])]);
     // (a spend or shield still waiting for its block: the notes it spent are not held, and what it makes is joining)
-    const held = X.livePoolAssets().map((a) => { const v = X.pendingView(all, a.id, pw); return { ...a, value: v.live.filter((n) => strip(n.asset).toLowerCase() === a.id).reduce((t, n) => t + BigInt(n.value), 0n), joining: v.settling }; });
+    const held = X.livePoolAssets().map((a) => { const v = X.pendingView(all, a.id, pw); return { ...a, value: v.live.filter((n) => strip(n.asset).toLowerCase() === a.id).reduce((t, n) => t + BigInt(n.value), 0n), joining: v.settling, joinLine: X.shieldLine(v.shields), refused: v.refused }; });
     if (S.key?.pubHex === pub) { HELD.sats = held; dashSoon(); }
     // TAC taken out of the pool for sale waits at the wallet's own sale keys, outside the pool; its spends say which keys
     const tac = all.filter((n) => strip(n.asset).toLowerCase() === X.TAC_ASSET_MAINNET);
@@ -7215,7 +7215,7 @@ function tacPageSet(on) {
   viewTitle();
   for (const a of $$('a[href="/tac/"]')) { if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
   if (!on) {
-    TPOOL.open = false; tpgAct(null); tacClaimStop(); chainLive(false); chlRead(); refreshTape();
+    TPOOL.open = false; tpgAct(null); tacClaimStop(); chainLive(false); refreshTape();
     if (!numsAt && store.get(NUMS_KEY)) paintNums(store.get(NUMS_KEY));
     if (Date.now() - numsAt > NUMS_MS) refreshNums();
     if (HX.tab === 'swap' && !SWC.el) paintHx();
@@ -7877,48 +7877,17 @@ function paintHints() {
   const mine = held.length ? [...held, ['trade', 'Trade TAC', 'M4 17l5-6 4 4 7-8M15 7h5v5']] : held;
   if (mine.length) {
     const own = html`${mine.map(([id, t, d], i) => html`<button type="button" class="hint own" data-hint="${id}" style="--i:${i}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${t}</span></button>`)}`;
+    el.hidden = false;
     if (el.__h !== own.s) { el.__h = own.s; mount(el, own); }
     hintsWarm();
     return;
   }
-  const hs = [
-    { id: 'shield', ic: ['tk-eth', 'tk-teth'], lead: 'Shield ', amt: `${HINT_ETH} ETH`, rest: '', tip: 'Put ETH in the pool, then swap, farm and send from there. Earns points' },
-    { id: 'pswap', ic: ['tk-eth', 'tk-usdc'], lead: 'Swap ', amt: `${HINT_ETH} ETH`, rest: ' to USDC privately', tip: 'ETH goes into the private pool and the relay swaps and sends USDC out: nothing on chain links them' },
-    { id: 'send', ic: ['tk-usdc', 'tk-teth'], lead: 'Pay ', amt: '25 USDC', rest: ' privately', tip: 'Paid from your wallet into their private balance: the deposit shows, not whose it is' },
-    { id: 'buytac', ic: ['tk-btc', 'tk-tac'], lead: 'Buy ', amt: 'TAC', rest: ' with BTC', tip: 'The Bitcoin order book: listings priced in sats, paid from your own key and settled on Bitcoin. Nothing to connect first' },
-    HINT_POOL && { id: 'zap', ic: ['tk-teth', ...HINT_POOL.icons.slice(1)], lead: 'Farm ', amt: `${HINT_ETH} ETH`, rest: ` in ${HINT_POOL.name}`, tip: `The best farm for this amount now (${HINT_POOL.name}): one transaction puts ETH in and your share is farmed` },
-  ].filter(Boolean);
-  const view = html`<span class="hints-k" aria-hidden="true">Try</span>${hs.map((h, i) => html`<button type="button" class="hint" data-hint="${h.id}" title="${h.tip}" style="--i:${i}">${pair(h.ic)}<span>${h.lead}<b>${h.amt}</b>${h.rest}</span><i class="pf" role="img" aria-hidden="true"></i><i class="go" aria-hidden="true">→</i></button>`)}`;
-  if (el.__h !== view.s) { el.__h = view.s; mount(el, view); }
-  hintsWarm();
-  hintsReady().catch(() => {});
-}
-async function hintsReady() {
-  const el = $('#hints');
-  if (!el) return;
-  const mark = (id, st) => { const b = el.querySelector(`[data-hint="${id}"]`); if (!b) return; if (st) b.dataset.pf = st; else delete b.dataset.pf; b.setAttribute('aria-label', st === 'ready' ? `${b.textContent.trim()}. Its proof is made: one transaction.` : ''); if (!st) b.removeAttribute('aria-label'); };
-  if (!S.key) { mark('shield', ''); mark('zap', ''); return; }
-  const v = await vouchers(), pub = S.key.pubHex, size = String(KEEP_FIRST[0]);
-  const state = (list, f) => { const mine = list.filter(f); return mine.some((x) => x.status === 'ready') ? 'ready' : mine.length ? 'proving' : ''; };
-  mark('shield', state(v.list(pub, 'cETH'), (x) => x.amount === size));
-  mark('zap', HINT_POOL ? state(v.list(pub, lpTicker(HINT_POOL.poolId)), (x) => x.size === size) : '');
+  el.hidden = true;
 }
 function hintGo(id) {
-  if (id === 'buytac') { location.href = '/trade/tac/?lane=btc&src=chip'; return; }       // the trade page opens on the Bitcoin order book, and counts that a chip brought the visitor
   if (id === 'trade') { location.href = '/trade/tac/?src=chip'; return; }
   if (id === 'bal') { openPortfolio(); return; }
-  if (id === 'act') { openAct(); return; }
-  if (S.wallet && !S.key && !signing) { signing = true; open.eth({ address: S.wallet }).catch(() => {}).finally(() => { signing = false; if (S.key) { try { hxQuote(); } catch { } } }); }
-  if (id === 'zap' && HINT_POOL) return hxPreset(`earn:ether:${HINT_POOL.spec}`, HINT_ETH);
-  if (id === 'shield') return hxPreset('shield:ether:defi', HINT_ETH);
-  if (id === 'send') { hxPreset('send:wusdc', '25'); $('#hx-rcpt')?.focus({ preventScroll: true }); return $('#hx').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' }); }
-  if (id !== 'pswap') return;
-  for (const o of $$('dialog.sheet[open]')) o.close();
-  hxKeepAmt(() => { HX.q = null; HX.tab = 'swap'; HX.flow = null; HX.via = false; SWC.ask = new URLSearchParams({ from: 'ETH', to: 'USDC', private: 'to', amt: HINT_ETH }); });
-  paintHx();
-  const card = $('#hx'), calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  card.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'center' });
-  if (!calm) card.animate([{ outline: '2px solid var(--orange)', outlineOffset: '2px' }, { outline: '2px solid transparent', outlineOffset: '12px' }], { duration: 1100, easing: 'ease-out' });
+  if (id === 'act') openAct();
 }
 function paintFarmChips(pools) {
   const el = $('#fms'), chips = pools.filter(({ p }) => !p.idle && String(p.reserves?.assetA).toLowerCase() === CETH_ID && Number(p.reserves?.lpTotalShares)).map(({ p, apr }) => ({
@@ -7951,7 +7920,6 @@ function farmDay(p, eth) {
   return eth > 0 && FARM.program?.epoch?.active && Number(r.lpTotalShares) ? Number(p.tacPerDayForPool) * eth / (staked + eth) : 0;
 }
 function readyMarks() {
-  hintsReady().catch(() => {});
   if (HX.tab === 'earn') hxReadyRead().catch(() => {});
   if (HX.tab === 'swap') SWC.card?.refresh?.();
 }
@@ -10378,6 +10346,7 @@ const hxSources = () => Object.keys(HX_SH).filter((k) => hxWays(k).length);
 const HX_BR = { btc: 'eth', tb: 'back', tac: 'btc', eth: 'btc', ether: 'btc', cbtc: 'btc', kb: 'back', cusd: 'btc', ub: 'back', wusdt: 'btc', cusdt: 'btc', ut: 'back' };
 const HX_BR_REV = { btc: 'tac', tac: 'btc', tb: 'eth', eth: 'tb', ether: 'tb', cbtc: 'kb', kb: 'cbtc', cusd: 'ub', ub: 'cusd', wusdt: 'ut', cusdt: 'ut', ut: 'cusdt' };
 const hxBrSources = () => Object.keys(HX_BR).filter((k) => hxWays(k).includes(HX_BR[k]) && (!SPXP || spxKey(k)));
+const HX_VIA_WALLET = ['ether', 'wtac', 'wusdc', 'wusdt'];
 const hxBrTo = (sf) => (HX_BR[sf] === 'btc' ? 'bitcoin' : 'private');
 const hxBrGo = (sf = HX.sf) => `Bridge ${HX_SH[sf]?.u ?? ''} ${HX_BR[sf] === 'btc' ? 'to' : 'from'} Bitcoin`;
 const HX_BR_ASSET = { tb: 'teth', eth: 'teth', ether: 'teth', cbtc: 'cbtc', kb: 'cbtc', cusd: 'cusd', ub: 'cusd', wusdt: 'cusdt', cusdt: 'cusdt', ut: 'cusdt' };
@@ -11743,6 +11712,19 @@ const hxMoves = {
   },
   go: (key, amt) => { if (HX.tab !== 'swap') return; hxMoveSet(key, amt); hxNorm(); hxGo(); },
   idle: () => { HXM.key = null; HXM.cb = null; try { chainWayPaint(); } catch { } },
+  // the Bitcoin side of the card's coin lists: Shield's From lists what can be bridged in from Bitcoin, Withdraw's To what can go out to it; picking one opens that bridge
+  bridges: (flow, side) => {
+    if (SPXP || HX.tab !== 'swap') return [];
+    const inn = flow === 'shield' && side === 'pay', out = flow === 'withdraw' && side === 'get';
+    if (!inn && !out) return [];
+    // the coin already in the card first: Shield's To (tETH from tETH on Bitcoin, …), Withdraw's From (TAC to TAC on Bitcoin, …)
+    const c = String(SWC.card?.params?.()?.get(inn ? 'to' : 'from') || '').toLowerCase();
+    const first = inn ? ({ eth: 'tb', teth: 'tb', cbtc: 'kb', cusd: 'ub', usdt: 'ut', cusdt: 'ut' }[c] || 'btc') : ({ tac: 'tac', cbtc: 'cbtc', cusd: 'cusd', usdt: 'cusdt', cusdt: 'cusdt' }[c] || 'eth');
+    return hxBrSources().filter((k) => (inn ? hxPlaceOf('bridge', k) === 'bitcoin' && hxBrTo(k) === 'private' : HX_SH[k]?.priv && hxBrTo(k) === 'bitcoin'))
+      .sort((a, b) => (b === first) - (a === first))
+      .map((k) => { const sh = HX_SH[inn ? k : HX_BR_REV[k]] || HX_SH[k]; return sh ? { k, sym: sh.u, name: inn ? sh.name : `${sh.name} · from private ${HX_SH[k].u}`, icon: hxIco(sh.ic, 'tk btc').s } : null; }).filter(Boolean);
+  },
+  bridge: (flow, side, k) => { if (!hxBrSources().includes(k)) return; hxPreset(`bridge:${k}`, undefined, true); HX.via = true; paintHx(); },
   cleared: (key) => { if (HX.tab !== 'swap') return; HX.seq++; hxMoveSet(key, ''); },
   warm: () => hxWarmBals(Object.values(HX_MV_SRC).filter((k) => k !== 'btc')),
   stale: (k, at) => { const sf = HX_MV_SRC[`${hxMvCoin(k)}@${at}`], id = sf && hxPayId(sf); if (id != null && PB.pub) PB.at[String(id)] = 0; if (sf) hxWarmBals([sf]); },
@@ -12310,6 +12292,8 @@ function hxBalPaint() {
   };
 }
 function hxSubOf(id, k) {
+  if (id === 'hx-from' && HX.tab === 'bridge' && HX.via && hxViaKey() === 'shield' && hxPlaceOf('bridge', k) === 'wallet') return 'shield it from your wallet';
+  if (id === 'hx-to') return k === 'wallet' ? 'public, in your wallet' : 'at your Bitcoin address';
   if (id === 'hx-from' && HX.tab === 'bridge') return k === 'ether' ? 'to Bitcoin, as tETH' : HX_BR[k] === 'btc' ? 'to Bitcoin' : 'to Ethereum, private';
   if (id === 'hx-sa' && hxIsLp(k)) return 'LP shares, a part or all of them';
   if (id === 'hx-sa' && /^xb0x/.test(k)) {      // a token bridged to Bitcoin is at the key's Taproot address, which the balance on the right (the Bitcoin address) does not count
@@ -14160,7 +14144,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=bf1eaaad').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=867029f7').catch((e) => { SWC.p = null; throw e; }));
 // Intent on Shield or Swap is a useful head start: fetch both the card and the
 // private action engine, and warm the fee/log reads they need before submit.
 const hxActionWarm = () => { swcLoad().catch(() => {}); hxWarm(); hxWarmWrap(); };
@@ -14187,7 +14171,7 @@ function hxWhereSync() {
   const panel = $('#hx-panel'), hk = hxHeadKey();
   if (!panel) return;
   let el = panel.querySelector(':scope > .hx-where');
-  if (hk !== 'shield' && hk !== 'withdraw') { el?.remove(); return; }
+  if ((hk !== 'shield' && hk !== 'withdraw') || !SPXP) { el?.remove(); return; }
   const btc = HX.tab === 'bridge', w = hk === 'shield' ? 'From ' : 'To ';
   const v = html`${[['wallet', 'c-eth', 'wallet', 'Wallet'], ['bitcoin', 'c-btc', 'Bitcoin', 'Bitcoin']].map(([k, ic, t, n]) => html`<button type="button" role="radio" data-hxwhere="${k}" aria-checked="${String(btc === (k === 'bitcoin'))}"><svg class="tk" aria-hidden="true"><use href="#${ic}"/></svg><span class="w">${SPXP && hk === 'shield' && k === 'bitcoin' ? 'Back from Bitcoin' : `${w}${t}`}</span><span class="n">${n}</span></button>`)}`;
   if (!el) { el = Object.assign(document.createElement('div'), { className: 'hx-mode hx-where' }); el.setAttribute('role', 'radiogroup'); const lead = panel.querySelector(':scope > .hx-lead'); if (lead) lead.after(el); else panel.prepend(el); }
@@ -14319,11 +14303,18 @@ function paintHx() {
   if (m === 'swap') {
     body = html`<div class="hx-swap" id="hx-swap"></div>`;
   } else if (m === 'bridge') {
-    const groups = hxGroups('bridge'), place = hxPlaceOf('bridge', HX.sf), to = hxBrTo(HX.sf), w = HX_WAY[`${HX.sf}>${HX.sd}`], fixed = hxMoveFixed();
+    // reached from Shield or Withdraw (HX.via), the coin lists stay on that side: Shield's From is Bitcoin's coins and, to shield from the wallet instead, the
+    // wallet's; Withdraw's From is what is held privately, and its To is Bitcoin or, instead, the wallet
+    const viaK = HX.via && !SPXP ? hxViaKey() : null, all = hxGroups('bridge');
+    const groups = viaK === 'shield' ? [...all.filter(([, , p]) => p === 'bitcoin'), ['Wallet', HX_VIA_WALLET.filter((k) => HX_SH[k]).map((k) => [k, HX_SH[k].u, HX_SH[k].ic, 6, HX_SH[k].name]), 'wallet']]
+      : viaK === 'withdraw' ? all.filter(([, , p]) => p === 'private') : all;
+    const place = hxPlaceOf('bridge', HX.sf), to = hxBrTo(HX.sf), w = HX_WAY[`${HX.sf}>${HX.sd}`], fixed = hxMoveFixed();
+    const pub = w.u === 'tETH' ? ['ETH', 'eth'] : [w.u, w.ic];
+    const toCoin = viaK === 'withdraw' ? coin('hx-to', 'To', [['Bitcoin', [['btc', w.u, w.ic, 6, `${w.u}, on Bitcoin`]], 'bitcoin'], ['Wallet', [['wallet', pub[0], pub[1], 6, `${pub[0]}, to your wallet`]], 'wallet']], 'btc') : html`<span class="coin one">${hxIco(w.ic)}${w.u}</span>`;
     const step = (t, i) => { const c = /^(.+?) ((?:on|for|to) (Bitcoin|Ethereum))$/.exec(t); return html`<li style="--i:${i}"><span class="dot" aria-hidden="true"></span>${c ? html`${c[1]} <span class="sr">${c[2]}</span><svg class="tk" aria-hidden="true"><use href="#c-${c[3] === 'Bitcoin' ? 'btc' : 'eth'}"/></svg>` : t}</li>`; };
     body = html`${field('From', heldAt(place), fixed ? html`<span class="say">whole notes, picked below</span>` : amt(`${HX_SH[HX.sf].u} to bridge`), coin('hx-from', 'Bridge from', groups, HX.sf), fixed ? 'bal' : true, place === 'private')}
       ${mid('Bridge it the other way')}
-      ${field('To', heldAt(to), out(), html`<span class="coin one">${hxIco(w.ic)}${w.u}</span>`, false, to === 'private')}
+      ${field('To', heldAt(to), out(), toCoin, false, to === 'private')}
       <ol class="hx-brs${to === 'bitcoin' ? ' out' : ''}" aria-label="Steps">${hxBrSteps(HX.sf).map(step)}</ol>
       ${tail}
       <p class="q" id="hx-ss-at" hidden></p>
@@ -14476,8 +14467,11 @@ function paintHx() {
     if (!d || ks.length < 2) return;
     e.preventDefault(); choose(ks[(i + d + ks.length) % ks.length], true);
   };
-  const setFrom = (v) => { HX.placePick = true; HX.placeAuto = null; hxKeepAmt(() => { if (m === 'bridge') HX.br = v; else if (m === 'earn') HX.ern = v; else if (m === 'borrow') { HX.bsrc = v === 'wtac' ? 'tac' : v === 'cbtc' ? 'cbtc' : 'btc'; HX.bm = HX.bsrc === 'tac' ? (HX.bm === 'tace' ? 'tace' : 'tacd') : HX.bsrc === 'btc' && HX.bm === 'cbtc' ? 'cbtc' : 'cusd'; HX.amt = ''; } HX.q = null; }); paintHx(); };
+  const setFrom = (v) => {
+    if (m === 'bridge' && HX.via && !SPXP && hxViaKey() === 'shield' && hxPlaceOf('bridge', v) === 'wallet') { if (v === 'ether') hxSetTab('shield'); else hxPreset(`shield:${v}`, undefined, true); paintHx(); return; }
+    HX.placePick = true; HX.placeAuto = null; hxKeepAmt(() => { if (m === 'bridge') HX.br = v; else if (m === 'earn') HX.ern = v; else if (m === 'borrow') { HX.bsrc = v === 'wtac' ? 'tac' : v === 'cbtc' ? 'cbtc' : 'btc'; HX.bm = HX.bsrc === 'tac' ? (HX.bm === 'tace' ? 'tace' : 'tacd') : HX.bsrc === 'btc' && HX.bm === 'cbtc' ? 'cbtc' : 'cusd'; HX.amt = ''; } HX.q = null; }); paintHx(); };
   $('#hx-from')?.addEventListener('change', (e) => setFrom(e.target.value));
+  $('#hx-to')?.addEventListener('change', (e) => { if (e.target.value === 'wallet') { hxSetTab('withdraw'); paintHx(); } });
   $('#hx-chain-sel')?.addEventListener('change', (e) => { HX.chain = Number(e.target.value); HX.q = null; HX.max = false; paintHx(); });
   netPicker($('#hx-chain-sel'));
   $('#hx-flip')?.addEventListener('click', () => {
@@ -14793,7 +14787,7 @@ async function hxBtcMarket(addr) {
   const r = xtOf(addr), b = r && xtBridge(r);
   if (!b) return;
   try {
-    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=fdb5ab71')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
+    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=02ca566b')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
     await BTC_MKT.get(b.hex).open();
   } catch (e) { toast(`The ${b.name} market on Bitcoin did not open: ${errText(e)}`, true); }
 }
@@ -14985,28 +14979,6 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) rest
 let lastTick = Date.now();
 const tick = () => { lastTick = Date.now(); paintEarn(); if (!TACP.on) refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); brWaitTick(); bswTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (!TACP.on && lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if (shown(n) && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
 setInterval(() => { if (!document.hidden) tick(); }, 60e3);
-const CHL = { p: null };
-const chlAgo = (s) => (s < 90 ? 'just now' : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`);
-function chlRead() {
-  const el = $('#chl');
-  if (!el || TACP.on || CHL.p || document.hidden) return;
-  CHL.p = import('/tacit-chain-config.js?cb=74171404').then(async (cf) => {
-    const cfg = cf.tacitChain();
-    if (!cfg) { el.hidden = true; return; }
-    const [st, w] = await Promise.all([
-      leaderState(cfg.leader).catch(() => null),
-      multicall(['0ef26743', '2fb9bbfd', '16f0115b', '03314efa'].map((sel) => ({ to: cfg.blocks, data: sel }))).catch(() => []),
-    ]);
-    const [height, last, pool, shares] = [0, 1, 2, 3].map((i) => { try { return w[i] ? BigInt(w[i]) : null; } catch { return null; } });
-    if (height == null || pool == null || shares == null) return;
-    const pending = Number(st?.pending || 0), quiet = last ? Date.now() / 1000 - Number(last) : null;
-    $('#chl-dot').className = `dot ${!st ? '' : pending && quiet > 180 ? 'live' : 'on'}`;
-    const bits = [`block ${Number(height).toLocaleString('en-US')}`, quiet != null && last > 0n && chlAgo(quiet), `1 share = ${tpgPrice(pool, shares).toFixed(4)} TAC`, `${fmt(pool, 8, 2)} TAC private`, pending && `${pending} in the next block`];
-    $('#chl-a').title = `The Tacit chain, live: ${bits.filter(Boolean).join(' · ')}`;
-  }).catch(() => {}).finally(() => { CHL.p = null; });
-}
-(window.requestIdleCallback || setTimeout)(() => chlRead());
-setInterval(() => { if (!document.hidden) chlRead(); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastTick > 60e3) tick(); });
 const route = () => {
   route.at = performance.now();
