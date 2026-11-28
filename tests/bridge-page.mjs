@@ -354,11 +354,11 @@ try {
     await page.waitForSelector('.sm summary', { state: 'attached' });
     await page.waitForTimeout(500);
     const read = () => page.evaluate(() => {
-      const s = document.querySelector('.sm summary'), t = document.querySelector('.sm-p a[href="/bridge/"]'), d = s.querySelector(':scope > .bd');
-      return { dot: !!d && !d.hidden, label: s.getAttribute('aria-label'), tag: t?.lastElementChild && !t.lastElementChild.hidden ? t.lastElementChild.textContent : '' };
+      const s = document.querySelector('.sn > a[href="/#/chains"]'), d = s.querySelector(':scope > .bd'), l = s.getAttribute('aria-label') || '';
+      return { dot: !!d && !d.hidden, label: l, tag: /(\d+) needs you$/.test(l) ? `${/(\d+) needs you$/.exec(l)[1]} needs you` : /(\d+) bridges? under way$/.test(l) ? `${/(\d+) bridges? under way$/.exec(l)[1]} under way` : '' };
     });
     let m = await read();
-    ok(m.dot && m.tag === '1 needs you' && /4 bridges under way, 1 needs you/.test(m.label), `${path}: the menu button carries a dot, and the menu's Bridges entry says what waits on the holder (${JSON.stringify(m)})`);
+    ok(m.dot && m.tag === '1 needs you' && /4 bridges under way, 1 needs you/.test(m.label), `${path}: the header's Bridge entry carries a dot and says what waits on the holder (${JSON.stringify(m)})`);
     await page.evaluate(([pub, a, b]) => {
       localStorage.setItem('tacit-burndep-bridge-v1:mainnet:' + pub, a); localStorage.setItem('tacit-crossout-bridge-v1:mainnet:' + pub, b);
       window.dispatchEvent(new StorageEvent('storage', { key: 'tacit-crossout-bridge-v1:mainnet:' + pub }));
@@ -372,7 +372,7 @@ try {
     }, [PUB, JSON.stringify(OUT.map((r) => ({ ...r, stage: 'minted' })))]);
     await page.waitForTimeout(300);
     m = await read();
-    ok(!m.dot && !m.tag && m.label === 'More pages', `${path}: once every bridge has arrived the dot and the count go (${JSON.stringify(m)})`);
+    ok(!m.dot && !m.tag && m.label === 'Bridge', `${path}: once every bridge has arrived the dot and the count go (${JSON.stringify(m)})`);
     await browser.close();
   }
 

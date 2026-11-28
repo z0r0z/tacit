@@ -175,6 +175,8 @@ html[data-sec="rewards/"] #find-h { display: none !important; }
 .sm-p a[aria-current="page"] { background: var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
 .sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
+.sm-p .smg { margin: 10px 12px 4px; font: 500 10.5px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.sm-p .smg:first-of-type { margin-top: 6px; }
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
 @media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
