@@ -253,7 +253,7 @@ test('BTC for ETH: the provider builds and proves its lock from the offer the pa
   console.log(`    b2e block -> provider's lock in the pool: ${slow.wait} s as before, ${fast.wait} s proved ahead`);
 });
 
-test('a lock of sats that a block goes by without is bumped from its change, child pays for parent, its txid kept, within its cap', async () => {
+test('a lock of sats that a block goes by without is bumped from its change to the next block\'s rate, child pays for parent, its txid kept, within its cap', async () => {
   const w = pairWorld();
   await w.ready();
   w.uEvm.fund(UNITS, 'inv0');
@@ -266,7 +266,8 @@ test('a lock of sats that a block goes by without is bumped from its change, chi
   await w.rev.tick();
   const s0 = (await w.stores.rv.swaps.list())[0];
   const lockTxid = s0.lock.txid;
-  rate = 20;
+  // the rate the provider sends at stays 3 (its few-blocks estimate lags a backlog); the next block wants 20, and the bump is sized to that (2026-11-28)
+  w.rBtc.nextFeeRate = async () => 20;
   const child = () => [...w.btc.txs.entries()].find(([, e]) => e.esplora.vin.some((i) => i.txid === lockTxid));
   w.btc.holdBack = (id) => id === lockTxid && !child();
   w.btc.mine(1);

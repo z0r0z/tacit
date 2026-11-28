@@ -109,7 +109,7 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   // An estimate above the ceiling (sat/vB) is a mistake or a lie; no fee market has been near it.
   const FEE_RATE_CEILING = 5000, FEE_RATE_SPREAD = 8;
   let fee = null, feeRead = null, feeLost = null;
-  async function readFee() {
+  async function readFee(target = feeTarget) {
     const why = [];
     // Three explorers are asked first (the ones that answered lately, in turn: askOrder), and the rest only when fewer than two of them gave an estimate; one that
     // fails is left alone for a while like any other read (coolDown), so a dead explorer is not asked again with every estimate.
@@ -118,7 +118,7 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
       try {
         const r = await fetchImpl(b + '/fee-estimates', { signal: AbortSignal.timeout(timeoutMs) });
         if (!r.ok) { why.push(`${host} ${r.status}`); coolDown(b, retryAfter(r), `fee estimate ${r.status}`); return null; }
-        const f = await r.json(), v = Number(f[feeTarget] ?? f['6']);
+        const f = await r.json(), v = Number(f[target] ?? f['6']);
         if (Number.isFinite(v) && v > FEE_RATE_CEILING) { why.push(`${host} gave an implausible estimate`); return null; }
         if (Number.isFinite(v) && v > 0) { healed(b); return v; }
         why.push(`${host} gave no estimate`); return null;
@@ -136,6 +136,17 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     // one explorer's word alone is held to `soloFeeCeiling` (sat/vB): a rate above it is taken only when two say so
     if (seen.length === 1) return Math.max(1, minFeeRate, Math.ceil(Math.min(seen[0], soloFeeCeiling)));
     return Math.max(1, minFeeRate, Math.ceil(seen.length % 2 ? seen[(seen.length - 1) / 2] : (seen[seen.length / 2 - 1] + seen[seen.length / 2]) / 2));
+  }
+  // What the explorers give for the NEXT block (target 1), read the same way: a lock that a block went by without is bumped to this, not to the target the
+  // party sends at (a three-block estimate runs under what a block takes when a backlog builds: a lock bumped to it on 2026-11-28 waited three more blocks)
+  let nextFee = null, nextRead = null;
+  async function nextFeeRate(maxAgeMs = 60000) {
+    const t = nowMs();
+    if (nextFee && t - nextFee.at < maxAgeMs) return nextFee.v;
+    try {
+      nextRead ||= readFee('1').then((v) => { nextFee = { v, at: nowMs() }; return v; }).finally(() => { nextRead = null; });
+      return await nextRead;
+    } catch (e) { if (nextFee && t - nextFee.at < feeStaleMs) return nextFee.v; return feeRate(0); }
   }
   async function feeRate(maxAgeMs = feeFreshMs) {          // a caller that wants it newer than a quote needs it (the LP's tick) says so
     const t = nowMs();
@@ -306,5 +317,5 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     return null;
   }
 
-  return { prims, wallet, tx: builder, address, satsUtxos, satsCoins, coinsIn, feeRate, broadcast, fetchTx, status, tip, blockTime, outspend, lockAgreed, history, resolveNote, crossLaneBlocked };
+  return { prims, wallet, tx: builder, address, satsUtxos, satsCoins, coinsIn, feeRate, nextFeeRate, broadcast, fetchTx, status, tip, blockTime, outspend, lockAgreed, history, resolveNote, crossLaneBlocked };
 }

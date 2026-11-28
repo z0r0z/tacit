@@ -282,6 +282,12 @@ test('a status look at a transaction not out yet stops at two explorers that agr
   assert.equal(has.seen.length, 3, 'a read of the transaction itself still asks every explorer (a note is never denied on two lagging ones)');
 });
 
+test('the next block\'s rate is read from the explorers\' target 1, apart from the rate a party sends at', async () => {
+  const { btc } = chainOf(['a.test', 'b.test', 'c.test'], (u) => (u.pathname.endsWith('/fee-estimates') ? json({ 1: 9.2, 3: 2.1, 6: 1.5 }) : gone()), { feeTarget: '3' });
+  assert.equal(await btc.feeRate(), 3, 'the party\'s own target (3 blocks), rounded up');
+  assert.equal(await btc.nextFeeRate(), 10, 'the next block (target 1), rounded up');
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }

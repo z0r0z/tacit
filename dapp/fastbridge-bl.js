@@ -177,7 +177,7 @@ export function makeBitcoinLocker(ctx) {
     if (tip < rec.bumpTip + (policy.lockBumpBlocks ?? 1)) return;
     const last = rec.cpfp || null;
     if ((last ? last.bumps : 0) >= (policy.lockMaxBumps ?? 4)) return;
-    const rate = Math.ceil(await btc.feeRate(0)), childVb = btc.tx.childVsize ? btc.tx.childVsize() : 110;
+    const rate = Math.ceil(await (btc.nextFeeRate ? btc.nextFeeRate() : btc.feeRate(0))), childVb = btc.tx.childVsize ? btc.tx.childVsize() : 110;
     const cap = lockBumpCap(rec.amount, rec.lock.change.value, policy);
     let fee = rate * (rec.lock.vsize + childVb) - rec.lock.fee;
     if (last) fee = Math.max(fee, last.fee + childVb + 1);                 // (a replacement pays more than the child it replaces, by the relay's increment)
